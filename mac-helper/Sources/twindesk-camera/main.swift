@@ -74,7 +74,7 @@ class DeviceSource: NSObject, CMIOExtensionDeviceSource {
   private var formatDescription: CMFormatDescription!
   private var pool: CVPixelBufferPool!
   private var blackFrame: CVPixelBuffer?
-  private let queue = DispatchQueue(label: "org.macshare.mac.camera", qos: .userInteractive)
+  private let queue = DispatchQueue(label: "io.github.alexfoxtm.twindesk.camera", qos: .userInteractive)
   private var timer: DispatchSourceTimer?
   private var readers = 0
   private var sinking = false

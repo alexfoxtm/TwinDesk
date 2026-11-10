@@ -375,7 +375,6 @@
   "Network and Bluetooth": "网络和蓝牙",
   "New screenshots are copied to the clipboard on {name}": "新截图会被复制到 {name} 的剪贴板",
   "New texts": "新短信",
-  "New versions for every platform": "适用于所有平台的新版本",
   "Newest first, in Photos on {name}": "最新的在前，位于 {name} 的“照片”中",
   "Next": "下一首",
   "Next track": "下一首",
@@ -974,5 +973,8 @@
   "{what} requires Wi-Fi Direct or the same Wi-Fi network. You’re connected over Bluetooth.": "{what}需要 WLAN 直连或同一 Wi-Fi 网络。你当前通过蓝牙连接。",
   "‹ Back": "‹ 返回",
   "‹ Up": "‹ 上一级",
-  "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘ 相当于 Ctrl，因此 ⌘C 复制，⌘V 粘贴"
+  "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘ 相当于 Ctrl，因此 ⌘C 复制，⌘V 粘贴",
+  "Downloads for this fork": "此分支的下载",
+  "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "InukaAsith/TwinDesk 的构建是另一个应用，不会作为更新安装。",
+  "Upstream releases": "上游版本"
 }

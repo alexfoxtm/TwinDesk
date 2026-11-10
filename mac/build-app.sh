@@ -8,6 +8,11 @@ unset ELECTRON_RUN_AS_NODE
 cd "$(dirname "$0")"
 ROOT=..
 STAGE=dist/stage
+FORK_APP='dist/TwinDesk Fork.app'
+if [ -e "$FORK_APP" ]; then
+  echo "error: $FORK_APP already exists; move the previous build before building again" >&2
+  exit 1
+fi
 ARCH=${1:-$(uname -m)}
 case "$ARCH" in
   x86_64) ARCH=x64 ;;
@@ -22,7 +27,23 @@ EV=$(node -p "require('./node_modules/electron/package.json').version")
 # TwinDesk for Android with notification access, which the Mac installs on a phone over wireless
 # debugging (phone-bridge.js): the newest full build from android/dist, if one was built.
 FULL_APK=$(ls "$ROOT"/android/dist/*-full.apk 2>/dev/null | sort | tail -1)
-if [ -n "$FULL_APK" ]; then cp "$FULL_APK" vendor/twindesk-android-full.apk; else echo "note: no android/dist/*-full.apk — the app won't offer the full Android build"; fi
+APK_DEST=vendor/twindesk-android-full.apk
+APK=${FULL_APK:-}
+if [ -z "$APK" ] && [ -f "$APK_DEST" ]; then APK=$APK_DEST; fi
+if [ -n "$APK" ]; then
+  AAPT_BIN=${AAPT:-}
+  if [ -z "$AAPT_BIN" ]; then
+    for tool in "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"/build-tools/*/aapt; do
+      [ ! -x "$tool" ] || AAPT_BIN=$tool
+    done
+  fi
+  [ -n "$AAPT_BIN" ] && [ -x "$AAPT_BIN" ] || { echo 'error: aapt is required to verify the bundled Android package' >&2; exit 1; }
+  APK_ID=$("$AAPT_BIN" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1)
+  [ "$APK_ID" = 'io.github.alexfoxtm.twindesk.android' ] || { echo 'error: the bundled Android APK is not the fork package' >&2; exit 1; }
+  [ "$APK" = "$APK_DEST" ] || cp "$APK" "$APK_DEST"
+else
+  echo "note: no Android full APK — the app won't offer the full Android build"
+fi
 
 # adb for wireless debugging (phone-bridge.js), fetched once into mac/vendor/adb (scripts/fetch-adb.sh).
 sh scripts/fetch-adb.sh
@@ -65,7 +86,7 @@ cat > dist/extra.plist <<'EOF'
   <key>NSLocationUsageDescription</key><string>macOS shows Wi-Fi networks only to apps with Location. TwinDesk joins your phone's or PC's Wi-Fi to send files when they aren't on your network.</string>
   <key>NSLocationWhenInUseUsageDescription</key><string>macOS shows Wi-Fi networks only to apps with Location. TwinDesk joins your phone's or PC's Wi-Fi to send files when they aren't on your network.</string>
   <key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>macOS shows Wi-Fi networks only to apps with Location. TwinDesk joins your phone's or PC's Wi-Fi to send files when they aren't on your network.</string>
-  <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>TwinDesk</string><key>CFBundleURLSchemes</key><array><string>macshare</string></array></dict></array>
+  <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>TwinDesk</string><key>CFBundleURLSchemes</key><array><string>alexfoxtm-twindesk</string></array></dict></array>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string><string>ru</string><string>tr</string><string>pt-BR</string></array>
@@ -73,9 +94,12 @@ cat > dist/extra.plist <<'EOF'
 </dict></plist>
 EOF
 
+# The packager name stays TwinDesk, so the helpers stay "TwinDesk Helper", "TwinDesk Helper (GPU)",
+# "TwinDesk Helper (Renderer)" and "TwinDesk Helper (Plugin)". The fork's Keychain service and logs
+# are set at launch (mac/main.js), not by renaming those helpers.
 ./node_modules/.bin/electron-packager "$STAGE" TwinDesk \
   --platform=darwin --arch="$ARCH" --electron-version="$EV" \
-  --app-bundle-id=org.macshare.mac --app-version="$(node -p "require('./package.json').version")" \
+  --app-bundle-id=io.github.alexfoxtm.twindesk --helper-bundle-id=io.github.alexfoxtm.twindesk.helper --app-version="$(node -p "require('./package.json').version")" \
   --icon=dist/TwinDesk.icns --extend-info=dist/extra.plist \
   --no-prune --asar=false --out=dist --overwrite --quiet
 
@@ -91,7 +115,7 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>org.macshare.mac.share</string>
+  <key>CFBundleIdentifier</key><string>io.github.alexfoxtm.twindesk.share</string>
   <key>CFBundleName</key><string>TwinDesk</string>
   <key>CFBundleDisplayName</key><string>TwinDesk</string>
   <key>CFBundleExecutable</key><string>MacShareShare</string>
@@ -120,38 +144,47 @@ cat > dist/share.entitlements <<'PLIST'
 </dict></plist>
 PLIST
 
+# Release profiles are optional. Ad-hoc and the local self-signed certificate leave both unset.
+# When a profile is supplied it must be this fork's App ID; another id is not embedded.
+TEAM=${MAC_TEAM_ID:-$APPLE_TEAM_ID}
+if [ -n "${MAC_APP_PROFILE:-}" ]; then
+  node scripts/check-provision-profile.js "$MAC_APP_PROFILE" "io.github.alexfoxtm.twindesk" "MAC_APP_PROFILE" "$TEAM"
+fi
+if [ -n "${MAC_CAMERA_PROFILE:-}" ]; then
+  node scripts/check-provision-profile.js "$MAC_CAMERA_PROFILE" "io.github.alexfoxtm.twindesk.camera" "MAC_CAMERA_PROFILE" "$TEAM"
+fi
+
 # Camera › Virtual camera (vcam.js): the Camera Extension and twindesk-vcam, which installs and feeds
 # it, only in a build macOS takes it from: Developer ID (MAC_IDENTITY), the team (MAC_TEAM_ID, else
 # APPLE_TEAM_ID) and two Developer ID provisioning profiles with the System Extension capability, the
-# app's (MAC_APP_PROFILE, App ID org.macshare.mac) and the extension's (MAC_CAMERA_PROFILE, App ID
-# org.macshare.mac.camera), both with the app group <team>.org.macshare.mac. Without them it isn't
-# in the app, and the Camera tab says the virtual camera needs a release build.
+# app's (MAC_APP_PROFILE, App ID io.github.alexfoxtm.twindesk) and the extension's (MAC_CAMERA_PROFILE,
+# App ID io.github.alexfoxtm.twindesk.camera), both with the app group <team>.io.github.alexfoxtm.twindesk.
+# Without them it isn't in the app, and the Camera tab says the virtual camera needs a release build.
 # twindesk-vcam is in every build: it also feeds OBS Virtual Camera (OBS's own Camera Extension).
-TEAM=${MAC_TEAM_ID:-$APPLE_TEAM_ID}
 cp "$ROOT/mac-helper/.build/release/twindesk-vcam" dist/TwinDesk.app/Contents/MacOS/twindesk-vcam
-SYSEXT=dist/TwinDesk.app/Contents/Library/SystemExtensions/org.macshare.mac.camera.systemextension
+SYSEXT=dist/TwinDesk.app/Contents/Library/SystemExtensions/io.github.alexfoxtm.twindesk.camera.systemextension
 CAMERA=""
 if [ -n "$MAC_IDENTITY" ] && [ -n "$TEAM" ] && [ -f "$MAC_APP_PROFILE" ] && [ -f "$MAC_CAMERA_PROFILE" ]; then
   CAMERA=1
   mkdir -p "$SYSEXT/Contents/MacOS"
-  cp "$ROOT/mac-helper/.build/release/twindesk-camera" "$SYSEXT/Contents/MacOS/org.macshare.mac.camera"
+  cp "$ROOT/mac-helper/.build/release/twindesk-camera" "$SYSEXT/Contents/MacOS/io.github.alexfoxtm.twindesk.camera"
   cp "$MAC_CAMERA_PROFILE" "$SYSEXT/Contents/embedded.provisionprofile"
   cp "$MAC_APP_PROFILE" dist/TwinDesk.app/Contents/embedded.provisionprofile
   cat > "$SYSEXT/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>org.macshare.mac.camera</string>
+  <key>CFBundleIdentifier</key><string>io.github.alexfoxtm.twindesk.camera</string>
   <key>CFBundleName</key><string>TwinDesk Camera</string>
   <key>CFBundleDisplayName</key><string>TwinDesk Camera</string>
-  <key>CFBundleExecutable</key><string>org.macshare.mac.camera</string>
+  <key>CFBundleExecutable</key><string>io.github.alexfoxtm.twindesk.camera</string>
   <key>CFBundlePackageType</key><string>SYSX</string>
   <key>CFBundleShortVersionString</key><string>$VER</string>
   <key>CFBundleVersion</key><string>$VER</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>CMIOExtension</key><dict>
-    <key>CMIOExtensionMachServiceName</key><string>$TEAM.org.macshare.mac.camera</string>
+    <key>CMIOExtensionMachServiceName</key><string>$TEAM.io.github.alexfoxtm.twindesk.camera</string>
   </dict>
   <key>NSSystemExtensionUsageDescription</key><string>TwinDesk Camera: the other computer's or the phone's camera, as a camera every app on this Mac can pick.</string>
 </dict></plist>
@@ -161,16 +194,16 @@ PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>com.apple.security.app-sandbox</key><true/>
-  <key>com.apple.security.application-groups</key><array><string>$TEAM.org.macshare.mac</string></array>
-  <key>com.apple.application-identifier</key><string>$TEAM.org.macshare.mac.camera</string>
+  <key>com.apple.security.application-groups</key><array><string>$TEAM.io.github.alexfoxtm.twindesk</string></array>
+  <key>com.apple.application-identifier</key><string>$TEAM.io.github.alexfoxtm.twindesk.camera</string>
   <key>com.apple.developer.team-identifier</key><string>$TEAM</string>
 </dict></plist>
 PLIST
   # The app (and twindesk-vcam, signed as the app) may install system extensions.
   cp entitlements.plist dist/app.entitlements
   /usr/libexec/PlistBuddy -c "Add :com.apple.developer.system-extension.install bool true" \
-    -c "Add :com.apple.security.application-groups array" -c "Add :com.apple.security.application-groups:0 string $TEAM.org.macshare.mac" \
-    -c "Add :com.apple.application-identifier string $TEAM.org.macshare.mac" -c "Add :com.apple.developer.team-identifier string $TEAM" dist/app.entitlements
+    -c "Add :com.apple.security.application-groups array" -c "Add :com.apple.security.application-groups:0 string $TEAM.io.github.alexfoxtm.twindesk" \
+    -c "Add :com.apple.application-identifier string $TEAM.io.github.alexfoxtm.twindesk" -c "Add :com.apple.developer.team-identifier string $TEAM" dist/app.entitlements
   echo "Camera extension: in the app"
 else
   echo "note: no camera extension (Camera › Virtual camera): needs MAC_IDENTITY, MAC_TEAM_ID (or APPLE_TEAM_ID), MAC_APP_PROFILE and MAC_CAMERA_PROFILE"
@@ -186,7 +219,7 @@ if [ -n "$MAC_IDENTITY" ]; then
   ID="$MAC_IDENTITY"
   OPTIONS="--options runtime --timestamp"
   echo "Signing with Developer ID: $ID"
-elif KC=$(scripts/signing-identity.sh 2>/dev/null) && SIGNTEST=$(mktemp) && cp /usr/bin/true "$SIGNTEST" \
+elif [ "${MAC_ADHOC:-0}" != 1 ] && KC=$(scripts/signing-identity.sh 2>/dev/null) && SIGNTEST=$(mktemp) && cp /usr/bin/true "$SIGNTEST" \
   && { security list-keychains -d user | grep -qF "$KC" || eval "security list-keychains -d user -s \"$KC\" $(security list-keychains -d user | tr '\n' ' ')"; } \
   && codesign --force --keychain "$KC" --sign "TwinDesk Self-Signed" "$SIGNTEST" 2>/dev/null; then
   # codesign finds the certificate only in a keychain on the search list (a fresh CI machine's isn't):
@@ -224,10 +257,10 @@ if [ -n "$MAC_IDENTITY" ]; then
   codesign --force $OPTIONS $SIGN "$ID" --entitlements dist/share.entitlements "$APPEX"
   if [ -n "$CAMERA" ]; then
     codesign --force $OPTIONS $SIGN "$ID" --entitlements dist/camera.entitlements "$SYSEXT"
-    codesign --force $OPTIONS $SIGN "$ID" -i org.macshare.mac --entitlements dist/app.entitlements "$APP/Contents/MacOS/twindesk-vcam"
+    codesign --force $OPTIONS $SIGN "$ID" -i io.github.alexfoxtm.twindesk --entitlements dist/app.entitlements "$APP/Contents/MacOS/twindesk-vcam"
     ENTITLEMENTS=dist/app.entitlements
   else
-    codesign --force $OPTIONS $SIGN "$ID" -i org.macshare.mac --entitlements "$ENTITLEMENTS" "$APP/Contents/MacOS/twindesk-vcam"
+    codesign --force $OPTIONS $SIGN "$ID" -i io.github.alexfoxtm.twindesk --entitlements "$ENTITLEMENTS" "$APP/Contents/MacOS/twindesk-vcam"
   fi
   codesign --force $OPTIONS $SIGN "$ID" --entitlements "$ENTITLEMENTS" "$APP"
 else
@@ -235,11 +268,12 @@ else
   # TwinDesk's own certificate macOS keeps its permissions across updates; ad-hoc works, but each
   # update asks for them again.
   for b in "$APP"/Contents/Resources/app/mac-helper/.build/release/*; do [ -f "$b" ] && codesign --force $SIGN "$ID" "$b"; done
-  codesign --force $SIGN "$ID" -i org.macshare.mac "$APP/Contents/MacOS/twindesk-vcam"
+  codesign --force $SIGN "$ID" -i io.github.alexfoxtm.twindesk "$APP/Contents/MacOS/twindesk-vcam"
   codesign --force --deep $SIGN "$ID" "$APP"
   codesign --force $SIGN "$ID" --entitlements dist/share.entitlements "$APPEX" # --deep dropped its sandbox
   codesign --force $SIGN "$ID" "$APP"
 fi
 rm -f dist/share.entitlements dist/camera.entitlements dist/app.entitlements
 codesign -dr - dist/TwinDesk.app 2>&1 | grep designated
-echo "built mac/dist/TwinDesk.app"
+mv dist/TwinDesk.app "$FORK_APP"
+echo "built mac/$FORK_APP"

@@ -2138,4 +2138,7 @@
   "Select {target}": "选择 {target}",
   "On an iPhone with a Home button, swipe up from the bottom edge instead.": "在有主屏幕按钮的 iPhone 上，请改为从底部边缘向上轻扫。",
   "Shortcuts": "快捷方式",
+  "Downloads for this fork": "此分支的下载",
+  "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "InukaAsith/TwinDesk 的构建是另一个应用，不会作为更新安装。",
+  "Upstream releases": "上游版本",
 });

@@ -2138,4 +2138,7 @@
   "Select {target}": "Select {target}",
   "On an iPhone with a Home button, swipe up from the bottom edge instead.": "On an iPhone with a Home button, swipe up from the bottom edge instead.",
   "Shortcuts": "Shortcuts",
+  "Downloads for this fork": "Downloads for this fork",
+  "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.",
+  "Upstream releases": "Upstream releases",
 });

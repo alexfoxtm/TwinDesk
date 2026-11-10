@@ -1,7 +1,7 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // twindesk-vcam (TwinDesk.app/Contents/MacOS, beside the app: the system extension it installs
 // must be in its main bundle): the virtual camera's side in TwinDesk (mac/vcam.js).
-//   activate    installs the Camera Extension (org.macshare.mac.camera); the first time macOS asks
+//   activate    installs the Camera Extension (io.github.alexfoxtm.twindesk.camera); the first time macOS asks
 //               the person to allow it in System Settings: {"approval":true} is printed meanwhile,
 //               and it waits (up to 5 minutes) for the answer
 //   deactivate  removes it
@@ -16,7 +16,7 @@ import Foundation
 import SystemExtensions
 import VideoToolbox
 
-let extensionID = "org.macshare.mac.camera"
+let extensionID = "io.github.alexfoxtm.twindesk.camera"
 let args = Array(CommandLine.arguments.dropFirst())
 let cameraName: String = {
   if let i = args.firstIndex(of: "--name"), i + 1 < args.count { return args[i + 1] }

@@ -5,7 +5,13 @@
 const { ipcMain, shell, app, screen, dialog, clipboard, Menu } = require('electron');
 const P = require('../../shared/protocol.js');
 const CL = require('../../shared/cursorlock.js');
-const { LINKS } = require('../../shared/about.js');
+const { LINKS: ABOUT_LINKS } = require('../../shared/about.js');
+const LINKS = {
+  ...ABOUT_LINKS,
+  github: 'https://github.com/alexfoxtm/TwinDesk',
+  releases: 'https://github.com/alexfoxtm/TwinDesk/releases',
+  upstream: 'https://github.com/InukaAsith/TwinDesk/releases',
+};
 const store = require('./store');
 const { planConnect, settleConnect, sessionIsUp } = require('../connect-plan');
 

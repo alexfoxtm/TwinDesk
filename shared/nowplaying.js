@@ -11,6 +11,10 @@ const P = require('./protocol.js');
 
 const T = P.T;
 const isPhone = (ctx) => !!ctx && ctx.os === P.OS.ANDROID;
+// Upstream Android (com.twindesk.*) and this fork: the phone's own TwinDesk playback is not media.
+function ownPhoneApp(app) {
+  return app.startsWith('com.twindesk.') || app.startsWith('io.github.alexfoxtm.twindesk');
+}
 const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
@@ -45,7 +49,7 @@ class NowPlaying extends EventEmitter {
 
   _got(m) {
     // TwinDesk on the phone playing this computer's sound: not shown again (older phones sent it).
-    if (!m.none && typeof m.app === 'string' && m.app.startsWith('com.twindesk.')) m = { none: true };
+    if (!m.none && typeof m.app === 'string' && ownPhoneApp(m.app)) m = { none: true };
     if (m.none) {
       this.now = null;
       this.why = str(m.why, 40);
@@ -75,4 +79,4 @@ class NowPlaying extends EventEmitter {
   }
 }
 
-module.exports = { NowPlaying };
+module.exports = { NowPlaying, ownPhoneApp };

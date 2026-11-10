@@ -375,7 +375,6 @@
   "Network and Bluetooth": "Rede e Bluetooth",
   "New screenshots are copied to the clipboard on {name}": "Novas capturas de tela são copiadas para a área de transferência em {name}",
   "New texts": "Novas mensagens",
-  "New versions for every platform": "Novas versões para todas as plataformas",
   "Newest first, in Photos on {name}": "Mais recentes primeiro, em Fotos em {name}",
   "Next": "Avançar",
   "Next track": "Próxima faixa",
@@ -974,5 +973,8 @@
   "{what} requires Wi-Fi Direct or the same Wi-Fi network. You’re connected over Bluetooth.": "{what} requer Wi-Fi Direct ou a mesma rede Wi-Fi. Você está conectado por Bluetooth.",
   "‹ Back": "‹ Voltar",
   "‹ Up": "‹ Acima",
-  "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘ funciona como Ctrl, então ⌘C copia e ⌘V cola"
+  "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘ funciona como Ctrl, então ⌘C copia e ⌘V cola",
+  "Downloads for this fork": "Downloads desta versão",
+  "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "As compilações de InukaAsith/TwinDesk são outro aplicativo. Elas não são instaladas como atualizações.",
+  "Upstream releases": "Versões do projeto original"
 }

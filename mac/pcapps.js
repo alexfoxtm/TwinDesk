@@ -383,7 +383,7 @@ class PcApps extends EventEmitter {
     }
   }
 
-  // macshare://pc-app/<id> (a kept Dock icon, Launchpad, Spotlight): open it now or once connected.
+  // alexfoxtm-twindesk://pc-app/<id> (a kept Dock icon, Launchpad, Spotlight): open it now or once connected.
   openFromLink(id) {
     if (this.server.current && this.cfg.on) return this.open(id);
     this.pendingLink = { id, at: Date.now() };

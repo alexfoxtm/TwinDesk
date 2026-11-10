@@ -18,7 +18,7 @@ const path = require('path');
 // Contents/Resources/app/mac → Contents
 const CONTENTS = path.join(__dirname, '..', '..', '..');
 const TOOL = path.join(CONTENTS, 'MacOS', 'twindesk-vcam');
-const EXTENSION = path.join(CONTENTS, 'Library', 'SystemExtensions', 'org.macshare.mac.camera.systemextension');
+const EXTENSION = path.join(CONTENTS, 'Library', 'SystemExtensions', 'io.github.alexfoxtm.twindesk.camera.systemextension');
 
 const OBS = 'OBS Virtual Camera';
 const TARGETS = [{ value: 'obs', label: OBS }, { value: 'twindesk', label: 'TwinDesk Camera' }]; // OBS's first: the default

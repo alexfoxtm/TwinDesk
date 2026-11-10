@@ -1,6 +1,7 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // Terminal, PC -> Mac: the PC's public key arrives over
-// the paired link and goes into ~/.ssh/authorized_keys with a `macshare:<pcId>` marker; the Mac
+// the paired link and goes into ~/.ssh/authorized_keys with an `alexfoxtm-twindesk:<pcId>` marker; the Mac
+// removes only that marker. Lines marked `macshare:` belong to upstream and stay.
 // answers with its user, port and host keys so the PC never has to trust-on-first-use.
 //
 // Events: 'change' — this.view changed.
@@ -17,7 +18,7 @@ const SSH_DIR = path.join(os.homedir(), '.ssh');
 const AUTH_KEYS = path.join(SSH_DIR, 'authorized_keys');
 const KEY_RE = /^(ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ssh-rsa) ([A-Za-z0-9+/]+={0,3})(?: .*)?$/;
 const OPTIONS = 'no-agent-forwarding,no-X11-forwarding';
-const marker = (id) => `macshare:${String(id).replace(/[^A-Za-z0-9._-]/g, '')}`;
+const marker = (id) => `alexfoxtm-twindesk:${String(id).replace(/[^A-Za-z0-9._-]/g, '')}`;
 
 function sshdUp() {
   return new Promise((resolve) => {
@@ -54,7 +55,7 @@ function writeKey(mark, line) {
   if (line) lines.push(line);
   fs.mkdirSync(SSH_DIR, { recursive: true, mode: 0o700 });
   fs.chmodSync(SSH_DIR, 0o700);
-  const tmp = `${AUTH_KEYS}.macshare-tmp`;
+  const tmp = `${AUTH_KEYS}.alexfoxtm-twindesk-tmp`;
   fs.writeFileSync(tmp, lines.length ? `${lines.join('\n')}\n` : '', { mode: 0o600 });
   fs.renameSync(tmp, AUTH_KEYS);
 }
@@ -134,7 +135,7 @@ class Terminal extends EventEmitter {
   applySettings() {
     if (!this.allow) {
       for (const l of readKeys()) {
-        const m = / macshare:([A-Za-z0-9._-]+)$/.exec(l);
+        const m = / alexfoxtm-twindesk:([A-Za-z0-9._-]+)$/.exec(l);
         if (m) this._remove(m[1]);
       }
     }
@@ -149,7 +150,7 @@ class Terminal extends EventEmitter {
   }
 
   get view() {
-    const installed = readKeys().filter((l) => / macshare:/.test(l)).length;
+    const installed = readKeys().filter((l) => / alexfoxtm-twindesk:/.test(l)).length;
     return { remoteLogin: this.remoteLogin, installed, user: os.userInfo().username };
   }
 }

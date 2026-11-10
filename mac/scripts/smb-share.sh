@@ -2,13 +2,13 @@
 # TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 # Share one folder with the paired PC over SMB. Run as root (TwinDesk starts it through
 # the macOS administrator prompt). Usage: smb-share.sh <folder> <password-file>
-# Creates a hidden, login-less account "macshare" with SMB (NT) password hashes, gives it
-# read/write on the folder with an ACL, shares the folder as "TwinDesk" over SMB only (no guest),
+# Creates a hidden, login-less account "alexfoxtmtd" with SMB (NT) password hashes, gives it
+# read/write on the folder with an ACL, shares the folder as "AlexfoxtmTwinDesk" over SMB only (no guest),
 # and turns the SMB server on. The password file is read and deleted.
 # A step that fails (chmod +a on a privacy-protected folder such as ~/Documents, for one) undoes
 # what this run added, and only that: an account or ACL entry that was already there stays (#34).
 set -e
-DIR="$1"; PWFILE="$2"; U=macshare; SHARE=MacShare
+DIR="$1"; PWFILE="$2"; U=alexfoxtmtd; SHARE=AlexfoxtmTwinDesk
 ACL="$U allow list,add_file,search,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit"
 PW=$(cat "$PWFILE"); rm -f "$PWFILE"
 [ -d "$DIR" ] || { echo "no such folder: $DIR" >&2; exit 2; }
@@ -25,7 +25,7 @@ undo() {
 trap undo EXIT
 
 if ! id "$U" >/dev/null 2>&1; then
-  sysadminctl -addUser "$U" -fullName "MacShare" -password "$PW" -home /var/empty -shell /usr/bin/false >/dev/null 2>&1
+  sysadminctl -addUser "$U" -fullName "Alexfoxtm TwinDesk" -password "$PW" -home /var/empty -shell /usr/bin/false >/dev/null 2>&1
   ADDED_USER=1
 fi
 dscl . -create "/Users/$U" IsHidden 1

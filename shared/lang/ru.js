@@ -2137,4 +2137,7 @@
   "Select {target}": "Выберите {target}",
   "On an iPhone with a Home button, swipe up from the bottom edge instead.": "На iPhone с кнопкой «Домой» смахните вверх от нижнего края.",
   "Shortcuts": "Ярлыки",
+  "Downloads for this fork": "Загрузки этой версии",
+  "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "Сборки InukaAsith/TwinDesk — отдельное приложение. Они не устанавливаются как обновления.",
+  "Upstream releases": "Версии оригинального проекта",
 });

@@ -8,7 +8,7 @@ const os = require('os');
 const path = require('path');
 const { app } = require('electron');
 
-const LABEL = 'org.macshare.mac';
+const LABEL = 'io.github.alexfoxtm.twindesk';
 const PLIST = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 

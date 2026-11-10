@@ -18,7 +18,7 @@ const tabs = require('../shared/browsertabs.js');
 const docfind = require('../shared/docfind.js');
 
 const CHROMIUMS = ['com.google.Chrome', 'com.google.Chrome.beta', 'com.microsoft.edgemac', 'com.brave.Browser', 'com.vivaldi.Vivaldi', 'com.operasoftware.Opera', 'company.thebrowser.Browser', 'org.chromium.Chromium'];
-const SKIP = /^(com\.apple\.(finder|dock|loginwindow|systemuiserver|controlcenter|notificationcenterui|Spotlight|systempreferences)|org\.macshare\.|com\.twindesk\.|com\.github\.Electron)/;
+const SKIP = /^(com\.apple\.(finder|dock|loginwindow|systemuiserver|controlcenter|notificationcenterui|Spotlight|systempreferences)|io\.github\.alexfoxtm\.twindesk|org\.macshare\.|com\.twindesk\.|com\.github\.Electron)/;
 
 const SCRIPT = `
 ObjC.import('AppKit');

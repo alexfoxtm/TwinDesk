@@ -1,9 +1,10 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
-// One Dock icon per PC app. A tiny generated bundle (`~/Applications/MacShare Apps/<name>.app`:
+// One Dock icon per PC app. A tiny generated bundle (`~/Applications/io.github.alexfoxtm.twindesk/<name>.app`:
 // the app's name, a per-app bundle id, its icon; mac-helper's macshare-dockstub as the executable,
 // ad-hoc signed) runs while that app has windows here. Its events: activate / focus <i> / quit.
 // It lives in ~/Applications so it shows in Launchpad and Spotlight and can be kept in
-// the Dock; opened on its own it asks TwinDesk (macshare://pc-app/<id>) to open the PC app.
+// the Dock; opened on its own it asks this fork (alexfoxtm-twindesk://pc-app/<id>) to open the PC app.
+// Upstream stubs in ~/Applications/MacShare Apps are left alone.
 'use strict';
 
 const fs = require('fs');
@@ -15,7 +16,7 @@ const { app } = require('electron');
 const STUB = path.join(__dirname, '..', 'mac-helper', '.build', 'release', 'macshare-dockstub');
 
 const run = (cmd, args) => new Promise((resolve) => execFile(cmd, args, (err) => resolve(!err)));
-const APPS_DIR = path.join(require('os').homedir(), 'Applications', 'MacShare Apps');
+const APPS_DIR = path.join(require('os').homedir(), 'Applications', 'io.github.alexfoxtm.twindesk');
 const xml = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // Builds (or reuses) the bundle for one PC app; returns the executable path, or null.
@@ -29,7 +30,7 @@ async function bundle({ id, name, icon }) {
     if (!plist.includes(`<string>${xml(id)}</string>`)) dir = path.join(APPS_DIR, `${safe} ${hash.slice(0, 4)}.app`);
   } catch { /* new */ }
   const exe = path.join(dir, 'Contents', 'MacOS', 'dockstub');
-  const stamp = crypto.createHash('sha1').update([id, name, icon || '', fs.statSync(STUB).mtimeMs, 'r6'].join('|')).digest('hex');
+  const stamp = crypto.createHash('sha1').update([id, name, icon || '', fs.statSync(STUB).mtimeMs, 'r7'].join('|')).digest('hex');
   const stampFile = path.join(dir, 'Contents', 'macshare-stamp');
   try {
     if (fs.readFileSync(stampFile, 'utf8') === stamp) return exe;
@@ -51,7 +52,7 @@ async function bundle({ id, name, icon }) {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>dockstub</string>
-<key>CFBundleIdentifier</key><string>org.macshare.pcapp.${hash}</string>
+<key>CFBundleIdentifier</key><string>io.github.alexfoxtm.twindesk.pcapp.${hash}</string>
 <key>CFBundleName</key><string>${xml(safe)}</string>
 <key>CFBundleDisplayName</key><string>${xml(safe)}</string>
 <key>CFBundlePackageType</key><string>APPL</string>

@@ -375,7 +375,6 @@
   "Network and Bluetooth": "Ağ ve Bluetooth",
   "New screenshots are copied to the clipboard on {name}": "Yeni ekran görüntüleri {name} panosuna kopyalanır",
   "New texts": "Yeni mesajlar",
-  "New versions for every platform": "Her platform için yeni sürümler",
   "Newest first, in Photos on {name}": "En yeniler önce, {name} üzerindeki Fotoğraflar’da",
   "Next": "İleri",
   "Next track": "Sonraki parça",
@@ -974,5 +973,8 @@
   "{what} requires Wi-Fi Direct or the same Wi-Fi network. You’re connected over Bluetooth.": "{what} için Wi-Fi Direct veya aynı Wi-Fi ağı gerekir. Bluetooth ile bağlısınız.",
   "‹ Back": "‹ Geri",
   "‹ Up": "‹ Yukarı",
-  "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘, Ctrl gibi çalışır; ⌘C kopyalar, ⌘V yapıştırır"
+  "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘, Ctrl gibi çalışır; ⌘C kopyalar, ⌘V yapıştırır",
+  "Downloads for this fork": "Bu çatalın indirmeleri",
+  "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "InukaAsith/TwinDesk derlemeleri ayrı bir uygulamadır. Güncelleme olarak yüklenmezler.",
+  "Upstream releases": "Üst proje sürümleri"
 }

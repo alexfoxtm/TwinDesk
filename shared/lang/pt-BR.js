@@ -2137,4 +2137,7 @@
   "Select {target}": "Selecione {target}",
   "On an iPhone with a Home button, swipe up from the bottom edge instead.": "Num iPhone com botão de Início, deslize de baixo para cima.",
   "Shortcuts": "Atalhos",
+  "Downloads for this fork": "Downloads desta versão",
+  "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "As compilações de InukaAsith/TwinDesk são outro aplicativo. Elas não são instaladas como atualizações.",
+  "Upstream releases": "Versões do projeto original",
 });

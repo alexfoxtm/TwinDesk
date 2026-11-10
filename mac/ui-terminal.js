@@ -17,11 +17,11 @@ UI.tab({
     const outSw = UI.switch((v) => api.setTerminal({ connectPc: v }), { label: I18n.t('Open shells there') });
     const shellBtn = UI.button(I18n.t('Open'), () => api.openPcShell(), 'small');
     const outRow = UI.row(I18n.t('Open shells on {name} from {me}'), '', [outSw], { literalHint: true });
-    const cmdRow = UI.row(I18n.t('In Terminal'), '', [el('code', { class: 'mono', text: 'ssh twindesk' }), shellBtn]);
+    const cmdRow = UI.row(I18n.t('In Terminal'), '', [el('code', { class: 'mono', text: 'ssh alexfoxtm-twindesk' }), shellBtn]);
     const inSw = UI.switch((v) => api.setTerminal({ allowPc: v }), { label: I18n.t('Allow shells here') });
     const inRow = UI.row(I18n.t('Let {name} open shells on {me}'), '', [inSw], { literalHint: true });
     const rl = UI.row(I18n.t('Remote Login'), '', [UI.button(I18n.t('Settings'), () => api.openSharingSettings(), 'small')]);
-    const how = UI.row(I18n.t('On {name}'), '', [el('code', { class: 'mono', text: 'ssh twindesk' })]);
+    const how = UI.row(I18n.t('On {name}'), '', [el('code', { class: 'mono', text: 'ssh alexfoxtm-twindesk' })]);
     body.append(
       UI.pair(
         UI.dir('m2w', [outRow, cmdRow]),

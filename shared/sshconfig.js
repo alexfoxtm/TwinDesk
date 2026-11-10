@@ -8,12 +8,32 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const ALIAS = 'twindesk';
 const SSH_DIR = path.join(os.homedir(), '.ssh');
 const CONFIG = path.join(SSH_DIR, 'config');
-const BEGIN = '# >>> twindesk (managed by TwinDesk, do not edit)';
-const END = '# <<< twindesk';
-const OLD = [['# >>> macshare', '# <<< macshare']];
+const SCOPES = {
+  upstream: {
+    alias: 'twindesk',
+    begin: '# >>> twindesk (managed by TwinDesk, do not edit)',
+    end: '# <<< twindesk',
+    old: [['# >>> macshare', '# <<< macshare']],
+    backup: '.before-twindesk',
+    priorBackup: '.before-macshare',
+  },
+  // The Mac fork. Its block does not include upstream's markers, so writing it leaves `Host twindesk` alone.
+  fork: {
+    alias: 'alexfoxtm-twindesk',
+    begin: '# >>> alexfoxtm-twindesk (managed by Alexfoxtm TwinDesk, do not edit)',
+    end: '# <<< alexfoxtm-twindesk',
+    old: [],
+    backup: '.before-alexfoxtm-twindesk',
+    priorBackup: null,
+  },
+};
+const ALIAS = SCOPES.upstream.alias;
+
+function scopeOf(name) {
+  return SCOPES[name] || SCOPES.upstream;
+}
 
 // A value for the config file, quoted when it has spaces (Windows paths often do).
 const quote = (v) => (/[\s"]/.test(v) ? `"${String(v).replace(/"/g, '')}"` : String(v));
@@ -31,38 +51,51 @@ function strip(text, begin, end) {
 }
 
 // host: {address, port, user, identityFile, knownHostsFile}, or null to remove the entry.
-function setHost(host) {
-  let text = '';
-  try {
-    text = fs.readFileSync(CONFIG, 'utf8');
-  } catch { /* no config yet */ }
-  const before = text;
-  for (const [b, e] of [[BEGIN, END], ...OLD]) text = strip(text, b, e);
+// scopeName defaults to upstream (`Host twindesk`). 'fork' touches only the fork's block.
+function renderConfig(text, host, scopeName) {
+  const scope = scopeOf(scopeName);
+  let out = String(text || '');
+  for (const [b, e] of [[scope.begin, scope.end], ...scope.old]) out = strip(out, b, e);
   if (host) {
     const lines = [
-      `Host ${ALIAS}`,
+      `Host ${scope.alias}`,
       `  HostName ${host.address}`,
       `  Port ${Number(host.port) || 22}`,
       `  User ${quote(host.user)}`,
       `  IdentityFile ${quote(host.identityFile)}`,
       '  IdentitiesOnly yes',
-      `  HostKeyAlias ${ALIAS}`,
+      `  HostKeyAlias ${scope.alias}`,
       `  UserKnownHostsFile ${quote(host.knownHostsFile)}`,
       '  StrictHostKeyChecking yes',
     ];
-    text = `${text}${text && !text.endsWith('\n') ? '\n' : ''}${text ? '\n' : ''}${BEGIN}\n${lines.join('\n')}\n${END}\n`;
+    out = `${out}${out && !out.endsWith('\n') ? '\n' : ''}${out ? '\n' : ''}${scope.begin}\n${lines.join('\n')}\n${scope.end}\n`;
   }
-  if (text === before) return;
+  return out;
+}
+
+function setHost(host, scopeName) {
+  const scope = scopeOf(scopeName);
+  let text = '';
+  try {
+    text = fs.readFileSync(CONFIG, 'utf8');
+  } catch { /* no config yet */ }
+  const next = renderConfig(text, host, scopeName);
+  if (next === text) return;
   fs.mkdirSync(SSH_DIR, { recursive: true, mode: 0o700 });
-  const backup = `${CONFIG}.before-twindesk`;
-  if (fs.existsSync(CONFIG) && !fs.existsSync(backup) && !fs.existsSync(`${CONFIG}.before-macshare`)) fs.copyFileSync(CONFIG, backup);
+  const backup = `${CONFIG}${scope.backup}`;
+  const prior = scope.priorBackup ? `${CONFIG}${scope.priorBackup}` : '';
+  if (fs.existsSync(CONFIG) && !fs.existsSync(backup) && !(prior && fs.existsSync(prior))) fs.copyFileSync(CONFIG, backup);
   const mode = fs.existsSync(CONFIG) ? fs.statSync(CONFIG).mode & 0o777 : 0o600;
-  fs.writeFileSync(CONFIG, text, { mode });
+  fs.writeFileSync(CONFIG, next, { mode });
+}
+
+function alias(scopeName) {
+  return scopeOf(scopeName).alias;
 }
 
 // Pinned host keys for the alias, one per line.
-function knownHosts(keys) {
-  return keys.map((k) => `${ALIAS} ${k}`).join('\n') + '\n';
+function knownHosts(keys, scopeName) {
+  return keys.map((k) => `${alias(scopeName)} ${k}`).join('\n') + '\n';
 }
 
-module.exports = { ALIAS, setHost, knownHosts };
+module.exports = { ALIAS, setHost, knownHosts, renderConfig, alias };

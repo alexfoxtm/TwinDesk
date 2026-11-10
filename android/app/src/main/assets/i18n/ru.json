@@ -375,7 +375,6 @@
   "Network and Bluetooth": "Сеть и Bluetooth",
   "New screenshots are copied to the clipboard on {name}": "Новые снимки экрана копируются в буфер обмена на {name}",
   "New texts": "Новые SMS",
-  "New versions for every platform": "Новые версии для всех платформ",
   "Newest first, in Photos on {name}": "Сначала новые, в «Фото» на {name}",
   "Next": "Далее",
   "Next track": "Следующий трек",
@@ -974,5 +973,8 @@
   "{what} requires Wi-Fi Direct or the same Wi-Fi network. You’re connected over Bluetooth.": "Для «{what}» нужен Wi-Fi Direct или та же сеть Wi-Fi. Вы подключены по Bluetooth.",
   "‹ Back": "‹ Назад",
   "‹ Up": "‹ Вверх",
-  "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘ работает как Ctrl: ⌘C копирует, ⌘V вставляет"
+  "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘ работает как Ctrl: ⌘C копирует, ⌘V вставляет",
+  "Downloads for this fork": "Загрузки этой версии",
+  "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "Сборки InukaAsith/TwinDesk — отдельное приложение. Они не устанавливаются как обновления.",
+  "Upstream releases": "Версии оригинального проекта"
 }

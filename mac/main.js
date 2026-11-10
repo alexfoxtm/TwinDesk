@@ -59,8 +59,13 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // (jitterBufferTarget). FlexFEC repairs lost packets without waiting a round trip for a resend; it
 // costs bandwidth only while packets are being lost.
 app.commandLine.appendSwitch('force-fieldtrials', 'WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:0/WebRTC-FlexFEC-03/Enabled/WebRTC-FlexFEC-03-Advertised/Enabled/');
-// Renamed to TwinDesk: settings, pairing and the identity stay in the old folder.
-app.setPath('userData', process.env.MACSHARE_PROFILE || path.join(app.getPath('appData'), 'MacShare')); // PROFILE: a second dev copy
+// Electron names its macOS Keychain item "<app name> Safe Storage" and its logs ~/Library/Logs/<app name>.
+// productName stays TwinDesk so the packaged helpers stay "TwinDesk Helper". This only points the fork
+// at its own service and log folder. It does not read, write, or migrate the upstream TwinDesk item or logs.
+app.setName('AlexfoxtmTwinDesk');
+app.setAppLogsPath(path.join(require('os').homedir(), 'Library', 'Logs', 'AlexfoxtmTwinDesk'));
+// Fork profile. Upstream keeps ~/Library/Application Support/MacShare; this app does not read or write it.
+app.setPath('userData', process.env.MACSHARE_PROFILE || path.join(app.getPath('appData'), 'io.github.alexfoxtm.twindesk')); // PROFILE: a second dev copy
 require('../shared/applog.js').start(app); // console.* and crashes into the log folder, both apps
 // Screen share codec (shared/screencodec.js): H.265 available in WebRTC, so the
 // Encoder setting works on the next share. One enable-features switch for the app: Chromium keeps only the last one.
@@ -159,13 +164,13 @@ function openPhoneApp(pkg) {
   openPhoneApp.timer = setTimeout(() => pendingPhoneApp && openPhoneApp(pendingPhoneApp.pkg), 2000);
 }
 
-// macshare://pc-app/<id> from a PC app's Dock icon / Launchpad entry. It can arrive
-// before the services exist, so it waits in `linkQueue`.
+// alexfoxtm-twindesk://pc-app/<id> from a PC app's Dock icon / Launchpad entry. It can arrive
+// before the services exist, so it waits in `linkQueue`. The fork does not register macshare://.
 let linkQueue = [];
 function handleLink(url) {
   if (!svc) return linkQueue.push(url);
-  if (/^macshare:\/\/send\b/.test(String(url))) return handleSendLink(String(url));
-  const m = /^macshare:\/\/pc-app\/(.+)$/.exec(String(url));
+  if (/^alexfoxtm-twindesk:\/\/send\b/.test(String(url))) return handleSendLink(String(url));
+  const m = /^alexfoxtm-twindesk:\/\/pc-app\/(.+)$/.exec(String(url));
   if (!m) return;
   const id = decodeURIComponent(m[1]).slice(0, 1024);
   if (id.startsWith('phone:')) return openPhoneApp(id.slice(6));
@@ -350,7 +355,7 @@ function onScreenCtl(m) {
   if (typeof m.share === 'boolean' && m.share !== !!settings.sharing.on) actions.setSharing(m.share, 'remote');
 }
 
-// macshare://send?p=<path>&p=… from the Share menu extension: Send files to the peer.
+// alexfoxtm-twindesk://send?p=<path>&p=… from the Share menu extension: Send files to the peer.
 function handleSendLink(url) {
   let u;
   try { u = new URL(url); } catch { return; }
@@ -918,7 +923,7 @@ app.whenReady().then(() => {
       sendFile: (p, batch) => !!svc.fileSend.sendBatch([p], 'rezume', batch),
       expectFile: (batch, dir) => svc.drop.expectBatch(batch, dir || '', true),
       // Documents opened in place (shared/rzlive.js), the chooser (shared/rzpick.js), and where copies go.
-      cacheDir: path.join(app.getPath('temp'), 'TwinDesk ReZume'),
+      cacheDir: path.join(app.getPath('temp'), 'AlexfoxtmTwinDesk ReZume'),
       live: (() => {
         const { LiveShare } = require('../shared/rzlive.js');
         const ls = new LiveShare({ tls: () => server && server.tls, mounter: require('./phonedrive').mounter });
@@ -993,7 +998,7 @@ app.whenReady().then(() => {
         : ['gestures', 'ble', 'keyboard', 'speed', 'reverseScroll', 'syncPads'].includes(dir) ? actions.setKvm({ [dir]: on }) : actions.setSharingOpts({ [dir]: on })) });
   // New releases on GitHub: a notification once per version, the menu bar item and About › Updates.
   updates = new Updates({
-    current: app.getVersion(), platform: 'mac', getSettings: () => settings, getLanguage: () => i18n.locale,
+    current: app.getVersion(), platform: 'mac', repo: 'alexfoxtm/TwinDesk', getSettings: () => settings, getLanguage: () => i18n.locale,
     save: () => store.saveSettings(settings), onChange: pushState,
     onShowModal: showUpdateWindow,
     notify: (title, body, onClick) => {
@@ -1035,7 +1040,7 @@ app.whenReady().then(() => {
   svc.clipboard.on('popup', (kind, text) => hud.show(kind, text)); // a picture from the other side
   svc.pcApps.on('popup', (kind, text) => hud.show(kind, text));
   svc.phone.bridge.on('popup', (kind, text) => hud.show(kind, text));
-  if (app.isPackaged) app.setAsDefaultProtocolClient('macshare');
+  if (app.isPackaged) app.setAsDefaultProtocolClient('alexfoxtm-twindesk');
   for (const url of linkQueue.splice(0)) handleLink(url);
   // The hotkey's double-tap: the big card "Cursor sharing on/off" (also when the other side switched it).
   // ble: Over Bluetooth was switched (kvm.setShared through Bluetooth).
@@ -1323,7 +1328,7 @@ function loadHub() {
     share: { // shared folders with the phone (shared/foldershare.js)
       mounter: require('./phonedrive').mounter, adb: svc && svc.phone.bridge.adb, serialOf: (id) => svc && svc.wired && svc.wired.serialOf(id),
       chooseFolder: () => dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, { properties: ['openDirectory', 'createDirectory'] }).then((r) => (r.canceled ? '' : r.filePaths[0])),
-      defaultFolder: path.join(require('os').homedir(), 'MacShare'),
+      defaultFolder: path.join(require('os').homedir(), 'AlexfoxtmTwinDesk'),
       tls: () => server && server.tls, // served with the session's certificate, which the phone pinned
       wifi: (on) => (!svc.net ? Promise.resolve(false) : on ? svc.net.need('folder') : Promise.resolve(svc.net.release('folder'))), // through Bluetooth
     },
@@ -1347,6 +1352,7 @@ function loadHub() {
 // server beside the TwinDesk session. Each web device has its own pages in the sidebar.
 function setupWeb() {
   const { ipcMain, screen, shell } = require('electron');
+  const { SMB_USER, SMB_SHARE } = require('./smb');
   const { startWeb } = require('../shared/web/webwire.js');
   const { Input } = require('./input');
   const { PhoneRemote } = require('../shared/phone-remote.js');
@@ -1412,7 +1418,7 @@ function setupWeb() {
       const pw = c.sharing ? svc.smb.password() : '';
       if (!pw) return { on: false };
       const host = web ? web.hub.host : `${require('os').hostname()}`;
-      return { on: true, host, share: 'MacShare', user: 'macshare', password: pw, path: c.folder || path.join(require('os').homedir(), 'MacShare'), url: `smb://${host}/MacShare` };
+      return { on: true, host, share: SMB_SHARE, user: SMB_USER, password: pw, path: c.folder || path.join(require('os').homedir(), 'AlexfoxtmTwinDesk'), url: `smb://${host}/${SMB_SHARE}` };
     },
     key: (code) => {
       svc.helper.send('inject', { ev: { t: P.T.K_KEY_DOWN, code } });
@@ -1423,7 +1429,7 @@ function setupWeb() {
     share: {
       view: () => {
         const v = svc.smb.view;
-        return { on: !!settings.smb.sharing, busy: v.shareBusy ? 'setup' : '', error: v.shareError || '', folder: settings.smb.folder || v.defaultFolder, name: 'MacShare', user: 'macshare' };
+        return { on: !!settings.smb.sharing, busy: v.shareBusy ? 'setup' : '', error: v.shareError || '', folder: settings.smb.folder || v.defaultFolder, name: SMB_SHARE, user: SMB_USER };
       },
       set: (on) => (on ? svc.smb.startSharing() : svc.smb.stopSharing()),
       async choose(folder) {

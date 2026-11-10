@@ -17,7 +17,9 @@ const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 
 const SCRIPTS = path.join(__dirname, 'scripts');
-const DEFAULT_FOLDER = path.join(os.homedir(), 'MacShare'); // shared with the PC unless another is chosen
+const SMB_USER = 'alexfoxtmtd';
+const SMB_SHARE = 'AlexfoxtmTwinDesk';
+const DEFAULT_FOLDER = path.join(os.homedir(), 'AlexfoxtmTwinDesk'); // shared with the PC unless another is chosen
 
 // An existing smbfs mount of //…@host/share, if any (e.g. still mounted from the last run).
 function existingMount(host, share) {
@@ -58,7 +60,7 @@ function asAdmin(cmd, prompt) {
 // (Desktop, Documents, Downloads — where a dev checkout often lives): "Operation not permitted".
 // So it runs a copy from a fresh private temp folder, removed afterwards.
 async function runScript(name, args, prompt) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'macshare-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alexfoxtmtd-'));
   const copy = path.join(dir, name);
   try {
     fs.copyFileSync(path.join(SCRIPTS, name), copy);
@@ -184,7 +186,7 @@ class Smb extends EventEmitter {
 
   _offerOurs() {
     const pw = this._secret();
-    if (this.cfg.sharing && pw) this.server.sendToClient({ t: P.T.SMB_OFFER, share: 'MacShare', user: 'macshare', password: pw, port: 445 });
+    if (this.cfg.sharing && pw) this.server.sendToClient({ t: P.T.SMB_OFFER, share: SMB_SHARE, user: SMB_USER, password: pw, port: 445 });
   }
 
   // One switch: share the chosen folder, or ~/TwinDesk (created if missing).
@@ -195,7 +197,7 @@ class Smb extends EventEmitter {
     this.share = { busy: true, error: null, peer: null };
     this.emit('change');
     const pw = crypto.randomBytes(18).toString('base64url');
-    const pwFile = path.join(os.tmpdir(), `macshare-${crypto.randomBytes(6).toString('hex')}`);
+    const pwFile = path.join(os.tmpdir(), `alexfoxtmtd-${crypto.randomBytes(6).toString('hex')}`);
     fs.writeFileSync(pwFile, pw, { mode: 0o600 });
     try {
       await runScript('smb-share.sh', [folder, pwFile], 'TwinDesk wants to share a folder with the other computer.');
@@ -221,7 +223,7 @@ class Smb extends EventEmitter {
     this.emit('change');
     try {
       await runScript('smb-unshare.sh', [c.folder], 'TwinDesk wants to stop sharing the folder.');
-      this.server.sendToClient({ t: P.T.SMB_REVOKE, share: 'MacShare' });
+      this.server.sendToClient({ t: P.T.SMB_REVOKE, share: SMB_SHARE });
       c.sharing = false;
       c.secret = '';
       this.saveSettings();
@@ -249,4 +251,4 @@ class Smb extends EventEmitter {
   }
 }
 
-module.exports = { Smb };
+module.exports = { Smb, SMB_USER, SMB_SHARE };

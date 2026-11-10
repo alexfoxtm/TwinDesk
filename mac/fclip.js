@@ -21,6 +21,10 @@ const pastefiles = require('../shared/pastefiles.js');
 
 const T = P.T;
 const DESKTOP = path.join(os.homedir(), 'Desktop');
+// This fork and upstream TwinDesk are not apps to paste files into.
+function ownBundle(id) {
+  return id.startsWith('io.github.alexfoxtm.twindesk') || id.startsWith('org.macshare.');
+}
 
 function osascript(script) {
   return new Promise((resolve) => {
@@ -206,7 +210,7 @@ class FileClip extends EventEmitter {
     try {
       const src = await this.helper.request('fileSource');
       if (src.front === 'com.apple.finder') dir = await finderFolder();
-      else if (src.front && !src.front.startsWith('org.macshare.')) into = true;
+      else if (src.front && !ownBundle(src.front)) into = true;
     } catch { /* Desktop */ }
     const paths = l.paths.filter((p) => fs.existsSync(p));
     const done = { key: paths.length === 1 ? 'Pasted {count} file' : 'Pasted {count} files', vars: { count: paths.length } };
@@ -234,7 +238,7 @@ class FileClip extends EventEmitter {
       const src = await this.helper.request('fileSource');
       if (src.front === 'com.apple.finder') dir = await finderFolder();
       // An app in front (not Finder, nor TwinDesk and its windows): the files go into it.
-      else if (src.front && !src.front.startsWith('org.macshare.')) into = { app: src.front };
+      else if (src.front && !ownBundle(src.front)) into = { app: src.front };
     } catch { /* Desktop */ }
     if (into) dir = pastefiles.pasteDir();
     dir = dir && fs.existsSync(dir) ? dir.replace(/\/$/, '') : DESKTOP;

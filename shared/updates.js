@@ -176,6 +176,10 @@ class Updates {
     this.platform = opts.platform;
     this.arch = opts.arch || process.arch;
     this.prefer = opts.prefer || '';
+    const repo = typeof opts.repo === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(opts.repo) ? opts.repo : REPO;
+    this.repo = repo;
+    this.api = `https://api.github.com/repos/${repo}/releases/latest`;
+    this.releasesPage = `https://github.com/${repo}/releases`;
     this.getSettings = opts.getSettings;
     this.save = opts.save || (() => {});
     this.notify = opts.notify || (() => {});
@@ -192,7 +196,7 @@ class Updates {
       available: false,
       error: '',
       checkedAt: 0,
-      releaseUrl: RELEASES,
+      releaseUrl: this.releasesPage,
       releaseNotes: '',
       publishedAt: '',
       download: null,
@@ -248,7 +252,7 @@ class Updates {
     if (this.status.checking) return;
     this._set({ checking: true, error: '', promptUpdate: false });
     try {
-      const url = `${API}?_=${Date.now()}`;
+      const url = `${this.api}?_=${Date.now()}`;
       const res = await this.fetch(url, {
         headers: { Accept: 'application/vnd.github+json', 'User-Agent': `TwinDesk/${this.current}` },
         cache: 'no-store',
@@ -257,7 +261,7 @@ class Updates {
       if (res.status === 404) {
         return this._set({
           checking: false, latest: null, name: '', available: false, download: null,
-          releaseUrl: RELEASES, releaseNotes: '', publishedAt: '', noReleases: true,
+          releaseUrl: this.releasesPage, releaseNotes: '', publishedAt: '', noReleases: true,
           checkedAt: Date.now(), skipped: false, promptUpdate: false,
         });
       }
@@ -277,7 +281,7 @@ class Updates {
         name: String(r.name || `TwinDesk ${latest}`),
         available,
         download,
-        releaseUrl: r.html_url || RELEASES,
+        releaseUrl: r.html_url || this.releasesPage,
         releaseNotes: String(r.body || ''),
         publishedAt: r.published_at || '',
         noReleases: false,

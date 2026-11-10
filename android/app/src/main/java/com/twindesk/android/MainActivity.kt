@@ -1843,8 +1843,9 @@ private fun AboutPage(core: Core, v: Int) {
     }
     MacCard(tr("Made by")) {
         MacRow("Inuka Asith", "inukaasith.vercel.app", first = true) { Secondary(tr("Portfolio")) { open("https://inukaasith.vercel.app") } }
-        MacRow(tr("Source code"), "github.com/InukaAsith/TwinDesk") { Secondary("GitHub") { open("https://github.com/InukaAsith/TwinDesk") } }
-        MacRow(tr("Releases"), tr("New versions for every platform")) { Secondary(tr("Open")) { open("https://github.com/InukaAsith/TwinDesk/releases") } }
+        MacRow(tr("Source code"), "github.com/alexfoxtm/TwinDesk") { Secondary("GitHub") { open("https://github.com/alexfoxtm/TwinDesk") } }
+        MacRow(tr("Releases"), tr("Downloads for this fork")) { Secondary(tr("Open")) { open("https://github.com/alexfoxtm/TwinDesk/releases") } }
+        MacRow(tr("Upstream releases"), tr("InukaAsith/TwinDesk builds are a different app. They are not installed as updates.")) { Secondary(tr("Open")) { open("https://github.com/InukaAsith/TwinDesk/releases") } }
     }
     MacCard(tr("License")) {
         MacRow(tr("GNU General Public License v3"), tr("Free and open source. Copyright © 2026 inukaasith"), first = true) {

@@ -4,7 +4,7 @@
 // resizing the window resizes the app). One scrcpy session per window (scrcpy.js); the window
 // decodes the H.264 itself (phoneview-renderer.js) and sends touches, keys and scrolls back.
 // A phone app with windows here has a Dock icon of its own (dockstub.js, like a PC app), and pin()
-// keeps it in the Dock: opened from there, it asks TwinDesk for macshare://pc-app/phone:<package>.
+// keeps it in the Dock: opened from there, it asks TwinDesk for alexfoxtm-twindesk://pc-app/phone:<package>.
 //
 // A phone notification clicked on the Mac opens its app here (openNotified): the phone wakes and
 // asks for its unlock first if it's locked (Wake.kt), as the app's window would show the lock screen.

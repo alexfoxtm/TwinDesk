@@ -10,7 +10,7 @@
 set -e
 cd "$(dirname "$0")"
 
-APP="dist/TwinDesk.app"
+APP="dist/TwinDesk Fork.app"
 if [ ! -d "$APP" ]; then
   echo "Error: $APP not found. Run ./build-app.sh first." >&2
   exit 1
@@ -25,12 +25,12 @@ case "$ARCH" in
   arm64) ;;
   *) echo "Error: $APP is '$ARCH', not one architecture (build-app.sh x64 or arm64)." >&2; exit 2 ;;
 esac
-DMG_NAME=${1:-TwinDesk-$VER-$ARCH.dmg}
+DMG_NAME=${1:-TwinDesk-Fork-$VER-$ARCH.dmg}
 case "$DMG_NAME" in
   */*) DMG="$DMG_NAME" ;;
   *) DMG="dist/$DMG_NAME" ;;
 esac
-VOLNAME="TwinDesk $VER"
+VOLNAME="TwinDesk Fork $VER"
 VENV="dist/.dmgbuild"
 
 if [ ! -x "$VENV/bin/dmgbuild" ]; then

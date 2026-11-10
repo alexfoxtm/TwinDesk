@@ -2137,4 +2137,7 @@
   "Select {target}": "{target} seçin",
   "On an iPhone with a Home button, swipe up from the bottom edge instead.": "Ana Ekran düğmeli bir iPhone’da bunun yerine alt kenardan yukarı kaydırın.",
   "Shortcuts": "Kısayollar",
+  "Downloads for this fork": "Bu çatalın indirmeleri",
+  "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "InukaAsith/TwinDesk derlemeleri ayrı bir uygulamadır. Güncelleme olarak yüklenmezler.",
+  "Upstream releases": "Üst proje sürümleri",
 });

@@ -90,7 +90,7 @@ class Updates(private val core: Core) {
     }
 
     companion object {
-        private const val REPO = "InukaAsith/TwinDesk"
+        private const val REPO = "alexfoxtm/TwinDesk"
         private const val API = "https://api.github.com/repos/$REPO/releases/latest"
         const val RELEASES = "https://github.com/$REPO/releases"
         private const val FIRST_DELAY = 15_000L

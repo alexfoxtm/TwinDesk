@@ -60,8 +60,9 @@ UI.tab({
       ], { cls: 'keep-on' }),
       UI.card(t('Made by'), [
         UI.row('Inuka Asith', 'inukaasith.vercel.app', [link(t('Portfolio'), 'portfolio')]),
-        UI.row(t('Source code'), 'github.com/InukaAsith/TwinDesk', [link('GitHub', 'github')]),
-        UI.row(t('All releases'), t('Downloads for macOS, Windows and Linux'), [link(t('Releases'), 'releases')]),
+        UI.row(t('Source code'), 'github.com/alexfoxtm/TwinDesk', [link('GitHub', 'github')]),
+        UI.row(t('All releases'), t('Downloads for this fork'), [link(t('Releases'), 'releases')]),
+        UI.row(t('Upstream releases'), t('InukaAsith/TwinDesk builds are a different app. They are not installed as updates.'), [link(t('Open'), 'upstream')]),
         UI.row(t('Log files'), t('What TwinDesk did and any crash, to attach to a bug report'), [link(t('Open log folder'), 'logs')]),
       ], { cls: 'keep-on' }),
       pc,

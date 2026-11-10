@@ -61,7 +61,7 @@
     </queries>
 
     <application
-        android:label="TwinDesk"
+        android:label="TwinDesk Fork"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.TwinDesk"

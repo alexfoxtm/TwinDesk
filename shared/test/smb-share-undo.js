@@ -21,7 +21,7 @@ const STUBS = {
   sysadminctl: 'case "$1" in -addUser) touch "$STATE/user";; -deleteUser) rm -f "$STATE/user";; esac',
   dscl: 'true', pwpolicy: 'true', dseditgroup: 'true',
   chmod: 'case "$1" in +a) touch "$STATE/acl";; -a) rm -f "$STATE/acl";; esac',
-  ls: '[ -n "$HAVE_ACL" ] || [ -f "$STATE/acl" ] && echo " 0: user:macshare allow list"; true',
+  ls: '[ -n "$HAVE_ACL" ] || [ -f "$STATE/acl" ] && echo " 0: user:alexfoxtmtd allow list"; true',
   sharing: 'case "$1" in -a) touch "$STATE/share";; -r) rm -f "$STATE/share";; esac',
   launchctl: 'true',
 };
