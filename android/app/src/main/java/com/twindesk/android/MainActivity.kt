@@ -1069,13 +1069,18 @@ private fun ScreenPage(core: Core, v: Int) {
         MacRow(tr("Show {name}’s screen", "name" to name), tr("Opens full screen. Tap the handle at the top for display options and the keyboard."), first = true) {
             Primary(tr("Open")) { ctx.startActivity(Intent(ctx, ViewerActivity::class.java)) }
         }
-        if (s.remote) MacRow(tr("Mode"), tr("Extend uses this device as a second display for {name}", "name" to name)) {
-            // A phone: Mirror and Extend across the row's width, under the label.
-            SingleChoiceSegmentedButtonRow(if (LocalConfiguration.current.screenWidthDp < 600) Modifier.fillMaxWidth() else Modifier) {
-                val modes = listOf("mirror" to tr("Mirror"), "extend" to tr("Extend"))
-                modes.forEachIndexed { i, (m, label) ->
-                    SegmentedButton(selected = s.sharing && s.mode == m, onClick = { s.control(share = true, mode = m) }, shape = SegmentedButtonDefaults.itemShape(i, modes.size)) { Text(label) }
+        if (s.remote) {
+            MacRow(tr("Mode"), tr("Extend uses this device as a second display for {name}", "name" to name)) {
+                // A phone: Mirror and Extend across the row's width, under the label.
+                SingleChoiceSegmentedButtonRow(if (LocalConfiguration.current.screenWidthDp < 600) Modifier.fillMaxWidth() else Modifier) {
+                    val modes = listOf("mirror" to tr("Mirror"), "extend" to tr("Extend"))
+                    modes.forEachIndexed { i, (m, label) ->
+                        SegmentedButton(selected = s.sharing && s.mode == m, onClick = { s.control(share = true, mode = m) }, shape = SegmentedButtonDefaults.itemShape(i, modes.size)) { Text(label) }
+                    }
                 }
+            }
+            if (s.displays.size > 1) MacRow(tr("Display"), tr("Mirror one screen of {name}", "name" to name)) {
+                MacDisplayPick(s.displays, if (s.sharing && s.mode != "extend") s.displayId else "") { s.pickDisplay(it) }
             }
         } else MacRow(tr("Mode"), tr("Managed from {name}", "name" to name))
         if (s.sharing && s.remote) MacRow(tr("Sharing"), "") { Secondary(tr("Stop")) { s.control(share = false) } }

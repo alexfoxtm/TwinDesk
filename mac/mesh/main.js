@@ -49,6 +49,7 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 const P = require('../../shared/protocol.js');
+const Pick = require('../../shared/screen-pick.js');
 const CL = require('../../shared/cursorlock.js');
 const trayMenu = require('../../shared/traymenu.js');
 const I18n = require('../../shared/i18n.js');
@@ -208,6 +209,7 @@ function publishState() {
     const { helper, displays, stream, clipboard: clip, kvm } = svc || {};
     state.helper.running = !!(helper && helper.running);
     if (displays) {
+      anchorDisplay(); // a screen that was unplugged is dropped before the window is told
       const target = displays.target();
       state.sharing = {
         on: !!settings.sharing.on,
@@ -276,9 +278,23 @@ function publishState() {
 // Tell the viewer what we share, so it can show Start / Extend / Mirror itself
 // (screen.state); only when something changed or the peer is new.
 let screenStateKey = '';
+
+// A picked screen that was unplugged is forgotten, so it does not return when it is plugged in again.
+function anchorDisplay() {
+  if (!svc) return;
+  const next = Pick.anchoredDisplay(svc.displays.list(), settings.sharing.displayId, !!(settings.virtual && settings.virtual.enabled), require('electron').screen.getPrimaryDisplay().id);
+  if (!next.replaced) return;
+  const cur = settings.sharing.displayId == null ? null : Number(settings.sharing.displayId);
+  if (cur === next.displayId) return;
+  settings.sharing.displayId = next.displayId;
+  store.saveSettings(settings);
+}
+
 function sendScreenState() {
   const c = peer && peer.current;
   if (!c || !svc) return void (screenStateKey = '');
+  // No display list. Mesh has one capture and one input target, and each device can be off or on
+  // its own screen. A phone pick would clear that choice and move every viewer that follows it.
   const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, modes: ['extend', 'mirror'] };
   const key = JSON.stringify([c.deviceId, msg]);
   if (key === screenStateKey) return;
@@ -286,11 +302,18 @@ function sendScreenState() {
   peer.sendToClient(msg);
 }
 
+function displayPick(m) {
+  return !!m && Object.prototype.hasOwnProperty.call(m, 'displayId') && m.displayId != null && m.displayId !== '';
+}
+
 // The viewer on the other computer starts/stops our sharing or switches Extend/Mirror.
 function onScreenCtl(m) {
   // The phone viewer's Close stops sharing even when the viewer may not start and switch it.
   if (m.share === false && m.close === true) return void (settings.sharing.on && actions.setSharing(false, 'remote'));
   if (settings.sharing.remote === false) return void (screenStateKey = '', pushState()); // re-send: remote false
+  // One-to-one only. Ignore it here so the owner's per-device off or display, and every other
+  // viewer's picture, stay as they are. Stop (share false) still runs below.
+  if (m.share !== false && displayPick(m)) return;
   if (m.mode === 'extend' || m.mode === 'mirror') {
     if (displayMode() !== m.mode) actions.setDisplayMode(m.mode);
   }
