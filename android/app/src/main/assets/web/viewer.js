@@ -33,6 +33,7 @@
   let pc = null;
   let session = null;
   let pending = null;
+  let captureUnavailable = false;
   let name = t('the computer'); // the one we're connected to (opts)
   let streamAudio = false;
   let sound = true;
@@ -132,6 +133,7 @@
   }
 
   video.addEventListener('playing', () => {
+    captureUnavailable = false;
     setOverlay('');
     applyViewport();
     TD.playing(video.videoWidth, video.videoHeight);
@@ -150,9 +152,12 @@
       case 'stream.info': // its name is the display shared, not the computer
         streamAudio = msg.audio === true;
         applyAudio();
-        if (!pc) setOverlay(t('Waiting for {name}…', { name }));
+        if (!pc && !captureUnavailable) setOverlay(t('Waiting for {name}…', { name }));
         break;
-      case 'rtc.offer': onOffer(msg); break;
+      case 'rtc.offer':
+        captureUnavailable = false;
+        setOverlay(t('Waiting for {name}…', { name }));
+        onOffer(msg); break;
       case 'rtc.ice':
         if (!pc || msg.session !== session || !msg.candidate) break;
         if (pending) pending.push(msg.candidate);
@@ -161,11 +166,15 @@
       case 'stream.stop':
         if (viewGestures) cancelInput();
         closePc();
-        setOverlay(t('{name} isn’t sharing its screen', { name }));
+        captureUnavailable = msg.reason === 'capture-unavailable';
+        setOverlay(captureUnavailable
+          ? t('Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…', { name })
+          : t('{name} isn’t sharing its screen', { name }));
         break;
       case 'screen.state':
         if ('touch' in msg) realTouch = msg.touch === true;
-        if (!pc) setOverlay(msg.on ? t('Waiting for {name}…', { name }) : t('{name} isn’t sharing its screen. Start it with the button below.', { name }));
+        if (msg.on === false) captureUnavailable = false;
+        if (!pc && !captureUnavailable) setOverlay(msg.on ? t('Waiting for {name}…', { name }) : t('{name} isn’t sharing its screen. Start it with the button below.', { name }));
         break;
       case 'opts':
         if (viewGestures !== (msg.viewGestures === true)) { cancelInput(); zoom = 1; panX = panY = 0; applyViewport(); }

@@ -601,5 +601,6 @@ window.TwinDeskWeb = { lang: 'tr', messages: {
   "{name}’s clipboard": "{name} panosu",
   "{sent} of {size}": "{sent} / {size}",
   "{what} and {last} are turned off for this {device} on {name}. Turn them on in TwinDesk there, on this device’s page.": "{what} ve {last}, {name} üzerinde bu {device} için kapalı. Onları oradaki TwinDesk’te, bu cihazın sayfasında açın.",
-  "{what} is turned off for this {device} on {name}. Turn it on in TwinDesk there, on this device’s page.": "{what}, {name} üzerinde bu {device} için kapalı. Onu oradaki TwinDesk’te, bu cihazın sayfasında açın."
+  "{what} is turned off for this {device} on {name}. Turn it on in TwinDesk there, on this device’s page.": "{what}, {name} üzerinde bu {device} için kapalı. Onu oradaki TwinDesk’te, bu cihazın sayfasında açın.",
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "{name} üzerinde ekran yakalama kullanılamıyor. Mac’in kilidini ve Ekran Kaydı ayarlarını kontrol edin. Yeniden deneniyor…"
 } };

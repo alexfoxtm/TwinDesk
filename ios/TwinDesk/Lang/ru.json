@@ -696,5 +696,6 @@
   "{name}’s sound": "Звук {name}",
   "{shown} shown this session": "Показано за сеанс: {shown}",
   "{systemName} {systemVersion}": "{systemName} {systemVersion}",
-  "{what}. Save to this {device}?": "{what}. Сохранить на этот {device}?"
+  "{what}. Save to this {device}?": "{what}. Сохранить на этот {device}?",
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "Захват экрана на {name} недоступен. Проверьте блокировку Mac и разрешение на запись экрана. Повторная попытка…"
 }

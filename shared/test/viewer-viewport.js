@@ -24,7 +24,7 @@ function fixture(local = true, touch = 'direct') {
     clientX: x, clientY: y, preventDefault() {}, ...extra });
   const recv = (m) => window.tdRecv(m);
   recv({ t: 'opts', viewGestures: local, touch, tap: true });
-  return { window, video, sent, pointer, events, recv, document, docEvents, videoEvents,
+  return { window, video, overlay: nodes.overlay, sent, pointer, events, recv, document, docEvents, videoEvents,
     hold() { now += 600; for (const fn of [...timers.values()]) fn(); timers.clear(); } };
 }
 const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
@@ -62,6 +62,19 @@ function pinchPanAndControl() {
   assert.strictEqual(staggered.sent[0].t, 'in.wh', 'a slightly staggered three-finger swipe scrolls');
 }
 function cancellationAndBounds() {
+  const capture = fixture();
+  capture.recv({ t: 'stream.stop', reason: 'capture-unavailable' });
+  assert.match(capture.overlay.textContent, /Screen capture is unavailable/);
+  capture.recv({ t: 'stream.info' });
+  capture.recv({ t: 'screen.state', on: true });
+  assert.match(capture.overlay.textContent, /Retrying/,'retry state preserves the actionable failure');
+  capture.videoEvents.get('playing')();
+  assert.strictEqual(capture.overlay.textContent, '', 'a recovered stream clears its failure');
+  capture.recv({ t: 'stream.stop', reason: 'capture-unavailable' });
+  capture.recv({ t: 'screen.state', on: false });
+  assert.doesNotMatch(capture.overlay.textContent, /Retrying/, 'explicit stop clears retry guidance');
+  capture.recv({ t: 'stream.stop' });
+  assert.match(capture.overlay.textContent, /isn’t sharing/, 'legacy stop behavior remains available');
   const f = fixture();
   f.pointer('pointerdown', 1, 400, 400); f.pointer('pointermove', 1, 440, 400);
   f.pointer('pointerdown', 2, 600, 400);

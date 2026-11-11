@@ -17,10 +17,11 @@ Module._load = function (request, parent, isMain) {
     desktopCapturer: { getSources: async () => [{ id: 'screen:2:0', display_id: '2' }] },
     systemPreferences: { getMediaAccessStatus: () => 'granted' },
   };
-  if (request === './audiohub.js') return { loopback: () => true };
+  if (request === './audiohub.js' || request === '../audiohub.js') return { loopback: () => true };
   return originalLoad.apply(this, arguments);
 };
 const { Stream } = require('../stream.js');
+const { Stream: MeshStream } = require('../mesh/stream.js');
 Module._load = originalLoad;
 
 test('passes selected display, bounded dimensions and audio to the capture window', async () => {
@@ -40,4 +41,20 @@ test('passes selected display, bounded dimensions and audio to the capture windo
   assert.equal(start.msg.width, 1920);
   assert.equal(start.msg.height, 1080);
   assert.equal(start.msg.audio, 'loopback');
+});
+
+test('capture errors reach only the current viewer without raw error details', () => {
+  for (const Class of [Stream, MeshStream]) {
+    const sent = [];
+    const context = { view: {}, server: { current: { deviceId: 'phone' }, sendToClient: (m) => sent.push(m) },
+      getSettings: () => ({ sharing: { on: true } }), emit() {} };
+    Class.prototype._setStatus.call(context, 'error: private system diagnostic');
+    assert.deepEqual(sent, [{ t: 'stream.stop', reason: 'capture-unavailable' }]);
+    Class.prototype._setStatus.call(context, 'starting');
+    Class.prototype._setStatus.call(context, 'live');
+    assert.equal(sent.length, 1, 'recovery is not mistaken for a capture failure');
+    context.server.current = null;
+    Class.prototype._setStatus.call(context, 'error: capture ended');
+    assert.equal(sent.length, 1, 'no disconnected viewer receives status');
+  }
 });

@@ -187,6 +187,9 @@ class Stream extends EventEmitter {
 
   _setStatus(status) {
     this.view.status = status;
+    if (status.startsWith('error') && this.server.current && this.getSettings().sharing.on) {
+      this.server.sendToClient({ t: P.T.STREAM_STOP, reason: 'capture-unavailable' });
+    }
     this.emit('change');
   }
 
@@ -243,6 +246,7 @@ class Stream extends EventEmitter {
         steady: !!(set.sharing && set.sharing.pace === 'steady'), // Playback › Steady (shared/screencodec.js)
       });
     } catch (e) {
+      if (!this.active || this.active.session !== s) return;
       console.error(`[stream] start failed: ${e.message}`);
       this._setStatus(`error: ${e.message}`);
       this._scheduleRetry();

@@ -993,5 +993,6 @@
   "Remove approval": "移除授权",
   "Companion approval": "配套设备授权",
   "Pinch to zoom, slide to move the view": "双指捏合缩放，滑动移动画面",
-  "Three fingers": "三指"
+  "Three fingers": "三指",
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "无法捕捉 {name} 的屏幕。请检查 Mac 的锁定状态和屏幕录制设置。正在重试…"
 }

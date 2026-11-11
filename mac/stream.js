@@ -165,6 +165,9 @@ class Stream extends EventEmitter {
 
   _setStatus(status) {
     this.view.status = status;
+    if (status.startsWith('error') && this.server.current && this.getSettings().sharing.on) {
+      this.server.sendToClient({ t: P.T.STREAM_STOP, reason: 'capture-unavailable' });
+    }
     this.emit('change');
   }
 
@@ -222,6 +225,7 @@ class Stream extends EventEmitter {
         codec: ScreenCodec.mode(set.sharing && set.sharing.codec), // Share screen › Encoder
       });
     } catch (e) {
+      if (!this.active || this.active.session !== s) return;
       // The rejection isn't always an Error (Screen Recording not allowed): say what it was.
       const why = (e && e.message) || util.inspect(e);
       console.error(`[stream] start failed: ${why} (Screen Recording: ${systemPreferences.getMediaAccessStatus('screen')})`);

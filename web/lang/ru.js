@@ -601,5 +601,6 @@ window.TwinDeskWeb = { lang: 'ru', messages: {
   "{name}’s clipboard": "Буфер обмена {name}",
   "{sent} of {size}": "{sent} из {size}",
   "{what} and {last} are turned off for this {device} on {name}. Turn them on in TwinDesk there, on this device’s page.": "{what} и {last} выключены для этого {device} на {name}. Включите их в TwinDesk там, на странице этого устройства.",
-  "{what} is turned off for this {device} on {name}. Turn it on in TwinDesk there, on this device’s page.": "{what}: выключено для этого {device} на {name}. Включите это в TwinDesk там, на странице этого устройства."
+  "{what} is turned off for this {device} on {name}. Turn it on in TwinDesk there, on this device’s page.": "{what}: выключено для этого {device} на {name}. Включите это в TwinDesk там, на странице этого устройства.",
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "Захват экрана на {name} недоступен. Проверьте блокировку Mac и разрешение на запись экрана. Повторная попытка…"
 } };

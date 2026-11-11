@@ -601,5 +601,6 @@ window.TwinDeskWeb = { lang: 'zh-CN', messages: {
   "{name}’s clipboard": "{name} 的剪贴板",
   "{sent} of {size}": "{sent} / {size}",
   "{what} and {last} are turned off for this {device} on {name}. Turn them on in TwinDesk there, on this device’s page.": "{what}和{last}已在 {name} 上为此 {device} 关闭。请在那边 TwinDesk 中此设备的页面上打开它们。",
-  "{what} is turned off for this {device} on {name}. Turn it on in TwinDesk there, on this device’s page.": "{what}已在 {name} 上为此 {device} 关闭。请在那边 TwinDesk 中此设备的页面上打开它。"
+  "{what} is turned off for this {device} on {name}. Turn it on in TwinDesk there, on this device’s page.": "{what}已在 {name} 上为此 {device} 关闭。请在那边 TwinDesk 中此设备的页面上打开它。",
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "无法捕捉 {name} 的屏幕。请检查 Mac 的锁定状态和屏幕录制设置。正在重试…"
 } };

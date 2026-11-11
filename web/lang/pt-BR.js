@@ -601,5 +601,6 @@ window.TwinDeskWeb = { lang: 'pt-BR', messages: {
   "{name}’s clipboard": "A área de transferência de {name}",
   "{sent} of {size}": "{sent} de {size}",
   "{what} and {last} are turned off for this {device} on {name}. Turn them on in TwinDesk there, on this device’s page.": "{what} e {last} estão desativados para este {device} em {name}. Ative-os no TwinDesk de lá, na página deste aparelho.",
-  "{what} is turned off for this {device} on {name}. Turn it on in TwinDesk there, on this device’s page.": "{what} está desativado para este {device} em {name}. Ative no TwinDesk de lá, na página deste aparelho."
+  "{what} is turned off for this {device} on {name}. Turn it on in TwinDesk there, on this device’s page.": "{what} está desativado para este {device} em {name}. Ative no TwinDesk de lá, na página deste aparelho.",
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "A captura de tela está indisponível em {name}. Verifique o bloqueio do Mac e os ajustes de Gravação da Tela. Tentando novamente…"
 } };
