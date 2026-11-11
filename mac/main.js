@@ -381,6 +381,7 @@ function displayMode() {
 }
 
 function refreshPermissions() {
+  if (svc && svc.notifs) void svc.notifs.nativePermission.refresh();
   state.permissions.screen = systemPreferences.getMediaAccessStatus('screen');
   state.permissions.accessibility = systemPreferences.isTrustedAccessibilityClient(false);
   if (svc && svc.helper.running) {

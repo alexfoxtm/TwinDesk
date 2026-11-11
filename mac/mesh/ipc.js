@@ -398,9 +398,17 @@ function setupIpc(ctx) {
     setNotifs(partial) {
       setGroup('notifs', partial);
       ctx.notifs.applySettings();
+      if (partial && partial.receive === true) void ctx.notifs.nativePermission.request();
     },
     muteNotifApp(arg) {
       if (arg && typeof arg.app === 'string') ctx.notifs.setMuted(arg.app.slice(0, 200), !!arg.muted);
+    },
+    async allowNativeNotifications() {
+      const permission = await ctx.notifs.nativePermission.request();
+      if (permission.authorization !== 'authorized' || permission.alerts !== 'enabled') {
+        const id = permission.bundleId ? '?id=' + encodeURIComponent(permission.bundleId) : '';
+        shell.openExternal('x-apple.systempreferences:com.apple.Notifications-Settings.extension' + id);
+      }
     },
     // Full Disk Access has no request API: open the pane and show TwinDesk in Finder to drag in.
     allowFullDisk() {

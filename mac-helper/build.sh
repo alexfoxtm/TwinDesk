@@ -14,6 +14,19 @@ case "$ARCH" in
 esac
 TARGET="$SWIFT_ARCH-apple-macos13.0"
 
+# Node-API is stable across Electron versions. Headers come from the installed Node toolchain;
+# a build without them stays usable, with notification authorization reported as unknown.
+NODE_HEADERS=${NODE_HEADERS:-$(node -p "require('path').resolve(process.execPath, '../../include/node')")}
+if [ -f "$NODE_HEADERS/node_api.h" ]; then
+  clang++ -O2 -std=c++17 -fobjc-arc -shared -undefined dynamic_lookup -target "$TARGET" \
+    -I "$NODE_HEADERS" -framework Foundation -framework UserNotifications \
+    Sources/notification-permission/main.mm -o .build/release/notification-permission.node
+  echo "built .build/release/notification-permission.node"
+else
+  rm -f .build/release/notification-permission.node
+  echo "note: Node headers missing; macOS notification authorization will be unknown" >&2
+fi
+
 # The input lane (native/tdfast, docs/protocol.md), when cargo is there: libtdfast.a for this arch,
 # and the helpers built with -D TDFAST. Without cargo they build as before and Node keeps its own lane.
 TDFAST=""

@@ -2141,4 +2141,10 @@
   "Downloads for this fork": "此分支的下载",
   "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "InukaAsith/TwinDesk 的构建是另一个应用，不会作为更新安装。",
   "Upstream releases": "上游版本",
+  "macOS notifications": "macOS 通知",
+  "Notifications are disabled for this app in macOS Settings.": "此应用的通知已在 macOS 设置中关闭。",
+  "Enable alerts for this app in macOS Notifications settings.": "请在 macOS 通知设置中启用此应用的提醒。",
+  "macOS could not show the notification. Check this app’s notification settings.": "macOS 无法显示通知。请检查此应用的通知设置。",
+  "Allow macOS notifications to see alerts from your paired device.": "请允许 macOS 通知，以查看已配对设备的提醒。",
+  "Notification authorization could not be checked. Open macOS Notifications settings.": "无法检查通知权限。请打开 macOS 通知设置。",
 });

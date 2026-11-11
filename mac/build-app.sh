@@ -59,6 +59,7 @@ cp "$ROOT"/shared/web/*.js "$ROOT"/shared/web/*.html "$STAGE/shared/web/"
 rsync -a --exclude shortcuts-src "$ROOT/web/" "$STAGE/web/"
 cp -R "$ROOT/android/app/src/main/assets/web/." "$STAGE/android-web/"
 cp "$ROOT"/mac-helper/.build/release/macshare-helper "$ROOT"/mac-helper/.build/release/macshare-helper-multi "$ROOT"/mac-helper/.build/release/macshare-dockstub "$ROOT"/mac-helper/.build/release/macshare-calls "$ROOT"/mac-helper/.build/release/macshare-iosusb "$ROOT"/mac-helper/.build/release/libtwindesk-nowplaying.dylib "$STAGE/mac-helper/.build/release/"
+[ ! -f "$ROOT/mac-helper/.build/release/notification-permission.node" ] || cp "$ROOT/mac-helper/.build/release/notification-permission.node" "$STAGE/mac-helper/.build/release/"
 cp -R node_modules/ws "$STAGE/node_modules/"
 mkdir -p "$STAGE/mac/node_modules" && cp -R node_modules/ws "$STAGE/mac/node_modules/"
 cp "$ROOT/LICENSE" "$STAGE/"
@@ -105,6 +106,9 @@ EOF
   --no-prune --asar=false --out=dist --overwrite --quiet
 
 APP="dist/TwinDesk-darwin-$ARCH/TwinDesk.app"
+# Keep executable/helper names intact; these labels identify the fork in macOS Settings.
+/usr/libexec/PlistBuddy -c "Set :CFBundleName TwinDesk Fork" \
+  -c "Set :CFBundleDisplayName TwinDesk Fork" "$APP/Contents/Info.plist"
 cp -R locales/zh-Hans.lproj locales/ru.lproj locales/tr.lproj locales/pt-BR.lproj "$APP/Contents/Resources/"
 rm -rf dist/TwinDesk.app && mv "$APP" dist/ && rm -rf "dist/TwinDesk-darwin-$ARCH" "$STAGE" dist/extra.plist
 # The Share menu extension (mac-helper/Sources/macshare-share), sandboxed as macOS requires.
@@ -117,8 +121,8 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>io.github.alexfoxtm.twindesk.share</string>
-  <key>CFBundleName</key><string>TwinDesk</string>
-  <key>CFBundleDisplayName</key><string>TwinDesk</string>
+  <key>CFBundleName</key><string>TwinDesk Fork</string>
+  <key>CFBundleDisplayName</key><string>TwinDesk Fork</string>
   <key>CFBundleExecutable</key><string>MacShareShare</string>
   <key>CFBundlePackageType</key><string>XPC!</string>
   <key>CFBundleShortVersionString</key><string>$VER</string>
@@ -256,7 +260,7 @@ if [ -n "$MAC_IDENTITY" ]; then
   done | sort -rn | cut -f2- | while IFS= read -r f; do
     # A library gets none: entitlements belong to executables (a dylib's are meaningless, and
     # notarization can flag them); executables (adb, the helpers) keep them.
-    if file -b "$f" | grep -q 'shared library'; then codesign --force $OPTIONS $SIGN "$ID" "$f"
+    if file -b "$f" | grep -Eq 'shared library|Mach-O .* bundle'; then codesign --force $OPTIONS $SIGN "$ID" "$f"
     else codesign --force $OPTIONS $SIGN "$ID" --entitlements "$ENTITLEMENTS" "$f"; fi
   done
   for b in "$APP"/Contents/Frameworks/*.framework "$APP"/Contents/Frameworks/*.app; do

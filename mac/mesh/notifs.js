@@ -61,6 +61,10 @@ class Notifs extends EventEmitter {
     this.sent = 0;
     this.shown = 0;
     this.live = new Set(); // shown toasts, kept alive until closed
+    this.nativePermission = new (require('../notification-permission').NotificationPermission)();
+    this.nativePermission.on('change', () => this.emit('change'));
+    this.nativeFailure = false;
+    void this.nativePermission.refresh();
     this.guard = new NotifGuard(); // the same text from the same app within seconds goes once (a loop between devices)
     this.echoes = []; // {title, body, until}: shown here from another device, never sent back
 
@@ -238,17 +242,20 @@ class Notifs extends EventEmitter {
     this.live.add(n);
     const drop = () => { n.tdActionCurrent = false; this.live.delete(n); };
     n.on('close', drop);
+    n.on('show', () => { this.nativeFailure = false; this.shown++; this.emit('change'); });
+    n.on('failed', () => { this.nativeFailure = true; void this.nativePermission.refresh(); this.emit('change'); });
     n.on('click', () => this.emit('click', { app: str(m.app, 200), appName, originId: r.msg.o }));
     const timer = setTimeout(drop, 60000);
     if (timer && timer.unref) timer.unref();
     n.show();
-    this.shown++;
     this.emit('change');
   }
 
   get view() {
     return {
       access: this.access,
+      nativeAccess: this.nativePermission.view,
+      nativeFailure: this.nativeFailure,
       peerAccepts: this.peerAccepts,
       sent: this.sent,
       shown: this.shown,

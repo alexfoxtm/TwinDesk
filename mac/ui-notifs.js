@@ -25,10 +25,12 @@ UI.tab({
     const fdaRow = UI.row(I18n.t('Allow Full Disk Access'), I18n.t('Click +, or drag TwinDesk into the list'), [fdaBtn]);
     const recvSw = UI.switch((v) => api.setNotifs({ receive: v }), { label: I18n.t('Show notifications here') });
     const recvRow = UI.row(I18n.t('Show {name}’s notifications on {me}'), '', [recvSw]);
+    const nativeBtn = UI.button(I18n.t('Allow'), () => api.allowNativeNotifications(), 'small primary');
+    const nativeRow = UI.row(I18n.t('macOS notifications'), '', [nativeBtn]);
     const apps = el('div');
 
     body.append(
-      UI.pair(UI.dir('m2w', [sendRow, fdaRow, hideRow]), UI.dir('w2m', [recvRow])),
+      UI.pair(UI.dir('m2w', [sendRow, fdaRow, hideRow]), UI.dir('w2m', [recvRow, nativeRow])),
       UI.card(I18n.t('Apps'), [apps]),
     );
 
@@ -40,6 +42,14 @@ UI.tab({
       sendSw.set(n.send);
       hideSw.set(n.hideText);
       recvSw.set(n.receive);
+      const native = n.nativeAccess || {};
+      nativeRow.hidden = !n.receive || (native.authorization === 'authorized' && native.alerts === 'enabled' && !n.nativeFailure);
+      nativeBtn.textContent = I18n.t(native.authorization === 'not-determined' ? 'Allow' : 'Open Settings');
+      nativeRow.setHint(native.authorization === 'denied' ? I18n.t('Notifications are disabled for this app in macOS Settings.')
+        : native.alerts === 'disabled' ? I18n.t('Enable alerts for this app in macOS Notifications settings.')
+        : n.nativeFailure ? I18n.t('macOS could not show the notification. Check this app’s notification settings.')
+        : native.authorization === 'not-determined' ? I18n.t('Allow macOS notifications to see alerts from your paired device.')
+        : I18n.t('Notification authorization could not be checked. Open macOS Notifications settings.'));
       fdaRow.hidden = n.access !== 'noAccess';
       sendRow.setHint(!n.send ? '' : n.access === 'noAccess' ? I18n.t('Needs Full Disk Access')
         : !s.client ? I18n.t('Also switches it on the other computer') : n.sent ? I18n.t('{count} sent', { count: n.sent }) : I18n.t('As native notifications there'));

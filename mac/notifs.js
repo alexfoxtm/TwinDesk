@@ -27,6 +27,10 @@ class Notifs extends EventEmitter {
     this.sent = 0;
     this.shown = 0;
     this.live = []; // keep shown Notification objects alive until closed
+    this.nativePermission = new (require('./notification-permission').NotificationPermission)();
+    this.nativePermission.on('change', () => this.emit('change'));
+    this.nativeFailure = false;
+    void this.nativePermission.refresh();
 
     server.on('client', () => {
       this.peerAccepts = false;
@@ -143,10 +147,11 @@ class Notifs extends EventEmitter {
     this.live.push(n);
     const drop = () => { this.live = this.live.filter((x) => x !== n); };
     n.on('close', drop);
+    n.on('show', () => { this.nativeFailure = false; this.shown++; this.emit('change'); });
+    n.on('failed', () => { this.nativeFailure = true; void this.nativePermission.refresh(); this.emit('change'); });
     n.on('click', () => this.emit('click', { app: str(m.app, 200), appName }));
     setTimeout(drop, 60000);
     n.show();
-    this.shown++;
     this.emit('change');
   }
 
@@ -166,6 +171,8 @@ class Notifs extends EventEmitter {
   get view() {
     return {
       access: this.access,
+      nativeAccess: this.nativePermission.view,
+      nativeFailure: this.nativeFailure,
       peerAccepts: this.peerAccepts,
       sent: this.sent,
       shown: this.shown,

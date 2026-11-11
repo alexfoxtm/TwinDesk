@@ -2141,4 +2141,10 @@
   "Downloads for this fork": "Downloads for this fork",
   "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.",
   "Upstream releases": "Upstream releases",
+  "macOS notifications": "macOS notifications",
+  "Notifications are disabled for this app in macOS Settings.": "Notifications are disabled for this app in macOS Settings.",
+  "Enable alerts for this app in macOS Notifications settings.": "Enable alerts for this app in macOS Notifications settings.",
+  "macOS could not show the notification. Check this app’s notification settings.": "macOS could not show the notification. Check this app’s notification settings.",
+  "Allow macOS notifications to see alerts from your paired device.": "Allow macOS notifications to see alerts from your paired device.",
+  "Notification authorization could not be checked. Open macOS Notifications settings.": "Notification authorization could not be checked. Open macOS Notifications settings.",
 });
