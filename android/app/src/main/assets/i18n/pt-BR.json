@@ -989,5 +989,6 @@
   "Review TwinDesk’s companion-device associations in Android settings, then try again. Notification forwarding is paused.": "Revise as associações de dispositivos complementares do TwinDesk nas configurações do Android e tente novamente. O encaminhamento de notificações está pausado.",
   "Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.": "Notificações sensíveis permitidas. Remover esta aprovação mantém seu Mac emparelhado. Seus filtros de apps e a configuração para ocultar texto continuam valendo.",
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "A aprovação foi salva. Aguardando o serviço de notificações do Android se reconectar…",
-  "Remove approval": "Remover aprovação"
+  "Remove approval": "Remover aprovação",
+  "Companion approval": "Aprovação do dispositivo complementar"
 }

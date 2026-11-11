@@ -1470,6 +1470,8 @@ private fun NotificationsPage(core: Core, v: Int) {
     val protectedReady = companionHost?.let { companion.readyFor(it.id) } == true
     val companionBluetooth = core.ble.allowed() && core.ble.radioOn
     val canApprove = companionHost != null && access && !core.link.ble && companionBluetooth
+    val canToggleSensitive = !companionBusy && companionState != CompanionApproval.State.RECOVERY &&
+        (protectedReady || (canApprove && !companionApproved))
     val approve = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == android.app.Activity.RESULT_CANCELED) companion.cancel()
     }
@@ -1501,12 +1503,17 @@ private fun NotificationsPage(core: Core, v: Int) {
         SwitchRow(tr("Show this device’s notifications on {name}", "name" to name), tr("{count} sent", "count" to sent), outOn, first = true) { core.sync.set("notifs", "out", it) }
         SwitchRow(tr("Hide the message text"), tr("Only the app name and title are shown on {name}", "name" to name), hideText) { core.store.setFlag("notifs.hideText", it); core.changed() }
         if (supported && !access) MacRow(tr("Notification access"), tr("Required to read notifications")) { Primary(tr("Allow")) { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } }
-        if (companion.supported) MacRow(tr("Sensitive notifications"), companionHint) {
-            if (companionBusy) Secondary(tr("Cancel")) { companion.cancel() }
-            else if (companionApproved && companionHost != null) Secondary(tr("Remove approval")) { companion.forget(companionHost.id) }
-            else if (companionState == CompanionApproval.State.RECOVERY) Secondary(tr("Try again")) { companion.retryRecovery() }
-            else if (!protectedReady && canApprove) Primary(tr(if (companionState == CompanionApproval.State.FAILED) "Try again" else "Allow")) {
-                companion.begin { sender -> approve.launch(IntentSenderRequest.Builder(sender).build()) }
+        if (companion.supported) {
+            SwitchRow(tr("Sensitive notifications"), companionHint, protectedReady, enabled = canToggleSensitive) { on ->
+                if (on) companion.begin { sender -> approve.launch(IntentSenderRequest.Builder(sender).build()) }
+                else companionHost?.let { companion.forget(it.id) }
+            }
+            if (companionBusy || companionState == CompanionApproval.State.RECOVERY || (companionApproved && !protectedReady)) {
+                MacRow(tr("Companion approval"), first = true) {
+                    if (companionBusy) Secondary(tr("Cancel")) { companion.cancel() }
+                    else if (companionApproved) Secondary(tr("Remove approval")) { companion.forget(companionHost.id) }
+                    else Secondary(tr("Try again")) { companion.retryRecovery() }
+                }
             }
         }
         if (!supported && !paired) MacRow(tr("Wireless debugging"), tr("Set it up, then install the full version from {name}", "name" to name)) { Primary(tr("Guide")) { Guide.open.value = true } }

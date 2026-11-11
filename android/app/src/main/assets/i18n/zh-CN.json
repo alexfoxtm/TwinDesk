@@ -989,5 +989,6 @@
   "Review TwinDesk’s companion-device associations in Android settings, then try again. Notification forwarding is paused.": "请在 Android 设置中检查 TwinDesk 的配套设备关联，然后重试。通知转发已暂停。",
   "Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.": "已允许敏感通知。移除此授权不会取消 Mac 配对。应用过滤和隐藏文本设置仍然有效。",
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "授权已保存。正在等待 Android 通知服务重新连接…",
-  "Remove approval": "移除授权"
+  "Remove approval": "移除授权",
+  "Companion approval": "配套设备授权"
 }
