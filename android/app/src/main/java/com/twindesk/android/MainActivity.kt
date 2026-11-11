@@ -124,6 +124,7 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         shown = false
+        Core.get(this).background()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

@@ -116,7 +116,16 @@ class Phone extends EventEmitter {
   }
 
   // Let the phone go: it won't resume, and the computer reconnects by itself.
+  // A dropped phone that is only inside the grace window has no socket to bye, so the block is
+  // recorded here too. release() records it again when a session is up.
+  // A hello whose welcome is still deferred has no current session yet. releasePending records
+  // that phone and closes the socket, so the callback cannot welcome after Disconnect.
   disconnect() {
+    const c = this.raw && this.raw.current;
+    const grace = this.raw && this.raw.phoneGrace;
+    const id = c && P.isPhoneOs(c.os) ? c.deviceId : ((grace && grace.id) || this.pairing.returnPhone);
+    if (this.raw && typeof this.raw.releasePending === 'function') this.raw.releasePending(id);
+    if (id && this.raw && typeof this.raw.noteReleased === 'function') this.raw.noteReleased(id);
     if (this.raw.current && P.isPhoneOs(this.raw.current.os)) this.raw.release();
     else this.raw.endPhoneGrace(); // dropped and waiting to resume: let it go too
   }
