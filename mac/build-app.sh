@@ -106,9 +106,8 @@ EOF
   --no-prune --asar=false --out=dist --overwrite --quiet
 
 APP="dist/TwinDesk-darwin-$ARCH/TwinDesk.app"
-# Keep executable/helper names intact; these labels identify the fork in macOS Settings.
-/usr/libexec/PlistBuddy -c "Set :CFBundleName TwinDesk Fork" \
-  -c "Set :CFBundleDisplayName TwinDesk Fork" "$APP/Contents/Info.plist"
+# Electron uses CFBundleName to locate its helper apps; only change the visible label.
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName TwinDesk Fork" "$APP/Contents/Info.plist"
 cp -R locales/zh-Hans.lproj locales/ru.lproj locales/tr.lproj locales/pt-BR.lproj "$APP/Contents/Resources/"
 rm -rf dist/TwinDesk.app && mv "$APP" dist/ && rm -rf "dist/TwinDesk-darwin-$ARCH" "$STAGE" dist/extra.plist
 # The Share menu extension (mac-helper/Sources/macshare-share), sandboxed as macOS requires.

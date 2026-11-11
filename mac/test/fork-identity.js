@@ -37,6 +37,8 @@ const files = {
 
 function main() {
   const build = files['mac/build-app.sh'];
+  assert.match(build, /Set :CFBundleDisplayName TwinDesk Fork/);
+  assert.doesNotMatch(build, /Set :CFBundleName TwinDesk Fork/, 'Electron locates helper apps using CFBundleName');
   assert.match(build, /--app-bundle-id=io\.github\.alexfoxtm\.twindesk /);
   assert.match(build, /--helper-bundle-id=io\.github\.alexfoxtm\.twindesk\.helper /);
   assert.match(build, /<string>io\.github\.alexfoxtm\.twindesk\.share<\/string>/);
