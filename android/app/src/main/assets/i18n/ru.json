@@ -991,5 +991,10 @@
   "Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.": "Конфиденциальные уведомления разрешены. Удаление разрешения не отменяет сопряжение с Mac. Фильтры приложений и скрытие текста по-прежнему действуют.",
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "Разрешение сохранено. Ожидание повторного подключения службы уведомлений Android…",
   "Remove approval": "Удалить разрешение",
-  "Companion approval": "Разрешение сопутствующего устройства"
+  "Companion approval": "Разрешение сопутствующего устройства",
+  "Zoom out": "Уменьшить",
+  "Zoom in": "Увеличить",
+  "Fit": "Вписать",
+  "Move view": "Перемещать вид",
+  "Drag to move the view. Mac input is paused.": "Перетаскивайте для перемещения вида. Ввод на Mac приостановлен."
 }

@@ -991,5 +991,10 @@
   "Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.": "已允许敏感通知。移除此授权不会取消 Mac 配对。应用过滤和隐藏文本设置仍然有效。",
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "授权已保存。正在等待 Android 通知服务重新连接…",
   "Remove approval": "移除授权",
-  "Companion approval": "配套设备授权"
+  "Companion approval": "配套设备授权",
+  "Zoom out": "缩小",
+  "Zoom in": "放大",
+  "Fit": "适合屏幕",
+  "Move view": "移动画面",
+  "Drag to move the view. Mac input is paused.": "拖动以移动画面。Mac 输入已暂停。"
 }

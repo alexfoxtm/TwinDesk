@@ -124,7 +124,15 @@ private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
     @Suppress("UNUSED_EXPRESSION") v
     var bar by remember { mutableStateOf(true) }
     var keyboard by remember { mutableStateOf(false) }
-    LaunchedEffect(bar) { if (bar) { delay(4000); bar = false } }
+    var zoom by remember { mutableStateOf(1.0) }
+    var moving by remember { mutableStateOf(false) }
+    val viewport = { scale: Double, move: Boolean ->
+        zoom = scale.coerceIn(1.0, 4.0)
+        moving = move && zoom > 1.0
+        host.post(msg("viewport", "scale" to zoom, "pan" to moving))
+        bar = true
+    }
+    LaunchedEffect(bar, moving, zoom) { if (bar && !moving) { delay(4000); bar = false } }
     val s = core.screen
     val name = core.host?.name ?: "Mac"
     // Opened because the computer started sharing: it closes when the computer stops.
@@ -166,9 +174,22 @@ private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
                         }
                         if (s.sharing) TextButton(onClick = { s.control(share = false) }) { Text(tr("Stop"), color = Color.White) }
                     }
-                    TextButton(onClick = { keyboard = !keyboard; s.keyboard(keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
+                    TextButton(onClick = { if (moving) viewport(zoom, false); keyboard = !keyboard; s.keyboard(keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
                     TextButton(onClick = { s.end(); close() }) { Text(tr("Close"), color = Color.White) }
                 }
+                Row(
+                    Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124))
+                        .horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { viewport((zoom / 1.5).coerceAtLeast(1.0), moving) }, enabled = zoom > 1.0) { Text(tr("Zoom out"), color = if (zoom > 1.0) Color.White else Color.Gray) }
+                    Text("${(zoom * 100).toInt()}%", color = Color.White)
+                    TextButton(onClick = { viewport((zoom * 1.5).coerceAtMost(4.0), moving) }, enabled = zoom < 4.0) { Text(tr("Zoom in"), color = if (zoom < 4.0) Color.White else Color.Gray) }
+                    TextButton(onClick = { viewport(1.0, false) }) { Text(tr("Fit"), color = Color.White) }
+                    if (moving) FilledTonalButton(onClick = { viewport(zoom, false) }) { Text(tr("Move view")) }
+                    else TextButton(onClick = { keyboard = false; s.keyboard(false); viewport(zoom, true) }, enabled = zoom > 1.0) { Text(tr("Move view"), color = if (zoom > 1.0) Color.White else Color.Gray) }
+                }
+                if (moving) Text(tr("Drag to move the view. Mac input is paused."), color = Color.White, modifier = Modifier.padding(top = 4.dp).background(Color(0xE6202124)).padding(8.dp))
                 if (s.remote && s.displays.size > 1) {
                     Row(
                         Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124)).padding(horizontal = 8.dp, vertical = 2.dp),

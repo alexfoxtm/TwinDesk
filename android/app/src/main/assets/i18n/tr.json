@@ -991,5 +991,10 @@
   "Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.": "Hassas bildirimlere izin verildi. Bu onayı kaldırmak Mac’inizin eşleştirmesini kaldırmaz. Uygulama filtreleriniz ve metin gizleme ayarınız geçerli olmaya devam eder.",
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "Onay kaydedildi. Android bildirim hizmetinin yeniden bağlanması bekleniyor…",
   "Remove approval": "Onayı kaldır",
-  "Companion approval": "Yardımcı cihaz onayı"
+  "Companion approval": "Yardımcı cihaz onayı",
+  "Zoom out": "Uzaklaştır",
+  "Zoom in": "Yakınlaştır",
+  "Fit": "Sığdır",
+  "Move view": "Görünümü taşı",
+  "Drag to move the view. Mac input is paused.": "Görünümü taşımak için sürükleyin. Mac girişi duraklatıldı."
 }

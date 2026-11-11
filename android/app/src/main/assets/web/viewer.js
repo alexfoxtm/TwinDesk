@@ -43,6 +43,26 @@
   let penOn = true; // a stylus is a pen (opts.pen); off: a mouse
   let penFast = false; // Fast writing (opts.penFast): a stroke's samples in one in.mm (pts); off: each its own, paced
   let realTouch = false; // the computer injects real touch (screen.state touch): Direct sends in.tc
+  let zoom = 1, panX = 0, panY = 0, movingView = false;
+  const panPoints = new Map();
+  let panLast = null;
+
+  function fitRect() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return null;
+    const W = window.innerWidth, H = window.innerHeight;
+    const k = Math.min(W / vw, H / vh);
+    return { x: (W - vw * k) / 2, y: (H - vh * k) / 2, w: vw * k, h: vh * k };
+  }
+  function applyViewport() {
+    const r = fitRect();
+    const dx = r ? Math.max(0, (r.w * zoom - window.innerWidth) / 2) : 0;
+    const dy = r ? Math.max(0, (r.h * zoom - window.innerHeight) / 2) : 0;
+    panX = Math.max(-dx, Math.min(dx, panX));
+    panY = Math.max(-dy, Math.min(dy, panY));
+    video.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  }
+  window.addEventListener('resize', applyViewport);
 
   function setOverlay(t) {
     overlay.textContent = t || '';
@@ -114,9 +134,10 @@
 
   video.addEventListener('playing', () => {
     setOverlay('');
+    applyViewport();
     TD.playing(video.videoWidth, video.videoHeight);
   });
-  video.addEventListener('resize', () => TD.playing(video.videoWidth, video.videoHeight));
+  video.addEventListener('resize', () => { applyViewport(); TD.playing(video.videoWidth, video.videoHeight); });
 
   window.tdRecv = (msg) => {
     if (msg.t !== 'rtc.ice') console.log(`viewer <- ${msg.t}${msg.session != null ? ` #${msg.session}` : ''}`);
@@ -159,6 +180,15 @@
       case 'keyboard':
         if (msg.on) { kbd.value = ''; sent = ''; kbd.focus(); } else kbd.blur();
         break;
+      case 'viewport':
+        cancelInput();
+        { const next = Number.isFinite(msg.scale) ? Math.max(1, Math.min(4, msg.scale)) : 1;
+          panX *= next / zoom; panY *= next / zoom; zoom = next; }
+        movingView = msg.pan === true && zoom > 1;
+        if (zoom === 1) panX = panY = 0;
+        panPoints.clear(); panLast = null;
+        applyViewport();
+        break;
       default: break;
     }
   };
@@ -166,11 +196,10 @@
   // ---- input ----
 
   function drawn() {
-    const vw = video.videoWidth, vh = video.videoHeight;
-    if (!vw || !vh) return null;
+    const r = fitRect();
+    if (!r) return null;
     const W = window.innerWidth, H = window.innerHeight;
-    const k = Math.min(W / vw, H / vh);
-    return { x: (W - vw * k) / 2, y: (H - vh * k) / 2, w: vw * k, h: vh * k };
+    return { x: (W - r.w * zoom) / 2 + panX, y: (H - r.h * zoom) / 2 + panY, w: r.w * zoom, h: r.h * zoom };
   }
   function norm(cx, cy, clamp) {
     const r = drawn();
@@ -567,27 +596,65 @@
   // A mouse (or trackpad) on the phone: as on a computer.
   const BUTTONS = { 0: B.LEFT, 1: B.MIDDLE, 2: B.RIGHT, 3: 3, 4: 4 };
   const held = new Set();
+  const keyHeld = new Set();
+  let mouseLast = { x: 0.5, y: 0.5 };
+  function cancelInput() {
+    if (one) {
+      clearTimeout(one.timer);
+      if (one.dragging) send({ t: 'in.mu', x: one.p.x, y: one.p.y, b: B.LEFT });
+    }
+    one = two = null; touches.clear();
+    if (slots.size) { slots.clear(); tcSend(); }
+    if (penNear || penLast || penHeld.size) penLeave();
+    for (const b of held) send({ t: 'in.mu', ...mouseLast, b });
+    held.clear();
+    for (const code of keyHeld) send({ t: 'in.ku', code });
+    keyHeld.clear();
+  }
+  function panCenter() {
+    if (!panPoints.size) return null;
+    const points = [...panPoints.values()];
+    return { x: points.reduce((n, p) => n + p.x, 0) / points.length, y: points.reduce((n, p) => n + p.y, 0) / points.length };
+  }
+  function panDown(e) {
+    e.preventDefault();
+    panPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    panLast = panCenter();
+  }
+  function panMove(e) {
+    if (!panPoints.has(e.pointerId)) return;
+    e.preventDefault();
+    panPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const next = panCenter();
+    if (panLast) { panX += next.x - panLast.x; panY += next.y - panLast.y; applyViewport(); }
+    panLast = next;
+  }
+  function panUp(e) { panPoints.delete(e.pointerId); panLast = panCenter(); }
   window.addEventListener('pointerdown', (e) => {
+    if (movingView) return panDown(e);
     if (e.pointerType === 'pen' && penOn) return penDown(e);
     if (e.pointerType === 'touch') return fingerDown(e);
     e.preventDefault();
     const p = norm(e.clientX, e.clientY, false);
     const b = BUTTONS[e.button];
     if (!p || b === undefined) return;
+    mouseLast = p;
     held.add(b);
     send({ t: 'in.md', x: p.x, y: p.y, b });
   });
   // pointerrawupdate comes as soon as the system has the sample, not once a frame (Chromium; Safari
   // has none): the pen goes from there, a frame sooner.
   const RAW = 'onpointerrawupdate' in window;
-  if (RAW) window.addEventListener('pointerrawupdate', (e) => { if (e.pointerType === 'pen' && penOn) penMove(e); });
+  if (RAW) window.addEventListener('pointerrawupdate', (e) => { if (!movingView && e.pointerType === 'pen' && penOn) penMove(e); });
   window.addEventListener('pointermove', (e) => {
+    if (movingView) return panMove(e);
     if (e.pointerType === 'pen' && penOn) return RAW ? undefined : penMove(e);
     if (e.pointerType === 'touch') return fingerMove(e);
     const p = norm(e.clientX, e.clientY, held.size > 0);
-    if (p) sendAt(p.x, p.y);
+    if (p) { mouseLast = p; sendAt(p.x, p.y); }
   });
   window.addEventListener('pointerup', (e) => {
+    if (movingView) return panUp(e);
     if (e.pointerType === 'pen' && penOn) return penUp(e);
     if (e.pointerType === 'touch') return fingerUp(e);
     const b = BUTTONS[e.button];
@@ -597,12 +664,14 @@
     if (p) send({ t: 'in.mu', x: p.x, y: p.y, b });
   });
   window.addEventListener('pointercancel', (e) => {
+    if (movingView) return panUp(e);
     if (e.pointerType === 'pen') { if (penOn) penLeave(); }
     else if (e.pointerType === 'touch') fingerUp(e);
   });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('wheel', (e) => {
     e.preventDefault();
+    if (movingView) { panX -= e.deltaX; panY -= e.deltaY; applyViewport(); return; }
     const k = e.deltaMode === 1 ? 40 : 1;
     send({ t: 'in.wh', dx: e.deltaX * k, dy: e.deltaY * k });
   }, { passive: false });
@@ -611,13 +680,17 @@
   // The soft keyboard's Backspace or Enter on an empty field comes as a key, with no code sometimes.
   const keyCode = (e) => e.code || ({ Backspace: 'Backspace', Enter: 'Enter' })[e.key] || '';
   window.addEventListener('keydown', (e) => {
+    if (movingView) return e.preventDefault();
     if (!keyCode(e) || e.keyCode === 229 || e.isComposing) return; // composing on the soft keyboard: see 'input'
     e.preventDefault();
+    keyHeld.add(keyCode(e));
     send({ t: 'in.kd', code: keyCode(e) });
   });
   window.addEventListener('keyup', (e) => {
+    if (movingView) return e.preventDefault();
     if (!keyCode(e) || e.keyCode === 229 || e.isComposing) return;
     e.preventDefault();
+    keyHeld.delete(keyCode(e));
     send({ t: 'in.ku', code: keyCode(e) });
   });
 
@@ -647,6 +720,7 @@
   let sent = '';
   let composing = false;
   function sync() {
+    if (movingView) { kbd.value = ''; sent = ''; return; }
     const v = kbd.value;
     let i = 0;
     while (i < sent.length && i < v.length && sent[i] === v[i]) i++;
