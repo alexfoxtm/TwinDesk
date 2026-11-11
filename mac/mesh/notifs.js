@@ -12,6 +12,8 @@ const P = require('../../shared/protocol.js');
 const { Pool } = require('../../shared/mesh.js');
 const { NotifGuard, isOwn } = require('../../shared/notif-guard.js');
 const { IconsOut, IconsIn } = require('../../shared/notificon.js');
+const { actionsOf } = require('../../shared/notifacts.js');
+const { otpOf } = require('../../shared/otp.js');
 
 const T = P.T;
 const str = (v, n = 500) => (typeof v === 'string' ? v.slice(0, n) : '');
@@ -196,20 +198,45 @@ class Notifs extends EventEmitter {
     if (!this.cfg.receive) return;
     const r = this.pool.receive(from, m);
     if (!r.fresh || !this.Notification || !this.Notification.isSupported()) return;
-    if (this.guard.repeat('in', m.app, m.title, m.body)) return; // a repeat of what was just shown
+    const id = str(m.id, 200);
+    let updated = false;
+    for (const old of this.live) {
+      if (id && old.tdOrigin === from && old.tdId === id) {
+        old.tdActionCurrent = false;
+        updated = true;
+        try { old.close(); } catch {}
+        this.live.delete(old);
+      }
+    }
+    if (this.guard.repeat('in', m.app, m.title, m.body) && !updated) return; // a repeat of what was just shown
     const origin = this._nameOf(r.msg.o, m.on, from);
     const appName = str(m.appName, 100);
     const title = str(m.title, 200) || appName || origin;
     const body = str(m.body);
+    const code = otpOf([title, str(m.subtitle, 200), body].join(' '));
+    const peer = this.mesh.get(from);
+    // Actions have no relay protocol: only the authenticated origin can run its buttons.
+    const actions = r.msg.o === from && peer && peer.os === P.OS.ANDROID ? actionsOf(m) : [];
     this.echoes.push({ title, body: body.slice(0, 80), until: Date.now() + 30000 });
     const n = new this.Notification({
       title,
       icon: this.iconsIn.for(m),
       subtitle: [appName, origin].filter(Boolean).join(' · '),
       body: [str(m.subtitle, 200), body].filter(Boolean).join('\n'),
+      actions: [...(code ? ['Copy ' + code] : []), ...actions].map((text) => ({ type: 'button', text })),
+    });
+    n.tdOrigin = from;
+    n.tdId = id;
+    n.tdActionCurrent = true;
+    n.on('action', (_e, i) => {
+      if (!this.cfg.receive || !n.tdActionCurrent) return;
+      if (code && i === 0) return require('electron').clipboard.writeText(code);
+      const action = i - (code ? 1 : 0);
+      if (!id || !Number.isInteger(action) || !actions[action] || this.mesh.get(from) !== peer || !this.bus.connectedIds().includes(from)) return;
+      this.bus.send(from, { t: 'notif.act', id, i: action });
     });
     this.live.add(n);
-    const drop = () => this.live.delete(n);
+    const drop = () => { n.tdActionCurrent = false; this.live.delete(n); };
     n.on('close', drop);
     n.on('click', () => this.emit('click', { app: str(m.app, 200), appName, originId: r.msg.o }));
     const timer = setTimeout(drop, 60000);

@@ -126,7 +126,7 @@ class Notifs extends EventEmitter {
     this.history = [item, ...(this.history || []).filter((x) => x.id !== item.id)].slice(0, 50);
     if (!Notification.isSupported()) return void this.emit('change');
     // A one-time code: a Copy button on the notification.
-    const code = require('../shared/otp.js').otpOf([item.title, item.body].join(' '));
+    const code = require('../shared/otp.js').otpOf([item.title, item.subtitle, item.body].join(' '));
     const n = new Notification({
       title: item.title,
       subtitle: [appName, peer].filter(Boolean).join(' · '),
