@@ -209,6 +209,13 @@ else
   echo "note: no camera extension (Camera › Virtual camera): needs MAC_IDENTITY, MAC_TEAM_ID (or APPLE_TEAM_ID), MAC_APP_PROFILE and MAC_CAMERA_PROFILE"
 fi
 
+# Local network privacy keys off the main executable UUID (TN3179, TN3178). Electron's
+# prebuilt binary reuses one LC_UUID per version and architecture, and the packager copies
+# it unchanged. Stamp this fork's UUID after the bundle is assembled and before codesign,
+# which covers LC_UUID. Helpers, frameworks and the Electron cache are not modified. This
+# build emits no dSYM; one for the main executable has to be made from the stamped binary.
+node scripts/stamp-main-uuid.js dist/TwinDesk.app
+
 # Signing: with Developer ID (MAC_IDENTITY) for releases, with TwinDesk's self-signed certificate
 # (scripts/signing-identity.sh) for local dev so permissions carry across updates, or ad-hoc.
 ENTITLEMENTS="entitlements.plist"
