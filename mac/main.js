@@ -60,8 +60,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // costs bandwidth only while packets are being lost.
 app.commandLine.appendSwitch('force-fieldtrials', 'WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:0/WebRTC-FlexFEC-03/Enabled/WebRTC-FlexFEC-03-Advertised/Enabled/');
 // Electron names its macOS Keychain item "<app name> Safe Storage" and its logs ~/Library/Logs/<app name>.
-// productName stays TwinDesk so the packaged helpers stay "TwinDesk Helper". This only points the fork
-// at its own service and log folder. It does not read, write, or migrate the upstream TwinDesk item or logs.
+// This points the fork at its own service and log folder without migrating upstream data.
 app.setName('AlexfoxtmTwinDesk');
 app.setAppLogsPath(path.join(require('os').homedir(), 'Library', 'Logs', 'AlexfoxtmTwinDesk'));
 // Fork profile. Upstream keeps ~/Library/Application Support/MacShare; this app does not read or write it.

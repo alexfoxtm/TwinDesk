@@ -40,7 +40,8 @@ function main() {
   assert.match(build, /if \[ -n "\$\{MAC_CAMERA_PROFILE:-\}" \]/);
   assert.match(build, /check-provision-profile\.js "\$MAC_APP_PROFILE" "io\.github\.alexfoxtm\.twindesk"/);
   assert.match(build, /check-provision-profile\.js "\$MAC_CAMERA_PROFILE" "io\.github\.alexfoxtm\.twindesk\.camera"/);
-  assert.match(build, /electron-packager "\$STAGE" TwinDesk /);
+  assert.match(build, /electron-packager "\$STAGE" "TwinDesk Fork" /);
+  assert.match(build, /--executable-name=TwinDesk /);
   assert.match(read('mac/package.json'), /"productName": "TwinDesk"/);
   const checker = read('mac/scripts/check-provision-profile.js');
   assert.doesNotMatch(checker, /\bsecurity\b/);

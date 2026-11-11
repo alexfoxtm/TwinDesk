@@ -96,20 +96,20 @@ cat > dist/extra.plist <<'EOF'
 </dict></plist>
 EOF
 
-# The packager name stays TwinDesk, so the helpers stay "TwinDesk Helper", "TwinDesk Helper (GPU)",
-# "TwinDesk Helper (Renderer)" and "TwinDesk Helper (Plugin)". The fork's Keychain service and logs
-# are set at launch (mac/main.js), not by renaming those helpers.
-./node_modules/.bin/electron-packager "$STAGE" TwinDesk \
+# The bundle name and helper names must agree for Electron's helper lookup. Keep the main
+# executable stable while the fork gets its own visible name and matching helpers.
+./node_modules/.bin/electron-packager "$STAGE" "TwinDesk Fork" \
+  --executable-name=TwinDesk \
   --platform=darwin --arch="$ARCH" --electron-version="$EV" \
   --app-bundle-id=io.github.alexfoxtm.twindesk --helper-bundle-id=io.github.alexfoxtm.twindesk.helper --app-version="$(node -p "require('./package.json').version")" \
   --icon=dist/TwinDesk.icns --extend-info=dist/extra.plist \
   --no-prune --asar=false --out=dist --overwrite --quiet
 
-APP="dist/TwinDesk-darwin-$ARCH/TwinDesk.app"
-# Electron uses CFBundleName to locate its helper apps; only change the visible label.
+APP="dist/TwinDesk Fork-darwin-$ARCH/TwinDesk Fork.app"
+# The packager derives this label from executable-name; keep the fork's visible name.
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName TwinDesk Fork" "$APP/Contents/Info.plist"
 cp -R locales/zh-Hans.lproj locales/ru.lproj locales/tr.lproj locales/pt-BR.lproj "$APP/Contents/Resources/"
-rm -rf dist/TwinDesk.app && mv "$APP" dist/ && rm -rf "dist/TwinDesk-darwin-$ARCH" "$STAGE" dist/extra.plist
+rm -rf dist/TwinDesk.app && mv "$APP" dist/TwinDesk.app && rm -rf "dist/TwinDesk Fork-darwin-$ARCH" "$STAGE" dist/extra.plist
 # The Share menu extension (mac-helper/Sources/macshare-share), sandboxed as macOS requires.
 APPEX=dist/TwinDesk.app/Contents/PlugIns/MacShareShare.appex
 VER="$(node -p "require('./package.json').version")"
