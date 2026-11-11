@@ -1,57 +1,82 @@
 // TwinDesk — Copyright (C) 2026 pengusto. GPL-3.0, see LICENSE.
-// Exercise both real reset entry points with a fake process runner; never touch TCC.
+// Exercise the real permission routes with fakes. Never query or change macOS privacy grants.
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { resetMissing } = require('../permission-reset');
+const { NotificationPermission } = require('../notification-permission');
 
-async function check(file, id, failReset = false) {
+async function entrypoints(file, allowed) {
   const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-  const start = source.indexOf('let staleChecked = false;');
-  const end = source.indexOf('// Setup shows once:', start);
-  assert.ok(start >= 0 && end > start, `missing permission handler in ${file}`);
-  const resets = [];
-  let saves = 0, refreshes = 0, warnings = 0;
-  let finished;
-  const done = new Promise((resolve) => { finished = resolve; });
-  const execFile = (name, args, cb) => {
-    if (name === '/usr/bin/codesign') return setImmediate(() => cb(null, 'designated => test-signature', ''));
-    if (name === '/usr/bin/plutil') return setImmediate(() => cb(null, id));
-    if (name === '/usr/bin/tccutil') {
-      resets.push(args);
-      return setImmediate(() => cb(failReset ? new Error('reset failed') : null));
-    }
-    throw new Error(`unexpected program ${name}`);
-  };
+  assert.doesNotMatch(source, /clearStalePermissions|resetMissing|tccutil/, file + ' must not reset privacy grants on launch');
+  const start = source.indexOf('function refreshPermissions() {');
+  const end = source.indexOf('// macOS owns privacy grants.', start);
+  assert.ok(start >= 0 && end > start);
+  const state = { permissions: {} };
   const context = {
-    app: { isPackaged: true }, path, process: { execPath: '/some/Test.app/Contents/MacOS/TwinDesk' },
-    settings: { app: { signature: 'old' } },
-    state: { permissions: { screen: 'denied', accessibility: false, inputMonitoring: false } },
-    store: { saveSettings() { saves++; } }, refreshPermissions() { refreshes++; finished(); },
-    console: { log() {}, warn() { warnings++; finished(); } },
-    require(name) {
-      if (name === 'child_process') return { execFile };
-      if (name === './permission-reset' || name === '../permission-reset') return { resetMissing };
-      throw new Error(`unexpected dependency ${name}`);
+    state,
+    svc: { notifs: { nativePermission: { refresh() {} } }, helper: {
+      running: true, request: async () => ({ screen: !allowed, inputMonitoring: true }),
+    } },
+    systemPreferences: {
+      getMediaAccessStatus: () => allowed ? 'granted' : 'denied',
+      isTrustedAccessibilityClient: () => true,
     },
+    setupSeen() {}, pushState() {},
+    require(name) { throw new Error('unexpected dependency ' + name); },
   };
-  vm.runInNewContext(`${source.slice(start, end)}\nclearStalePermissions();`, context, { filename: file });
-  await done;
-  assert.deepEqual(resets.map((args) => Array.from(args)), [
-    ['reset', 'ScreenCapture', id], ['reset', 'Accessibility', id], ['reset', 'ListenEvent', id],
-  ]);
-  assert.equal(saves, failReset ? 0 : 1);
-  assert.equal(refreshes, failReset ? 0 : 1);
-  assert.equal(warnings, failReset ? 1 : 0);
+  vm.runInNewContext(source.slice(start, end) + '\nrefreshPermissions();', context, { filename: file });
+  await Promise.resolve();
+  assert.equal(state.permissions.screen, allowed ? 'granted' : 'denied', 'only the capturing app decides Screen Recording access');
+  assert.equal(state.permissions.inputMonitoring, true);
+}
+
+async function requestRoute(file, granted, unavailable = false) {
+  const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const start = source.indexOf('    async allowPermission(kind) {');
+  const end = source.indexOf('    skipSetup(', start);
+  assert.ok(start >= 0 && end > start);
+  let nativeRequests = 0, helperRequests = 0, refreshes = 0, warnings = 0;
+  const opened = [];
+  const nativePermission = new NotificationPermission({ requestScreenAccess() {
+    nativeRequests++;
+    if (unavailable) throw new Error('native request unavailable');
+    return granted;
+  } });
+  const actions = vm.runInNewContext('({' + source.slice(start, end) + '})', {
+    SETTINGS_URLS: { screen: 'screen-settings', accessibility: 'accessibility-settings', localNetwork: 'network-settings' },
+    ctx: { notifs: { nativePermission }, helper: { running: true, request: async () => { helperRequests++; return { granted: true }; } },
+      refreshPermissions() { refreshes++; } },
+    shell: { openExternal(url) { opened.push(url); } },
+    console: { warn() { warnings++; } },
+  }, { filename: file });
+  await actions.allowPermission('screen');
+  assert.equal(nativeRequests, 1);
+  assert.equal(helperRequests, 0, 'screen request belongs to Electron main, never the helper');
+  assert.deepEqual(opened, granted ? [] : ['screen-settings']);
+  assert.equal(warnings, unavailable ? 1 : 0);
+  assert.equal(refreshes, 1);
+  await actions.allowPermission('accessibility');
+  assert.equal(helperRequests, 1, 'the existing Accessibility request remains on its helper route');
+}
+
+async function main() {
+  for (const file of ['main.js', 'mesh/main.js']) await entrypoints(file, true);
+  for (const file of ['ipc.js', 'mesh/ipc.js']) await requestRoute(file, true);
+}
+
+async function failure() {
+  for (const file of ['main.js', 'mesh/main.js']) await entrypoints(file, false);
+  for (const file of ['ipc.js', 'mesh/ipc.js']) {
+    await requestRoute(file, false);
+    await requestRoute(file, false, true);
+  }
+  assert.throws(() => new NotificationPermission(null).requestScreen(), /unavailable/);
 }
 
 (async () => {
-  for (const file of ['main.js', 'mesh/main.js']) {
-    await check(file, 'org.macshare.portals.safe');
-    await check(file, 'org.macshare.mac');
-    await check(file, 'org.macshare.portals.safe', true);
-  }
-  console.log('permission reset: both app modes use their own identity and fail closed');
+  await main();
+  await failure();
+  console.log('permission entrypoints: app-owned screen request and no automatic resets');
 })().catch((err) => { console.error(err); process.exitCode = 1; });

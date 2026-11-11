@@ -80,7 +80,7 @@ jobs:
             fi
           fi
           if [ -z "$ID" ]; then
-            echo "::notice title=Not notarized::No Developer ID certificate: this build is signed with TwinDesk's own certificate, not notarized. Gatekeeper asks once (or brew install --cask inukaasith/twindesk/twindesk clears it)."
+            echo "::notice title=Signing::No Developer ID certificate imported. Builds without MAC_IDENTITY use disposable ad-hoc signing and do not preserve permissions across updates."
           fi
 
       - name: Install dependencies
@@ -92,6 +92,9 @@ jobs:
         # Camera › Virtual camera's extension (build-app.sh) only with the two provisioning profiles
         # that allow system extensions (base64 secrets); without them the app is built without it.
         run: |
+          if [ -z "${MAC_IDENTITY:-}" ]; then
+            export MAC_ADHOC=1
+          fi
           if [ -n "$MAC_APP_PROFILE_BASE64" ] && [ -n "$MAC_CAMERA_PROFILE_BASE64" ]; then
             echo "$MAC_APP_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/app.provisionprofile"
             echo "$MAC_CAMERA_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/camera.provisionprofile"

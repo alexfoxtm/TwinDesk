@@ -386,44 +386,14 @@ function refreshPermissions() {
   if (svc && svc.helper.running) {
     svc.helper.request('permissions').then((r) => {
       state.permissions.inputMonitoring = !!r.inputMonitoring;
-      if (r.screen === true) state.permissions.screen = 'granted'; // the helper sees a fresh grant first
       setupSeen();
-      clearStalePermissions();
       pushState();
     }, () => {});
   }
   pushState();
 }
 
-// After an update signed differently (every ad-hoc build was), macOS still lists TwinDesk as
-// allowed but the grant belongs to the old signature, so the switches are on and nothing works,
-// and switching them on again does nothing. Once per new signature: whatever reads as missing is
-// reset (tccutil drops the stale entry), so Allow asks afresh and the switch in System Settings
-// really is ours. Builds signed with TwinDesk's certificate keep one signature (build-app.sh).
-let staleChecked = false;
-function clearStalePermissions() {
-  if (staleChecked || !app.isPackaged) return;
-  staleChecked = true;
-  const bundle = path.resolve(process.execPath, '..', '..', '..');
-  require('child_process').execFile('/usr/bin/codesign', ['-dr', '-', bundle], (err, out, errOut) => {
-    const m = /designated => (.+)/.exec(`${out}${errOut}`);
-    if (!m || m[1] === settings.app.signature) return;
-    const p = state.permissions;
-    const services = [
-      p.screen !== 'granted' && 'ScreenCapture',
-      !p.accessibility && 'Accessibility',
-      p.inputMonitoring === false && 'ListenEvent',
-    ].filter(Boolean);
-    const done = (resetErr) => {
-      if (resetErr) return console.warn(`[permissions] reset skipped or failed: ${resetErr.message}`);
-      settings.app.signature = m[1];
-      store.saveSettings(settings);
-      refreshPermissions();
-    };
-    if (services.length) console.log(`[permissions] new signature: resetting ${services.join(', ')}`);
-    require('./permission-reset').resetMissing(bundle, services, require('child_process').execFile, done);
-  });
-}
+// macOS owns privacy grants. Updates must never reset them automatically.
 
 // Setup shows once: when everything is allowed it's done for good (like Skip for now).
 function setupSeen() {

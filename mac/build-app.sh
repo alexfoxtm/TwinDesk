@@ -21,6 +21,10 @@ case "$ARCH" in
   *) echo "Error: unsupported macOS architecture '$ARCH' (use x64 or arm64)." >&2; exit 2 ;;
 esac
 EV=$(node -p "require('./node_modules/electron/package.json').version")
+LOCAL_IDENTITY=""
+if [ -z "${MAC_IDENTITY:-}" ] && [ "${MAC_ADHOC:-0}" != 1 ]; then
+  LOCAL_IDENTITY=$(node scripts/local-signing-identity.js)
+fi
 
 ../mac-helper/build.sh "$ARCH"
 
@@ -220,8 +224,8 @@ fi
 # build emits no dSYM; one for the main executable has to be made from the stamped binary.
 node scripts/stamp-main-uuid.js dist/TwinDesk.app
 
-# Signing: with Developer ID (MAC_IDENTITY) for releases, with TwinDesk's self-signed certificate
-# (scripts/signing-identity.sh) for local dev so permissions carry across updates, or ad-hoc.
+# Release signing is supplied by MAC_IDENTITY. Local builds pin an Apple Development certificate;
+# only an explicit MAC_ADHOC=1 produces a disposable identity.
 ENTITLEMENTS="entitlements.plist"
 OPTIONS=""
 
@@ -230,25 +234,19 @@ if [ -n "$MAC_IDENTITY" ]; then
   ID="$MAC_IDENTITY"
   OPTIONS="--options runtime --timestamp"
   echo "Signing with Developer ID: $ID"
-elif [ "${MAC_ADHOC:-0}" != 1 ] && KC=$(scripts/signing-identity.sh 2>/dev/null) && SIGNTEST=$(mktemp) && cp /usr/bin/true "$SIGNTEST" \
-  && { security list-keychains -d user | grep -qF "$KC" || eval "security list-keychains -d user -s \"$KC\" $(security list-keychains -d user | tr '\n' ' ')"; } \
-  && codesign --force --keychain "$KC" --sign "TwinDesk Self-Signed" "$SIGNTEST" 2>/dev/null; then
-  # codesign finds the certificate only in a keychain on the search list (a fresh CI machine's isn't):
-  # it's added, and tried on a copy of true first; without it, ad-hoc below.
-  rm -f "$SIGNTEST"
-  SIGN="--keychain $KC --sign"
-  ID="TwinDesk Self-Signed"
-  OPTIONS=""
-  echo "Signing with local self-signed certificate"
+elif [ -n "$LOCAL_IDENTITY" ]; then
+  SIGN="--sign"
+  ID="$LOCAL_IDENTITY"
+  OPTIONS="--options runtime --timestamp=none"
+  echo "Signing with pinned local Apple Development certificate: $ID"
 else
-  rm -f "$SIGNTEST"
   echo "note: signing ad-hoc: permissions won't carry over to the next update"
   SIGN="--sign"
   ID="-"
   OPTIONS=""
 fi
 APP=dist/TwinDesk.app
-if [ -n "$MAC_IDENTITY" ]; then
+if [ -n "$MAC_IDENTITY" ] || [ -n "$LOCAL_IDENTITY" ]; then
   # Hardened runtime (for notarization): every piece of code signed on its own, inside out, with
   # the entitlements: Electron's helper apps need JIT, and macOS gives the microphone, camera and
   # location only to code that has them (the helpers too). --deep would sign the nested code with
@@ -275,9 +273,7 @@ if [ -n "$MAC_IDENTITY" ]; then
   fi
   codesign --force $OPTIONS $SIGN "$ID" --entitlements "$ENTITLEMENTS" "$APP"
 else
-  # One signature over the whole bundle (helpers first), so the edited Info.plist is sealed. With
-  # TwinDesk's own certificate macOS keeps its permissions across updates; ad-hoc works, but each
-  # update asks for them again.
+  # Explicit disposable build: helpers first, then the edited app bundle.
   for b in "$APP"/Contents/Resources/app/mac-helper/.build/release/*; do [ -f "$b" ] && codesign --force $SIGN "$ID" "$b"; done
   codesign --force $SIGN "$ID" -i io.github.alexfoxtm.twindesk "$APP/Contents/MacOS/twindesk-vcam"
   codesign --force --deep $SIGN "$ID" "$APP"
@@ -286,5 +282,6 @@ else
 fi
 rm -f dist/share.entitlements dist/camera.entitlements dist/app.entitlements
 codesign -dr - dist/TwinDesk.app 2>&1 | grep designated
+codesign --verify --deep --strict dist/TwinDesk.app
 mv dist/TwinDesk.app "$FORK_APP"
 echo "built mac/$FORK_APP"

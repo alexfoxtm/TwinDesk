@@ -19,7 +19,7 @@ TARGET="$SWIFT_ARCH-apple-macos13.0"
 NODE_HEADERS=${NODE_HEADERS:-$(node -p "require('path').resolve(process.execPath, '../../include/node')")}
 if [ -f "$NODE_HEADERS/node_api.h" ]; then
   clang++ -O2 -std=c++17 -fobjc-arc -shared -undefined dynamic_lookup -target "$TARGET" \
-    -I "$NODE_HEADERS" -framework Foundation -framework UserNotifications \
+    -I "$NODE_HEADERS" -framework Foundation -framework UserNotifications -framework CoreGraphics \
     Sources/notification-permission/main.mm -o .build/release/notification-permission.node
   echo "built .build/release/notification-permission.node"
 else

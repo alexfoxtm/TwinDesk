@@ -4,6 +4,7 @@
 #include <node_api.h>
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
+#import <CoreGraphics/CoreGraphics.h>
 #include <memory>
 #include <atomic>
 #include <string>
@@ -104,12 +105,21 @@ static napi_value Start(napi_env env, bool request) {
 
 static napi_value Get(napi_env env, napi_callback_info) { return Start(env, false); }
 static napi_value Request(napi_env env, napi_callback_info) { return Start(env, true); }
+// Node-API invokes this on Electron's main thread. Request for the application that captures,
+// rather than for the separate helper process; an existing grant needs no new request.
+static napi_value RequestScreen(napi_env env, napi_callback_info) {
+  const bool granted = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess();
+  napi_value result;
+  napi_get_boolean(env, granted, &result);
+  return result;
+}
 static napi_value Init(napi_env env, napi_value exports) {
   const napi_property_descriptor methods[] = {
     {"getSettings", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"request", nullptr, Request, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"requestScreenAccess", nullptr, RequestScreen, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
-  napi_define_properties(env, exports, 2, methods);
+  napi_define_properties(env, exports, 3, methods);
   return exports;
 }
 NAPI_MODULE(notification_permission, Init)

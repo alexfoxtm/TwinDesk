@@ -257,11 +257,14 @@ function setupIpc(ctx) {
     copyText(text) {
       if (typeof text === 'string' && text.length < 200) clipboard.writeText(text);
     },
-    // Ask first (that puts TwinDesk in the System Settings list), then open the pane.
+    // Request access before guiding the user to macOS Settings.
     async allowPermission(kind) {
       if (!SETTINGS_URLS[kind]) return;
       let granted = false;
-      if (kind !== 'localNetwork' && ctx.helper.running) {
+      if (kind === 'screen') {
+        try { granted = ctx.notifs.nativePermission.requestScreen(); }
+        catch (err) { console.warn(`[permissions] Screen Recording request failed: ${err.message}`); }
+      } else if (kind !== 'localNetwork' && ctx.helper.running) {
         try {
           granted = !!(await ctx.helper.request('requestAccess', { kind })).granted;
         } catch {}

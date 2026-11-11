@@ -54,6 +54,13 @@ class NotificationPermission extends EventEmitter {
     try { return await pending; }
     finally { if (this.pending === pending) this.pending = null; }
   }
+
+  requestScreen() {
+    if (!this.binding || typeof this.binding.requestScreenAccess !== 'function') {
+      throw new Error('main-process Screen Recording request is unavailable');
+    }
+    return this.binding.requestScreenAccess() === true;
+  }
 }
 
 module.exports = { NotificationPermission };
