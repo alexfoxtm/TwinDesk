@@ -992,9 +992,6 @@
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "授权已保存。正在等待 Android 通知服务重新连接…",
   "Remove approval": "移除授权",
   "Companion approval": "配套设备授权",
-  "Zoom out": "缩小",
-  "Zoom in": "放大",
-  "Fit": "适合屏幕",
-  "Move view": "移动画面",
-  "Drag to move the view. Mac input is paused.": "拖动以移动画面。Mac 输入已暂停。"
+  "Pinch to zoom, slide to move the view": "双指捏合缩放，滑动移动画面",
+  "Three fingers": "三指"
 }

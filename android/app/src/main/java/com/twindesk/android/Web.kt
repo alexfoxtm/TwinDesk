@@ -246,7 +246,7 @@ class Screen(core: Core) : Feature(core) {
     // pen: a stylus is a pen on the computer (its pressure, tilt, eraser), else a mouse; penFast: a
     // stroke's samples batched per event (Fast writing), else each its own, paced (every point lands).
     fun opts(): JSONObject = msg("opts", "sound" to core.store.flag("screen.sound", false), "pacing" to (core.store.flag("screen.smooth", false).let { if (it) "smooth" else "fast" }),
-        "name" to (core.host?.name ?: "the computer"), "touch" to (if (core.store.flag("screen.touchpad", true)) "pad" else "direct"),
+        "viewGestures" to (core.host?.os == "mac"), "name" to (core.host?.name ?: "the computer"), "touch" to (if (core.store.flag("screen.touchpad", true)) "pad" else "direct"),
         "speed" to core.remote.speed.toDouble(), "tap" to core.remote.tapClick, "pen" to core.store.flag("screen.pen", true),
         "penFast" to core.store.flag("screen.penFast", false))
 

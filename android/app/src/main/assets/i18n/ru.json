@@ -992,9 +992,6 @@
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "Разрешение сохранено. Ожидание повторного подключения службы уведомлений Android…",
   "Remove approval": "Удалить разрешение",
   "Companion approval": "Разрешение сопутствующего устройства",
-  "Zoom out": "Уменьшить",
-  "Zoom in": "Увеличить",
-  "Fit": "Вписать",
-  "Move view": "Перемещать вид",
-  "Drag to move the view. Mac input is paused.": "Перетаскивайте для перемещения вида. Ввод на Mac приостановлен."
+  "Pinch to zoom, slide to move the view": "Сведите или разведите пальцы для масштаба, сдвиньте для перемещения вида",
+  "Three fingers": "Три пальца"
 }

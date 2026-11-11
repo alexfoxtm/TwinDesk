@@ -992,9 +992,6 @@
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "Onay kaydedildi. Android bildirim hizmetinin yeniden bağlanması bekleniyor…",
   "Remove approval": "Onayı kaldır",
   "Companion approval": "Yardımcı cihaz onayı",
-  "Zoom out": "Uzaklaştır",
-  "Zoom in": "Yakınlaştır",
-  "Fit": "Sığdır",
-  "Move view": "Görünümü taşı",
-  "Drag to move the view. Mac input is paused.": "Görünümü taşımak için sürükleyin. Mac girişi duraklatıldı."
+  "Pinch to zoom, slide to move the view": "Yakınlaştırmak için kıstırın, görünümü taşımak için kaydırın",
+  "Three fingers": "Üç parmak"
 }

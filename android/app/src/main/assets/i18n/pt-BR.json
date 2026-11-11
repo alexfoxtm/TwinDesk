@@ -992,9 +992,6 @@
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "A aprovação foi salva. Aguardando o serviço de notificações do Android se reconectar…",
   "Remove approval": "Remover aprovação",
   "Companion approval": "Aprovação do dispositivo complementar",
-  "Zoom out": "Diminuir zoom",
-  "Zoom in": "Aumentar zoom",
-  "Fit": "Ajustar",
-  "Move view": "Mover visualização",
-  "Drag to move the view. Mac input is paused.": "Arraste para mover a visualização. A entrada no Mac está pausada."
+  "Pinch to zoom, slide to move the view": "Faça uma pinça para ampliar, deslize para mover a visualização",
+  "Three fingers": "Três dedos"
 }
