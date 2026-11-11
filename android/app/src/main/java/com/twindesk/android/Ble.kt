@@ -141,6 +141,26 @@ class Ble(
         return c.openPipe(timeoutMs)
     }
 
+    // A companion chooser's exact device, kept out of discovery and the session's connections.
+    // This pipe is only for proving its TLS certificate; it must never replace a live BLE pipe.
+    class ProofPipe(val port: Int, private val release: () -> Unit) : java.io.Closeable {
+        override fun close() = release()
+    }
+
+    fun openProof(device: BluetoothDevice, timeoutMs: Long = 15000): ProofPipe? {
+        if (!allowed() || !radioOn) return null
+        synchronized(conns) {
+            val existing = conns[device.address]
+            if (existing?.piped == true) return null
+            existing?.close()
+        }
+        val c = Conn(device, keep = true, proof = true)
+        c.start()
+        val port = c.openPipe(timeoutMs)
+        if (port == null) { c.close(); return null }
+        return ProofPipe(port) { c.close() }
+    }
+
     // On the same Wi-Fi as the computer (Core.bleTick): links without a pipe go.
     fun trim() {
         for (c in conns.values.toList()) if (!c.piped) c.close()
@@ -155,7 +175,7 @@ class Ble(
 
     // ---- one computer ----
 
-    private inner class Conn(val dev: BluetoothDevice, val keep: Boolean) {
+    private inner class Conn(val dev: BluetoothDevice, val keep: Boolean, val proof: Boolean = false) {
         @Volatile var gatt: BluetoothGatt? = null
         @Volatile var ready = false
         @Volatile var hostId = ""
@@ -258,9 +278,11 @@ class Ble(
             val os = o!!.optString("os", "mac")
             val f = Found(id, o.optString("name").take(100).ifEmpty { "Computer" }, os, "ble:${dev.address}",
                 o.optInt("port", Proto.PORT), Proto.normFingerprint(o.optString("fp")), System.currentTimeMillis(), false)
-            val old = found[id]
-            found[id] = f
-            if (old == null || old.name != f.name || old.address != f.address) onChange()
+            if (!proof) {
+                val old = found[id]
+                found[id] = f
+                if (old == null || old.name != f.name || old.address != f.address) onChange()
+            }
             if (!isPaired(id) && !keep) { close(); return } // listed for pairing; connected again for that
             // Paired: listen on CTRL (invites) and DOWN (the pipe), and say who we are.
             for (uuid in listOf(CTRL, DOWN)) {
@@ -269,6 +291,7 @@ class Ble(
                 val d = c.getDescriptor(CCCD) ?: continue
                 op("descriptor") { writeDescriptor(g, d, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) }
             }
+            // Control hello lets the host apply its BLE admission policy; it has no session token.
             ctrlWrite(hello().put("op", "hello"))
             op("") { ready = true; readyWait.countDown(); false }
         }
@@ -283,7 +306,7 @@ class Ble(
             if (uuid != CTRL) return
             val o = runCatching { JSONObject(String(value)) }.getOrNull() ?: return
             when (o.optString("op")) {
-                "invite" -> found[hostId]?.let { onInvite(it.copy(invited = true)) }
+                "invite" -> if (!proof) found[hostId]?.let { onInvite(it.copy(invited = true)) }
                 "closed" -> closePipe(false)
             }
         }

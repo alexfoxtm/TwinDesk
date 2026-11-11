@@ -976,5 +976,18 @@
   "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘ работает как Ctrl: ⌘C копирует, ⌘V вставляет",
   "Downloads for this fork": "Загрузки этой версии",
   "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "Сборки InukaAsith/TwinDesk — отдельное приложение. Они не устанавливаются как обновления.",
-  "Upstream releases": "Версии оригинального проекта"
+  "Upstream releases": "Версии оригинального проекта",
+  "Sensitive notifications": "Конфиденциальные уведомления",
+  "Choose your Mac in Android’s companion-device approval.": "Выберите свой Mac в окне разрешения сопутствующего устройства Android.",
+  "Checking the selected Mac…": "Проверка выбранного Mac…",
+  "Approval did not complete. Check Bluetooth on both devices and try again.": "Разрешение не получено. Проверьте Bluetooth на обоих устройствах и повторите попытку.",
+  "Connect to your paired Mac to allow sensitive notifications.": "Подключитесь к сопряжённому Mac, чтобы разрешить конфиденциальные уведомления.",
+  "Allow Notification access first.": "Сначала разрешите доступ к уведомлениям.",
+  "Connect over Wi-Fi or USB to approve sensitive notifications.": "Для разрешения конфиденциальных уведомлений подключитесь по Wi-Fi или USB.",
+  "Turn on Bluetooth and allow Nearby devices to approve your Mac.": "Включите Bluetooth и разрешите доступ к устройствам поблизости, чтобы подтвердить свой Mac.",
+  "Android can let TwinDesk read sensitive notifications, including security codes. Notifications sent to {name} still follow your app filters and hidden-text setting.": "Android может разрешить TwinDesk читать конфиденциальные уведомления, включая коды безопасности. При отправке на {name} по-прежнему действуют фильтры приложений и скрытие текста.",
+  "Review TwinDesk’s companion-device associations in Android settings, then try again. Notification forwarding is paused.": "Проверьте сопутствующие устройства TwinDesk в настройках Android и повторите попытку. Пересылка уведомлений приостановлена.",
+  "Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.": "Конфиденциальные уведомления разрешены. Удаление разрешения не отменяет сопряжение с Mac. Фильтры приложений и скрытие текста по-прежнему действуют.",
+  "Approval is saved. Waiting for Android’s notification service to reconnect…": "Разрешение сохранено. Ожидание повторного подключения службы уведомлений Android…",
+  "Remove approval": "Удалить разрешение"
 }

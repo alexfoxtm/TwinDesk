@@ -976,5 +976,18 @@
   "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘ 相当于 Ctrl，因此 ⌘C 复制，⌘V 粘贴",
   "Downloads for this fork": "此分支的下载",
   "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "InukaAsith/TwinDesk 的构建是另一个应用，不会作为更新安装。",
-  "Upstream releases": "上游版本"
+  "Upstream releases": "上游版本",
+  "Sensitive notifications": "敏感通知",
+  "Choose your Mac in Android’s companion-device approval.": "在 Android 的配套设备授权中选择您的 Mac。",
+  "Checking the selected Mac…": "正在验证所选 Mac…",
+  "Approval did not complete. Check Bluetooth on both devices and try again.": "授权未完成。请检查两台设备的蓝牙后重试。",
+  "Connect to your paired Mac to allow sensitive notifications.": "请连接已配对的 Mac，以允许敏感通知。",
+  "Allow Notification access first.": "请先允许通知访问权限。",
+  "Connect over Wi-Fi or USB to approve sensitive notifications.": "请通过 Wi-Fi 或 USB 连接以授权敏感通知。",
+  "Turn on Bluetooth and allow Nearby devices to approve your Mac.": "请开启蓝牙并允许附近设备权限，以验证您的 Mac。",
+  "Android can let TwinDesk read sensitive notifications, including security codes. Notifications sent to {name} still follow your app filters and hidden-text setting.": "Android 可允许 TwinDesk 读取敏感通知，包括安全代码。发送到 {name} 的通知仍遵循应用过滤和隐藏文本设置。",
+  "Review TwinDesk’s companion-device associations in Android settings, then try again. Notification forwarding is paused.": "请在 Android 设置中检查 TwinDesk 的配套设备关联，然后重试。通知转发已暂停。",
+  "Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.": "已允许敏感通知。移除此授权不会取消 Mac 配对。应用过滤和隐藏文本设置仍然有效。",
+  "Approval is saved. Waiting for Android’s notification service to reconnect…": "授权已保存。正在等待 Android 通知服务重新连接…",
+  "Remove approval": "移除授权"
 }

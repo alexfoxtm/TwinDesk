@@ -51,6 +51,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val sync = PairSync(this)
     val clip = Clip(this)
     val notifs = Notifs(this)
+    val companion = CompanionApproval(this)
     val files = Files(this)
     val fclip = FileClip(this)
     val info = PhoneInfo(this)
@@ -85,7 +86,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // Connect with Android: another phone, on a session of its own beside the computer's (Peer.kt).
     // Not a Feature: the computer's messages never reach it, nor its the computer.
     val peer = Peer(this)
-    private val features: List<Feature> = listOf(net, sync, clip, notifs, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, macSound, shortcuts, kvm, remote, hub, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia)
+    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, macSound, shortcuts, kvm, remote, hub, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia)
 
     val host: Host? get() = if (link.connected) link.host else null
 
@@ -368,6 +369,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     fun forget(id: String) {
+        companion.forget(id)
         if (link.host?.id == id) link.disconnect()
         store.forgetHost(id)
         changed()

@@ -73,9 +73,16 @@ class NotifListener : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         if (running === this) running = null
+        CompanionApproval.listenerDisconnected(this)
+    }
+
+    fun suspendForApproval() {
+        if (running === this) running = null
+        requestUnbind()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        if (CompanionApproval.holdNotifications(this)) return
         runCatching { Core.get(this).notifs.posted(sbn) }
     }
 
@@ -85,8 +92,13 @@ class NotifListener : NotificationListenerService() {
 
     // Allowed now (or Android started it again): the computer's media controls can see what plays.
     override fun onListenerConnected() {
+        if (CompanionApproval.holdNotifications(this)) {
+            runCatching { Core.get(this) } // reconcile a recorded, interrupted approval first
+            if (CompanionApproval.holdNotifications(this)) { requestUnbind(); return }
+        }
         running = this
-        runCatching { Core.get(this).nowPlaying.retry() }
+        CompanionApproval.listenerConnected(this)
+        runCatching { Core.get(this).also { it.nowPlaying.retry(); it.changed() } }
     }
 }
 

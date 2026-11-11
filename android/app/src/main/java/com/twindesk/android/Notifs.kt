@@ -254,12 +254,14 @@ class Notifs(core: Core) : Feature(core) {
 
     // The conversations open on the phone now (the computer just asked).
     private fun chatSnapshot() {
+        if (CompanionApproval.holdNotifications(core.ctx)) return
         val l = NotifListener.running ?: return
         runCatching { l.activeNotifications }.getOrNull()?.forEach { runCatching { chatPosted(it) } }
     }
 
     // From NotifListener: a new notification on this phone.
     fun posted(sbn: StatusBarNotification) {
+        if (CompanionApproval.holdNotifications(core.ctx)) return
         runCatching { chatPosted(sbn) }
         runCatching { core.peer.notifPosted(sbn, this) } // and to a phone connected with Connect with Android (Peer.kt)
         if (!peerAccepts || !core.sync.get("notifs", "out") || !core.link.connected) return

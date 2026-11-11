@@ -976,5 +976,18 @@
   "⌘ works as Ctrl, so ⌘C copies and ⌘V pastes": "⌘ funciona como Ctrl, então ⌘C copia e ⌘V cola",
   "Downloads for this fork": "Downloads desta versão",
   "InukaAsith/TwinDesk builds are a different app. They are not installed as updates.": "As compilações de InukaAsith/TwinDesk são outro aplicativo. Elas não são instaladas como atualizações.",
-  "Upstream releases": "Versões do projeto original"
+  "Upstream releases": "Versões do projeto original",
+  "Sensitive notifications": "Notificações sensíveis",
+  "Choose your Mac in Android’s companion-device approval.": "Escolha seu Mac na aprovação de dispositivo complementar do Android.",
+  "Checking the selected Mac…": "Verificando o Mac selecionado…",
+  "Approval did not complete. Check Bluetooth on both devices and try again.": "A aprovação não foi concluída. Verifique o Bluetooth nos dois dispositivos e tente novamente.",
+  "Connect to your paired Mac to allow sensitive notifications.": "Conecte-se ao Mac emparelhado para permitir notificações sensíveis.",
+  "Allow Notification access first.": "Primeiro permita o acesso às notificações.",
+  "Connect over Wi-Fi or USB to approve sensitive notifications.": "Conecte-se por Wi-Fi ou USB para aprovar notificações sensíveis.",
+  "Turn on Bluetooth and allow Nearby devices to approve your Mac.": "Ative o Bluetooth e permita o acesso a dispositivos próximos para aprovar seu Mac.",
+  "Android can let TwinDesk read sensitive notifications, including security codes. Notifications sent to {name} still follow your app filters and hidden-text setting.": "O Android pode permitir que o TwinDesk leia notificações sensíveis, incluindo códigos de segurança. As notificações enviadas para {name} continuam seguindo seus filtros de apps e a configuração para ocultar texto.",
+  "Review TwinDesk’s companion-device associations in Android settings, then try again. Notification forwarding is paused.": "Revise as associações de dispositivos complementares do TwinDesk nas configurações do Android e tente novamente. O encaminhamento de notificações está pausado.",
+  "Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.": "Notificações sensíveis permitidas. Remover esta aprovação mantém seu Mac emparelhado. Seus filtros de apps e a configuração para ocultar texto continuam valendo.",
+  "Approval is saved. Waiting for Android’s notification service to reconnect…": "A aprovação foi salva. Aguardando o serviço de notificações do Android se reconectar…",
+  "Remove approval": "Remover aprovação"
 }

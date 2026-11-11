@@ -18,6 +18,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -64,6 +65,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -1460,6 +1462,34 @@ private fun NotificationsPage(core: Core, v: Int) {
     val paired = core.adb.paired
     val inOn = core.sync.get("notifs", "in")
     val shown = core.notifs.shown
+    val companion = core.companion
+    val companionState = companion.state
+    val companionBusy = companion.busy
+    val companionHost = core.host?.takeIf { it.os == "mac" }
+    val companionApproved = companionHost?.let { companion.hasApproval(it.id) } == true
+    val protectedReady = companionHost?.let { companion.readyFor(it.id) } == true
+    val companionBluetooth = core.ble.allowed() && core.ble.radioOn
+    val canApprove = companionHost != null && access && !core.link.ble && companionBluetooth
+    val approve = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_CANCELED) companion.cancel()
+    }
+    DisposableEffect(companion) { onDispose { companion.cancel() } }
+    val companionHint = when {
+        companionState == CompanionApproval.State.RECOVERY -> tr("Review TwinDesk’s companion-device associations in Android settings, then try again. Notification forwarding is paused.")
+        protectedReady -> tr("Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.")
+        companionApproved -> tr("Approval is saved. Waiting for Android’s notification service to reconnect…")
+        companionBusy -> when (companionState) {
+            CompanionApproval.State.WAITING -> tr("Waiting for {name}…", "name" to name)
+            CompanionApproval.State.CHOOSING -> tr("Choose your Mac in Android’s companion-device approval.")
+            else -> tr("Checking the selected Mac…")
+        }
+        companionState == CompanionApproval.State.FAILED -> tr("Approval did not complete. Check Bluetooth on both devices and try again.")
+        companionHost == null -> tr("Connect to your paired Mac to allow sensitive notifications.")
+        !access -> tr("Allow Notification access first.")
+        core.link.ble -> tr("Connect over Wi-Fi or USB to approve sensitive notifications.")
+        !companionBluetooth -> tr("Turn on Bluetooth and allow Nearby devices to approve your Mac.")
+        else -> tr("Android can let TwinDesk read sensitive notifications, including security codes. Notifications sent to {name} still follow your app filters and hidden-text setting.", "name" to name)
+    }
     if (!supported) Note(
         tr("This version of TwinDesk can’t read notifications, as Play Protect restricts downloaded apps. ") +
             tr("Once wireless debugging is set up, install the full version from the Phone page on {name}. Your settings and pairings are kept.", "name" to name),
@@ -1471,6 +1501,14 @@ private fun NotificationsPage(core: Core, v: Int) {
         SwitchRow(tr("Show this device’s notifications on {name}", "name" to name), tr("{count} sent", "count" to sent), outOn, first = true) { core.sync.set("notifs", "out", it) }
         SwitchRow(tr("Hide the message text"), tr("Only the app name and title are shown on {name}", "name" to name), hideText) { core.store.setFlag("notifs.hideText", it); core.changed() }
         if (supported && !access) MacRow(tr("Notification access"), tr("Required to read notifications")) { Primary(tr("Allow")) { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } }
+        if (companion.supported) MacRow(tr("Sensitive notifications"), companionHint) {
+            if (companionBusy) Secondary(tr("Cancel")) { companion.cancel() }
+            else if (companionApproved && companionHost != null) Secondary(tr("Remove approval")) { companion.forget(companionHost.id) }
+            else if (companionState == CompanionApproval.State.RECOVERY) Secondary(tr("Try again")) { companion.retryRecovery() }
+            else if (!protectedReady && canApprove) Primary(tr(if (companionState == CompanionApproval.State.FAILED) "Try again" else "Allow")) {
+                companion.begin { sender -> approve.launch(IntentSenderRequest.Builder(sender).build()) }
+            }
+        }
         if (!supported && !paired) MacRow(tr("Wireless debugging"), tr("Set it up, then install the full version from {name}", "name" to name)) { Primary(tr("Guide")) { Guide.open.value = true } }
     }
     MacCard {

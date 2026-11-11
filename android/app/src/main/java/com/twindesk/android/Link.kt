@@ -260,6 +260,8 @@ class Link(
     // The session's socket now: its address and port (127.0.0.1 through the cable or Bluetooth).
     fun endpoint(): Pair<String, Int>? = ws?.let { endOf[it] }
 
+    internal fun sessionMarker(): Any? = ws
+
     // An HTTPS client for the session's computer, its certificate pinned as the session's is.
     fun https(): OkHttpClient? {
         val fp = host?.fp ?: return null

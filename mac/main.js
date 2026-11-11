@@ -1160,11 +1160,14 @@ const bleQuiet = wifiQuiet();
 function setupNet() {
   const { safeStorage } = require('electron');
   const iosNow = () => !!peer.current && peer.current.os === P.OS.IOS;
+  svc.companionAdvertise = new (require('./companion-advertise').CompanionAdvertise)({
+    server, pairing, apply: () => svc.ble && svc.ble.apply(),
+  });
   svc.ble = new BleHost({
     helper: svc.helper, server,
     info: () => ({ id: id.macId, name: id.macName.slice(0, 40), os: P.OS.MAC, port: server.port, fp: id.fp }),
-    enabled: () => !bleOff && (settings.net.ble !== false || settings.net.blePc === true),
-    accept: (g) => (P.isPhoneOs(g.os) ? settings.net.ble !== false : settings.net.blePc === true), // General's two Bluetooth switches
+    enabled: () => svc.companionAdvertise.active || (!bleOff && (settings.net.ble !== false || settings.net.blePc === true)),
+    accept: (g) => svc.companionAdvertise.accepts(g.id) || (!bleOff && (P.isPhoneOs(g.os) ? settings.net.ble !== false : settings.net.blePc === true)), // General's two Bluetooth switches
     // Quiet on Wi-Fi with an iPhone or iPad in the session or linked: its link stays (idle, slow, no
     // advertising: the helper's bleHold), as it's what wakes TwinDesk there when iOS suspends it and
     // what the session falls back to. Advertising comes back only if that link drops.
