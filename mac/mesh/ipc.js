@@ -2,7 +2,7 @@
 // Actions from the control window (and the menu bar): validate, save settings, apply.
 'use strict';
 
-const { ipcMain, shell, app, screen, dialog, clipboard, Menu } = require('electron');
+const { ipcMain, shell, app, screen, dialog, clipboard, Menu, systemPreferences } = require('electron');
 const P = require('../../shared/protocol.js');
 const CL = require('../../shared/cursorlock.js');
 const { LINKS: ABOUT_LINKS } = require('../../shared/about.js');
@@ -264,6 +264,9 @@ function setupIpc(ctx) {
       if (kind === 'screen') {
         try { granted = ctx.notifs.nativePermission.requestScreen(); }
         catch (err) { console.warn(`[permissions] Screen Recording request failed: ${err.message}`); }
+      } else if (kind === 'accessibility') {
+        try { granted = systemPreferences.isTrustedAccessibilityClient(true); }
+        catch (err) { console.warn(`[permissions] Accessibility request failed: ${err.message}`); }
       } else if (kind !== 'localNetwork' && ctx.helper.running) {
         try {
           granted = !!(await ctx.helper.request('requestAccess', { kind })).granted;

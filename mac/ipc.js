@@ -250,6 +250,9 @@ function setupIpc(ctx) {
       if (kind === 'screen') {
         try { granted = ctx.notifs.nativePermission.requestScreen(); }
         catch (err) { console.warn(`[permissions] Screen Recording request failed: ${err.message}`); }
+      } else if (kind === 'accessibility') {
+        try { granted = systemPreferences.isTrustedAccessibilityClient(true); }
+        catch (err) { console.warn(`[permissions] Accessibility request failed: ${err.message}`); }
       } else if (kind !== 'localNetwork' && ctx.helper.running) {
         try {
           granted = !!(await ctx.helper.request('requestAccess', { kind })).granted;

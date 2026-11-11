@@ -37,7 +37,7 @@ async function requestRoute(file, granted, unavailable = false) {
   const start = source.indexOf('    async allowPermission(kind) {');
   const end = source.indexOf('    skipSetup(', start);
   assert.ok(start >= 0 && end > start);
-  let nativeRequests = 0, helperRequests = 0, refreshes = 0, warnings = 0;
+  let nativeRequests = 0, accessibilityRequests = 0, helperRequests = 0, refreshes = 0, warnings = 0;
   const opened = [];
   const nativePermission = new NotificationPermission({ requestScreenAccess() {
     nativeRequests++;
@@ -45,7 +45,13 @@ async function requestRoute(file, granted, unavailable = false) {
     return granted;
   } });
   const actions = vm.runInNewContext('({' + source.slice(start, end) + '})', {
-    SETTINGS_URLS: { screen: 'screen-settings', accessibility: 'accessibility-settings', localNetwork: 'network-settings' },
+    SETTINGS_URLS: { screen: 'screen-settings', accessibility: 'accessibility-settings', inputMonitoring: 'input-settings', localNetwork: 'network-settings' },
+    systemPreferences: { isTrustedAccessibilityClient(prompt) {
+      assert.equal(prompt, true, 'Allow asks macOS to register the main app');
+      accessibilityRequests++;
+      if (unavailable) throw new Error('Accessibility request unavailable');
+      return granted;
+    } },
     ctx: { notifs: { nativePermission }, helper: { running: true, request: async () => { helperRequests++; return { granted: true }; } },
       refreshPermissions() { refreshes++; } },
     shell: { openExternal(url) { opened.push(url); } },
@@ -58,7 +64,14 @@ async function requestRoute(file, granted, unavailable = false) {
   assert.equal(warnings, unavailable ? 1 : 0);
   assert.equal(refreshes, 1);
   await actions.allowPermission('accessibility');
-  assert.equal(helperRequests, 1, 'the existing Accessibility request remains on its helper route');
+  assert.equal(accessibilityRequests, 1);
+  assert.equal(helperRequests, 0, 'Accessibility request belongs to Electron main, never the helper');
+  assert.deepEqual(opened, granted ? [] : ['screen-settings', 'accessibility-settings']);
+  assert.equal(warnings, unavailable ? 2 : 0);
+  assert.equal(refreshes, 2);
+  await actions.allowPermission('inputMonitoring');
+  assert.equal(helperRequests, 1, 'Input Monitoring still asks the capturing helper');
+  assert.equal(refreshes, 3);
 }
 
 async function main() {
@@ -78,5 +91,5 @@ async function failure() {
 (async () => {
   await main();
   await failure();
-  console.log('permission entrypoints: app-owned screen request and no automatic resets');
+  console.log('permission entrypoints: app-owned Screen Recording and Accessibility requests, no automatic resets');
 })().catch((err) => { console.error(err); process.exitCode = 1; });
