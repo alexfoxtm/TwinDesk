@@ -1003,5 +1003,6 @@
   "Connecting to the Mac login screen…": "Mac giriş ekranına bağlanılıyor…",
   "Login-screen connection ended. Close this view and try again.": "Giriş ekranı bağlantısı sona erdi. Bu görünümü kapatıp tekrar deneyin.",
   "Signing in to Screen Sharing…": "Ekran Paylaşımı’na giriş yapılıyor…",
-  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "Bu hesap adı veya parola 63 UTF-8 baytını aştığı için Ekran Paylaşımı tarafından kullanılamıyor."
+  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "Bu hesap adı veya parola 63 UTF-8 baytını aştığı için Ekran Paylaşımı tarafından kullanılamıyor.",
+  "Use a different account": "Başka bir hesap kullan"
 }

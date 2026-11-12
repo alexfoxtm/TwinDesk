@@ -348,6 +348,24 @@ export default class RFB extends EventTargetMixin {
         this._updateClip();
     }
 
+    // TwinDesk's authenticated Mac geometry identifies one screen in the RFB desktop.
+    set primaryView(view) {
+        this._primaryView = view && { x: view.x, y: view.y, width: view.width,
+            height: view.height, desktopWidth: view.desktopWidth, desktopHeight: view.desktopHeight };
+        this._updateClip();
+        this._updateScale();
+    }
+
+    _primaryViewport() {
+        const v = this._primaryView;
+        if (!v || ![v.x, v.y, v.width, v.height, v.desktopWidth, v.desktopHeight].every(Number.isInteger) ||
+            v.x < 0 || v.y < 0 || v.width <= 0 || v.height <= 0 ||
+            v.desktopWidth <= 0 || v.desktopHeight <= 0 || v.desktopWidth > 32768 || v.desktopHeight > 32768 ||
+            v.x + v.width > v.desktopWidth || v.y + v.height > v.desktopHeight ||
+            this._fbWidth !== v.desktopWidth || this._fbHeight !== v.desktopHeight) return null;
+        return v;
+    }
+
     get scaleViewport() { return this._scaleViewport; }
     set scaleViewport(scale) {
         this._scaleViewport = scale;
@@ -749,6 +767,17 @@ export default class RFB extends EventTargetMixin {
     // configured viewport matches the current screen size
     _updateClip() {
         const curClip = this._display.clipViewport;
+        const primary = this._primaryViewport();
+        if (primary) {
+            this._display.clipViewport = true;
+            this._display.viewportChangeSize(primary.width, primary.height);
+            const current = this._display._viewportLoc;
+            this._display.viewportChangePos(primary.x - current.x, primary.y - current.y);
+            this._fixScrollbars();
+            this._setClippingViewport(true);
+            if (!curClip) this._saveExpectedClientSize();
+            return;
+        }
         let newClip = this._clipViewport;
 
         if (this._scaleViewport) {

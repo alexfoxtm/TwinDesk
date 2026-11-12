@@ -13,6 +13,7 @@ let ended = false;
 let asked = false;
 let submitted = false;
 let connected = false;
+let primaryView = null;
 const clearCredentials = () => { keyboard.value = ''; };
 function close() {
     if (ended) return;
@@ -43,12 +44,18 @@ function makeChannel() {
 }
 window.lockRecv = message => {
     if (ended) return;
-    if (message.t === 'open') {
+    if (message.t === 'metadata') {
+        const view = message.primaryView;
+        primaryView = view && { x: view.x, y: view.y, width: view.width,
+            height: view.height, desktopWidth: view.desktopWidth, desktopHeight: view.desktopHeight };
+        if (rfb) rfb.primaryView = primaryView;
+    } else if (message.t === 'open') {
         if (channel) return fail();
         if (!window.isSecureContext || !window.crypto?.subtle) return fail();
         channel = makeChannel();
         try { rfb = new RFB(document.getElementById('screen'), channel, { shared: true }); }
         catch (_) { return fail(); }
+        rfb.primaryView = primaryView;
         rfb.scaleViewport = true;
         rfb.resizeSession = false;
         rfb.clipViewport = true;

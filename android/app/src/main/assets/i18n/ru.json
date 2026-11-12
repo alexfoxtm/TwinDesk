@@ -1003,5 +1003,6 @@
   "Connecting to the Mac login screen…": "Подключение к экрану входа Mac…",
   "Login-screen connection ended. Close this view and try again.": "Подключение к экрану входа завершено. Закройте это окно и повторите попытку.",
   "Signing in to Screen Sharing…": "Вход в «Общий экран»…",
-  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "Имя учётной записи или пароль превышает 63 байта UTF-8 и не поддерживается общим экраном."
+  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "Имя учётной записи или пароль превышает 63 байта UTF-8 и не поддерживается общим экраном.",
+  "Use a different account": "Использовать другую учётную запись"
 }

@@ -6,3 +6,4 @@ AUTHORS: removed trailing whitespace.
 ARD startup is guarded against asynchronous/fragmented re-entry; repeated credential requests are handled by the local page.
 Dispatches a one-time twindeskframe event after the first decoded nonempty framebuffer rectangle.
 Dispatches twindeskdraw when the decoded framebuffer first reaches a nonempty canvas draw.
+Supports an optional, validated primary-display viewport while retaining remote input coordinates.

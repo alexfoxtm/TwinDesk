@@ -33,7 +33,10 @@ function fixture() {
 }
 async function main() {
     const f = fixture();
+    const primaryView = { x: 5120, y: 0, width: 5120, height: 2880, desktopWidth: 10240, desktopHeight: 2880 };
+    f.recv({ t: 'metadata', primaryView });
     f.recv({ t: 'open' });
+    assert.deepEqual(f.calls.rfb.primaryView, primaryView);
     f.calls.rfb.events.credentialsrequired({ detail: { types: ['username', 'password'] } });
     f.calls.rfb.events.credentialsrequired({ detail: { types: ['username', 'password'] } });
     assert.equal(f.calls.authRequired, 1, 'fragmented authentication requests the native form once');
@@ -66,6 +69,15 @@ async function main() {
     assert.deepEqual(f.calls.keys, [65, 0xff08, 0xff08, 0xff0d]);
     assert.equal(f.element('keyboard').value, '\u200b');
     gateFixture();
+    const viewport = viewportFixture();
+    viewport.primaryView = primaryView;
+    assert.deepEqual({ ...viewport._display._viewportLoc }, { x: 5120, y: 0, w: 5120, h: 2880 });
+    assert.equal(viewport._display.absX(0), 5120, 'left edge input includes the crop origin');
+    assert.equal(viewport._display.absX(400), 7680, 'center input reaches the primary monitor center');
+    assert.equal(viewport._display.absY(225), 1440);
+    viewport._screenSize = () => ({ w: 360, h: 780 });
+    viewport._updateClip(); viewport._updateScale();
+    assert.equal(viewport._display.absX(180), 7680, 'portrait fit keeps crop input aligned');
     await ardFixture();
     f.recv({ t: 'closed' });
     assert.match(f.element('status').textContent, /connection ended/);
@@ -109,9 +121,39 @@ function failure() {
     f.calls.rfb.events.credentialsrequired({ detail: { types: ['username', 'password'] } });
     assert.equal(f.submit(7, 'test-user', 'é'.repeat(32)), false);
     assert.equal(f.calls.credentials, null);
+    const viewport = viewportFixture();
+    viewport.primaryView = { x: 5120, y: 0, width: 5120, height: 2880, desktopWidth: 10240, desktopHeight: 2880 };
+    for (const primaryView of [
+        { x: 0, y: 0, width: 5120, height: 2880, desktopWidth: 5120, desktopHeight: 2880 },
+        { x: -1, y: 0, width: 5120, height: 2880, desktopWidth: 10240, desktopHeight: 2880 },
+        { x: 9000, y: 0, width: 5120, height: 2880, desktopWidth: 10240, desktopHeight: 2880 },
+        { x: 0, y: 0, width: NaN, height: 2880, desktopWidth: 10240, desktopHeight: 2880 },
+    ]) {
+        viewport.primaryView = primaryView;
+        assert.deepEqual({ ...viewport._display._viewportLoc }, { x: 0, y: 0, w: 10240, h: 2880 }, 'invalid or nonmatching geometry keeps the full desktop');
+    }
     f.calls.rfb.events.credentialsrequired({ detail: { types: ['password'] } });
     assert.equal(f.calls.close, 1);
     assert.equal(f.calls.credentials, null);
+}
+// Exercise the vendored viewport and input-coordinate methods without capturing any pixels.
+function viewportFixture() {
+    const canvas = () => ({ width: 0, height: 0, style: {}, getContext: () => ({ drawImage() {}, getImageData: () => ({}), putImageData() {} }) });
+    const displaySource = fs.readFileSync(path.join(base, 'novnc/core/display.js'), 'utf8').replace(/^import .*;\n/gm, '').replace('export default class Display', 'class Display');
+    const Display = vm.runInNewContext(displaySource + '\nDisplay;', { Log: { Debug() {} }, navigator: { userAgent: 'fixture' }, document: { createElement: canvas }, toSigned32bit: n => n | 0 });
+    const rfb = fs.readFileSync(path.join(base, 'novnc/core/rfb.js'), 'utf8');
+    const method = signature => {
+        const start = rfb.indexOf('    ' + signature);
+        assert.ok(start >= 0, signature);
+        return rfb.slice(start, rfb.indexOf('\n    }', start) + 6);
+    };
+    const Viewport = new Function('return class {' + ['set primaryView(view)', '_primaryViewport()', '_updateClip()', '_updateScale()'].map(method).join('\n') + '}')();
+    const view = new Viewport();
+    view._display = new Display(canvas()); view._display.resize(10240, 2880);
+    view._fbWidth = 10240; view._fbHeight = 2880; view._scaleViewport = true; view._clipViewport = true;
+    view._fixScrollbars = () => {}; view._setClippingViewport = () => {}; view._saveExpectedClientSize = () => {};
+    view._screenSize = () => ({ w: 800, h: 600 });
+    return view;
 }
 // Exercise the production gate with real reader threads: ACK and cancellation
 // both unblock the reader without ever waiting on Android's main thread.

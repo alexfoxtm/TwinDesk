@@ -1003,5 +1003,6 @@
   "Connecting to the Mac login screen…": "Conectando à tela de início de sessão do Mac…",
   "Login-screen connection ended. Close this view and try again.": "A conexão com a tela de início de sessão foi encerrada. Feche esta tela e tente novamente.",
   "Signing in to Screen Sharing…": "Iniciando sessão no Compartilhamento de Tela…",
-  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "O Compartilhamento de Tela não pode usar este nome de conta ou senha porque excede 63 bytes UTF-8."
+  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "O Compartilhamento de Tela não pode usar este nome de conta ou senha porque excede 63 bytes UTF-8.",
+  "Use a different account": "Usar outra conta"
 }

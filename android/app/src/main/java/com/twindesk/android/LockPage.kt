@@ -36,6 +36,16 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     var credentialsRequested by mutableStateOf(false); private set
     private val account: EditText = credentialField(false)
     private val secret: EditText = credentialField(true)
+    private var suggestedAccount: String? = null
+    private var manualAccount = false
+    private val accountLabel = TextView(activity).apply {
+        text = tr("Mac account name"); labelFor = account.id; setTextColor(0xffffffff.toInt()); textSize = 14f
+        setPadding(0, dp(8), 0, dp(4))
+    }
+    private val changeAccount = Button(activity).apply {
+        text = tr("Use a different account"); visibility = View.GONE
+        setOnClickListener { manualAccount = true; updateAccountFields(); focusedField = account; account.requestFocus() }
+    }
     private val authError = TextView(activity).apply { setTextColor(0xffffb4ab.toInt()); visibility = View.GONE; isSaveEnabled = false }
     private var focusedField: EditText = account
     val authView = ScrollView(activity).apply {
@@ -50,7 +60,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
                 this.text = text; labelFor = field.id; setTextColor(0xffffffff.toInt()); textSize = 14f
                 setPadding(0, dp(8), 0, dp(4))
             })
-            label(tr("Mac account name"), account)
+            addView(accountLabel)
             addView(account, LinearLayout.LayoutParams(-1, dp(52)))
             label(tr("Mac account password"), secret)
             addView(secret, LinearLayout.LayoutParams(-1, dp(52)))
@@ -58,6 +68,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
             addView(Button(activity).apply {
                 text = tr("Sign in"); minHeight = dp(48); setOnClickListener { submitCredentials() }
             }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+            addView(changeAccount, LinearLayout.LayoutParams(-1, -2))
         }, android.widget.FrameLayout.LayoutParams(-1, -2))
     }
 
@@ -80,9 +91,16 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     }
 
     private fun clearCredentials() { account.text.clear(); secret.text.clear(); authError.text = ""; authError.visibility = View.GONE }
+    private fun updateAccountFields() {
+        val automatic = suggestedAccount != null && !manualAccount
+        account.visibility = if (automatic) View.GONE else View.VISIBLE
+        accountLabel.text = if (automatic) "${tr("Mac account name")}: $suggestedAccount" else tr("Mac account name")
+        accountLabel.visibility = View.VISIBLE
+        changeAccount.visibility = if (automatic) View.VISIBLE else View.GONE
+    }
     private fun submitCredentials() {
         if (!visible || !ready || !credentialsRequested) return
-        val username = account.text.toString()
+        val username = if (!manualAccount) suggestedAccount ?: account.text.toString() else account.text.toString()
         val password = secret.text.toString()
         if (username.isEmpty() || password.isEmpty()) return
         if (username.toByteArray(Charsets.UTF_8).size > 63 || password.toByteArray(Charsets.UTF_8).size > 63) {
@@ -152,6 +170,9 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         ready = false
         credentialsRequested = false
         clearCredentials()
+        suggestedAccount = null
+        manualAccount = false
+        updateAccountFields()
         val token = Any()
         owner = token
         view.addJavascriptInterface(Bridge(++generation, token), "LockBridge")
@@ -182,6 +203,9 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         ready = false
         credentialsRequested = false
         clearCredentials()
+        suggestedAccount = null
+        manualAccount = false
+        updateAccountFields()
         generation++
         owner?.let { core.lockView.endFor(it) }
         owner = null
@@ -205,13 +229,24 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
                 android.util.Log.i("TwinDeskLock", "geometry framebuffer=${fw}x$fh canvas=${cw}x$ch viewport=${vw}x$vh")
         }
         @JavascriptInterface fun credentials() = activity.runOnUiThread {
-            if (current() && ready && !credentialsRequested) { clearCredentials(); focusedField = account; credentialsRequested = true }
+            if (current() && ready && !credentialsRequested) {
+                clearCredentials(); updateAccountFields()
+                focusedField = if (suggestedAccount != null && !manualAccount) secret else account
+                credentialsRequested = true
+            }
         }
         @JavascriptInterface fun ready() = activity.runOnUiThread {
             if (!current() || ready) return@runOnUiThread
             ready = true
             core.lockView.attach(token) { message ->
                 if (!current()) return@attach
+                if (message.optString("t") == "metadata") {
+                    suggestedAccount = message.optString("account").takeIf { it.isNotBlank() }
+                    manualAccount = false
+                    updateAccountFields()
+                    if (suggestedAccount != null) focusedField = secret
+                    message.remove("account") // The local web page needs only display geometry.
+                }
                 if (message.optString("t") == "closed") { credentialsRequested = false; clearCredentials() }
                 if (message.optString("t") == "unlocked") unlocked()
                 else view.evaluateJavascript("window.lockRecv && window.lockRecv($message);", null)

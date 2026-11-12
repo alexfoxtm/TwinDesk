@@ -104,6 +104,20 @@ class LockView(core: Core) : Feature(core) {
                 if (!Regex("[A-Za-z0-9_-]{43}").matches(ticket) || m.optString("path") != "/lockview" || m.optLong("expiresIn") !in 1..10000) { end(); return true }
                 val mine = attempt
                 val gate = reader ?: return true
+                val metadata = msg("metadata")
+                val account = m.optString("account")
+                if (account.isNotBlank() && account.toByteArray(Charsets.UTF_8).size <= 63 && account.none { it.code < 32 || it.code == 127 }) metadata.put("account", account)
+                m.optJSONObject("primaryView")?.let { source ->
+                    val keys = listOf("x", "y", "width", "height", "desktopWidth", "desktopHeight")
+                    val values = keys.map { source.optDouble(it, Double.NaN) }
+                    if (values.all { it.isFinite() && it >= 0 && it <= 32768 && it == it.toInt().toDouble() } &&
+                        values[2] > 0 && values[3] > 0 && values[4] > 0 && values[5] > 0 &&
+                        values[0] + values[2] <= values[4] && values[1] + values[3] <= values[5]) {
+                        metadata.put("primaryView", JSONObject().apply { keys.forEachIndexed { i, key -> put(key, values[i].toInt()) } })
+                    }
+                }
+                deliver?.invoke(metadata)
+                if (mine != attempt || !valid()) return true
                 socket = core.link.openLockTunnel(ticket, marker, object : WebSocketListener() {
                     override fun onOpen(ws: WebSocket, response: Response) { main.post {
                         if (mine != attempt || !valid() || ws !== socket) { ws.cancel(); return@post }

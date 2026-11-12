@@ -9,7 +9,7 @@ const { spawnSync } = require('child_process');
 process.env.NODE_PATH = [process.env.NODE_PATH, path.join(__dirname, '../../mac/node_modules')].filter(Boolean).join(path.delimiter);
 require('module').Module._initPaths();
 const { Server } = require('../../mac/server');
-const { startLockView, verifyScreenSharingPeer, lockedConsole, ownsTuple, servicePid, readLocked } = require('../../mac/lockview');
+const { startLockView, verifyScreenSharingPeer, lockedConsole, ownsTuple, servicePid, readLocked, primaryView } = require('../../mac/lockview');
 const { LockTunnel, ArdGate } = require('../locktunnel');
 const P = require('../protocol');
 const REQUEST = 'ab'.repeat(16);
@@ -44,7 +44,7 @@ function fixture(permitted = true, options = {}) {
   const power = new EventEmitter(), connections = [];
   let allowed = permitted;
   const adapter = startLockView({ server, powerMonitor: power, remoteAllowed: () => allowed,
-    readLock: async () => true, probe: async () => true, verifyPeer: async () => true,
+    readLock: async () => true, probe: async () => true, verifyPeer: async () => true, metadata: () => ({}), screens: null,
     connect: (target) => { const tcp = new Tcp(); connections.push({ target, tcp }); return tcp; }, ...options });
   const send = (msg, from = ctx) => server._onMessage(from, Buffer.from(JSON.stringify(msg)), false, from.ws);
   const accept = (ticket, extra = {}) => {
@@ -161,6 +161,12 @@ function identityCommands(overrides = {}) {
 }
 
 async function mainPath() {
+  const screens = [
+    { id: 1, scaleFactor: 2, bounds: { x: -2560, y: 0, width: 2560, height: 1440 } },
+    { id: 2, scaleFactor: 2, bounds: { x: 0, y: 0, width: 2560, height: 1440 } },
+  ];
+  const primary = primaryView(screens, 2);
+  assert.deepStrictEqual(primary, { x: 5120, y: 0, width: 5120, height: 2880, desktopWidth: 10240, desktopHeight: 2880 });
   assert(ownsTuple(ownership(), 45678, 123));
   assert.strictEqual(await verifyScreenSharingPeer(peerSocket(), identityCommands()), true);
   assert.strictEqual(await verifyScreenSharingPeer(peerSocket(), identityCommands({ cold: true })), true, 'wait for the actual daemon after socket activation');
@@ -173,7 +179,7 @@ async function mainPath() {
     assert.strictEqual(await readLocked(async (file, args) => file === '/usr/sbin/ioreg' ? 'disposable plist' : args[1] === envelope ? JSON.stringify(users) : null, 502), true);
   }
   await wireCase(true, 30);
-  const f = fixture(false);
+  const f = fixture(false, { metadata: () => ({ account: 'fixture-account', primaryView: primary }) });
   try {
     await turn();
     assert.strictEqual(f.control.sent.at(-1).can, false);
@@ -181,6 +187,9 @@ async function mainPath() {
     await turn();
     assert.strictEqual(f.control.sent.at(-1).can, true);
     const ticket = await open(f);
+    assert.strictEqual(ticket.account, 'fixture-account');
+    assert.deepStrictEqual(ticket.primaryView, primary);
+    assert(f.control.sent.filter((m) => m.t !== P.T.LOCK_TICKET).every((m) => m.account === undefined && m.primaryView === undefined), 'metadata is ticket-only');
     assert.strictEqual(ticket.path, '/lockview');
     assert.strictEqual(ticket.expiresIn, 10000);
     assert.strictEqual(ticket.request, REQUEST);
@@ -232,6 +241,29 @@ async function mainPath() {
 }
 
 async function failurePath() {
+  assert.strictEqual(primaryView([{ id: -1, scaleFactor: 2, bounds: { x: 0, y: 0, width: 100, height: 100 } }], -1), null);
+  assert.strictEqual(primaryView([
+    { id: 1, scaleFactor: 1, bounds: { x: 0, y: 0, width: 100, height: 100 } },
+    { id: 2, scaleFactor: 2, bounds: { x: 100, y: 0, width: 100, height: 100 } },
+  ], 1), null, 'mixed-scale layout must not invent a crop');
+  let reads = 0, details = 0;
+  const changedConsole = fixture(true, { readLock: async () => ++reads === 1, metadata: () => { details++; return { account: 'must-not-send' }; } });
+  try {
+    await turn(); changedConsole.send({ t: P.T.LOCK_OPEN, request: REQUEST }); await turn();
+    assert.strictEqual(details, 0, 'fresh console verification precedes account metadata');
+    assert(!changedConsole.control.sent.some((m) => m.t === P.T.LOCK_TICKET));
+  } finally { changedConsole.server.close(); }
+  const topology = new EventEmitter();
+  let view = { x: 0, y: 0, width: 100, height: 100, desktopWidth: 200, desktopHeight: 100 };
+  const movedScreen = fixture(true, { screens: topology, metadata: () => ({ primaryView: view }) });
+  try {
+    const ticket = await open(movedScreen), ws = movedScreen.accept(ticket.ticket), tcp = movedScreen.connections[0].tcp;
+    tcp.emit('connect'); await turn();
+    view = { ...view, x: 100 };
+    topology.emit('display-metrics-changed');
+    assert(tcp.destroyed, 'a changed primary layout invalidates the crop before more input');
+    assert.strictEqual(ws.readyState, 3);
+  } finally { movedScreen.server.close(); }
   for (const identity of [{ table: null }, { table: ownership(1) }, { uid: '502' }, { badSignature: true }, { finalPid: 999 }]) {
     assert.strictEqual(await verifyScreenSharingPeer(peerSocket(), identityCommands(identity)), false);
   }

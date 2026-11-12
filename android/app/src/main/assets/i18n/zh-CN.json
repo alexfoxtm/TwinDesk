@@ -1003,5 +1003,6 @@
   "Connecting to the Mac login screen…": "正在连接 Mac 登录屏幕…",
   "Login-screen connection ended. Close this view and try again.": "登录屏幕连接已结束。请关闭此视图后重试。",
   "Signing in to Screen Sharing…": "正在登录屏幕共享…",
-  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "此账户名称或密码超过 63 个 UTF-8 字节，屏幕共享无法使用。"
+  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "此账户名称或密码超过 63 个 UTF-8 字节，屏幕共享无法使用。",
+  "Use a different account": "使用其他账户"
 }
