@@ -2,3 +2,12 @@
 
 #auth-error{font-size:14px;line-height:1.4;color:#ffb4ab;margin:0 0 16px}#auth-error:empty{display:none}
 #auth{max-height:calc(100dvh - 24px);overflow-y:auto}
+@media (orientation:landscape) and (max-height:500px){
+  #auth{width:min(600px,calc(100vw - 32px));padding:12px 16px}
+  #auth:not([hidden]){display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+  #auth label{margin:0}
+  #auth label span{margin-bottom:4px}
+  #auth input{padding:8px}
+  #auth-error,#signin{grid-column:1 / -1}
+  #signin{min-height:40px;padding:8px}
+}

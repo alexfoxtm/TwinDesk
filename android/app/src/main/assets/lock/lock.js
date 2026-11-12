@@ -19,7 +19,7 @@ let ended = false;
 let asked = false;
 let connected = false;
 const clearCredentials = () => { username.value = ''; password.value = ''; keyboard.value = ''; authError.textContent = ''; };
-for (const field of [username, password]) field.addEventListener('focus', () => {
+for (const field of [username, password]) field.addEventListener('pointerup', () => {
     LockBridge.keyboard();
     setTimeout(() => field.scrollIntoView?.({ block: 'nearest' }), 300);
 });
@@ -70,7 +70,6 @@ window.lockRecv = message => {
             asked = true;
             status.textContent = '';
             form.hidden = false;
-            username.focus();
         });
         rfb.addEventListener('securityfailure', fail);
         rfb.addEventListener('disconnect', close);
