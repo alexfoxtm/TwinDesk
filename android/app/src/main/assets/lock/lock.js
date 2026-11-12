@@ -138,6 +138,9 @@ keyboard.addEventListener('keydown', event => {
     if (keys[event.key]) { event.preventDefault(); rfb.sendKey(keys[event.key]); resetKeyboard(); }
 });
 window.lockClose = close;
+window.addEventListener('resize', () => {
+    if (rfb && !ended) requestAnimationFrame(() => { if (rfb && !ended) rfb.scaleViewport = true; });
+});
 document.getElementById('screen').addEventListener('pointerup', () => { if (connected && !ended) LockBridge.keyboard(); });
 window.addEventListener('pagehide', close);
 document.addEventListener('visibilitychange', () => { if (document.hidden) fail(); });
