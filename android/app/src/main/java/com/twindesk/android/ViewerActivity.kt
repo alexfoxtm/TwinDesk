@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
@@ -58,6 +60,8 @@ class ViewerActivity : ComponentActivity() {
     private var started = false
     private var attached = false
     private var viewport: Pair<Int, Int>? = null
+    private var lockPage: LockPage? = null
+    private var login by mutableStateOf(false)
     private val resize = Runnable { updateViewport() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,7 +83,13 @@ class ViewerActivity : ComponentActivity() {
                 h.view.postDelayed(resize, 250)
             }
         }
-        setContent { Theme { Viewer(core, h) { finish() } } }
+        val locked = LockPage(this, core) { h.view.post { login = false; lockPage?.close(); window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) } }
+        lockPage = locked
+        setContent { Theme { Viewer(core, h, locked, login, openLogin = {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            login = true
+            locked.open()
+        }, closeLogin = { login = false; locked.close(); window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }) { finish() } } }
     }
 
     override fun onStart() {
@@ -107,6 +117,9 @@ class ViewerActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         started = false
+        login = false
+        lockPage?.close()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         host?.view?.removeCallbacks(resize)
         host?.let { Core.get(this).screen.detach(it) }
         attached = false
@@ -114,6 +127,8 @@ class ViewerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        lockPage?.destroy()
+        lockPage = null
         host?.destroy()
         host = null
         super.onDestroy()
@@ -121,12 +136,14 @@ class ViewerActivity : ComponentActivity() {
 }
 
 @androidx.compose.runtime.Composable
-private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
+private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean, openLogin: () -> Unit, closeLogin: () -> Unit, close: () -> Unit) {
     val v by core.version.collectAsState()
     @Suppress("UNUSED_EXPRESSION") v
     var bar by remember { mutableStateOf(true) }
     val keyboard = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    LaunchedEffect(bar) { if (bar) { delay(4000); bar = false } }
+    LaunchedEffect(bar, login) { if (bar && !login) { delay(4000); bar = false } }
+    var consent by remember { mutableStateOf(false) }
+    LaunchedEffect(core.lockView.available, login) { if (login && !core.lockView.available) closeLogin() }
     val s = core.screen
     val name = core.host?.name ?: "Mac"
     // Opened because the computer started sharing: it closes when the computer stops.
@@ -138,6 +155,7 @@ private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
 
     Box(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.displayCutout)) {
         AndroidView(factory = { host.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize())
+        if (login) AndroidView(factory = { lockPage.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize().imePadding())
         // A small handle at the top: tap for the bar (the rest of the screen is the Mac's).
         Box(
             Modifier.align(Alignment.TopCenter).padding(top = 4.dp).width(72.dp).height(18.dp)
@@ -159,7 +177,7 @@ private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
                         modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(6.dp))
                             .background(if (core.link.wired) Color(0xFF30D158).copy(alpha = 0.35f) else Color(0x33FFFFFF)).padding(horizontal = 6.dp, vertical = 2.dp),
                     )
-                    if (s.remote) {
+                    if (s.remote && !login) {
                         for (mode in listOf("mirror", "extend")) {
                             val on = s.sharing && s.mode == mode
                             val label = if (mode == "mirror") tr("Mirror") else tr("Extend")
@@ -168,10 +186,13 @@ private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
                         }
                         if (s.sharing) TextButton(onClick = { s.control(share = false) }) { Text(tr("Stop"), color = Color.White) }
                     }
-                    TextButton(onClick = { s.keyboard(!keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
-                    TextButton(onClick = { s.end(); close() }) { Text(tr("Close"), color = Color.White) }
+                    if (core.lockView.available && !login) TextButton(onClick = { consent = true; bar = true }) { Text(tr("Open Mac login screen"), color = Color.White) }
+                    if (login) TextButton(onClick = { closeLogin(); s.control(share = false); bar = true }) { Text(tr("Stop"), color = Color.White) }
+                    if (login) TextButton(onClick = { closeLogin(); bar = true }) { Text(tr("Back"), color = Color.White) }
+                    TextButton(onClick = { if (login) lockPage.keyboard(!keyboard) else s.keyboard(!keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
+                    TextButton(onClick = { closeLogin(); s.end(); close() }) { Text(tr("Close"), color = Color.White) }
                 }
-                if (s.remote && s.displays.size > 1) {
+                if (!login && s.remote && s.displays.size > 1) {
                     Row(
                         Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124)).padding(horizontal = 8.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.Center,
@@ -182,4 +203,9 @@ private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
             }
         }
     }
+    if (consent) AlertDialog(onDismissRequest = { consent = false },
+        title = { Text(tr("Open Mac login screen")) },
+        text = { Text(tr("Sign in to Screen Sharing with your Mac account, then unlock the Mac. Your password is used only for this connection and is not saved. Screen Sharing must already be enabled on the Mac.")) },
+        confirmButton = { TextButton(onClick = { consent = false; openLogin(); bar = true }) { Text(tr("Continue")) } },
+        dismissButton = { TextButton(onClick = { consent = false }) { Text(tr("Cancel")) } })
 }

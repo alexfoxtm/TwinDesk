@@ -1,0 +1,6 @@
+noVNC v1.7.0, https://github.com/novnc/noVNC/tree/v1.7.0
+Core and vendor sources are included under their original licenses.
+TwinDesk changes in core/rfb.js: only ARD security type 30 is accepted; clear account credentials after creating the ARD response.
+Source archive SHA-256: b1003a11b6e6e8d8f7f5e5586daae7f8ca651d8aee0aa155ff9ac841c48f52c6
+AUTHORS: removed trailing whitespace.
+ARD startup is guarded against asynchronous/fragmented re-entry; repeated credential requests are handled by the local page.

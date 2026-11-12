@@ -332,7 +332,7 @@ class Screen(core: Core) : Feature(core) {
                 core.changed()
             }
             "stream.input" -> { inputOn = m.optBoolean("on", true); core.changed() }
-            "screen.textFocus" -> if (viewing && inputOn && core.host?.os == "mac") keyboard(true)
+            "screen.textFocus" -> if (viewing && inputOn && !core.lockView.active && core.host?.os == "mac") keyboard(true)
             "stream.info" -> { lastInfo = m; host?.post(m) }
             "rtc.offer", "rtc.ice", "stream.stop" -> host?.post(m)
             else -> return false

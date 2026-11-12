@@ -69,6 +69,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val input = Input(this)
     val drive = Drive(this)
     val screen = Screen(this)
+    val lockView = LockView(this)
     val macSound = MacSound(this)
     val shortcuts = Shortcuts(this)
     val kvm = Kvm(this)
@@ -93,7 +94,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // Connect with Android: another phone, on a session of its own beside the computer's (Peer.kt).
     // Not a Feature: the computer's messages never reach it, nor its the computer.
     val peer = Peer(this)
-    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, macSound, shortcuts, kvm, remote, hub, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia)
+    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia)
 
     val host: Host? get() = if (link.connected) link.host else null
 
@@ -117,7 +118,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // something happens, and a message makes the link active at once.
         link.keepPinging = performance
         link.busyHere = {
-            screen.viewing || adb.viewed || remote.active || files.moving || mirror.wanted || sound.wanted || SoundService.running != null ||
+            screen.viewing || lockView.active || adb.viewed || remote.active || files.moving || mirror.wanted || sound.wanted || SoundService.running != null ||
                 MainActivity.shown
         }
         // The screen came on or the phone was unlocked: look at the session now (a dead one is found
@@ -418,6 +419,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // ---- Link.Events ----
 
     override fun onChange() {
+        lockView.linkChanged()
         runCatching { share.linkChanged() } // the session moved (Bluetooth <-> Wi-Fi): shared folders follow
         runCatching { remote.linkChanged() } // … and the Remote page's pace
         changed()

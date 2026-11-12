@@ -995,5 +995,14 @@
   "Pinch to zoom, slide to scroll": "Сведите или разведите пальцы для масштаба, сдвиньте для прокрутки",
   "Moves the view": "Перемещает вид",
   "Three fingers": "Три пальца",
-  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "Захват экрана на {name} недоступен. Проверьте блокировку Mac и разрешение на запись экрана. Повторная попытка…"
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "Захват экрана на {name} недоступен. Проверьте блокировку Mac и разрешение на запись экрана. Повторная попытка…",
+  "Open Mac login screen": "Открыть экран входа Mac",
+  "Sign in to Screen Sharing with your Mac account, then unlock the Mac. Your password is used only for this connection and is not saved. Screen Sharing must already be enabled on the Mac.": "Войдите в «Общий экран» с учётной записью Mac, затем разблокируйте Mac. Пароль используется только для этого подключения и не сохраняется. На Mac должен быть включён общий экран.",
+  "Mac account name": "Имя учётной записи Mac",
+  "Mac account password": "Пароль учётной записи Mac",
+  "Sign in": "Войти",
+  "Connecting to the Mac login screen…": "Подключение к экрану входа Mac…",
+  "Login-screen connection ended. Close this view and try again.": "Подключение к экрану входа завершено. Закройте это окно и повторите попытку.",
+  "Signing in to Screen Sharing…": "Вход в «Общий экран»…",
+  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "Имя учётной записи или пароль превышает 63 байта UTF-8 и не поддерживается общим экраном."
 }

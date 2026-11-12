@@ -67,7 +67,7 @@ class Link(
     val connected get() = state == "connected"
 
     private val exec = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "td-link").apply { isDaemon = true } }
-    private var ws: WebSocket? = null
+    @Volatile private var ws: WebSocket? = null
     private var mode = "" // session | pair
     private var nw = ""
     private var pairNonce = "" // pairing through the cable: the nonce the computer sent us over adb
@@ -306,6 +306,22 @@ class Link(
     fun https(): OkHttpClient? {
         val fp = host?.fp ?: return null
         return client(fp).newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).writeTimeout(0, TimeUnit.MILLISECONDS).build()
+    }
+
+    internal fun lockSessionCurrent(marker: Any?): Boolean = connected && !parting && !ble && marker != null && ws === marker && host?.os == "mac"
+
+    // Separate RFB channel on the authenticated socket's exact endpoint and certificate.
+    // A ticket never selects a destination, and BLE is deliberately unsupported.
+    internal fun openLockTunnel(ticket: String, marker: Any?, listener: WebSocketListener): WebSocket? {
+        val source = ws ?: return null
+        val pairedHost = host ?: return null
+        if (source !== marker || !lockSessionCurrent(marker)) return null
+        val fp = pairedHost.fp.takeIf { it.isNotBlank() } ?: return null
+        val (address, port) = endOf[source] ?: return null
+        if (ws !== source || host !== pairedHost || !lockSessionCurrent(marker)) return null
+        val hostname = if (address.contains(':')) "[$address]" else address
+        return client(fp).newWebSocket(Request.Builder().url("wss://$hostname:$port/lockview")
+            .header("X-TwinDesk-Lock-Ticket", ticket).build(), listener)
     }
 
     // Fast files for the next file: the computer gave a token, and the session is on the network, a

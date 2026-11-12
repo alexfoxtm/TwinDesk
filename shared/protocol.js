@@ -39,6 +39,9 @@
     UNAUTH_TIMEOUT_MS: 70000, // Mac closes sockets that never authenticate
     RECONNECT_MS: [1000, 2000, 3000], // Windows: then keep using the last value
     MAX_PAYLOAD: 16 * 1024 * 1024,
+    LOCK_PATH: '/lockview', // pinned WSS, opaque RFB to the host's literal loopback Screen Sharing port
+    LOCK_TICKET_HEADER: 'x-twindesk-lock-ticket',
+    LOCK_TICKET_MS: 10000,
     SAS_LABEL: 'macshare-sas-v1',
 
     // Mouse & keyboard sharing
@@ -92,6 +95,10 @@
       // screen sharing
       STREAM_INFO: 'stream.info',
       STREAM_STOP: 'stream.stop',
+      LOCK_STATE: 'lock.state', // host->Android {locked,can}: login-screen access, single-session Mac only
+      LOCK_OPEN: 'lock.open', // Android->host {request:32 lowercase hex}: explicit user action
+      LOCK_TICKET: 'lock.ticket', // host->Android {request,ticket,path,expiresIn}; never logged or persisted
+      LOCK_END: 'lock.end', // Android {request}; host {request?,reason:unavailable|ended|unlocked|session-ended|timeout}
       STREAM_INPUT: 'stream.input', // Mac -> Windows: {on} whether the Mac accepts in.* ("Receive input")
       RTC_OFFER: 'rtc.offer',
       RTC_ANSWER: 'rtc.answer',
