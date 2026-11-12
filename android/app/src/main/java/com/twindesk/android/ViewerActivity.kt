@@ -52,25 +52,9 @@ import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.delay
 
 class ViewerActivity : ComponentActivity() {
-    companion object {
-        private var loginParent: java.lang.ref.WeakReference<ViewerActivity>? = null
-        internal fun loginViewStopped(attempt: Int) {
-            val parent = loginParent?.get() ?: return
-            if (parent.loginAttempt != attempt) return
-            loginParent = null
-            // Clear synchronously: the child may finish before this viewer gets onStop.
-            parent.loginHandoff = false
-            val ended = parent.loginAttempt
-            parent.host?.view?.post {
-                if (parent.loginAttempt == ended && !parent.started) parent.detachViewer()
-            }
-        }
-    }
     private var host: WebHost? = null
     private var started = false
     private var attached = false
-    private var loginHandoff = false
-    private var loginAttempt = 0
     private var viewport: Pair<Int, Int>? = null
     private val resize = Runnable { updateViewport() }
 
@@ -93,20 +77,12 @@ class ViewerActivity : ComponentActivity() {
                 h.view.postDelayed(resize, 250)
             }
         }
-        setContent { Theme { Viewer(core, h, openLogin = {
-            if (!loginHandoff) {
-                loginHandoff = true
-                loginAttempt++
-                loginParent = java.lang.ref.WeakReference(this)
-                startActivity(android.content.Intent(this, LockActivity::class.java).putExtra("lockHandoff", loginAttempt))
-            }
-        }, close = { finish() }) } }
+        setContent { Theme { Viewer(core, h) { finish() } } }
     }
 
     override fun onStart() {
         super.onStart()
         started = true
-        loginHandoff = false
         host?.view?.post(resize)
     }
 
@@ -130,20 +106,12 @@ class ViewerActivity : ComponentActivity() {
         super.onStop()
         started = false
         host?.view?.removeCallbacks(resize)
-        if (loginHandoff) return
-        detachViewer()
-    }
-
-    private fun detachViewer() {
         host?.let { Core.get(this).screen.detach(it) }
         attached = false
         viewport = null
-        loginHandoff = false
     }
 
     override fun onDestroy() {
-        if (loginParent?.get() === this) loginParent = null
-        if (attached) detachViewer()
         host?.destroy()
         host = null
         super.onDestroy()
@@ -151,7 +119,7 @@ class ViewerActivity : ComponentActivity() {
 }
 
 @androidx.compose.runtime.Composable
-private fun Viewer(core: Core, host: WebHost, openLogin: () -> Unit, close: () -> Unit) {
+private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
     val v by core.version.collectAsState()
     @Suppress("UNUSED_EXPRESSION") v
     var bar by remember { mutableStateOf(true) }
@@ -207,11 +175,6 @@ private fun Viewer(core: Core, host: WebHost, openLogin: () -> Unit, close: () -
                         horizontalArrangement = Arrangement.Center,
                     ) {
                         MacDisplayPick(s.displays, if (s.sharing && s.mode != "extend") s.displayId else "", onDark = true) { s.pickDisplay(it); bar = true }
-                    }
-                }
-                if (core.lockView.available) {
-                    FilledTonalButton(onClick = openLogin) {
-                        Text(tr("Open Mac login screen"))
                     }
                 }
             }

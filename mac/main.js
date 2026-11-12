@@ -195,7 +195,6 @@ function readDefaultIf() {
 
 let pushQueued = false;
 function pushState() {
-  if (server && server.lockviewRefresh) server.lockviewRefresh();
   if (pushQueued) return;
   pushQueued = true;
   setImmediate(() => {
@@ -587,8 +586,6 @@ app.whenReady().then(() => {
   console.log(`[main] ${id.macName} (${id.macId}) fp ${id.fp}`);
 
   server = new Server(id, { hold: true }); // listens once the helper's input lane is settled (afterLane below)
-  require('./lockview').startLockView({ server, powerMonitor: require('electron').powerMonitor,
-    remoteAllowed: () => settings.sharing.on === true && settings.sharing.remote !== false && settings.streamInput !== false });
   server.on('listening', () => console.log(`[server] listening on 0.0.0.0:${server.port}`));
   server.on('listenError', (err) => {
     state.serverError = `Cannot listen on port ${P.PORT}: ${err.code || err.message}`;

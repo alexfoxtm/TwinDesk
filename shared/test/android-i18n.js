@@ -12,8 +12,7 @@ const path = require('path');
 
 const APP = path.join(__dirname, '../../android/app/src/main');
 const KT = path.join(APP, 'java/com/twindesk/android');
-// The login page is Android-only; shared viewer assets are also consumed by iOS/Web.
-const WEB = [path.join(APP, 'assets/web'), path.join(APP, 'assets/lock')];
+const WEB = path.join(APP, 'assets/web');
 
 // Texts tr() gets from a variable: the pages' titles (MainActivity's Tab), the link's name
 // (Netlink.via) and trCount()'s words.
@@ -47,8 +46,8 @@ function keys() {
       if (text !== null) found.add(text);
     }
   }
-  for (const folder of WEB) for (const f of fs.readdirSync(folder)) {
-    const src = fs.readFileSync(path.join(folder, f), 'utf8');
+  for (const f of fs.readdirSync(WEB)) {
+    const src = fs.readFileSync(path.join(WEB, f), 'utf8');
     if (f.endsWith('.js')) {
       for (const m of src.matchAll(/\bt\('((?:[^'\\]|\\.)*)'/g)) found.add(m[1].replace(/\\(.)/g, '$1'));
     } else if (f.endsWith('.html')) {
