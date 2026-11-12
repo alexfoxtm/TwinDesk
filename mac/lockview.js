@@ -170,9 +170,9 @@ function ardAvailable({ connect = net.connect, verifyPeer = verifyScreenSharingP
   });
 }
 
-function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLocked, probe = ardAvailable, connect, verifyPeer = verifyScreenSharingPeer, metadata = ticketMetadata, screens = displayEvents() }) {
+function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLocked, probe = ardAvailable, connect, verifyPeer = verifyScreenSharingPeer, metadata = ticketMetadata, screens = displayEvents(), unlockConfirmMs = 750 }) {
   let locked = false, available = false, stopped = false, epoch = 0, lastOpen = -Infinity, sent = '', request = null;
-  let probing = null, nextProbe = 0, reading = false;
+  let probing = null, nextProbe = 0, reading = false, unlockTimer = null;
   let displayKey = null;
   const allowed = () => locked && available && remoteAllowed();
   const tunnel = new LockTunnel({ current: () => server.current, allowed, verifyPeer,
@@ -228,7 +228,10 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
     state();
     if (locked && !tunnel.active) void refresh();
   };
-  const lock = () => changed(true), unlock = () => changed(false);
+  const lock = () => { clearTimeout(unlockTimer); unlockTimer = null; changed(true); };
+  // Screen Sharing can emit a system unlock notification for a non-console session. Verify the
+  // actual console, then confirm an unlocked state before tearing down the paired viewer.
+  const unlock = () => { void inspectLock(); };
   const inspectLock = async () => {
     if (reading || stopped) return;
     reading = true;
@@ -236,7 +239,19 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
     let on = null;
     try { on = await readLock(); } catch {}
     reading = false;
-    if (!stopped && generation === epoch && typeof on === 'boolean') changed(on);
+    if (stopped || generation !== epoch || typeof on !== 'boolean') return;
+    if (on || !locked) {
+      clearTimeout(unlockTimer); unlockTimer = null;
+      changed(on);
+    } else if (!unlockTimer) {
+      unlockTimer = setTimeout(async () => {
+        unlockTimer = null;
+        let confirmed = null;
+        try { confirmed = await readLock(); } catch {}
+        if (!stopped && generation === epoch && typeof confirmed === 'boolean') changed(confirmed);
+      }, unlockConfirmMs);
+      unlockTimer.unref?.();
+    }
   };
   const client = () => { cancel('session-ended'); available = false; nextProbe = 0; sent = ''; void inspectLock(); };
   const closed = (ctx) => { if (request?.ctx === ctx || tunnel.pending?.ctx === ctx || tunnel.active?.ctx === ctx) cancel('session-ended'); };
@@ -305,6 +320,7 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
     cancel('session-ended');
     tunnel.close();
     clearInterval(poll);
+    clearTimeout(unlockTimer);
     delete server.lockview;
     delete server.lockviewRefresh;
     for (const [event, fn] of [['message', message], ['client', client], ['closed', closed], ['revoked', revoked], ['deviceClosed', deviceClosed], ['noreclaim', deviceClosed], ['transport', transport], ['closing', close]]) server.off(event, fn);

@@ -42,9 +42,9 @@ function fixture(permitted = true, options = {}) {
   server.current = ctx;
   server.sockets.add(ctx);
   const power = new EventEmitter(), connections = [];
-  let allowed = permitted;
+  let allowed = permitted, consoleLocked = true;
   const adapter = startLockView({ server, powerMonitor: power, remoteAllowed: () => allowed,
-    readLock: async () => true, probe: async () => true, verifyPeer: async () => true, metadata: () => ({}), screens: null,
+    readLock: async () => consoleLocked, unlockConfirmMs: 10, probe: async () => true, verifyPeer: async () => true, metadata: () => ({}), screens: null,
     connect: (target) => { const tcp = new Tcp(); connections.push({ target, tcp }); return tcp; }, ...options });
   const send = (msg, from = ctx) => server._onMessage(from, Buffer.from(JSON.stringify(msg)), false, from.ws);
   const accept = (ticket, extra = {}) => {
@@ -53,7 +53,7 @@ function fixture(permitted = true, options = {}) {
     return ws;
   };
   return { server, ctx, control, power, connections, adapter, send, accept,
-    permit(on) { allowed = on; server.lockviewRefresh(); } };
+    permit(on) { allowed = on; server.lockviewRefresh(); }, lockState(on) { consoleLocked = on; } };
 }
 async function open(f) {
   await turn();
@@ -221,6 +221,17 @@ async function mainPath() {
     assert.strictEqual(ws.paused, false);
     assert.strictEqual(f.accept(ticket.ticket).readyState, 3, 'ticket is single use');
     f.power.emit('unlock-screen');
+    await turn();
+    assert(!tcp.destroyed, 'non-console unlock event keeps the locked console session');
+    f.lockState(false);
+    f.power.emit('unlock-screen');
+    await turn();
+    f.lockState(true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert(!tcp.destroyed, 'a brief false console state does not end the session');
+    f.lockState(false);
+    f.power.emit('unlock-screen');
+    await new Promise((resolve) => setTimeout(resolve, 30));
     assert(tcp.destroyed);
     assert.strictEqual(ws.readyState, 3);
     assert(f.control.sent.some((m) => m.t === P.T.LOCK_END && m.reason === 'unlocked'));
@@ -296,8 +307,10 @@ async function failurePath() {
   try {
     await turn();
     pending.send({ t: P.T.LOCK_OPEN, request: REQUEST });
+    pending.lockState(false);
     pending.power.emit('unlock-screen');
-    assert(pending.control.sent.some((m) => m.t === P.T.LOCK_END && m.request === REQUEST && m.reason === 'unlocked'), 'unlock answers an in-flight request immediately');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert(pending.control.sent.some((m) => m.t === P.T.LOCK_END && m.request === REQUEST && m.reason === 'unlocked'), 'confirmed unlock answers an in-flight request');
     release(true);
     await turn();
     assert(!pending.control.sent.some((m) => m.t === P.T.LOCK_TICKET));
