@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
@@ -82,13 +83,12 @@ class ViewerActivity : ComponentActivity() {
                 h.view.postDelayed(resize, 250)
             }
         }
-        val locked = LockPage(this, core) { h.view.post { login = false; lockPage?.close(); window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) } }
+        val locked = LockPage(this, core) { h.view.post { login = false; lockPage?.close() } }
         lockPage = locked
         setContent { Theme { Viewer(core, h, locked, login, openLogin = {
-            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
             login = true
             locked.open()
-        }, closeLogin = { login = false; locked.close(); window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }) { finish() } } }
+        }, closeLogin = { login = false; locked.close() }) { finish() } } }
     }
 
     override fun onStart() {
@@ -118,7 +118,6 @@ class ViewerActivity : ComponentActivity() {
         started = false
         login = false
         lockPage?.close()
-        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         host?.view?.removeCallbacks(resize)
         host?.let { Core.get(this).screen.detach(it) }
         attached = false
@@ -163,7 +162,13 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     Box(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.displayCutout)) {
         AndroidView(factory = { host.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize())
         // Keep the login fields below the viewer handle and toolbar, including in landscape.
-        if (login) AndroidView(factory = { lockPage.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize().padding(top = if (bar && !keyboard) 92.dp else 8.dp).imePadding())
+        if (login) Box(Modifier.fillMaxSize().padding(top = if (bar && !keyboard) 92.dp else 8.dp).imePadding()) {
+            AndroidView(factory = { lockPage.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize())
+            if (lockPage.credentialsRequested) AndroidView(
+                factory = { lockPage.authView.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } },
+                modifier = Modifier.align(Alignment.Center).fillMaxHeight().widthIn(max = 480.dp).fillMaxWidth(),
+            )
+        }
         // A small handle at the top: tap for the bar (the rest of the screen is the Mac's).
         if (!login || !keyboard) Box(
             Modifier.align(Alignment.TopCenter).padding(top = 4.dp).width(72.dp).height(18.dp)

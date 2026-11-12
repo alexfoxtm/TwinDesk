@@ -4,30 +4,20 @@ import { initLogging } from '../novnc/core/util/logging.js';
 initLogging('none');
 const t = text => LockBridge.tr(text);
 const status = document.getElementById('status');
-const form = document.getElementById('auth');
-const username = document.getElementById('username');
-const password = document.getElementById('password');
+const pageId = LockBridge.pageId();
 const keyboard = document.getElementById('keyboard');
-const authError = document.getElementById('auth-error');
-document.getElementById('username-label').textContent = t('Mac account name');
-document.getElementById('password-label').textContent = t('Mac account password');
-document.getElementById('signin').textContent = t('Sign in');
 status.textContent = t('Connecting to the Mac login screen…');
 let rfb = null;
 let channel = null;
 let ended = false;
 let asked = false;
+let submitted = false;
 let connected = false;
-const clearCredentials = () => { username.value = ''; password.value = ''; keyboard.value = ''; authError.textContent = ''; };
-for (const field of [username, password]) field.addEventListener('pointerup', () => {
-    LockBridge.keyboard();
-    setTimeout(() => field.scrollIntoView?.({ block: 'nearest' }), 300);
-});
+const clearCredentials = () => { keyboard.value = ''; };
 function close() {
     if (ended) return;
     ended = true;
     clearCredentials();
-    form.hidden = true;
     if (rfb) rfb.disconnect();
     if (channel) { channel.readyState = 3; channel.onclose({ code: 1000, reason: '', wasClean: true }); }
     rfb = null;
@@ -69,11 +59,11 @@ window.lockRecv = message => {
             if (asked) return;
             asked = true;
             status.textContent = '';
-            form.hidden = false;
+            LockBridge.credentials();
         });
         rfb.addEventListener('securityfailure', fail);
         rfb.addEventListener('disconnect', close);
-        rfb.addEventListener('connect', () => { connected = true; clearCredentials(); form.hidden = true; status.textContent = ''; LockBridge.keyboard(); });
+        rfb.addEventListener('connect', () => { connected = true; clearCredentials(); status.textContent = ''; LockBridge.keyboard(); });
         channel.readyState = 1;
         channel.onopen({});
     } else if (message.t === 'bytes') {
@@ -86,26 +76,19 @@ window.lockRecv = message => {
         LockBridge.ack();
     } else if (message.t === 'closed') close();
 };
-form.addEventListener('submit', event => {
-    event.preventDefault();
-    if (ended || !rfb || !asked || form.hidden) return;
-    // ARD limits each UTF-8 field to 63 bytes. Refuse truncation rather than change a password.
-    if (new TextEncoder().encode(username.value).length > 63 || new TextEncoder().encode(password.value).length > 63) {
-        authError.textContent = t('Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.');
-        return;
-    }
-    rfb.sendCredentials({ username: username.value, password: password.value });
-    clearCredentials();
-    form.hidden = true;
+// Credentials come only from the native form for this exact page generation.
+window.lockCredentials = (generation, username, password) => {
+    if (generation !== pageId || ended || !rfb || !asked || submitted || connected || typeof username !== 'string' || typeof password !== 'string') return false;
+    if (!username || !password || new TextEncoder().encode(username).length > 63 || new TextEncoder().encode(password).length > 63) return false;
+    submitted = true;
+    rfb.sendCredentials({ username, password });
     status.textContent = t('Signing in to Screen Sharing…');
-});
+    return true;
+};
 const resetKeyboard = () => { keyboard.value = '\u200b'; keyboard.setSelectionRange(1, 1); };
 window.lockKeyboard = () => {
     if (ended || !rfb) return false;
-    if (!form.hidden) {
-        const field = document.activeElement;
-        (field === username || field === password ? field : username).focus();
-    } else if (connected) {
+    if (connected) {
         // Keep a canvas tap from taking focus away from the private IME field.
         rfb.focusOnClick = false;
         resetKeyboard();

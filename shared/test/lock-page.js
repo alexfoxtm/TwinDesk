@@ -14,7 +14,7 @@ function fixture() {
         if (!elements.has(id)) elements.set(id, { value: '', hidden: id === 'auth', textContent: '', events: {}, addEventListener(name, fn) { this.events[name] = fn; }, focus() { document.activeElement = this; }, setSelectionRange() {} });
         return elements.get(id);
     };
-    const calls = { sent: [], ack: 0, close: 0, credentials: null, received: null, rfb: null, keys: [] };
+    const calls = { sent: [], ack: 0, close: 0, credentials: null, received: null, rfb: null, keys: [], authRequired: 0 };
     const document = { hidden: false, getElementById: element, addEventListener() {} };
     class RFB {
         constructor(target, channel) { this.channel = channel; this.events = {}; calls.rfb = this; channel.onmessage = e => { calls.received = [...new Uint8Array(e.data)]; }; }
@@ -24,27 +24,24 @@ function fixture() {
         sendKey(key) { calls.keys.push(key); }
     }
     const context = { document, RFB, initLogging() {}, TextEncoder, Uint8Array, ArrayBuffer,
-        LockBridge: { tr: s => s, ready() {}, keyboard() {}, send: s => calls.sent.push(s), ack: () => calls.ack++, close: () => calls.close++ },
+        LockBridge: { tr: s => s, pageId: () => 7, credentials: () => calls.authRequired++, ready() {}, keyboard() {}, send: s => calls.sent.push(s), ack: () => calls.ack++, close: () => calls.close++ },
         atob: s => Buffer.from(s, 'base64').toString('binary'), btoa: s => Buffer.from(s, 'binary').toString('base64'),
         setTimeout: fn => fn(), console: new Proxy({}, { get: () => () => { throw Error('login page must not log'); } }) };
     context.window = { isSecureContext: true, crypto: { subtle: {} }, addEventListener() {} };
     vm.runInNewContext(source, context);
-    return { calls, element, recv: m => context.window.lockRecv(m), keyboard: () => context.window.lockKeyboard() };
+    return { calls, element, recv: m => context.window.lockRecv(m), keyboard: () => context.window.lockKeyboard(), submit: (page, name, secret) => context.window.lockCredentials(page, name, secret) };
 }
 async function main() {
     const f = fixture();
     f.recv({ t: 'open' });
     f.calls.rfb.events.credentialsrequired({ detail: { types: ['username', 'password'] } });
     f.calls.rfb.events.credentialsrequired({ detail: { types: ['username', 'password'] } });
-    assert.equal(f.element('auth').hidden, false);
+    assert.equal(f.calls.authRequired, 1, 'fragmented authentication requests the native form once');
     assert.equal(f.calls.close, 0, 'fragmented authentication does not close the form');
-    f.element('username').value = 'test-user';
-    f.element('password').value = 'test-only-secret';
-    f.element('auth').events.submit({ preventDefault() {} });
+    assert.equal(f.submit(6, 'test-user', 'test-only-secret'), false, 'old page generation cannot send credentials');
+    assert.equal(f.calls.credentials, null);
+    assert.equal(f.submit(7, 'test-user', 'test-only-secret'), true);
     assert.deepEqual(f.calls.credentials, { username: 'test-user', password: 'test-only-secret' });
-    assert.equal(f.element('password').value, '');
-    assert.equal(f.element('username').value, '');
-    assert.equal(f.element('auth').hidden, true);
     f.calls.rfb.events.credentialsrequired({ detail: { types: ['username', 'password'] } });
     assert.equal(f.calls.close, 0, 'async duplicate does not cancel submitted credentials');
     f.calls.rfb.channel.send(Uint8Array.from([1, 2, 3]));
@@ -105,16 +102,11 @@ function failure() {
     const f = fixture();
     f.recv({ t: 'open' });
     f.calls.rfb.events.credentialsrequired({ detail: { types: ['username', 'password'] } });
-    f.element('username').value = 'test-user';
-    f.element('password').value = 'é'.repeat(32);
-    f.element('auth').events.submit({ preventDefault() {} });
+    assert.equal(f.submit(7, 'test-user', 'é'.repeat(32)), false);
     assert.equal(f.calls.credentials, null);
-    assert.equal(f.element('auth').hidden, false);
-    assert.match(f.element('auth-error').textContent, /exceeds 63 UTF-8 bytes/);
     f.calls.rfb.events.credentialsrequired({ detail: { types: ['password'] } });
     assert.equal(f.calls.close, 1);
     assert.equal(f.calls.credentials, null);
-    assert.equal(f.element('password').value, '');
 }
 // Exercise the production gate with real reader threads: ACK and cancellation
 // both unblock the reader without ever waiting on Android's main thread.

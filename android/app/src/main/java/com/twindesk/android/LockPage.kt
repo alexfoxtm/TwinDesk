@@ -3,6 +3,15 @@ package com.twindesk.android
 
 import android.annotation.SuppressLint
 import android.view.View
+import android.view.Gravity
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import android.text.InputType
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -11,6 +20,10 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 
 // A protected local page inside ViewerActivity. It has no general WebHost/session bridge.
@@ -20,6 +33,69 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     @Volatile private var ready = false
     @Volatile private var generation = 0
     private var owner: Any? = null
+    var credentialsRequested by mutableStateOf(false); private set
+    private val account: EditText = credentialField(false)
+    private val secret: EditText = credentialField(true)
+    private val authError = TextView(activity).apply { setTextColor(0xffffb4ab.toInt()); visibility = View.GONE; isSaveEnabled = false }
+    private var focusedField: EditText = account
+    val authView = ScrollView(activity).apply {
+        isFillViewport = true
+        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        isSaveEnabled = false
+        addView(LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+            fun label(text: String, field: EditText) = addView(TextView(activity).apply {
+                this.text = text; labelFor = field.id; setTextColor(0xffffffff.toInt()); textSize = 14f
+                setPadding(0, dp(8), 0, dp(4))
+            })
+            label(tr("Mac account name"), account)
+            addView(account, LinearLayout.LayoutParams(-1, dp(52)))
+            label(tr("Mac account password"), secret)
+            addView(secret, LinearLayout.LayoutParams(-1, dp(52)))
+            addView(authError, LinearLayout.LayoutParams(-1, -2))
+            addView(Button(activity).apply {
+                text = tr("Sign in"); minHeight = dp(48); setOnClickListener { submitCredentials() }
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+        }, android.widget.FrameLayout.LayoutParams(-1, -2))
+    }
+
+    private fun dp(value: Int) = (value * activity.resources.displayMetrics.density).toInt()
+    private fun credentialField(password: Boolean): EditText = EditText(activity).apply {
+        id = View.generateViewId()
+        setSingleLine(true)
+        inputType = InputType.TYPE_CLASS_TEXT or if (password) InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING or if (password) EditorInfo.IME_ACTION_DONE else EditorInfo.IME_ACTION_NEXT
+        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        isSaveEnabled = false
+        setTextColor(0xffffffff.toInt()); setHintTextColor(0xffb8bac0.toInt())
+        backgroundTintList = android.content.res.ColorStateList.valueOf(0xff8b8e96.toInt())
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+        setOnFocusChangeListener { _, hasFocus -> if (hasFocus) focusedField = this }
+        setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_NEXT) { secret.requestFocus(); true }
+            else if (action == EditorInfo.IME_ACTION_DONE) { submitCredentials(); true } else false
+        }
+    }
+
+    private fun clearCredentials() { account.text.clear(); secret.text.clear(); authError.text = ""; authError.visibility = View.GONE }
+    private fun submitCredentials() {
+        if (!visible || !ready || !credentialsRequested) return
+        val username = account.text.toString()
+        val password = secret.text.toString()
+        if (username.isEmpty() || password.isEmpty()) return
+        if (username.toByteArray(Charsets.UTF_8).size > 63 || password.toByteArray(Charsets.UTF_8).size > 63) {
+            authError.text = tr("Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.")
+            authError.visibility = View.VISIBLE
+            return
+        }
+        val mine = generation
+        view.evaluateJavascript("window.lockCredentials && window.lockCredentials($mine, ${JSONObject.quote(username)}, ${JSONObject.quote(password)});", null)
+        clearCredentials()
+        credentialsRequested = false
+        activity.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(secret.windowToken, 0)
+    }
     val view = object : WebView(activity) {
         override fun onCreateInputConnection(info: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
             info.imeOptions = info.imeOptions or android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
@@ -68,6 +144,8 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         if (visible) return
         visible = true
         ready = false
+        credentialsRequested = false
+        clearCredentials()
         val token = Any()
         owner = token
         view.addJavascriptInterface(Bridge(++generation, token), "LockBridge")
@@ -77,6 +155,11 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
 
     fun keyboard(on: Boolean = true) {
         if (!visible || !ready) return
+        if (credentialsRequested) {
+            if (on) { focusedField.requestFocus(); activity.getSystemService(InputMethodManager::class.java).showSoftInput(focusedField, 0) }
+            else activity.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(focusedField.windowToken, 0)
+            return
+        }
         if (!on) {
             activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(view.windowToken, 0)
             return
@@ -91,6 +174,8 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     fun close() {
         visible = false
         ready = false
+        credentialsRequested = false
+        clearCredentials()
         generation++
         owner?.let { core.lockView.endFor(it) }
         owner = null
@@ -104,11 +189,16 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     private inner class Bridge(private val mine: Int, private val token: Any) {
         private fun current() = mine == generation && visible
         @JavascriptInterface fun tr(text: String): String = com.twindesk.android.tr(text)
+        @JavascriptInterface fun pageId(): Int = mine
+        @JavascriptInterface fun credentials() = activity.runOnUiThread {
+            if (current() && ready && !credentialsRequested) { clearCredentials(); focusedField = account; credentialsRequested = true }
+        }
         @JavascriptInterface fun ready() = activity.runOnUiThread {
             if (!current() || ready) return@runOnUiThread
             ready = true
             core.lockView.attach(token) { message ->
                 if (!current()) return@attach
+                if (message.optString("t") == "closed") { credentialsRequested = false; clearCredentials() }
                 if (message.optString("t") == "unlocked") unlocked()
                 else view.evaluateJavascript("window.lockRecv && window.lockRecv($message);", null)
             }
