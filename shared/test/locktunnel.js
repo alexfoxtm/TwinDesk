@@ -219,6 +219,7 @@ async function mainPath() {
     assert.strictEqual(ws.paused, true, 'TCP backpressure pauses inbound WSS');
     tcp.emit('drain');
     assert.strictEqual(ws.paused, false);
+    f.send({ t: P.T.LOCK_READY, request: REQUEST });
     assert.strictEqual(f.accept(ticket.ticket).readyState, 3, 'ticket is single use');
     f.power.emit('unlock-screen');
     await turn();
@@ -232,10 +233,15 @@ async function mainPath() {
     f.lockState(false);
     f.power.emit('unlock-screen');
     await new Promise((resolve) => setTimeout(resolve, 30));
-    assert(tcp.destroyed);
+    assert(!tcp.destroyed, 'confirmed unlock retains the authenticated viewer');
+    assert.strictEqual(ws.readyState, 1);
+    assert(f.control.sent.some((m) => m.t === P.T.LOCK_STATE && m.locked === false && m.continuing === true));
+    f.lockState(true);
+    f.power.emit('lock-screen');
+    assert.strictEqual(ws.readyState, 1, 'locking again keeps the same authorized viewer');
+    f.permit(false);
+    assert(tcp.destroyed, 'revoking screen access still closes the continuing viewer');
     assert.strictEqual(ws.readyState, 3);
-    assert(f.control.sent.some((m) => m.t === P.T.LOCK_END && m.reason === 'unlocked'));
-    assert.strictEqual(f.control.sent.at(-1).locked, false);
   } finally { f.server.close(); }
   // A user open during an obsolete availability probe must perform a fresh probe, not inherit failure.
   let release, calls = 0;
@@ -252,6 +258,17 @@ async function mainPath() {
 }
 
 async function failurePath() {
+  const unsigned = fixture();
+  try {
+    const ticket = await open(unsigned);
+    const ws = unsigned.accept(ticket.ticket);
+    unsigned.send({ t: P.T.LOCK_READY, request: REQUEST });
+    assert(!unsigned.server.lockview.active.ready, 'a ready message before ARD negotiation is ignored');
+    unsigned.lockState(false);
+    unsigned.power.emit('unlock-screen');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.strictEqual(ws.readyState, 3, 'local unlock closes a viewer that never authenticated');
+  } finally { unsigned.server.close(); }
   assert.strictEqual(primaryView([{ id: -1, scaleFactor: 2, bounds: { x: 0, y: 0, width: 100, height: 100 } }], -1), null);
   assert.strictEqual(primaryView([
     { id: 1, scaleFactor: 1, bounds: { x: 0, y: 0, width: 100, height: 100 } },

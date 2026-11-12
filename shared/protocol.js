@@ -95,8 +95,9 @@
       // screen sharing
       STREAM_INFO: 'stream.info',
       STREAM_STOP: 'stream.stop',
-      LOCK_STATE: 'lock.state', // host->Android {locked,can}: login-screen access, single-session Mac only
+      LOCK_STATE: 'lock.state', // host->Android {locked,can,continuing?}: single-session Mac viewer state
       LOCK_OPEN: 'lock.open', // Android->host {request:32 lowercase hex}: explicit user action
+      LOCK_READY: 'lock.ready', // Android->host {request}: Screen Sharing authentication completed
       LOCK_TICKET: 'lock.ticket', // host->Android {request,ticket,path,expiresIn,account?,primaryView?}; session-bound, never logged or persisted
       LOCK_END: 'lock.end', // Android {request}; host {request?,reason:unavailable|ended|unlocked|session-ended|timeout|display-changed}
       STREAM_INPUT: 'stream.input', // Mac -> Windows: {on} whether the Mac accepts in.* ("Receive input")

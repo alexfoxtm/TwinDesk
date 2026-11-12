@@ -16,7 +16,8 @@ import org.json.JSONObject
 class LockView(core: Core) : Feature(core) {
     @Volatile var locked = false; private set
     @Volatile var capable = false; private set
-    val available get() = locked && capable && core.host?.os == "mac" && !core.link.ble
+    @Volatile private var continuing = false
+    val available get() = (locked || (active && continuing)) && capable && core.host?.os == "mac" && !core.link.ble
     @Volatile var active = false; private set
     private val main = Handler(Looper.getMainLooper())
     private var owner: Any? = null
@@ -56,6 +57,10 @@ class LockView(core: Core) : Feature(core) {
 
     fun ack(pageOwner: Any) = main.post { if (owner === pageOwner) reader?.ack() }
 
+    fun markReady(pageOwner: Any) = main.post {
+        if (owner === pageOwner && valid() && socket != null && request.isNotEmpty()) core.send(msg("lock.ready", "request" to request))
+    }
+
     fun endFor(pageOwner: Any) { if (owner === pageOwner) end() }
 
     private fun valid() = active && core.link.connected && !core.link.ble && core.link.lockSessionCurrent(marker) && available
@@ -63,6 +68,7 @@ class LockView(core: Core) : Feature(core) {
     fun end(notify: Boolean = true) {
         val wasActive = active
         active = false
+        continuing = false
         attempt++
         val ws = socket
         socket = null
@@ -80,8 +86,8 @@ class LockView(core: Core) : Feature(core) {
         if (wasActive) core.changed()
     }
 
-    override fun onWelcome(host: Host) { main.post { android.util.Log.i("TwinDeskLock", "session-welcome"); end(false); locked = false; capable = false } }
-    override fun onClosed() { android.util.Log.i("TwinDeskLock", "session-closed"); end(false); locked = false; capable = false }
+    override fun onWelcome(host: Host) { main.post { android.util.Log.i("TwinDeskLock", "session-welcome"); end(false); locked = false; capable = false; continuing = false } }
+    override fun onClosed() { android.util.Log.i("TwinDeskLock", "session-closed"); end(false); locked = false; capable = false; continuing = false }
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
         when (t) {
@@ -90,6 +96,7 @@ class LockView(core: Core) : Feature(core) {
                 val wasCapable = capable
                 locked = m.optBoolean("locked")
                 capable = m.optBoolean("can")
+                continuing = m.optBoolean("continuing")
                 if (wasLocked != locked || wasCapable != capable) android.util.Log.i("TwinDeskLock", "state locked=$locked capable=$capable")
                 if (active && !available) {
                     if (!locked) deliver?.invoke(msg("unlocked"))

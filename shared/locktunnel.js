@@ -121,11 +121,18 @@ class LockTunnel {
     session.guard.unref?.();
     const touch = () => {
       clearTimeout(session.idle);
-      session.idle = setTimeout(() => finish('timeout'), 3 * 60000);
+      session.idle = setTimeout(() => finish('timeout'), (session.continuing ? 30 : 3) * 60000);
       session.idle.unref?.();
     };
-    session.limit = setTimeout(() => finish('timeout'), 5 * 60000);
-    session.limit.unref?.();
+    session.touch = touch;
+    session.armLocked = () => {
+      session.continuing = false;
+      clearTimeout(session.limit);
+      session.limit = setTimeout(() => finish('timeout'), 5 * 60000);
+      session.limit.unref?.();
+      touch();
+    };
+    session.armLocked();
     session.connectTimer = setTimeout(() => finish('unavailable'), 3000);
     session.connectTimer.unref?.();
     touch();
@@ -182,6 +189,23 @@ class LockTunnel {
   end(reason = 'ended') {
     this.pending = null;
     if (this.active) this.active.finish(reason);
+  }
+
+  // Keep an existing viewer through unlock; never issue a new ticket while unlocked.
+  continueUnlocked(ctx) {
+    const session = this.active;
+    if (!session || session.ctx !== ctx || session.done || !session.ready || session.gate.phase !== 'ard' || !this.valid(session)) return false;
+    session.continuing = true;
+    clearTimeout(session.limit);
+    session.touch();
+    return true;
+  }
+
+  markReady(ctx, request) {
+    const session = this.active;
+    if (!session || session.ctx !== ctx || session.request !== request || session.gate.phase !== 'ard' || !this.valid(session)) return false;
+    session.ready = true;
+    return true;
   }
 
   close() {

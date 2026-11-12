@@ -223,6 +223,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         @JavascriptInterface fun tr(text: String): String = com.twindesk.android.tr(text)
         @JavascriptInterface fun pageId(): Int = mine
         @JavascriptInterface fun phase(value: String) {
+            if (current() && value == "rfb-connected") core.lockView.markReady(token)
             if (current() && value in setOf("credentials-requested", "credentials-submitted", "security-failed", "rfb-connected", "rfb-disconnected", "framebuffer-data", "framebuffer-drawn"))
                 android.util.Log.i("TwinDeskLock", value)
         }
