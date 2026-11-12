@@ -32,7 +32,6 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
@@ -142,8 +141,16 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     var bar by remember { mutableStateOf(true) }
     val keyboard = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     LaunchedEffect(bar, login) { if (bar && !login) { delay(4000); bar = false } }
-    var consent by remember { mutableStateOf(false) }
-    LaunchedEffect(core.lockView.available, login) { if (login && !core.lockView.available) closeLogin() }
+    var offered by remember(core.host?.id) { mutableStateOf(false) }
+    LaunchedEffect(core.lockView.locked, core.lockView.available, login) {
+        if (!core.lockView.locked) offered = false
+        if (login && !core.lockView.available) closeLogin()
+        else if (core.lockView.available && !login && !offered) {
+            offered = true
+            openLogin()
+            bar = true
+        }
+    }
     val s = core.screen
     val name = core.host?.name ?: "Mac"
     // Opened because the computer started sharing: it closes when the computer stops.
@@ -156,13 +163,13 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     Box(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.displayCutout)) {
         AndroidView(factory = { host.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize())
         // Keep the login fields below the viewer handle and toolbar, including in landscape.
-        if (login) AndroidView(factory = { lockPage.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize().padding(top = if (bar) 92.dp else 28.dp).imePadding())
+        if (login) AndroidView(factory = { lockPage.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize().padding(top = if (bar && !keyboard) 92.dp else 8.dp).imePadding())
         // A small handle at the top: tap for the bar (the rest of the screen is the Mac's).
-        Box(
+        if (!login || !keyboard) Box(
             Modifier.align(Alignment.TopCenter).padding(top = 4.dp).width(72.dp).height(18.dp)
                 .clip(RoundedCornerShape(9.dp)).background(Color(0x55FFFFFF)).clickable { bar = !bar },
         )
-        AnimatedVisibility(bar, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp)) {
+        AnimatedVisibility(bar && !(login && keyboard), enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp)) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124))
@@ -187,7 +194,7 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                         }
                         if (s.sharing) TextButton(onClick = { s.control(share = false) }) { Text(tr("Stop"), color = Color.White) }
                     }
-                    if (core.lockView.available && !login) TextButton(onClick = { consent = true; bar = true }) { Text(tr("Open Mac login screen"), color = Color.White) }
+                    if (core.lockView.available && !login) TextButton(onClick = { openLogin(); bar = true }) { Text(tr("Open Mac login screen"), color = Color.White) }
                     if (login) TextButton(onClick = { closeLogin(); s.control(share = false); bar = true }) { Text(tr("Stop"), color = Color.White) }
                     if (login) TextButton(onClick = { closeLogin(); bar = true }) { Text(tr("Back"), color = Color.White) }
                     TextButton(onClick = { if (login) lockPage.keyboard(!keyboard) else s.keyboard(!keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
@@ -204,9 +211,4 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
             }
         }
     }
-    if (consent) AlertDialog(onDismissRequest = { consent = false },
-        title = { Text(tr("Open Mac login screen")) },
-        text = { Text(tr("Sign in to Screen Sharing with your Mac account, then unlock the Mac. Your password is used only for this connection and is not saved. Screen Sharing must already be enabled on the Mac.")) },
-        confirmButton = { TextButton(onClick = { consent = false; openLogin(); bar = true }) { Text(tr("Continue")) } },
-        dismissButton = { TextButton(onClick = { consent = false }) { Text(tr("Cancel")) } })
 }

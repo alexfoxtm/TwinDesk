@@ -997,7 +997,6 @@
   "Three fingers": "Üç parmak",
   "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "{name} üzerinde ekran yakalama kullanılamıyor. Mac’in kilidini ve Ekran Kaydı ayarlarını kontrol edin. Yeniden deneniyor…",
   "Open Mac login screen": "Mac giriş ekranını aç",
-  "Sign in to Screen Sharing with your Mac account, then unlock the Mac. Your password is used only for this connection and is not saved. Screen Sharing must already be enabled on the Mac.": "Mac hesabınızla Ekran Paylaşımı’na giriş yapın, ardından Mac’in kilidini açın. Parolanız yalnızca bu bağlantı için kullanılır ve kaydedilmez. Mac’te Ekran Paylaşımı önceden etkinleştirilmiş olmalıdır.",
   "Mac account name": "Mac hesap adı",
   "Mac account password": "Mac hesap parolası",
   "Sign in": "Giriş yap",

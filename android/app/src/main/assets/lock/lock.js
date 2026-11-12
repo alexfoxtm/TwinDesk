@@ -19,7 +19,10 @@ let ended = false;
 let asked = false;
 let connected = false;
 const clearCredentials = () => { username.value = ''; password.value = ''; keyboard.value = ''; authError.textContent = ''; };
-for (const field of [username, password]) field.addEventListener('focus', () => LockBridge.keyboard());
+for (const field of [username, password]) field.addEventListener('focus', () => {
+    LockBridge.keyboard();
+    setTimeout(() => field.scrollIntoView?.({ block: 'nearest' }), 300);
+});
 function close() {
     if (ended) return;
     ended = true;

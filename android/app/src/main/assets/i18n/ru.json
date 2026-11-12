@@ -997,7 +997,6 @@
   "Three fingers": "Три пальца",
   "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "Захват экрана на {name} недоступен. Проверьте блокировку Mac и разрешение на запись экрана. Повторная попытка…",
   "Open Mac login screen": "Открыть экран входа Mac",
-  "Sign in to Screen Sharing with your Mac account, then unlock the Mac. Your password is used only for this connection and is not saved. Screen Sharing must already be enabled on the Mac.": "Войдите в «Общий экран» с учётной записью Mac, затем разблокируйте Mac. Пароль используется только для этого подключения и не сохраняется. На Mac должен быть включён общий экран.",
   "Mac account name": "Имя учётной записи Mac",
   "Mac account password": "Пароль учётной записи Mac",
   "Sign in": "Войти",
