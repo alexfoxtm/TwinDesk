@@ -155,7 +155,8 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
 
     Box(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.displayCutout)) {
         AndroidView(factory = { host.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize())
-        if (login) AndroidView(factory = { lockPage.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize().imePadding())
+        // Keep the login fields below the viewer handle and toolbar, including in landscape.
+        if (login) AndroidView(factory = { lockPage.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize().padding(top = if (bar) 92.dp else 28.dp).imePadding())
         // A small handle at the top: tap for the bar (the rest of the screen is the Mac's).
         Box(
             Modifier.align(Alignment.TopCenter).padding(top = 4.dp).width(72.dp).height(18.dp)
