@@ -24,7 +24,7 @@ function fixture() {
         sendKey(key) { calls.keys.push(key); }
     }
     const context = { document, RFB, initLogging() {}, TextEncoder, Uint8Array, ArrayBuffer,
-        LockBridge: { tr: s => s, pageId: () => 7, credentials: () => calls.authRequired++, ready() {}, keyboard() {}, send: s => calls.sent.push(s), ack: () => calls.ack++, close: () => calls.close++ },
+        LockBridge: { tr: s => s, pageId: () => 7, credentials: () => calls.authRequired++, phase() {}, ready() {}, keyboard() {}, send: s => calls.sent.push(s), ack: () => calls.ack++, close: () => calls.close++ },
         atob: s => Buffer.from(s, 'base64').toString('binary'), btoa: s => Buffer.from(s, 'binary').toString('base64'),
         setTimeout: fn => fn(), console: new Proxy({}, { get: () => () => { throw Error('login page must not log'); } }) };
     context.window = { isSecureContext: true, crypto: { subtle: {} }, addEventListener() {} };

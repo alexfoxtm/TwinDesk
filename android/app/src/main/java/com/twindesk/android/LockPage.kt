@@ -91,7 +91,13 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
             return
         }
         val mine = generation
-        view.evaluateJavascript("window.lockCredentials && window.lockCredentials($mine, ${JSONObject.quote(username)}, ${JSONObject.quote(password)});", null)
+        view.evaluateJavascript("window.lockCredentials && window.lockCredentials($mine, ${JSONObject.quote(username)}, ${JSONObject.quote(password)});") { result ->
+            if (visible && mine == generation && result != "true") {
+                credentialsRequested = true
+                authError.text = tr("Login-screen connection ended. Close this view and try again.")
+                authError.visibility = View.VISIBLE
+            }
+        }
         clearCredentials()
         credentialsRequested = false
         activity.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(secret.windowToken, 0)
@@ -190,6 +196,10 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         private fun current() = mine == generation && visible
         @JavascriptInterface fun tr(text: String): String = com.twindesk.android.tr(text)
         @JavascriptInterface fun pageId(): Int = mine
+        @JavascriptInterface fun phase(value: String) {
+            if (current() && value in setOf("credentials-requested", "credentials-submitted", "security-failed", "rfb-connected", "rfb-disconnected"))
+                android.util.Log.i("TwinDeskLock", value)
+        }
         @JavascriptInterface fun credentials() = activity.runOnUiThread {
             if (current() && ready && !credentialsRequested) { clearCredentials(); focusedField = account; credentialsRequested = true }
         }

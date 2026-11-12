@@ -54,6 +54,7 @@ window.lockRecv = message => {
         rfb.clipViewport = true;
         rfb.focusOnClick = true;
         rfb.addEventListener('credentialsrequired', event => {
+            LockBridge.phase('credentials-requested');
             const types = event.detail?.types;
             if (!Array.isArray(types) || types.length !== 2 || !types.includes('username') || !types.includes('password')) return fail();
             if (asked) return;
@@ -61,9 +62,9 @@ window.lockRecv = message => {
             status.textContent = '';
             LockBridge.credentials();
         });
-        rfb.addEventListener('securityfailure', fail);
-        rfb.addEventListener('disconnect', close);
-        rfb.addEventListener('connect', () => { connected = true; clearCredentials(); status.textContent = ''; LockBridge.keyboard(); });
+        rfb.addEventListener('securityfailure', () => { LockBridge.phase('security-failed'); fail(); });
+        rfb.addEventListener('disconnect', () => { LockBridge.phase('rfb-disconnected'); close(); });
+        rfb.addEventListener('connect', () => { LockBridge.phase('rfb-connected'); connected = true; clearCredentials(); status.textContent = ''; LockBridge.keyboard(); });
         channel.readyState = 1;
         channel.onopen({});
     } else if (message.t === 'bytes') {
@@ -81,6 +82,7 @@ window.lockCredentials = (generation, username, password) => {
     if (generation !== pageId || ended || !rfb || !asked || submitted || connected || typeof username !== 'string' || typeof password !== 'string') return false;
     if (!username || !password || new TextEncoder().encode(username).length > 63 || new TextEncoder().encode(password).length > 63) return false;
     submitted = true;
+    LockBridge.phase('credentials-submitted');
     rfb.sendCredentials({ username, password });
     status.textContent = t('Signing in to Screen Sharing…');
     return true;
