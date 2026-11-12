@@ -994,5 +994,15 @@
   "Companion approval": "配套设备授权",
   "Pinch to zoom, slide to move the view": "双指捏合缩放，滑动移动画面",
   "Three fingers": "三指",
-  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "无法捕捉 {name} 的屏幕。请检查 Mac 的锁定状态和屏幕录制设置。正在重试…"
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "无法捕捉 {name} 的屏幕。请检查 Mac 的锁定状态和屏幕录制设置。正在重试…",
+  "Open Mac login screen": "打开 Mac 登录屏幕",
+  "Mac login screen": "Mac 登录屏幕",
+  "Sign in to Screen Sharing with your Mac account, then unlock the Mac. Your password is used only for this connection and is not saved. Screen Sharing must already be enabled on the Mac.": "使用 Mac 账户登录屏幕共享，然后解锁 Mac。密码仅用于本次连接，不会保存。Mac 必须已启用屏幕共享。",
+  "Mac account name": "Mac 账户名称",
+  "Mac account password": "Mac 账户密码",
+  "Sign in": "登录",
+  "Connecting to the Mac login screen…": "正在连接 Mac 登录屏幕…",
+  "Login-screen connection ended. Close this view and try again.": "登录屏幕连接已结束。请关闭此视图后重试。",
+  "Signing in to Screen Sharing…": "正在登录屏幕共享…",
+  "Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.": "此账户名称或密码超过 63 个 UTF-8 字节，屏幕共享无法使用。"
 }

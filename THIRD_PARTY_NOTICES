@@ -139,3 +139,7 @@ npm dependencies (installed by npm, not included in this repository)
 --------------------------------------------------------------------
 ws (MIT), Electron (MIT), electron-builder (MIT), @electron/packager (BSD-2-Clause) and their
 dependencies (MIT, ISC, BSD, BlueOak-1.0.0 and Apache-2.0 licenses, all compatible with GPL-3.0).
+
+noVNC 1.7.0 — https://github.com/novnc/noVNC — MPL-2.0.
+Bundled under android/app/src/main/assets/novnc, including its LICENSE.txt, AUTHORS and vendor licenses.
+TwinDesk modifications to core/rfb.js enforce ARD-only authentication and clear credentials after constructing the authentication response.

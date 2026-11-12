@@ -52,6 +52,11 @@ class Server extends EventEmitter {
   }
 
   _onConnection(ws, req) {
+    if (req.url && req.url.split('?')[0] === P.LOCK_PATH) {
+      if (this.lockview) return this.lockview.accept(ws, req);
+      ws.on('error', () => {});
+      return ws.close(1008, 'Unavailable');
+    }
     const now = Date.now();
     const ctx = {
       ws,
@@ -177,7 +182,7 @@ class Server extends EventEmitter {
       }
       return;
     }
-    this.emit('message', msg, ctx); // peer.js routes it by type
+    this.emit('message', msg, ctx, ws); // peer.js routes by type; lockview also checks the exact IP socket
   }
 
   // Pings and silence checks every PING_MS while any socket is open; with none, nothing wakes the app.
@@ -238,6 +243,7 @@ class Server extends EventEmitter {
 
   // Send an error and close the socket.
   fail(ctx, code, message) {
+    this.emit('revoked', ctx);
     this.send(ctx, { t: P.T.ERROR, code, message });
     if (ctx.alt) { // the whole session goes, not just this path of it
       const alt = ctx.alt;
@@ -360,11 +366,13 @@ class Server extends EventEmitter {
 
   // Close every socket that belongs to a device id (used by Forget).
   closeDevice(deviceId, code, message) {
+    this.emit('deviceClosed', deviceId);
     for (const ctx of this.sockets) if (ctx.deviceId === deviceId) this.fail(ctx, code, message);
   }
 
   close() {
     this.closed = true;
+    this.emit('closing');
     if (this.unquiet) this.unquiet();
     clearInterval(this.tick);
     this.tick = null;
