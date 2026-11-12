@@ -200,6 +200,10 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
             if (current() && value in setOf("credentials-requested", "credentials-submitted", "security-failed", "rfb-connected", "rfb-disconnected", "framebuffer-data", "framebuffer-drawn"))
                 android.util.Log.i("TwinDeskLock", value)
         }
+        @JavascriptInterface fun geometry(fw: Int, fh: Int, cw: Int, ch: Int, vw: Int, vh: Int) {
+            if (current() && listOf(fw, fh, cw, ch, vw, vh).all { it in 0..32768 })
+                android.util.Log.i("TwinDeskLock", "geometry framebuffer=${fw}x$fh canvas=${cw}x$ch viewport=${vw}x$vh")
+        }
         @JavascriptInterface fun credentials() = activity.runOnUiThread {
             if (current() && ready && !credentialsRequested) { clearCredentials(); focusedField = account; credentialsRequested = true }
         }

@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(base, 'lock/lock.js'), 'utf8').replace(
 function fixture() {
     const elements = new Map();
     const element = id => {
-        if (!elements.has(id)) elements.set(id, { value: '', hidden: id === 'auth', textContent: '', events: {}, addEventListener(name, fn) { this.events[name] = fn; }, focus() { document.activeElement = this; }, setSelectionRange() {} });
+        if (!elements.has(id)) elements.set(id, { value: '', hidden: id === 'auth', textContent: '', events: {}, clientWidth: 100, clientHeight: 100, querySelector() { return null; }, addEventListener(name, fn) { this.events[name] = fn; }, focus() { document.activeElement = this; }, setSelectionRange() {} });
         return elements.get(id);
     };
     const calls = { sent: [], ack: 0, close: 0, credentials: null, received: null, rfb: null, keys: [], authRequired: 0 };
@@ -24,7 +24,7 @@ function fixture() {
         sendKey(key) { calls.keys.push(key); }
     }
     const context = { document, RFB, initLogging() {}, TextEncoder, Uint8Array, ArrayBuffer,
-        LockBridge: { tr: s => s, pageId: () => 7, credentials: () => calls.authRequired++, phase() {}, ready() {}, keyboard() {}, send: s => calls.sent.push(s), ack: () => calls.ack++, close: () => calls.close++ },
+        LockBridge: { tr: s => s, pageId: () => 7, credentials: () => calls.authRequired++, phase() {}, geometry() {}, ready() {}, keyboard() {}, send: s => calls.sent.push(s), ack: () => calls.ack++, close: () => calls.close++ },
         atob: s => Buffer.from(s, 'base64').toString('binary'), btoa: s => Buffer.from(s, 'binary').toString('base64'),
         setTimeout: fn => fn(), console: new Proxy({}, { get: () => () => { throw Error('login page must not log'); } }) };
     context.window = { isSecureContext: true, crypto: { subtle: {} }, addEventListener() {} };

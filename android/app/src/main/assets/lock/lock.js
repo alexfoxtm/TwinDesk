@@ -66,7 +66,14 @@ window.lockRecv = message => {
         rfb.addEventListener('disconnect', () => { LockBridge.phase('rfb-disconnected'); close(); });
         rfb.addEventListener('connect', () => { LockBridge.phase('rfb-connected'); connected = true; clearCredentials(); status.textContent = t('Waiting for the computer…'); LockBridge.keyboard(); });
         rfb.addEventListener('twindeskframe', () => { LockBridge.phase('framebuffer-data'); });
-        rfb.addEventListener('twindeskdraw', () => { LockBridge.phase('framebuffer-drawn'); status.textContent = ''; });
+        rfb.addEventListener('twindeskdraw', () => {
+            LockBridge.phase('framebuffer-drawn');
+            status.textContent = '';
+            const target = document.getElementById('screen');
+            const canvas = target.querySelector('canvas');
+            const rect = canvas?.getBoundingClientRect();
+            LockBridge.geometry(rfb._fbWidth || 0, rfb._fbHeight || 0, Math.round(rect?.width || 0), Math.round(rect?.height || 0), target.clientWidth, target.clientHeight);
+        });
         channel.readyState = 1;
         channel.onopen({});
     } else if (message.t === 'bytes') {
