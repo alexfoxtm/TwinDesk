@@ -992,7 +992,8 @@
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "Onay kaydedildi. Android bildirim hizmetinin yeniden bağlanması bekleniyor…",
   "Remove approval": "Onayı kaldır",
   "Companion approval": "Yardımcı cihaz onayı",
-  "Pinch to zoom, slide to move the view": "Yakınlaştırmak için kıstırın, görünümü taşımak için kaydırın",
+  "Pinch to zoom, slide to scroll": "Yakınlaştırmak için kıstırın, kaydırmak için sürükleyin",
+  "Moves the view": "Görünümü taşır",
   "Three fingers": "Üç parmak",
   "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "{name} üzerinde ekran yakalama kullanılamıyor. Mac’in kilidini ve Ekran Kaydı ayarlarını kontrol edin. Yeniden deneniyor…"
 }

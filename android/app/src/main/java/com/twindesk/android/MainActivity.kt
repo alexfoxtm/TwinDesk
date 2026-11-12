@@ -1108,14 +1108,14 @@ private fun ScreenPage(core: Core, v: Int) {
             MacRow(tr("Slide"), tr("Moves the pointer"))
             MacRow(tr("Tap"), if (core.remote.tapClick) tr("Clicks") else tr("No action (Tap to click is off in Remote)"))
             MacRow(tr("Touch and hold"), tr("Right-click"))
-            MacRow(tr("Two fingers"), if (core.host?.os == "mac") tr("Pinch to zoom, slide to move the view") else tr("Scrolls"))
-            if (core.host?.os == "mac") MacRow(tr("Three fingers"), tr("Scrolls"))
+            MacRow(tr("Two fingers"), if (core.host?.os == "mac") tr("Pinch to zoom, slide to scroll") else tr("Scrolls"))
+            if (core.host?.os == "mac") MacRow(tr("Three fingers"), tr("Moves the view"))
         } else {
             MacRow(tr("Tap"), tr("Clicks"))
             MacRow(tr("Touch and hold"), tr("Right-click"))
             MacRow(tr("Drag"), tr("Select or move windows"))
-            MacRow(tr("Two fingers"), if (core.host?.os == "mac") tr("Pinch to zoom, slide to move the view") else tr("Scrolls"))
-            if (core.host?.os == "mac") MacRow(tr("Three fingers"), tr("Scrolls"))
+            MacRow(tr("Two fingers"), if (core.host?.os == "mac") tr("Pinch to zoom, slide to scroll") else tr("Scrolls"))
+            if (core.host?.os == "mac") MacRow(tr("Three fingers"), tr("Moves the view"))
         }
         if (!s.inputOn) MacRow(tr("Input is off"), tr("{name} doesn’t accept input from this device. Turn on Receive input in Share screen on {name}.", "name" to name))
     }

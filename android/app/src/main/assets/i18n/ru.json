@@ -992,7 +992,8 @@
   "Approval is saved. Waiting for Android’s notification service to reconnect…": "Разрешение сохранено. Ожидание повторного подключения службы уведомлений Android…",
   "Remove approval": "Удалить разрешение",
   "Companion approval": "Разрешение сопутствующего устройства",
-  "Pinch to zoom, slide to move the view": "Сведите или разведите пальцы для масштаба, сдвиньте для перемещения вида",
+  "Pinch to zoom, slide to scroll": "Сведите или разведите пальцы для масштаба, сдвиньте для прокрутки",
+  "Moves the view": "Перемещает вид",
   "Three fingers": "Три пальца",
   "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "Захват экрана на {name} недоступен. Проверьте блокировку Mac и разрешение на запись экрана. Повторная попытка…"
 }

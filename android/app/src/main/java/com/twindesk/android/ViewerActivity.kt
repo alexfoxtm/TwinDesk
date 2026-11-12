@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -42,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -123,7 +125,7 @@ private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
     val v by core.version.collectAsState()
     @Suppress("UNUSED_EXPRESSION") v
     var bar by remember { mutableStateOf(true) }
-    var keyboard by remember { mutableStateOf(false) }
+    val keyboard = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     LaunchedEffect(bar) { if (bar) { delay(4000); bar = false } }
     val s = core.screen
     val name = core.host?.name ?: "Mac"
@@ -166,7 +168,7 @@ private fun Viewer(core: Core, host: WebHost, close: () -> Unit) {
                         }
                         if (s.sharing) TextButton(onClick = { s.control(share = false) }) { Text(tr("Stop"), color = Color.White) }
                     }
-                    TextButton(onClick = { keyboard = !keyboard; s.keyboard(keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
+                    TextButton(onClick = { s.keyboard(!keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
                     TextButton(onClick = { s.end(); close() }) { Text(tr("Close"), color = Color.White) }
                 }
                 if (s.remote && s.displays.size > 1) {

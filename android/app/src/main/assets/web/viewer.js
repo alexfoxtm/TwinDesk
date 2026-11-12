@@ -3,7 +3,7 @@
 // plays the picture (and its sound), and sends input back as in.* (normalized 0–1):
 //   touch   touchpad (opts.touch 'pad', the default): slide = move the pointer (never clicks) ·
 //           tap = left click ("Tap to click", on unless switched off) · hold = right click ·
-//           Android/Mac: two fingers zoom/pan, three scroll; other viewers: two scroll
+//           Android/Mac: two fingers scroll, pinch zooms, three fingers pan the view
 //           direct ('direct'): tap = click · hold = right click · drag = drag
 //           (the Mac's pointer follows the finger, so it is a touch screen for the Mac)
 //   mouse   and a hardware keyboard work as on a computer
@@ -219,7 +219,7 @@
     return { x, y };
   }
 
-  // Android Mac view: one finger controls, two zoom/pan locally, three scroll.
+  // Android Mac view: one finger controls, two scroll or pinch, three pan locally.
   // Other viewers retain two-finger scrolling.
   const touches = new Map(); // pointerId -> {x, y}
   let one = null; // {start, at, moved, dragging, timer, right}
@@ -246,29 +246,56 @@
     if (touches.size >= 4) { if (gesture) gesture.frozen = true; return; }
     if (gesture && gesture.frozen) return;
     if (gesture && gesture.latched) {
-      if (gesture.ids.length !== 2 || touches.size !== 3 || performance.now() - gesture.started > 150) return;
+      if (gesture.ids.length !== 2 || touches.size !== 3 || performance.now() - gesture.started >= 150) return;
       zoom = gesture.zoom; panX = gesture.panX; panY = gesture.panY; applyViewport();
     }
     const ids = [...touches.keys()];
     const at = fingerGeometry(ids);
-    gesture = { ids, at, last: at, zoom, panX, panY, started: performance.now(), latched: false, frozen: false };
+    gesture = { ids, at, last: at, zoom, panX, panY, started: performance.now(), latched: false, frozen: false, mode: null, queued: false };
   }
   function moveGesture(e) {
     const g = gesture;
     if (g.frozen || !g.ids.includes(e.pointerId)) return;
+    // A frame contains both fingers' moves; classifying the first event alone
+    // makes parallel scrolling look like a pinch.
+    if (g.queued) return;
+    g.queued = true;
+    requestAnimationFrame(() => { g.queued = false; if (gesture === g) updateGesture(); });
+  }
+  function updateGesture(ending = false) {
+    const g = gesture;
+    if (!g || g.frozen) return;
     const at = fingerGeometry(g.ids);
     if (!at) { g.frozen = true; return; }
     if (!g.latched) {
       if (Math.hypot(at.x - g.at.x, at.y - g.at.y) <= SLOP &&
           (g.ids.length !== 2 || Math.abs(at.span - g.at.span) <= SLOP)) return;
       g.latched = true;
+      g.mode = g.ids.length === 3 ? 'pan' :
+        Math.abs(at.span - g.at.span) > Math.hypot(at.x - g.at.x, at.y - g.at.y) * 1.5 ? 'pinch' : 'scroll';
     }
-    if (g.ids.length === 3) {
+    if (g.mode === 'scroll') {
+      // Let a slightly staggered third finger turn the gesture into a local
+      // pan before committing any remote scroll. A lift settles two fingers.
+      const wait = 150 - (performance.now() - g.started);
+      if (!ending && wait > 0) {
+        if (!g.scrollTimer) g.scrollTimer = setTimeout(() => {
+          g.scrollTimer = null;
+          if (gesture === g) updateGesture();
+        }, wait);
+        return;
+      }
       const dx = (g.last.x - at.x) * 2, dy = (g.last.y - at.y) * 2;
       if (Math.abs(dx) + Math.abs(dy) >= 1) { send({ t: 'in.wh', dx, dy }); g.last = at; }
       return;
     }
     if (!fitRect()) return;
+    if (g.mode === 'pan') {
+      panX = g.panX + at.x - g.at.x;
+      panY = g.panY + at.y - g.at.y;
+      applyViewport();
+      return;
+    }
     const next = Math.max(1, Math.min(4, g.at.span > 0 ? g.zoom * at.span / g.at.span : g.zoom));
     zoom = next < 1.05 ? 1 : next;
     panX = at.x - window.innerWidth / 2 - (g.at.x - window.innerWidth / 2 - g.panX) * zoom / g.zoom;
@@ -381,6 +408,7 @@
 
   function fingerUp(e) {
     if (slots.has(e.pointerId)) return tcUp(e);
+    if (viewGestures && gesture) updateGesture(true);
     touches.delete(e.pointerId);
     if (viewGestures && gesture) {
       if (gesture.ids.includes(e.pointerId)) gesture.frozen = true;

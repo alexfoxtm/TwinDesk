@@ -23,11 +23,22 @@ class WebHost(ctx: Context, page: String, private val core: Core, private val on
     private val queue = mutableListOf<JSONObject>()
 
     @SuppressLint("SetJavaScriptEnabled")
-    val view: WebView = WebView(ctx).apply {
+    val view: WebView = object : WebView(ctx) {
+        override fun onCreateInputConnection(info: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
+            val connection = super.onCreateInputConnection(info)
+            if (page == "viewer.html") info.imeOptions = info.imeOptions or android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+            return connection
+        }
+    }.apply {
         settings.javaScriptEnabled = true
         settings.mediaPlaybackRequiresUserGesture = false
         settings.allowFileAccess = true
         settings.domStorageEnabled = false
+        if (page == "viewer.html") {
+            @Suppress("DEPRECATION")
+            settings.saveFormData = false
+            importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        }
         setBackgroundColor(android.graphics.Color.BLACK)
         isFocusable = true
         isFocusableInTouchMode = true
@@ -321,6 +332,7 @@ class Screen(core: Core) : Feature(core) {
                 core.changed()
             }
             "stream.input" -> { inputOn = m.optBoolean("on", true); core.changed() }
+            "screen.textFocus" -> if (viewing && inputOn && core.host?.os == "mac") keyboard(true)
             "stream.info" -> { lastInfo = m; host?.post(m) }
             "rtc.offer", "rtc.ice", "stream.stop" -> host?.post(m)
             else -> return false

@@ -5,7 +5,7 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 function fixture(local = true, touch = 'direct') {
-  const events = new Map(), docEvents = new Map(), videoEvents = new Map(), sent = [], timers = new Map();
+  const events = new Map(), docEvents = new Map(), videoEvents = new Map(), sent = [], timers = new Map(), frames = [];
   let now = 10000, timerId = 0;
   const video = { videoWidth: 1920, videoHeight: 1080, style: {}, addEventListener(k, fn) { videoEvents.set(k, fn); } };
   const ctx = { setTransform() {}, clearRect() {} };
@@ -18,31 +18,49 @@ function fixture(local = true, touch = 'direct') {
     createElement: () => ({ style: {}, getContext: () => ctx }) };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../android/app/src/main/assets/web/viewer.js'), 'utf8'), {
     window, document, console: { log() {} }, performance: { now: () => now },
-    setTimeout: (fn) => { const id = ++timerId; timers.set(id, fn); return id; }, clearTimeout: (id) => timers.delete(id), requestAnimationFrame() {},
+    setTimeout: (fn, delay = 0) => { const id = ++timerId; timers.set(id, { fn, at: now + delay }); return id; }, clearTimeout: (id) => timers.delete(id), requestAnimationFrame: fn => frames.push(fn),
   });
   const pointer = (type, id, x, y, extra = {}) => events.get(type)({ pointerId: id, pointerType: 'touch', button: 0,
     clientX: x, clientY: y, preventDefault() {}, ...extra });
   const recv = (m) => window.tdRecv(m);
   recv({ t: 'opts', viewGestures: local, touch, tap: true });
+  const advance = ms => {
+    now += ms;
+    for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); }
+  };
   return { window, video, overlay: nodes.overlay, sent, pointer, events, recv, document, docEvents, videoEvents,
-    hold() { now += 600; for (const fn of [...timers.values()]) fn(); timers.clear(); } };
+    frame() { for (const fn of frames.splice(0)) fn(); },
+    advance, hold() { advance(600); } };
 }
 const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
 function pinchPanAndControl() {
   const f = fixture();
   f.pointer('pointerdown', 1, 400, 400); f.pointer('pointerdown', 2, 600, 400); f.sent.length = 0;
   f.pointer('pointermove', 2, 800, 400);
+  f.frame();
   assert.strictEqual(f.video.style.transform, 'translate(100px, 0px) scale(2)');
   f.pointer('pointermove', 1, 450, 450); f.pointer('pointermove', 2, 850, 450);
+  f.frame();
   assert.strictEqual(f.video.style.transform, 'translate(150px, 50px) scale(2)');
-  assert.deepStrictEqual(f.sent, [], 'two fingers only change the local view');
+  assert.deepStrictEqual(f.sent, [], 'pinch only changes the local view');
   f.pointer('pointerup', 1, 450, 450); f.pointer('pointerup', 2, 850, 450);
   f.pointer('pointerdown', 3, 500, 400); f.pointer('pointerup', 3, 500, 400);
   const click = f.sent.find((m) => m.t === 'in.md'); near(click.x, .425); near(click.y, 512.5 / 1125);
   f.sent.length = 0;
   f.pointer('pointerdown', 1, 400, 400); f.pointer('pointerdown', 2, 500, 400); f.pointer('pointerdown', 3, 600, 400); f.sent.length = 0;
   f.pointer('pointermove', 1, 400, 460);
-  assert.deepStrictEqual(f.sent.map((m) => m.t), ['in.wh']); near(f.sent[0].dy, -40);
+  f.frame();
+  assert.deepStrictEqual(f.sent, [], 'three-finger pan sends no input to the Mac');
+  assert.strictEqual(f.video.style.transform, 'translate(150px, 70px) scale(2)');
+  const scroll = fixture();
+  scroll.pointer('pointerdown', 1, 400, 400); scroll.pointer('pointerdown', 2, 600, 400); scroll.sent.length = 0;
+  scroll.pointer('pointermove', 1, 400, 450); scroll.pointer('pointermove', 2, 600, 450); scroll.frame();
+  assert.deepStrictEqual(scroll.sent, [], 'scroll waits briefly for a staggered third finger');
+  scroll.advance(150);
+  assert.deepStrictEqual(scroll.sent.map(m => m.t), ['in.wh']); near(scroll.sent[0].dy, -100);
+  assert.strictEqual(scroll.video.style.transform, 'translate(0px, 0px) scale(1)', 'parallel fingers scroll without zooming');
+  scroll.pointer('pointermove', 2, 650, 450); scroll.frame();
+  assert.strictEqual(scroll.video.style.transform, 'translate(0px, 0px) scale(1)', 'finger spacing changes do not turn an active scroll into a pinch');
   const legacy = fixture(false);
   legacy.pointer('pointerdown', 1, 400, 400); legacy.pointer('pointerdown', 2, 600, 400); legacy.sent.length = 0;
   legacy.pointer('pointermove', 2, 620, 400);
@@ -57,9 +75,17 @@ function pinchPanAndControl() {
   assert.ok(cursorX >= 32 && cursorX <= 968, 'zoomed touchpad follows its cursor');
   const staggered = fixture();
   staggered.pointer('pointerdown', 1, 300, 400); staggered.pointer('pointerdown', 2, 500, 400);
-  staggered.pointer('pointermove', 2, 540, 400); staggered.pointer('pointerdown', 3, 700, 400);
-  staggered.sent.length = 0; staggered.pointer('pointermove', 3, 700, 460);
-  assert.strictEqual(staggered.sent[0].t, 'in.wh', 'a slightly staggered three-finger swipe scrolls');
+  staggered.sent.length = 0;
+  staggered.pointer('pointermove', 1, 300, 440); staggered.pointer('pointermove', 2, 500, 440); staggered.frame();
+  staggered.advance(100); staggered.pointer('pointerdown', 3, 700, 440);
+  staggered.pointer('pointermove', 3, 700, 460); staggered.frame();
+  staggered.advance(100);
+  assert.deepStrictEqual(staggered.sent, [], 'a slightly staggered three-finger swipe never scrolls the Mac');
+  const flick = fixture();
+  flick.pointer('pointerdown', 1, 300, 400); flick.pointer('pointerdown', 2, 500, 400); flick.sent.length = 0;
+  flick.pointer('pointermove', 1, 300, 440); flick.pointer('pointermove', 2, 500, 440); flick.frame();
+  flick.pointer('pointerup', 1, 300, 440); flick.pointer('pointerup', 2, 500, 440); flick.advance(200);
+  assert.deepStrictEqual(flick.sent.map(m => m.t), ['in.wh'], 'a short two-finger flick commits once on lift');
 }
 function cancellationAndBounds() {
   const capture = fixture();
@@ -80,10 +106,12 @@ function cancellationAndBounds() {
   f.pointer('pointerdown', 2, 600, 400);
   assert.strictEqual(f.sent.filter((m) => m.t === 'in.mu').length, 1, 'second finger releases direct drag');
   f.sent.length = 0; f.pointer('pointermove', 2, 900, 400); f.pointer('pointerup', 2, 900, 400);
+  f.frame();
   f.pointer('pointermove', 1, 800, 600); f.hold(); f.pointer('pointerup', 1, 800, 600);
   assert.deepStrictEqual(f.sent, [], 'remaining finger cannot become a click or pointer');
   for (let id = 1; id <= 4; id++) f.pointer('pointerdown', id, 400 + id * 30, 400);
   f.sent.length = 0; f.pointer('pointermove', 1, 1000, 1000);
+  f.frame();
   for (let id = 1; id <= 4; id++) f.pointer('pointerup', id, 500, 400);
   assert.deepStrictEqual(f.sent, [], 'four-finger gesture is ignored');
   f.pointer('pointerdown', 1, 500, 400); f.pointer('pointercancel', 1, 500, 400); f.sent.length = 0; f.hold();
@@ -95,6 +123,7 @@ function cancellationAndBounds() {
   assert.ok(!f.video.style.transform.includes('NaN'), 'rotation clamps transform');
   f.video.videoWidth = 0; f.videoEvents.get('resize')();
   f.pointer('pointerdown', 1, 100, 400); f.pointer('pointerdown', 2, 300, 400); f.sent.length = 0; f.pointer('pointermove', 2, 390, 400);
+  f.frame();
   assert.deepStrictEqual(f.sent, []); assert.ok(!f.video.style.transform.includes('NaN'));
   const real = fixture(); real.recv({ t: 'screen.state', touch: true });
   real.pointer('pointerdown', 1, 500, 400); real.pointer('pointerup', 1, 500, 400);
@@ -105,6 +134,7 @@ function cancellationAndBounds() {
   pen.pointer('pointermove', 9, 500, 400, { pointerType: 'pen', buttons: 0, pressure: 0 });
   pen.sent.length = 0;
   pen.pointer('pointermove', 1, 800, 600); pen.pointer('pointerup', 1, 800, 600); pen.pointer('pointerup', 2, 800, 400);
+  pen.frame();
   assert.deepStrictEqual(pen.sent, [], 'pen proximity drops the prior finger gesture');
   const resize = fixture();
   resize.videoEvents.get('resize')();

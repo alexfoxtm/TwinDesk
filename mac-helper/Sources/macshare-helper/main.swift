@@ -142,6 +142,8 @@ func handle(_ line: String) {
       "inputMonitoring": IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted,
       "screen": CGPreflightScreenCaptureAccess(),
     ])
+  case "textFocus":
+    reply(id, textFocus())
   case "notifWatch":
     NotifWatch.shared.set(on: (msg["on"] as? Bool) ?? false)
     reply(id, ["readable": NotifWatch.shared.readable()])

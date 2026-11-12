@@ -20,15 +20,18 @@ class Input {
     this.enabled = enabled;
     this.swapKeys = swapKeys;
     this.dirty = false; // something may be held in the helper
+    this.focusRequest = 0;
+    server.on('client', () => { this.focusRequest++; });
+    server.on('closed', () => { this.focusRequest++; });
 
-    for (const t of IN_TYPES) server.on(`t:${t}`, (msg) => this._onInput(msg));
+    for (const t of IN_TYPES) server.on(`t:${t}`, (msg, ctx) => this._onInput(msg, ctx));
     server.on('closed', () => {
       if (!server.current) this.releaseAll();
     });
     server.on(`t:${P.T.CLIP_REQUEST}`, () => this.releaseAll()); // Monitor 2 lost focus
   }
 
-  _onInput(msg) {
+  _onInput(msg, ctx) {
     if (msg.wid != null) return; // input for one app window: appsend.js
     if (!this.enabled()) return;
     const target = this.displays.target();
@@ -56,9 +59,22 @@ class Input {
     }
     if (msg.t !== P.T.IN_MOVE && msg.t !== P.T.IN_WHEEL) this.dirty = true;
     this.helper.send('input', { ev, bounds: target.bounds });
+    const samePeer = () => ctx?.authed && ctx.ws && this.server.current?.ws === ctx.ws && this.server.current?.deviceId === ctx.deviceId;
+    if (msg.t === P.T.IN_UP && ev.b === 0 && ctx?.os === 'android' && samePeer()) {
+      const request = ++this.focusRequest, socket = ctx.ws;
+      setTimeout(async () => {
+        const current = () => request === this.focusRequest && this.enabled() && samePeer() && ctx.ws === socket;
+        if (!current()) return;
+        try {
+          const focus = await this.helper.request('textFocus', {}, 1000);
+          if (current() && focus.editable === true) this.server.sendToClient({ t: 'screen.textFocus', secure: focus.secure === true });
+        } catch (_) { /* No AX access: the viewer's Keyboard button remains available. */ }
+      }, 150);
+    }
   }
 
   releaseAll() {
+    this.focusRequest++;
     if (!this.dirty) return;
     this.dirty = false;
     this.helper.send('releaseAll');
