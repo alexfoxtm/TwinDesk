@@ -123,7 +123,7 @@ function typeKeyboard() {
     resetKeyboard();
 }
 keyboard.addEventListener('beforeinput', event => {
-    if (ended || !rfb) return;
+    if (ended || !rfb || event.isComposing) return;
     if (event.cancelable !== false && (event.inputType === 'deleteContentBackward' || event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph')) {
         event.preventDefault();
         rfb.sendKey(event.inputType === 'deleteContentBackward' ? 0xff08 : 0xff0d);
@@ -140,7 +140,7 @@ keyboard.addEventListener('input', event => {
     } else typeKeyboard();
 });
 keyboard.addEventListener('keydown', event => {
-    if (ended || !rfb) return;
+    if (ended || !rfb || event.isComposing || event.keyCode === 229) return;
     const keys = { Enter: 0xff0d, Backspace: 0xff08, Tab: 0xff09, Escape: 0xff1b, ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54 };
     if (keys[event.key]) { event.preventDefault(); rfb.sendKey(keys[event.key]); resetKeyboard(); }
 });

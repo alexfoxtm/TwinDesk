@@ -166,6 +166,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
 
     fun open() {
         if (visible) return
+        android.util.Log.i("TwinDeskLock", "page-open")
         visible = true
         ready = false
         credentialsRequested = false
@@ -199,6 +200,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     }
 
     fun close() {
+        if (visible) android.util.Log.i("TwinDeskLock", "page-close")
         visible = false
         ready = false
         credentialsRequested = false

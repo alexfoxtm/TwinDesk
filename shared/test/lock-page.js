@@ -66,6 +66,8 @@ async function main() {
     f.element('keyboard').events.beforeinput({ inputType: 'deleteContentBackward', cancelable: false });
     f.element('keyboard').events.input({ inputType: 'deleteContentBackward', isComposing: false });
     f.element('keyboard').events.keydown({ key: 'Enter', preventDefault() {} });
+    f.element('keyboard').events.keydown({ key: 'Enter', isComposing: true, preventDefault() {} });
+    f.element('keyboard').events.keydown({ key: 'Enter', keyCode: 229, preventDefault() {} });
     assert.deepEqual(f.calls.keys, [65, 0xff08, 0xff08, 0xff0d]);
     assert.equal(f.element('keyboard').value, '\u200b');
     gateFixture();

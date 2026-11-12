@@ -115,6 +115,7 @@ class ViewerActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        android.util.Log.i("TwinDeskLock", "viewer-stopped")
         started = false
         login = false
         lockPage?.close()
@@ -146,6 +147,7 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
         if (login && !core.lockView.available) closeLogin()
         else if (core.lockView.available && !login && !offered) {
             offered = true
+            android.util.Log.i("TwinDeskLock", "viewer-auto-open")
             openLogin()
             bar = true
         }
