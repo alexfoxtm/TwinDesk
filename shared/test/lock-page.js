@@ -50,6 +50,11 @@ async function main() {
     assert.deepEqual(f.calls.received, [4, 5, 6]);
     assert.equal(f.calls.ack, 1);
     f.calls.rfb.events.connect();
+    assert.equal(f.element('status').textContent, 'Waiting for the computer…');
+    f.calls.rfb.events.twindeskframe();
+    assert.equal(f.element('status').textContent, 'Waiting for the computer…');
+    f.calls.rfb.events.twindeskdraw();
+    assert.equal(f.element('status').textContent, '');
     assert.equal(f.keyboard(), true);
     assert.equal(f.calls.rfb.focusOnClick, false);
     f.element('keyboard').value = '\u200bA';

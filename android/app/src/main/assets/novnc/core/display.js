@@ -289,6 +289,7 @@ export default class Display {
                 this._targetCtx.drawImage(this._backbuffer,
                                           x, y, w, h,
                                           vx, vy, w, h);
+                this.twindeskDraw?.();
             }
 
             this._damageBounds.left = this._damageBounds.top = 65535;

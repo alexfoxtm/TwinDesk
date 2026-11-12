@@ -265,6 +265,12 @@ export default class RFB extends EventTargetMixin {
             Log.Error("Display exception: " + exc);
             throw exc;
         }
+        this._display.twindeskDraw = () => {
+            if (this._twindeskFrame && !this._twindeskDrawn) {
+                this._twindeskDrawn = true;
+                this.dispatchEvent(new Event('twindeskdraw'));
+            }
+        };
 
         this._keyboard = new Keyboard(this._canvas);
         this._keyboard.onkeyevent = this._handleKeyEvent.bind(this);
@@ -2981,10 +2987,15 @@ export default class RFB extends EventTargetMixin {
         }
 
         try {
-            return decoder.decodeRect(this._FBU.x, this._FBU.y,
-                                      this._FBU.width, this._FBU.height,
-                                      this._sock, this._display,
-                                      this._fbDepth);
+            const decoded = decoder.decodeRect(this._FBU.x, this._FBU.y,
+                                               this._FBU.width, this._FBU.height,
+                                               this._sock, this._display,
+                                               this._fbDepth);
+            if (decoded && this._FBU.width > 0 && this._FBU.height > 0 && !this._twindeskFrame) {
+                this._twindeskFrame = true;
+                this.dispatchEvent(new Event('twindeskframe'));
+            }
+            return decoded;
         } catch (err) {
             this._fail("Error decoding rect: " + err);
             return false;

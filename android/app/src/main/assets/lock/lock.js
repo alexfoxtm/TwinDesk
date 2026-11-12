@@ -64,7 +64,9 @@ window.lockRecv = message => {
         });
         rfb.addEventListener('securityfailure', () => { LockBridge.phase('security-failed'); fail(); });
         rfb.addEventListener('disconnect', () => { LockBridge.phase('rfb-disconnected'); close(); });
-        rfb.addEventListener('connect', () => { LockBridge.phase('rfb-connected'); connected = true; clearCredentials(); status.textContent = ''; LockBridge.keyboard(); });
+        rfb.addEventListener('connect', () => { LockBridge.phase('rfb-connected'); connected = true; clearCredentials(); status.textContent = t('Waiting for the computer…'); LockBridge.keyboard(); });
+        rfb.addEventListener('twindeskframe', () => { LockBridge.phase('framebuffer-data'); });
+        rfb.addEventListener('twindeskdraw', () => { LockBridge.phase('framebuffer-drawn'); status.textContent = ''; });
         channel.readyState = 1;
         channel.onopen({});
     } else if (message.t === 'bytes') {
