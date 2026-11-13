@@ -12,7 +12,7 @@ const P = require('../../shared/protocol.js');
 const { Pool } = require('../../shared/mesh.js');
 const { NotifGuard, isOwn } = require('../../shared/notif-guard.js');
 const { IconsOut, IconsIn } = require('../../shared/notificon.js');
-const { actionsOf } = require('../../shared/notifacts.js');
+const { actionsOf, withMeshPhoneActions } = require('../../shared/notifacts.js');
 const { otpOf } = require('../../shared/otp.js');
 
 const T = P.T;
@@ -70,6 +70,7 @@ class Notifs extends EventEmitter {
 
     const bus = this.bus;
     bus.on(T.NOTIF, (m, from) => this._show(m, from));
+    bus.on('notif.gone', (m, from) => this._goneFrom(m.id, from));
     bus.on(T.NOTIF_POLICY, (m, from) => {
       const e = this.mesh.get(from);
       if (e) e.notifPool = m.accept === true;
@@ -77,12 +78,14 @@ class Notifs extends EventEmitter {
       this.emit('change');
     });
     bus.onPeer('welcome', (id) => {
+      this._expireActions(id);
       const e = this.mesh.get(id);
       if (e) e.notifPool = false; // until its notif.policy says otherwise
       this._sendPolicy(id);
       this._watch();
     });
     bus.onPeer('closed', (id) => {
+      this._expireActions(id);
       const e = this.mesh.get(id);
       if (e) e.notifPool = false;
       this._watch();
@@ -165,6 +168,36 @@ class Notifs extends EventEmitter {
     this.emit('change');
   }
 
+  _expireActions(id) {
+    for (const item of this.history || []) {
+      if (item.from !== id) continue;
+      item.actionPeer = null;
+      item.actions = [];
+      item.reply = false;
+    }
+    this.emit('change');
+  }
+
+  // History can outlive a connection. Actions belong only to the exact origin session that
+  // supplied the current item; restored history and relayed notifications have no such binding.
+  _sendCurrent(item, message) {
+    if (!this.cfg.receive || !item || !(this.history || []).includes(item) || !item.actionPeer ||
+        this.mesh.get(item.from) !== item.actionPeer || !this.bus.connectedIds().includes(item.from)) return false;
+    return this.bus.send(item.from, message) !== false;
+  }
+
+  _goneFrom(id, from) {
+    const before = (this.history || []).length;
+    this.history = (this.history || []).filter((item) => item.id !== id || item.from !== from);
+    for (const n of [...this.live]) {
+      if (n.tdId !== id || n.tdOrigin !== from) continue;
+      n.tdActionCurrent = false;
+      try { n.close(); } catch {}
+      this.live.delete(n);
+    }
+    if (this.history.length !== before) this.changed();
+  }
+
   // TwinDesk Web's devices that show this Mac's notifications (shared/web/webhub.js notifSource).
   want(on) {
     if (!!on === !!this.webWant) return;
@@ -215,13 +248,20 @@ class Notifs extends EventEmitter {
     if (this.guard.repeat('in', m.app, m.title, m.body) && !updated) return; // a repeat of what was just shown
     const origin = this._nameOf(r.msg.o, m.on, from);
     const appName = str(m.appName, 100);
-    const title = str(m.title, 200) || appName || origin;
+    // The recent ones, for Overview and Messages' chat apps; buttons and Reply go back to the device.
+    const peer = this.mesh.get(from);
+    const direct = (!r.msg.o || r.msg.o === from) && peer && peer.os === P.OS.ANDROID;
+    const item = this.remember(m, { from, origin: r.msg.o || from, on: origin, direct: !!direct });
+    Object.defineProperty(item, 'actionPeer', { value: direct ? peer : null, writable: true });
+    const title = item.title;
     const body = str(m.body);
     const code = otpOf([title, str(m.subtitle, 200), body].join(' '));
-    const peer = this.mesh.get(from);
     // Actions have no relay protocol: only the authenticated origin can run its buttons.
-    const actions = r.msg.o === from && peer && peer.os === P.OS.ANDROID ? actionsOf(m) : [];
+    const actions = id && direct ? actionsOf(m) : [];
+    item.actions = actions;
+    if (!id) item.reply = false;
     this.echoes.push({ title, body: body.slice(0, 80), until: Date.now() + 30000 });
+    // A one-time code: a Copy button on the notification; then the phone's own buttons (Mark as read…).
     const n = new this.Notification({
       title,
       icon: this.iconsIn.for(m),
@@ -236,8 +276,8 @@ class Notifs extends EventEmitter {
       if (!this.cfg.receive || !n.tdActionCurrent) return;
       if (code && i === 0) return require('electron').clipboard.writeText(code);
       const action = i - (code ? 1 : 0);
-      if (!id || !Number.isInteger(action) || !actions[action] || this.mesh.get(from) !== peer || !this.bus.connectedIds().includes(from)) return;
-      this.bus.send(from, { t: 'notif.act', id, i: action });
+      if (!id || !Number.isInteger(action) || !actions[action]) return;
+      this._sendCurrent(item, { t: 'notif.act', id, i: action });
     });
     this.live.add(n);
     const drop = () => { n.tdActionCurrent = false; this.live.delete(n); };
@@ -260,8 +300,25 @@ class Notifs extends EventEmitter {
       sent: this.sent,
       shown: this.shown,
       apps: [...this.apps.values()].sort((a, b) => b.at - a.at).slice(0, 40),
+      ...this.historyView(),
     };
   }
+
+  changed() { this.emit('change'); }
 }
+
+withMeshPhoneActions(Notifs);
+Notifs.prototype.send = function (message) {
+  const items = (this.history || []).filter((item) => item.id === message.id);
+  return items.length === 1 && this._sendCurrent(items[0], message);
+};
+Notifs.prototype.dismiss = function (id) {
+  const items = (this.history || []).filter((item) => item.id === id);
+  if (!items.length) return false;
+  // A stale or ambiguous item can still be dismissed locally; never send to the wrong peer.
+  if (items.length === 1) this._sendCurrent(items[0], { t: 'notif.dismiss', id });
+  this._goneFrom(id, items[0].from);
+  return true;
+};
 
 module.exports = { Notifs };

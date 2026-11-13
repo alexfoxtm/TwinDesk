@@ -60,6 +60,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val clip = Clip(this)
     val notifs = Notifs(this)
     val companion = CompanionApproval(this)
+    val history = History(this) // the clipboard's and notifications' history, kept encrypted when asked (History.kt)
     val files = Files(this)
     val fclip = FileClip(this)
     val info = PhoneInfo(this)
@@ -74,6 +75,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val macSound = MacSound(this)
     val shortcuts = Shortcuts(this)
     val kvm = Kvm(this)
+    val deck = Deck(this) // the Deck: buttons here the computer runs (only when it offers it)
     val remote = Remote(this) // this phone as the computer's touchpad, keyboard and gamepad (the Remote page)
     // …and as a Bluetooth gamepad for any computer: made only when it's on or the Remote page asks.
     private val btPadLazy = lazy { BtPad(this) }
@@ -95,9 +97,27 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // Connect with Android: another phone, on a session of its own beside the computer's (Peer.kt).
     // Not a Feature: the computer's messages never reach it, nor its the computer.
     val peer = Peer(this)
-    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia)
+    // General › Modules (Modules.kt): the modules off when this process started; a page off isn't
+    // shown and its features hear nothing from the computer.
+    val modulesAtStart: Set<String> = Modules.off(store)
+    fun moduleOn(id: String) = id in Modules.FIXED || id !in modulesAtStart
+    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia, deck)
+        .filter { f ->
+            when (f) {
+                clip, fclip -> moduleOn("clipboard")
+                notifs, companion -> moduleOn("notifications")
+                rezume -> moduleOn("rezume")
+                remote -> moduleOn("remote")
+                pcMedia, nowPlaying -> moduleOn("media")
+                sound, macSound -> moduleOn("sound")
+                hub -> listOf("calls", "messages", "photos", "fileaccess").any(::moduleOn)
+                deck -> moduleOn("deck")
+                else -> true
+            }
+        }
 
     val host: Host? get() = if (link.connected) link.host else null
+    val returning: Host? get() = if (!link.connected) returnHost() else null
 
     // Not after Exit (the notification's): Android brings the process back for the notification
     // listener or the Accessibility service, and nothing should start or show then. wake() (TwinService.start:
@@ -222,7 +242,15 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     fun changed() {
         // (runCatching: discovery may report before every feature exists)
-        runCatching { wifiFast.hold(link.connected && !link.wired && (screen.viewing || adb.viewed || remote.active)) }
+        val pcFast = link.connected && !link.wired && (screen.viewing || adb.viewed || remote.active)
+        val peerFast = peer.connected && (
+            PeerScreen.viewer != null ||
+            PeerScreen.screenActive ||
+            PeerScreen.standaloneSoundActive ||
+            peer.isPlayingAudio ||
+            peer.isCapturingAudio
+        )
+        runCatching { wifiFast.hold(pcFast || peerFast) }
         runCatching { link.nudge() } // a hold started or ended: the computer hears within a tick
         version.value++
         main.post { TwinService.refresh(ctx); if (started) bank.checkSoon() }
@@ -234,7 +262,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
     fun hosts(): List<Host> = store.hosts()
 
     // The UI's Connect, or the Mac's invite: take the session.
-    fun connect(h: Host) { stopReturn(); connect(h, false) }
+    fun connect(h: Host) {
+        if (link.connected && link.host?.id == h.id && link.host?.fp == h.fp) return
+        stopReturn()
+        connect(h, false)
+    }
 
     // skipNet: the network just failed to reach it (a stale address after the Wi-Fi went): Bluetooth first.
     private fun connect(h: Host, skipNet: Boolean) {
@@ -322,19 +354,20 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // and the session pins the computer's certificate, so another machine there fails.
     // false: none of them answers from this network.
     fun connectQr(id: String, addrs: List<String>, port: Int, nonce: String, name: String): Boolean {
-        stopReturn()
+        if (id.isBlank() || port !in 1..65535) return false
         val answers = { a: String, p: Int ->
             runCatching { java.net.Socket().use { s -> s.connect(java.net.InetSocketAddress(a, p), 800) }; true }.getOrDefault(false)
         }
-        resumeUntil = 0
         store.hosts().find { it.id == id }?.let { h ->
             val use = if (discovery.found[h.id] != null || answers(h.address, h.port)) h
-                else addrs.firstOrNull { answers(it, port) }?.let { h.copy(address = it, port = port) } ?: h
+                else addrs.firstOrNull { answers(it, port) }?.let { h.copy(address = it, port = port) } ?: return false
             Log.i("TwinDesk", "QR: connecting to ${h.name}")
             connect(use)
             return true
         }
         val address = addrs.firstOrNull { answers(it, port) } ?: return false
+        stopReturn()
+        resumeUntil = 0
         Log.i("TwinDesk", "QR: pairing with ${name.ifEmpty { id }} at $address")
         invite?.let { discovery.clearInvite(it.id) }
         invite = null
@@ -357,7 +390,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     fun pair(f: Found) {
-        stopReturn()
+        if (f.address.isBlank() || (!f.address.startsWith("blp:") && !f.address.startsWith("ble:") && f.port !in 1..65535)) return
         invite = null
         discovery.clearInvite(f.id)
         if (f.address.startsWith("blp:") || f.address.startsWith("ble:")) {
@@ -367,11 +400,12 @@ class Core private constructor(val ctx: Context) : Link.Events {
             bg.execute {
                 val port = blePipe(f.id)
                 if (link.pair?.phase != "connecting" || link.pair?.port != 0) return@execute // cancelled meanwhile
-                if (port != null) link.startPairing("127.0.0.1", port, f.name, viaBle = true)
+                if (port != null) { stopReturn(); link.startPairing("127.0.0.1", port, f.name, viaBle = true) }
                 else link.pairUnreachable(tr("{name} didn’t answer over Bluetooth. Open TwinDesk on it, or put both on the same Wi-Fi, then Pair again.", "name" to f.name))
             }
             return
         }
+        stopReturn()
         link.startPairing(f.address, f.port, f.name)
     }
 
@@ -381,7 +415,12 @@ class Core private constructor(val ctx: Context) : Link.Events {
     private fun blePipe(id: String): Int? =
         (if (serve.get(id) != null) serve.open(id) else null) ?: (if (ble.get(id) != null) ble.open(id) else null)
 
-    fun pairAddress(address: String) { stopReturn(); link.startPairing(address.trim(), Proto.PORT, address.trim()) }
+    fun pairAddress(address: String) {
+        val use = address.trim()
+        if (use.isEmpty()) return
+        stopReturn()
+        link.startPairing(use, Proto.PORT, use)
+    }
 
     fun dismissInvite() {
         invite?.let { discovery.clearInvite(it.id) }
@@ -490,6 +529,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         returnFailures = 0
         returnTailTurn = false
         returnPrefs.edit().remove("host").commit()
+        changed()
     }
 
     @Synchronized private fun rememberReturn(h: Host, socket: Any?) {

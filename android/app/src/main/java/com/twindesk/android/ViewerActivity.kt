@@ -89,7 +89,16 @@ class ViewerActivity : ComponentActivity() {
         }
         val locked = LockPage(this, core) { h.view.post { login = false; lockPage?.close() } }
         lockPage = locked
-        setContent { Theme { Viewer(core, h, locked, login, openLogin = {
+        setContent { Theme {
+            val revision by core.version.collectAsState()
+            LaunchedEffect(revision) {
+                // A singleTask viewer can be reused after the connected computer changes.
+                val os = core.host?.os ?: return@LaunchedEffect
+                val orientation = if (os == "mac") android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                if (requestedOrientation != orientation) requestedOrientation = orientation
+            }
+            Viewer(core, h, locked, login, openLogin = {
             login = true
             locked.open()
         }, closeLogin = { login = false; locked.close() }) { finish() } } }

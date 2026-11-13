@@ -7,7 +7,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum Page: String, CaseIterable, Identifiable, Hashable {
-    case overview, connection, receive, share, remote, clipboard, notifications, files, photos, messages, audio, camera, media, airplay, shortcuts, general, about
+    case overview, connection, receive, share, remote, deck, clipboard, notifications, files, photos, messages, audio, camera, media, airplay, shortcuts, signing, general, about
     var id: String { rawValue }
 
     var title: String {
@@ -17,6 +17,7 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
         case .receive: return tr("Receive screen")
         case .share: return tr("Share screen")
         case .remote: return tr("Remote")
+        case .deck: return tr("Deck")
         case .clipboard: return tr("Clipboard")
         case .notifications: return tr("Notifications")
         case .files: return tr("File Sharing")
@@ -27,6 +28,7 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
         case .media: return tr("Media")
         case .airplay: return tr("AirPlay & SMB")
         case .shortcuts: return tr("Shortcuts")
+        case .signing: return tr("App refresh")
         case .general: return tr("General")
         case .about: return tr("About")
         }
@@ -39,6 +41,7 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
         case .receive: return "display"
         case .share: return "rectangle.on.rectangle"
         case .remote: return "gamecontroller.fill"
+        case .deck: return "square.grid.3x3.fill"
         case .clipboard: return "doc.on.clipboard.fill"
         case .notifications: return "bell.fill"
         case .files: return "folder.fill"
@@ -49,6 +52,7 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
         case .media: return "play.fill"
         case .airplay: return "airplayvideo"
         case .shortcuts: return "square.stack.3d.up.fill"
+        case .signing: return "signature"
         case .general: return "gearshape.fill"
         case .about: return "info"
         }
@@ -59,6 +63,7 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
         case .overview: return Color(white: 0.45)
         case .connection, .receive, .share, .files, .about: return TDColor.accent
         case .remote: return .orange
+        case .deck: return Color(red: 0.62, green: 0.38, blue: 0.95)
         case .messages: return TDColor.good
         case .clipboard: return Color(red: 0.35, green: 0.78, blue: 0.85)
         case .notifications: return TDColor.bad
@@ -68,22 +73,29 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
         case .media: return Color(red: 0.98, green: 0.24, blue: 0.5)
         case .airplay: return Color(red: 1, green: 0.8, blue: 0.0)
         case .shortcuts: return Color(red: 0.37, green: 0.36, blue: 0.9)
+        case .signing: return Color(red: 0.25, green: 0.52, blue: 0.56)
         case .general: return Color(white: 0.5)
         }
     }
 
-    // The sidebar's groups, as the computers have them.
-    static let groups: [[Page]] = [
+    // The sidebar's groups, as the computers have them; arranged (SearchView.swift's NavOrder), one
+    // group in that order, General and About last.
+    static var groups: [[Page]] { NavOrder.load() == nil ? defaultGroups : [NavOrder.ordered(), NavOrder.fixed] }
+    static let defaultGroups: [[Page]] = [
         [.overview, .connection],
-        [.receive, .share, .remote],
+        [.receive, .share, .remote, .deck],
         [.clipboard, .notifications, .files, .photos, .messages],
         [.audio, .camera, .media],
-        [.airplay, .shortcuts],
+        [.airplay, .shortcuts, .signing],
         [.general, .about],
     ]
 
     // iPhone's tab bar: these as tabs, everything else under More.
-    static let bottom: [Page] = [.overview, .connection, .receive, .files]
+    // Arranged: the first pages shown, as many as chosen.
+    static var bottom: [Page] {
+        guard let s = NavOrder.load() else { return [.overview, .connection, .receive, .files] }
+        return Array(NavOrder.ordered().filter { $0.shown(Core.shared) }.prefix(s.bar))
+    }
     var tabTitle: String {
         switch self {
         case .connection: return tr("Connect")
@@ -109,12 +121,12 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
 
 // What's over the pages now (full screen).
 enum Cover: Identifiable, Equatable {
-    case viewer, remote(String), peerScreen
-    var id: String { switch self { case .viewer: return "viewer"; case .peerScreen: return "peerScreen"; case .remote(let m): return "remote." + m } }
+    case viewer, remote(String), peerScreen, deck
+    var id: String { switch self { case .viewer: return "viewer"; case .peerScreen: return "peerScreen"; case .deck: return "deck"; case .remote(let m): return "remote." + m } }
 }
 
 // iPhone's tabs: a page of its own, or More (the rest, as a list).
-enum PhoneTab: Hashable { case page(Page), more }
+enum PhoneTab: Hashable { case page(Page), more, search }
 
 final class AppUI: ObservableObject {
     static let shared = AppUI()
@@ -122,6 +134,10 @@ final class AppUI: ObservableObject {
     @Published var tab: PhoneTab = .page(.overview) // iPhone: the tab bar's
     @Published var paths: [PhoneTab: [Page]] = [:] // iPhone: what's open over each tab
     @Published var cover: Cover?
+    @Published var navVersion = 0     // Arrange saved: the tabs and sidebar again
+    @Published var searching = false  // Search as a sheet (More's field, the iPad, ⌘K)
+    @Published var arranging = false  // the Arrange sheet
+    @Published var history: String?   // a history's own view: "clip" or "notifs" (HistoryView.swift)
 
     // Open a page: iPad, in the sidebar. iPhone: a tab's own page, that tab (at its root); any
     // other, over the tab that's open, so Back returns to where it was opened from.
@@ -161,6 +177,13 @@ struct RootView: View {
                 MirrorAskSheet().environmentObject(core).presentationDetents([.large])
             }
             .modifier(PairPrompts())
+            .sheet(isPresented: $ui.searching) {
+                NavigationStack { SearchView(sheet: true) }.environmentObject(core).environmentObject(ui)
+            }
+            .sheet(isPresented: $ui.arranging) { ArrangeSheet() }
+            .sheet(isPresented: Binding(get: { ui.history != nil }, set: { if !$0 { ui.history = nil } })) {
+                NavigationStack { HistoryView(what: ui.history ?? "clip") }.environmentObject(core).environmentObject(ui)
+            }
     }
 
     @ViewBuilder
@@ -171,34 +194,68 @@ struct RootView: View {
     }
 
     // iPhone: the tab bar (with a phone holding the session, only the tabs it can do).
-    private var stack: some View {
+    // Search, as Android's: its own round button at the bar's right end (iOS 26 draws a tab with the
+    // search role that way; iOS 18 to 25 as the last tab), or none (Arrange › Search button, More's
+    // field stays). iOS 16 and 17: the last tab.
+    @ViewBuilder private var stack: some View {
         let _ = core.tick
+        let _ = ui.navVersion
         let tabs = Page.bottom.filter { !core.peerMode || peerShows($0, core.peer) }
-        return TabView(selection: Binding(get: { ui.tab }, set: { t in
+        let search = NavOrder.searchButton
+        let pick = Binding<PhoneTab>(get: { ui.tab == .search && !search ? .page(.overview) : ui.tab }, set: { t in
             // A tab tapped again: back to its root.
             if t == ui.tab { ui.paths[t] = [] }
             ui.tab = t
             if case .page(let p) = t { ui.page = p }
-        })) {
-            ForEach(tabs) { p in
-                NavigationStack(path: ui.path(.page(p))) {
-                    PageView(page: p)
-                        .environment(\.branded, p == .overview) // the tab's own page only
-                        .navigationDestination(for: Page.self) { q in PageView(page: q).environment(\.branded, false) }
+        })
+        Group {
+            if #available(iOS 18.0, *) {
+                TabView(selection: pick) {
+                    ForEach(tabs) { p in
+                        Tab(p.tabTitle, systemImage: tabIcon(p), value: PhoneTab.page(p)) { pageStack(p) }
+                    }
+                    Tab(tr("More"), systemImage: "ellipsis", value: PhoneTab.more) { moreStack(tabs) }
+                    if search {
+                        Tab(tr("Search"), systemImage: "magnifyingglass", value: PhoneTab.search, role: .search) { searchStack }
+                    }
                 }
-                .tabItem { Label(p.tabTitle, systemImage: tabIcon(p)) }
-                .tag(PhoneTab.page(p))
+            } else {
+                TabView(selection: pick) {
+                    ForEach(tabs) { p in
+                        pageStack(p).tabItem { Label(p.tabTitle, systemImage: tabIcon(p)) }.tag(PhoneTab.page(p))
+                    }
+                    moreStack(tabs).tabItem { Label(tr("More"), systemImage: "ellipsis") }.tag(PhoneTab.more)
+                    if search {
+                        searchStack.tabItem { Label(tr("Search"), systemImage: "magnifyingglass") }.tag(PhoneTab.search)
+                    }
+                }
             }
-            NavigationStack(path: ui.path(.more)) {
-                Sidebar(selection: nil, hiding: tabs)
-                    .navigationDestination(for: Page.self) { p in PageView(page: p) }
-            }
-            .tabItem { Label(tr("More"), systemImage: "ellipsis") }
-            .tag(PhoneTab.more)
         }
         .modifier(TabBarGlass())
         // A tab that's gone (a phone that can't do it): Overview.
         .onChange(of: tabs) { t in if case .page(let p) = ui.tab, !t.contains(p) { ui.tab = .page(.overview) } }
+    }
+
+    private func pageStack(_ p: Page) -> some View {
+        NavigationStack(path: ui.path(.page(p))) {
+            PageView(page: p)
+                .environment(\.branded, p == .overview) // the tab's own page only
+                .navigationDestination(for: Page.self) { q in PageView(page: q).environment(\.branded, false) }
+        }
+    }
+
+    private func moreStack(_ tabs: [Page]) -> some View {
+        NavigationStack(path: ui.path(.more)) {
+            Sidebar(selection: nil, hiding: tabs)
+                .navigationDestination(for: Page.self) { p in PageView(page: p) }
+        }
+    }
+
+    private var searchStack: some View {
+        NavigationStack(path: ui.path(.search)) {
+            SearchView()
+                .navigationDestination(for: Page.self) { p in PageView(page: p) }
+        }
     }
 
     // Line icons in the bar, as Android's (the sidebar keeps the filled, coloured ones).
@@ -232,6 +289,7 @@ struct RootView: View {
             Button("") { core.clip.sendCurrent(force: true) }.keyboardShortcut("v", modifiers: [.command, .shift])
             Button("") { core.mirror.sharing ? core.mirror.stop() : ShareScreen.open() }.keyboardShortcut("s", modifiers: [.command, .shift])
             Button("") { if core.connected { ui.cover = .viewer } }.keyboardShortcut("r", modifiers: [.command, .shift])
+            Button("") { ui.searching = true }.keyboardShortcut("k", modifiers: .command)
         }
         .opacity(0).allowsHitTesting(false).accessibilityHidden(true)
     }
@@ -261,6 +319,7 @@ private struct Covers: ViewModifier {
         case .viewer: ViewerScreen()
         case .remote(let mode): RemoteScreen(mode: mode)
         case .peerScreen: PeerScreenView()
+        case .deck: DeckScreen()
         }
     }
 }
@@ -341,6 +400,8 @@ struct Sidebar: View {
         .navigationBarTitleDisplayMode(selection == nil ? .large : .inline)
         .modifier(BrandBar(on: selection != nil)) // iPad: the mark and name in the bar, level with the sidebar button
         .refreshable { core.discovery.refresh() }
+        // iPhone's More: Edit arranges the pages (which are tabs, and their order).
+        .toolbar { if selection == nil { ToolbarItem(placement: .navigationBarTrailing) { Button(tr("Edit")) { ui.arranging = true } } } }
     }
 
     @ViewBuilder
@@ -354,6 +415,11 @@ struct Sidebar: View {
             .padding(.top, selection == nil ? 4 : 8)
             .padding(.bottom, 4)
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+        }
+        // Search (SearchView.swift).
+        Section {
+        } header: {
+            SearchFieldButton().textCase(nil).listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
         }
         // The other paired computers and phones nearby, as the computers' sidebars list them: tap to connect.
         let near = nearbyPaired
@@ -377,7 +443,8 @@ struct Sidebar: View {
             } header: { Text(tr("Nearby")) }
         }
         // With a phone: only what it and this one can do (PeerViews' peerShows); Messages only then.
-        let groups = Page.groups.map { g in g.filter { !hiding.contains($0) && (core.peerMode ? peerShows($0, core.peer) : $0 != .messages) } }.filter { !$0.isEmpty }
+        let _ = ui.navVersion
+        let groups = Page.groups.map { g in g.filter { !hiding.contains($0) && $0.shown(core) } }.filter { !$0.isEmpty }
         ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
             Section {
                 ForEach(group) { p in
@@ -506,7 +573,7 @@ struct PageView: View {
     let page: Page
     var body: some View {
         let _ = core.tick
-        if core.peerMode && ![.connection, .general, .about].contains(page) { PeerPageView(page: page) }
+        if core.peerMode && ![.connection, .signing, .general, .about].contains(page) { PeerPageView(page: page) }
         else { pc }
     }
 
@@ -518,6 +585,7 @@ struct PageView: View {
         case .receive: ReceiveScreenView()
         case .share: ShareScreenView()
         case .remote: RemoteView()
+        case .deck: DeckView()
         case .clipboard: ClipboardView()
         case .notifications: NotificationsView()
         case .files: FilesView()
@@ -528,6 +596,7 @@ struct PageView: View {
         case .media: MediaView()
         case .airplay: AirPlayView()
         case .shortcuts: ShortcutsView()
+        case .signing: SignerView()
         case .general: SettingsView()
         case .about: AboutView()
         }

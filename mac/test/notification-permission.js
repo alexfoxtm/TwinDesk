@@ -17,6 +17,7 @@ function page() {
     switch: () => node('switch'), button: (text, click) => node('button', { textContent: text, click }),
     row(label, hint, controls) { const row = node('row', { label, hint, controls, setHint(v) { this.hint = v; } }); rows.push(row); return row; },
     pair: () => node('pair'), dir: () => node('dir'), card: () => node('card'),
+    historyCard: () => ({ el: node('history'), update() {} }),
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../ui-notifs.js'), 'utf8'), { UI, I18n: { t: (s) => s } });
   const render = tab.build({ append() {} });

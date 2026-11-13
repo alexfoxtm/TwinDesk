@@ -27,6 +27,9 @@ if [ -z "${MAC_IDENTITY:-}" ] && [ "${MAC_ADHOC:-0}" != 1 ]; then
 fi
 
 ../mac-helper/build.sh "$ARCH"
+# iPhone app signing's helper (ios-signer/, shared/iossign.js). Optional: without cargo, or its target,
+# the app leaves that page's work out.
+TWINDESK_SIGNER_ANY_IPA=1 ../ios-signer/build.sh "$ARCH" || echo "note: no iOS signing helper in this build" >&2
 
 # TwinDesk for Android with notification access, which the Mac installs on a phone over wireless
 # debugging (phone-bridge.js): the newest full build from android/dist, if one was built.
@@ -64,6 +67,9 @@ rsync -a --exclude shortcuts-src "$ROOT/web/" "$STAGE/web/"
 cp -R "$ROOT/android/app/src/main/assets/web/." "$STAGE/android-web/"
 cp "$ROOT"/mac-helper/.build/release/macshare-helper "$ROOT"/mac-helper/.build/release/macshare-helper-multi "$ROOT"/mac-helper/.build/release/macshare-dockstub "$ROOT"/mac-helper/.build/release/macshare-calls "$ROOT"/mac-helper/.build/release/macshare-iosusb "$ROOT"/mac-helper/.build/release/libtwindesk-nowplaying.dylib "$STAGE/mac-helper/.build/release/"
 [ ! -f "$ROOT/mac-helper/.build/release/notification-permission.node" ] || cp "$ROOT/mac-helper/.build/release/notification-permission.node" "$STAGE/mac-helper/.build/release/"
+if [ -f "$ROOT/ios-signer/bin/$ARCH/twindesk-ios-signer" ]; then
+  mkdir -p "$STAGE/ios-signer/bin/$ARCH" && cp "$ROOT/ios-signer/bin/$ARCH/twindesk-ios-signer" "$STAGE/ios-signer/bin/$ARCH/"
+fi
 cp -R node_modules/ws "$STAGE/node_modules/"
 mkdir -p "$STAGE/mac/node_modules" && cp -R node_modules/ws "$STAGE/mac/node_modules/"
 cp "$ROOT/LICENSE" "$STAGE/"
@@ -274,7 +280,7 @@ if [ -n "$MAC_IDENTITY" ] || [ -n "$LOCAL_IDENTITY" ]; then
   codesign --force $OPTIONS $SIGN "$ID" --entitlements "$ENTITLEMENTS" "$APP"
 else
   # Explicit disposable build: helpers first, then the edited app bundle.
-  for b in "$APP"/Contents/Resources/app/mac-helper/.build/release/*; do [ -f "$b" ] && codesign --force $SIGN "$ID" "$b"; done
+  for b in "$APP"/Contents/Resources/app/mac-helper/.build/release/* "$APP"/Contents/Resources/app/ios-signer/bin/*/*; do [ -f "$b" ] && codesign --force $SIGN "$ID" "$b"; done
   codesign --force $SIGN "$ID" -i io.github.alexfoxtm.twindesk "$APP/Contents/MacOS/twindesk-vcam"
   codesign --force --deep $SIGN "$ID" "$APP"
   codesign --force $SIGN "$ID" --entitlements dist/share.entitlements "$APPEX" # --deep dropped its sandbox

@@ -66,6 +66,11 @@ function refusesRelayAndDisconnectedActions() {
   f.settings.notifs.receive = false;
   f.shown[1].emit('action', {}, 0);
   assert.deepStrictEqual(f.sent, [], 'neither a relay, a disconnected source nor a disabled receiver sends an action');
+  assert.strictEqual(f.notifs.dismiss('relay'), true, 'a relayed notification can be dismissed locally');
+  assert(!f.notifs.history.some((item) => item.id === 'relay'));
+  assert.strictEqual(f.notifs.dismiss('direct'), true, 'a stale notification can be dismissed locally');
+  assert(!f.notifs.history.some((item) => item.id === 'direct'));
+  assert.deepStrictEqual(f.sent, [], 'local dismiss does not send to a disconnected or replaced session');
 }
 
 try {

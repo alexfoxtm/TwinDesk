@@ -98,6 +98,7 @@ UI.tab({
     const pingSw = UI.switch((v) => api.setApp({ keepPinging: v }), { label: t('Prioritize performance over battery life') });
     const pingRow = UI.row(t('Prioritize performance over battery life'), t('Checks the connection every second, even when nothing is in use. Off: an idle connection is checked every few minutes, and at once when something starts, so phones and laptops can sleep'), [pingSw]);
     const engines = UI.enginesRows(); // Engines in use, while connected (shared/ui-engines.js)
+    const modules = UI.modulesCard ? UI.modulesCard() : { card: null, update() {} }; // General › Modules (shared/ui-modules.js; not in Multi-device)
     const sections = UI.sections([
       UI.card(t('Permissions'), [
         ...perms.map((x) => x.row),
@@ -111,6 +112,7 @@ UI.tab({
         styleRow,
         themeRow,
         accentRow,
+        UI.arrangeRow ? UI.arrangeRow() : null,
         UI.row(t('Show a popup when switching'), t('When the mouse and keyboard move between devices'), [hudSw]),
         wallRow,
         media.el,
@@ -118,11 +120,16 @@ UI.tab({
       UI.card(t('Language'), [
         UI.row(t('Language'), t('Changing the language restarts TwinDesk.'), [language]),
       ]),
+      UI.card(t('Tutorial'), [
+        UI.row(t('Tour of TwinDesk'), t('How to install TwinDesk on your other device, connect it, and what each page does.'), [UI.button(t('Show the tour'), () => window.Tour && Tour.start(), 'small')]),
+        UI.row(t('What’s new'), t('What came in this version.'), [UI.button(t('Show'), () => window.Tour && Tour.news(), 'small')]),
+      ]),
       UI.card(t('Overview'), partRows),
       UI.card(t('Network and Bluetooth'), [bleRow, blePcRow, bleWifiRow, wakeRow, shareRow]),
       UI.card(t('Tailscale'), [tailRow, tailHere, tailHow]),
       UI.card(t('This computer'), [deviceRow, helperRow]),
       UI.card(t('Connections'), [pingRow]),
+      ...(modules.card ? [modules.card] : []),
       UI.card(t('Advanced'), [protoRow, ...engines.rows]),
     ]);
     body.append(sections);
@@ -140,6 +147,7 @@ UI.tab({
       sections.spy();
       media.update(s);
       engines.update(s);
+      modules.update(s);
       wallSw.set(!s.phone || !s.phone.settings || s.phone.settings.wallpaper !== false);
       const ov = (s.ui && s.ui.overview) || {};
       for (const k of Object.keys(partSw)) partSw[k].set(ov[k] !== false);

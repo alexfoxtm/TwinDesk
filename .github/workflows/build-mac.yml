@@ -83,6 +83,11 @@ jobs:
             echo "::notice title=Signing::No Developer ID certificate imported. Builds without MAC_IDENTITY use disposable ad-hoc signing and do not preserve permissions across updates."
           fi
 
+      # iPhone app signing's helper (ios-signer/build.sh, from build-app.sh) is Rust, built for each
+      # architecture the app is.
+      - name: Rust targets for both Mac architectures
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin || true
+
       - name: Install dependencies
         working-directory: mac
         run: npm install

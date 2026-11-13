@@ -729,8 +729,8 @@ class Link(
         if (failure == "identity" && !wasReclaim) {
             setState("failed", tr("{name} looks different now. Forget it and pair again.", "name" to (host?.name ?: tr("The computer"))))
         } else if (failure == "identity") {
-            // A changed network can put an unrelated device at a candidate address. The pin
-            // refuses that dial while keeping the original pairing and return intent.
+            // Discovery is unauthenticated. An unrelated computer at a candidate address must
+            // not erase the saved pairing or its return intent; another candidate may be genuine.
             setState("idle", tr("Reconnecting…"))
         } else {
             if (message.isEmpty() && failure != null && lastCode != "paused") message = failure

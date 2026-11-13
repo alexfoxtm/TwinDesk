@@ -128,6 +128,7 @@ class Phone extends EventEmitter {
     if (id && this.raw && typeof this.raw.noteReleased === 'function') this.raw.noteReleased(id);
     if (this.raw.current && P.isPhoneOs(this.raw.current.os)) this.raw.release();
     else this.raw.endPhoneGrace(); // dropped and waiting to resume: let it go too
+    this.emit('change');
   }
 
   _fail(message) {
@@ -159,10 +160,12 @@ class Phone extends EventEmitter {
 
   get view() {
     const c = this.server.current;
+    const returning = !isPhone(c) && this.pairing.returnPhone && this.pairing.list().find((p) => p.id === this.pairing.returnPhone);
     return {
       nearby: this.nearby(),
       connected: isPhone(c) ? { id: c.deviceId, name: c.name, os: c.os, rttMs: c.rttMs, usb: !!c.ice } : null,
       connecting: this.connecting ? { id: this.connecting.id, name: this.connecting.name } : null,
+      returning: returning ? { id: returning.id, name: returning.name } : null,
       message: this.message,
       held: !isPhone(c) && this.raw.phoneHolds(), // the phone dropped and may come back
       info: this.info && { ...this.info, wallpaper: !!this.info.wallpaper },

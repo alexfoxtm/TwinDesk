@@ -117,11 +117,17 @@ async function failurePath(dir, tls) {
     assert.strictEqual(error(hello(server, true)).code, P.E.BUSY);
     h.busy(false);
     const phone = new Phone({ server, raw: server, pairing, discovery: { list() { return []; }, get() { return null; } } });
+    assert.strictEqual(server.phoneGrace, null);
+    assert.deepStrictEqual(phone.view.returning, { id: ANDROID, name: ANDROID }, 'return stays visible after grace expires');
+    let phoneChanges = 0;
+    phone.on('change', () => phoneChanges++);
     const stopped = await deferred(server, () => { phone.disconnect(); });
+    assert.ok(phoneChanges > 0, 'Disconnect refreshes the pending return UI');
     assert.strictEqual(stopped.ctx.released, true);
     assert.strictEqual(stopped.ctx.authed, false);
     assert.ok(!stopped.sent.some((m) => m.t === P.T.WELCOME));
     assert.strictEqual(store.read('phone-return.json', null), null);
+    assert.strictEqual(phone.view.returning, null, 'Disconnect clears the visible pending return');
     assert.strictEqual(error(hello(server, true)).code, P.E.RELEASED);
     hello(server);
     free();
