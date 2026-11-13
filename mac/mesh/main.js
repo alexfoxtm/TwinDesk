@@ -49,7 +49,6 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 const P = require('../../shared/protocol.js');
-const Pick = require('../../shared/screen-pick.js');
 const CL = require('../../shared/cursorlock.js');
 const trayMenu = require('../../shared/traymenu.js');
 const I18n = require('../../shared/i18n.js');
@@ -209,7 +208,6 @@ function publishState() {
     const { helper, displays, stream, clipboard: clip, kvm } = svc || {};
     state.helper.running = !!(helper && helper.running);
     if (displays) {
-      anchorDisplay(); // a screen that was unplugged is dropped before the window is told
       const target = displays.target();
       state.sharing = {
         on: !!settings.sharing.on,
@@ -278,17 +276,6 @@ function publishState() {
 // Tell the viewer what we share, so it can show Start / Extend / Mirror itself
 // (screen.state); only when something changed or the peer is new.
 let screenStateKey = '';
-
-// A picked screen that was unplugged is forgotten, so it does not return when it is plugged in again.
-function anchorDisplay() {
-  if (!svc) return;
-  const next = Pick.anchoredDisplay(svc.displays.list(), settings.sharing.displayId, !!(settings.virtual && settings.virtual.enabled), require('electron').screen.getPrimaryDisplay().id);
-  if (!next.replaced) return;
-  const cur = settings.sharing.displayId == null ? null : Number(settings.sharing.displayId);
-  if (cur === next.displayId) return;
-  settings.sharing.displayId = next.displayId;
-  store.saveSettings(settings);
-}
 
 function sendScreenState() {
   const c = peer && peer.current;
