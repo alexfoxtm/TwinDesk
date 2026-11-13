@@ -20,6 +20,7 @@ import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -55,19 +56,43 @@ class InputService : AccessibilityService() {
     // The app in front, for the computer: Enter in a chat app there sends the message (phone.send,
     // shared/phonechat.js). Said again after each connect (resend).
     @Volatile var activePackage: String = ""; private set
+    @Volatile private var multipleApps = true
+
+    private fun multipleApplications(pkg: String): Boolean = runCatching {
+        val apps = windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }.map { it.root?.packageName?.toString() }
+        apps.isEmpty() || apps.any { it.isNullOrEmpty() } || apps.toSet().size != 1 || apps.first() != pkg
+    }.getOrDefault(true)
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            val multi = multipleApplications(activePackage)
+            if (multi != multipleApps) { multipleApps = multi; resend() }
+            return
+        }
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString() ?: ""
-        if (pkg.isEmpty() || pkg == activePackage || pkg == "com.android.systemui") return
+        if (pkg == "com.android.systemui") {
+            if (runCatching { rootInActiveWindow?.packageName?.toString() }.getOrNull() != pkg) return
+            if (activePackage.isNotEmpty()) {
+                activePackage = ""
+                val core = Core.get(this)
+                multipleApps = true
+                if (core.link.connected) core.send(msg(Proto.T.PHONE_ACTIVE_APP, "pkg" to "", "multi" to true))
+            }
+            return
+        }
+        if (pkg.isEmpty()) return
+        val multi = multipleApplications(pkg)
+        if (pkg == activePackage && multi == multipleApps) return
         runCatching { Core.get(this).bank.front(pkg) } // a banking app: debugging off, TwinDesk exits (BankGuard.kt)
         activePackage = pkg
+        multipleApps = multi
         resend()
     }
 
     fun resend() {
         val core = Core.get(this)
-        if (activePackage.isNotEmpty() && core.link.connected) core.send(msg(Proto.T.PHONE_ACTIVE_APP, "pkg" to activePackage))
+        if (core.link.connected) core.send(msg(Proto.T.PHONE_ACTIVE_APP, "pkg" to activePackage, "multi" to multipleApps))
     }
     override fun onInterrupt() {}
 

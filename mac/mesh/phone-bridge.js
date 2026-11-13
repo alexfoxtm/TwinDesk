@@ -31,6 +31,7 @@ const chat = require('../../shared/phonechat.js');
 const { uhidKey } = require('../../shared/uhidkbd.js');
 const { PhoneInput } = require('../../shared/phoneinput.js');
 const { PhonePinch } = require('../../shared/phonepinch.js');
+const { PhonePan } = require('../../shared/phonepan.js');
 const Modes = require('../../shared/phonemodes.js');
 const { NativeScreen } = require('../../shared/nativescreen.js');
 
@@ -101,6 +102,10 @@ class PhoneBridge extends EventEmitter {
     this.known = new Set(readJson(knownFile(), []));
     server.on(`t:${T.PHONE_INPUT}`, (m, ctx) => {
       if (!isPhone(ctx)) return;
+      if (m.on !== true) {
+        if (this.pan) this.pan.end();
+        if (this.views) { this.views.activeApp = ''; this.views.multipleApps = true; this.views.a11y = false; }
+      }
       this.phoneInput = m.on === true;
       // The phone's choice of input (changed there, or on connecting): the same setting here.
       const ph = this.getSettings().phone;
@@ -284,6 +289,7 @@ class PhoneBridge extends EventEmitter {
         // The cable was plugged in: move onto it (windows opened from now on use it too).
         console.log(`[phone] moving onto the USB cable (${usb})`);
         if (this.pinch) this.pinch.cancel();
+        if (this.pan) this.pan.end();
         this.control.stop();
         this.control = null;
       } else {
@@ -598,6 +604,7 @@ class PhoneBridge extends EventEmitter {
   }
 
   handle(m) {
+    if (this.pan && m.t !== T.K_WHEEL && m.t !== T.KVM_LOCK) this.pan.end();
     if ((this.pinch?.active || this.input?.pinching) && (m.t === T.K_MOVE || m.t === T.K_WHEEL)) return;
     if ([T.K_DOWN, T.K_UP, T.K_KEY_DOWN, T.K_KEY_UP, T.KVM_TAKE, T.KVM_RELEASE].includes(m.t)) {
       if (this.pinch) this.pinch.cancel();
@@ -806,6 +813,7 @@ class PhoneBridge extends EventEmitter {
 
   _kvmEnd(tellKvm) {
     if (this.pinch) this.pinch.cancel();
+    if (this.pan) this.pan.end();
     const k = this.kvm;
     if (!k) return;
     this.input.stop();
@@ -843,6 +851,13 @@ class PhoneBridge extends EventEmitter {
     if (!k || !d || !this.ctl) return;
     const line = m.mode === 'line';
     const rev = this.getSettings().kvm.reverseScroll ? -1 : 1;
+    if (!line && this.phoneInput && this.views?.activeApp === 'com.google.android.apps.maps' && this.views.multipleApps === false && this.ctl === this.control && k.mouse !== false && !k.buttons) {
+      if (m.momentum) { if (this.pan) this.pan.end(); return; }
+      const scale = Math.max(1, Math.min(3.5, (d.dpi || 420) / 160));
+      if (!this.pan) this.pan = new PhonePan();
+      return this.pan.move(this.ctl, d, k, -(Number(m.dx) || 0) * scale * rev, -(Number(m.dy) || 0) * scale * rev);
+    }
+    if (this.pan) this.pan.end();
     const hs = (-(Number(m.dx) || 0) / (line ? 1 : 40)) * rev;
     const vs = (-(Number(m.dy) || 0) / (line ? 1 : 40)) * rev;
     if (hs || vs) this.ctl.scroll(k.x, k.y, d.w, d.h, hs, vs, k.buttons);

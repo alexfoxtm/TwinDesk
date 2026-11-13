@@ -45,14 +45,18 @@ class PhoneViews extends EventEmitter {
     // app sends (shared/phonechat.js); a11y: the phone clicks Send itself.
     this.activeApp = '';
     this.a11y = false;
+    this.multipleApps = true;
     server.on(`t:${T.PHONE_ACTIVE_APP}`, (m) => {
       if (!m || typeof m.pkg !== 'string') return;
+      if ((this.activeApp !== m.pkg || m.multi !== false) && this.bridge.pan) this.bridge.pan.end();
       this.activeApp = m.pkg.slice(0, 200);
+      this.multipleApps = m.multi !== false;
       this.a11y = true;
     });
     server.on('closed', () => {
       this.activeApp = '';
       this.a11y = false;
+      this.multipleApps = true;
     });
     server.on(`t:${T.PHONE_AWAKE}`, (m) => this._awake(m));
     // The phone's own Show and Close (its Screen page): its screen in a window here (openScreen

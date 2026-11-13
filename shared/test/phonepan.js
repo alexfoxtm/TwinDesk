@@ -1,0 +1,52 @@
+'use strict';
+const assert = require('node:assert/strict');
+const { PhonePan } = require('../phonepan');
+const out = [], ctl = { closed: false, touch: (...v) => out.push(v) };
+const d = { w: 1080, h: 2400, dpi: 420 }, ptr = { x: 2, y: 2399, buttons: 0, mouse: true };
+const p = new PhonePan();
+p.move(ctl, d, ptr, 1, 1);
+assert.equal(out.length, 0, 'small movement must not plant an accidental tap');
+p.move(ctl, d, ptr, 30, -40);
+assert.deepEqual(out.map(v => v[0]), [0, 2]);
+assert.ok(out.every(v => v[2] >= 0 && v[2] < d.w && v[3] >= 0 && v[3] < d.h));
+p.end();
+assert.deepEqual(out.map(v => v[0]), [0, 2, 1]);
+const n = out.length;
+p.move(ctl, d, { ...ptr, buttons: 1 }, 40, 40);
+assert.equal(out.length, n, 'held mouse button cannot start a pan');
+console.log('phonepan: bounded drag and accidental-tap protection pass');
+const T = require('../protocol').T;
+for (const path of ['../../mac/phone-bridge', '../../mac/mesh/phone-bridge']) {
+  const { PhoneBridge } = require(path);
+  const b = Object.create(PhoneBridge.prototype), calls = [], scrolls = [];
+  const control = { closed: false, touch: (...v) => calls.push(v), scroll: (...v) => scrolls.push(v) };
+  Object.defineProperty(b, 'ctl', { value: control });
+  b.control = control; b.phoneInput = true; b.views = { activeApp: 'com.google.android.apps.maps', multipleApps: false };
+  b.kvm = { ...ptr, x: 540, y: 1200 }; b._display = () => d; b.getSettings = () => ({ kvm: {} });
+  b._wheel({ mode: 'pixel', dx: 0, dy: 20 });
+  assert.deepEqual(calls.map(v => v[0]), [0, 2], `${path}: Maps pans with touch`);
+  assert.equal(scrolls.length, 0, `${path}: no wheel is also sent`);
+  b._wheel({ mode: 'pixel', dx: 0, dy: 10, momentum: true });
+  assert.deepEqual(calls.map(v => v[0]), [0, 2, 1], `${path}: momentum releases rather than double-flinging`);
+  b._wheel({ mode: 'pixel', dx: 0, dy: 20 });
+  b.views.activeApp = 'com.android.settings';
+  b._wheel({ mode: 'pixel', dx: 0, dy: 20 });
+  assert.deepEqual(calls.map(v => v[0]), [0, 2, 1, 0, 2, 1], `${path}: leaving Maps releases touch`);
+  assert.equal(scrolls.length, 1, `${path}: other apps retain wheel`);
+  b.phoneInput = false; b.views.activeApp = 'com.google.android.apps.maps';
+  b._wheel({ mode: 'pixel', dx: 0, dy: 20 });
+  assert.equal(scrolls.length, 2, `${path}: unknown app state retains wheel`);
+  b.phoneInput = true; b.views.multipleApps = true;
+  b._wheel({ mode: 'pixel', dx: 0, dy: 20 });
+  assert.equal(scrolls.length, 3, `${path}: split-screen retains wheel`);
+}
+const originalSet = global.setTimeout, originalClear = global.clearTimeout;
+try {
+  let timeout;
+  global.setTimeout = fn => { timeout = fn; return 1; };
+  global.clearTimeout = () => { timeout = null; };
+  const events = [], c = { closed: false, touch: (...v) => events.push(v) }, pan = new PhonePan();
+  pan.move(c, d, ptr, 0, 40);
+  timeout();
+  assert.deepEqual(events.map(v => v[0]), [0, 2, 1], 'idle releases the finger');
+} finally { global.setTimeout = originalSet; global.clearTimeout = originalClear; }

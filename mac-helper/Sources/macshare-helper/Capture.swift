@@ -629,7 +629,8 @@ final class Capture {
         if e.getIntegerValueField(.scrollWheelEventIsContinuous) != 0 {
           ev(["t": "k.wh", "mode": "pixel",
               "dx": -e.getDoubleValueField(.scrollWheelEventPointDeltaAxis2),
-              "dy": -e.getDoubleValueField(.scrollWheelEventPointDeltaAxis1)])
+              "dy": -e.getDoubleValueField(.scrollWheelEventPointDeltaAxis1),
+              "momentum": e.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0])
         } else {
           ev(["t": "k.wh", "mode": "line",
               "dx": -e.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2),
