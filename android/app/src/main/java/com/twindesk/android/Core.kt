@@ -54,6 +54,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     @Volatile private var returnGeneration = 0
     @Volatile private var returnAfter = 0L
     private var returnFailures = 0
+    private var returnTailTurn = false
 
     val sync = PairSync(this)
     val clip = Clip(this)
@@ -462,8 +463,9 @@ class Core private constructor(val ctx: Context) : Link.Events {
         }
         // Capable Macs can be reclaimed without taking another session. Keep this intent across
         // outages, sleep and process death, until Disconnect/Forget/replacement explicitly ends it.
+        if (link.ble && returnHost()?.id == host.id) stopReturn()
         if (returnHost()?.id == host.id) {
-            if (link.state == "failed" || code in setOf("local", "reclaim", Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN)) stopReturn()
+            if (link.state == "failed" || code in setOf("local", "reclaim", "bad_message", Proto.E.VERSION_MISMATCH, Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN)) stopReturn()
             else {
                 returnFailures = (returnFailures + 1).coerceAtMost(5)
                 returnAfter = System.currentTimeMillis() + (1000L shl returnFailures)
@@ -486,6 +488,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         returnGeneration++
         returnAfter = 0L
         returnFailures = 0
+        returnTailTurn = false
         returnPrefs.edit().remove("host").commit()
     }
 
@@ -494,8 +497,9 @@ class Core private constructor(val ctx: Context) : Link.Events {
         returnGeneration++
         returnAfter = 0L
         returnFailures = 0
+        returnTailTurn = false
         returnPrefs.edit().remove("host").commit()
-        if (h.os == "mac" && link.canReclaim) {
+        if (h.os == "mac" && link.canReclaim && !link.ble) {
             returnPrefs.edit().putString("host", JSONObject().put("id", h.id).put("fp", h.fp).toString()).commit()
         }
     }
@@ -511,14 +515,25 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (inBackground() || link.connected || link.state == "connecting" || link.pair != null || peer.connected) return
         val now = System.currentTimeMillis()
         if (now < returnAfter) return
-        val seen = discovery.found[h.id]
+        val seen = discovery.found[h.id]?.takeIf { it.fp == h.fp }
         if (seen != null && (seen.os != "mac" || !seen.rc)) return
         val gen = returnGeneration
         returnAfter = now + 5000L
-        // Discovery refreshes a roamed LAN address. Without broadcasts (screen off), a pinned
-        // stored-address dial still works; old hosts reject rc+resume rather than taking over.
-        val dial = if (seen != null) h.copy(address = seen.address, port = seen.port) else h
-        if (seen != null && (h.address != seen.address || h.port != seen.port)) store.putHost(dial)
+        // Without a matching LAN beacon, alternate the paired Tailscale address and stored one.
+        // Both keep the same certificate pin and non-takeover hello, including on mobile data.
+        var dial = if (seen != null) h.copy(address = seen.address, port = seen.port) else h
+        val onTailnet = tailscale && Tailnet.onIt()
+        if (seen == null && onTailnet) {
+            val tail = Tailnet.address(h)
+            if (tail != null) {
+                returnTailTurn = !returnTailTurn
+                if (returnTailTurn) dial = h.copy(address = tail)
+            }
+        }
+        val address = dial.address.lowercase().removeSurrounding("[", "]")
+        if (Tailnet.isTailnet(address) && !onTailnet) return
+        if (dial.port !in 1..65535 || address.isBlank() || address == "localhost" || address == "::1" || address.startsWith("127.") || address.startsWith("::ffff:127.") || address.startsWith("ble:") || address.startsWith("blp:")) return
+        // Candidate addresses stay transient until Link verifies the pinned welcome.
         link.connect(dial, reclaim = true) {
             val same = gen == returnGeneration && returnHost()?.let { it.id == h.id && it.fp == h.fp } == true
             val paused = same && inBackground()

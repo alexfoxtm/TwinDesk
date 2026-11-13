@@ -17,8 +17,11 @@ class LockView(core: Core) : Feature(core) {
     @Volatile var locked = false; private set
     @Volatile var capable = false; private set
     @Volatile private var continuing = false
+    @Volatile var layoutStale = false; private set
     val available get() = (locked || (active && continuing)) && capable && core.host?.os == "mac" && !core.link.ble
     @Volatile var active = false; private set
+    @Volatile var presented = false; private set
+    private var presentationOwner: Any? = null
     private val main = Handler(Looper.getMainLooper())
     private var owner: Any? = null
     private var request = ""
@@ -40,7 +43,19 @@ class LockView(core: Core) : Feature(core) {
         core.send(msg("lock.open", "request" to request))
         val mine = ++attempt
         main.postDelayed({ if (active && attempt == mine && socket == null) end() }, 12000)
+        main.postDelayed(object : Runnable {
+            override fun run() {
+                if (!active || mine != attempt || owner !== pageOwner) return
+                if (continuing && valid()) core.send(msg("lock.keep", "request" to request))
+                main.postDelayed(this, 60000)
+            }
+        }, 60000)
         core.changed()
+    }
+
+    fun present(pageOwner: Any, on: Boolean) {
+        if (on) { presentationOwner = pageOwner; presented = true }
+        else if (presentationOwner === pageOwner) { presentationOwner = null; presented = false }
     }
 
     fun linkChanged() = main.post {
@@ -69,6 +84,7 @@ class LockView(core: Core) : Feature(core) {
         val wasActive = active
         active = false
         continuing = false
+        layoutStale = false
         attempt++
         val ws = socket
         socket = null
@@ -97,6 +113,8 @@ class LockView(core: Core) : Feature(core) {
                 locked = m.optBoolean("locked")
                 capable = m.optBoolean("can")
                 continuing = m.optBoolean("continuing")
+                layoutStale = m.optBoolean("layoutStale")
+                if (wasLocked != locked) core.screen.lockChanged(locked)
                 if (wasLocked != locked || wasCapable != capable) android.util.Log.i("TwinDeskLock", "state locked=$locked capable=$capable")
                 if (active && !available) {
                     if (!locked) deliver?.invoke(msg("unlocked"))

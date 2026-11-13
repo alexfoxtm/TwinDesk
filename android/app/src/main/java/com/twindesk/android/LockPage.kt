@@ -33,6 +33,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     @Volatile private var ready = false
     @Volatile private var generation = 0
     private var owner: Any? = null
+    private var foreground = true
     var credentialsRequested by mutableStateOf(false); private set
     private val account: EditText = credentialField(false)
     private val secret: EditText = credentialField(true)
@@ -176,13 +177,23 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         updateAccountFields()
         val token = Any()
         owner = token
+        foreground = true
+        core.lockView.present(token, true)
         view.addJavascriptInterface(Bridge(++generation, token), "LockBridge")
         WebView.setWebContentsDebuggingEnabled(false)
         view.loadUrl("https://login.twindesk.invalid/lock/lock.html")
     }
 
+    fun present(on: Boolean) {
+        if (!visible || foreground == on) return
+        foreground = on
+        owner?.let { core.lockView.present(it, on) }
+        if (!on) { keyboard(false); view.clearFocus() }
+        if (ready) view.evaluateJavascript("window.lockForeground && window.lockForeground($generation, $on);", null)
+    }
+
     fun keyboard(on: Boolean = true) {
-        if (!visible || !ready) return
+        if (!visible || !ready || (on && !foreground)) return
         if (credentialsRequested) {
             if (on) { focusedField.requestFocus(); activity.getSystemService(InputMethodManager::class.java).showSoftInput(focusedField, 0) }
             else activity.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(focusedField.windowToken, 0)
@@ -209,7 +220,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         manualAccount = false
         updateAccountFields()
         generation++
-        owner?.let { core.lockView.endFor(it) }
+        owner?.let { core.lockView.present(it, false); core.lockView.endFor(it) }
         owner = null
         view.removeJavascriptInterface("LockBridge")
         view.evaluateJavascript("window.lockClose && window.lockClose();", null)
@@ -258,6 +269,6 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         @JavascriptInterface fun send(data: String) { if (current() && ready) core.lockView.send(token, data) }
         @JavascriptInterface fun ack() { if (current() && ready) core.lockView.ack(token) }
         @JavascriptInterface fun close() = activity.runOnUiThread { if (current()) core.lockView.endFor(token) }
-        @JavascriptInterface fun keyboard() = activity.runOnUiThread { if (current() && ready) this@LockPage.keyboard() }
+        @JavascriptInterface fun keyboard() = activity.runOnUiThread { if (current() && ready && foreground) this@LockPage.keyboard() }
     }
 }

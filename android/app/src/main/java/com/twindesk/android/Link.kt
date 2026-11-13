@@ -705,6 +705,7 @@ class Link(
 
     private fun onClose(failure: String?) {
         Log.i("TwinDesk", "link closed: mode=$mode state=$state ble=$ble failure=$failure code=$lastCode")
+        val wasReclaim = reclaimHello
         pinger?.cancel(false)
         pinger = null
         quietSince = 0L
@@ -725,8 +726,12 @@ class Link(
             return
         }
         val was = state
-        if (failure == "identity") {
+        if (failure == "identity" && !wasReclaim) {
             setState("failed", tr("{name} looks different now. Forget it and pair again.", "name" to (host?.name ?: tr("The computer"))))
+        } else if (failure == "identity") {
+            // A changed network can put an unrelated device at a candidate address. The pin
+            // refuses that dial while keeping the original pairing and return intent.
+            setState("idle", tr("Reconnecting…"))
         } else {
             if (message.isEmpty() && failure != null && lastCode != "paused") message = failure
             setState(if (was == "connected" || was == "connecting") "idle" else was, message)

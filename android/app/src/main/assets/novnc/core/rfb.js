@@ -145,6 +145,7 @@ export default class RFB extends EventTargetMixin {
 
         this._supportsContinuousUpdates = false;
         this._enabledContinuousUpdates = false;
+        this._framebufferPaused = false;
 
         this._supportsSetDesktopSize = false;
         this._screenID = 0;
@@ -325,6 +326,19 @@ export default class RFB extends EventTargetMixin {
                 this._keyboard.grab();
             }
         }
+    }
+
+    // A hidden TwinDesk keeper retains authentication without decoding a second video stream.
+    get framebufferPaused() { return this._framebufferPaused; }
+    set framebufferPaused(paused) {
+        if (this._framebufferPaused === !!paused) return;
+        this._framebufferPaused = !!paused;
+        if (this._rfbConnectionState !== 'connected') return;
+        if (this._supportsContinuousUpdates) {
+            this._enabledContinuousUpdates = !this._framebufferPaused;
+            RFB.messages.enableContinuousUpdates(this._sock, !this._framebufferPaused, 0, 0, this._fbWidth, this._fbHeight);
+        }
+        if (!this._framebufferPaused) RFB.messages.fbUpdateRequest(this._sock, false, 0, 0, this._fbWidth, this._fbHeight);
     }
 
     get capabilities() { return this._capabilities; }
@@ -1205,6 +1219,7 @@ export default class RFB extends EventTargetMixin {
     }
 
     _handleMouseButton(x, y, bmask) {
+        this._mousePos = { x, y };
         // Flush waiting move event first
         this._flushMouseMoveTimer(x, y);
 
@@ -2253,7 +2268,7 @@ export default class RFB extends EventTargetMixin {
 
         RFB.messages.pixelFormat(this._sock, this._fbDepth, true);
         this._sendEncodings();
-        RFB.messages.fbUpdateRequest(this._sock, false, 0, 0, this._fbWidth, this._fbHeight);
+        if (!this._framebufferPaused) RFB.messages.fbUpdateRequest(this._sock, false, 0, 0, this._fbWidth, this._fbHeight);
 
         this._updateConnectionState('connected');
         return true;
@@ -2602,7 +2617,7 @@ export default class RFB extends EventTargetMixin {
         switch (msgType) {
             case 0:  // FramebufferUpdate
                 ret = this._framebufferUpdate();
-                if (ret && !this._enabledContinuousUpdates) {
+                if (ret && !this._enabledContinuousUpdates && !this._framebufferPaused) {
                     RFB.messages.fbUpdateRequest(this._sock, true, 0, 0,
                                                  this._fbWidth, this._fbHeight);
                 }
@@ -2625,7 +2640,7 @@ export default class RFB extends EventTargetMixin {
                 first = !this._supportsContinuousUpdates;
                 this._supportsContinuousUpdates = true;
                 this._enabledContinuousUpdates = false;
-                if (first) {
+                if (first && !this._framebufferPaused) {
                     this._enabledContinuousUpdates = true;
                     this._updateContinuousUpdates();
                     Log.Info("Enabling continuous updates.");
@@ -3032,7 +3047,7 @@ export default class RFB extends EventTargetMixin {
     }
 
     _updateContinuousUpdates() {
-        if (!this._enabledContinuousUpdates) { return; }
+        if (!this._enabledContinuousUpdates || this._framebufferPaused) { return; }
 
         RFB.messages.enableContinuousUpdates(this._sock, true, 0, 0,
                                              this._fbWidth, this._fbHeight);

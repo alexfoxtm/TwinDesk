@@ -79,6 +79,7 @@ class WebHost(ctx: Context, page: String, private val core: Core, private val on
             queue.clear()
             onEvent("ready", null)
         }.let { }
+        @JavascriptInterface fun videoState(generation: Int, session: Int, playing: Boolean) = main.post { onEvent("videoState", JSONObject().put("generation", generation).put("session", session).put("playing", playing)) }.let { }
         @JavascriptInterface fun playing(w: Int, h: Int) = main.post { onEvent("playing", JSONObject().put("w", w).put("h", h)) }.let { }
         @JavascriptInterface fun haptic() = main.post { view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) }.let { }
         // A light tap (a gamepad or touchpad button going down).
@@ -138,6 +139,11 @@ class Screen(core: Core) : Feature(core) {
     @Volatile var size: Pair<Int, Int>? = null; private set // the picture playing now
     private var host: WebHost? = null
     private var lastInfo: JSONObject? = null
+    private var videoGeneration = 0
+    private var videoSession: Int? = null
+    private var videoMarker: Any? = null
+    @Volatile var videoPlaying = false; private set
+    @Volatile var videoUnavailable = false; private set
     private var wantStart = false // the viewer opened before we knew whether the Mac shares
     private var startedByUs = false // we started the Mac's sharing: stop it when the viewer closes
     @Volatile var autoOpened = false; private set // the computer started sharing and opened the viewer: it closes when that stops
@@ -165,6 +171,7 @@ class Screen(core: Core) : Feature(core) {
     // ViewerActivity opened: stream to us, at our screen's size (the Mac sizes Extend to it).
     fun attach(h: WebHost, w: Int, hpx: Int) {
         host = h
+        resetVideo()
         viewing = true
         h.post(opts()) // first: the computer's name for the messages below
         lastInfo?.let { h.post(it) }
@@ -236,6 +243,7 @@ class Screen(core: Core) : Feature(core) {
     fun detach(h: WebHost) {
         if (host !== h) return
         host = null
+        resetVideo()
         viewing = false
         size = null
         wantStart = false
@@ -268,6 +276,27 @@ class Screen(core: Core) : Feature(core) {
         core.store.setFlag(key, on)
         host?.post(opts())
         core.changed()
+    }
+
+    private fun resetVideo() {
+        videoGeneration++
+        videoSession = null
+        videoMarker = null
+        videoPlaying = false
+        videoUnavailable = false
+    }
+
+    fun lockChanged(locked: Boolean) {
+        videoGeneration++
+        videoPlaying = false
+        val session = videoSession
+        if (viewing && session != null && videoMarker != null && core.link.connected && core.link.sessionMarker() === videoMarker) host?.post(msg("viewer.probe", "session" to session, "viewerGeneration" to videoGeneration, "accept" to !locked))
+    }
+
+    fun videoState(h: WebHost, generation: Int, session: Int, playing: Boolean) {
+        if (host !== h || !viewing || videoGeneration != generation || videoSession != session ||
+            videoMarker == null || core.link.sessionMarker() !== videoMarker || !core.link.connected) return
+        if (videoPlaying != playing) { videoPlaying = playing; core.changed() }
     }
 
     fun playing(w: Int, h: Int) {
@@ -313,6 +342,7 @@ class Screen(core: Core) : Feature(core) {
     override fun onClosed() {
         Notify.cancelScreen(core.ctx)
         state = null
+        resetVideo()
         lastInfo = null
         startedByUs = false
         host?.post(msg("stream.stop"))
@@ -332,9 +362,18 @@ class Screen(core: Core) : Feature(core) {
                 core.changed()
             }
             "stream.input" -> { inputOn = m.optBoolean("on", true); core.changed() }
-            "screen.textFocus" -> if (viewing && inputOn && !core.lockView.active && core.host?.os == "mac") keyboard(true)
+            "screen.textFocus" -> if (viewing && inputOn && !core.lockView.presented && core.host?.os == "mac") keyboard(true)
             "stream.info" -> { lastInfo = m; host?.post(m) }
-            "rtc.offer", "rtc.ice", "stream.stop" -> host?.post(m)
+            "rtc.offer" -> {
+                resetVideo()
+                videoUnavailable = false
+                videoSession = m.optInt("session", -1)
+                videoMarker = core.link.sessionMarker()
+                host?.post(JSONObject(m.toString()).put("viewerGeneration", videoGeneration))
+                core.changed()
+            }
+            "stream.stop" -> { resetVideo(); videoUnavailable = m.optString("reason") == "capture-unavailable"; host?.post(m); core.changed() }
+            "rtc.ice" -> host?.post(m)
             else -> return false
         }
         return true

@@ -11,7 +11,7 @@ const source = fs.readFileSync(path.join(base, 'lock/lock.js'), 'utf8').replace(
 function fixture() {
     const elements = new Map();
     const element = id => {
-        if (!elements.has(id)) elements.set(id, { value: '', hidden: id === 'auth', textContent: '', events: {}, clientWidth: 100, clientHeight: 100, querySelector() { return null; }, addEventListener(name, fn) { this.events[name] = fn; }, focus() { document.activeElement = this; }, setSelectionRange() {} });
+        if (!elements.has(id)) elements.set(id, { value: '', hidden: id === 'auth', textContent: '', events: {}, clientWidth: 100, clientHeight: 100, querySelector() { return null; }, addEventListener(name, fn) { this.events[name] = fn; }, focus() { document.activeElement = this; }, blur() {}, setSelectionRange() {} });
         return elements.get(id);
     };
     const calls = { sent: [], ack: 0, close: 0, credentials: null, received: null, rfb: null, keys: [], authRequired: 0 };
@@ -29,7 +29,7 @@ function fixture() {
         setTimeout: fn => fn(), console: new Proxy({}, { get: () => () => { throw Error('login page must not log'); } }) };
     context.window = { isSecureContext: true, crypto: { subtle: {} }, addEventListener() {} };
     vm.runInNewContext(source, context);
-    return { calls, element, recv: m => context.window.lockRecv(m), keyboard: () => context.window.lockKeyboard(), submit: (page, name, secret) => context.window.lockCredentials(page, name, secret) };
+    return { calls, element, foreground: (page, on) => context.window.lockForeground(page, on), recv: m => context.window.lockRecv(m), keyboard: () => context.window.lockKeyboard(), submit: (page, name, secret) => context.window.lockCredentials(page, name, secret) };
 }
 async function main() {
     const f = fixture();
@@ -70,6 +70,18 @@ async function main() {
     f.element('keyboard').events.keydown({ key: 'Enter', keyCode: 229, preventDefault() {} });
     assert.deepEqual(f.calls.keys, [65, 0xff08, 0xff08, 0xff0d]);
     assert.equal(f.element('keyboard').value, '\u200b');
+    const priorKeys = f.calls.keys.length;
+    assert.equal(f.foreground(6, false), false, 'stale page cannot hide the keeper');
+    assert.equal(f.foreground(7, false), true);
+    assert.equal(f.calls.rfb.framebufferPaused, true);
+    assert.equal(f.calls.rfb.viewOnly, true);
+    f.element('keyboard').value = 'hidden-input';
+    f.element('keyboard').events.input({ inputType: 'insertText', isComposing: false });
+    assert.equal(f.calls.keys.length, priorKeys, 'hidden keeper sends no keyboard input');
+    assert.equal(f.calls.close, 0, 'handoff preserves the authenticated channel');
+    assert.equal(f.foreground(7, true), true);
+    assert.equal(f.calls.rfb.framebufferPaused, false);
+    pauseFixture();
     gateFixture();
     const viewport = viewportFixture();
     viewport.primaryView = primaryView;
@@ -84,6 +96,23 @@ async function main() {
     f.recv({ t: 'closed' });
     assert.match(f.element('status').textContent, /connection ended/);
 }
+// Exercise the real noVNC pause setter and update dispatch without framebuffer pixels.
+function pauseFixture() {
+    const source = fs.readFileSync(path.join(base, 'novnc/core/rfb.js'), 'utf8');
+    const method = signature => { const at = source.indexOf('    ' + signature); assert(at >= 0); return source.slice(at, source.indexOf('\n    }', at) + 6); };
+    const calls = [];
+    const RFB = { messages: { enableContinuousUpdates: (...args) => calls.push(['continuous', ...args.slice(1)]), fbUpdateRequest: (...args) => calls.push(['request', ...args.slice(1)]) } };
+    const Keeper = new Function('RFB', 'Log', 'return class {' + [method('set framebufferPaused(paused)'), method('_normalMsg()')].join('\n') + '}')(RFB, { Info() {} });
+    const keeper = new Keeper(); Object.assign(keeper, { _rfbConnectionState: 'connected', _fbWidth: 100, _fbHeight: 100, _sock: { rQshift8: () => 0 }, _FBU: { rects: 0 }, _supportsContinuousUpdates: true, _enabledContinuousUpdates: true, _framebufferPaused: false, _framebufferUpdate: () => true });
+    keeper.framebufferPaused = true;
+    assert.deepStrictEqual(calls, [['continuous', false, 0, 0, 100, 100]]);
+    keeper._normalMsg(); assert.equal(calls.length, 1, 'paused keeper does not request incremental frames');
+    keeper._sock.rQshift8 = () => 150; keeper._supportsContinuousUpdates = false;
+    keeper._normalMsg(); assert.equal(calls.length, 1, 'server continuous support cannot resume a paused keeper');
+    keeper.framebufferPaused = false;
+    assert.deepStrictEqual(calls.at(-1), ['request', false, 0, 0, 100, 100], 'resuming requests a fresh full frame');
+}
+
 // Run the actual vendored ARD negotiation methods against fragmented input and deferred crypto.
 async function ardFixture() {
     const rfb = fs.readFileSync(path.join(base, 'novnc/core/rfb.js'), 'utf8');

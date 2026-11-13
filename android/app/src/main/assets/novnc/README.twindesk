@@ -7,3 +7,4 @@ ARD startup is guarded against asynchronous/fragmented re-entry; repeated creden
 Dispatches a one-time twindeskframe event after the first decoded nonempty framebuffer rectangle.
 Dispatches twindeskdraw when the decoded framebuffer first reaches a nonempty canvas draw.
 Supports an optional, validated primary-display viewport while retaining remote input coordinates.
+Supports pausing framebuffer updates while the normal viewer is active and refreshing on resume.

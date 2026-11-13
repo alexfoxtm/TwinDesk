@@ -41,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,6 +76,9 @@ class ViewerActivity : ComponentActivity() {
         val core = Core.get(this)
         val h = WebHost(this, "viewer.html", core) { ev, data ->
             if (ev == "playing" && data != null) core.screen.playing(data.optInt("w"), data.optInt("h"))
+            if (ev == "videoState" && data != null) host?.let {
+                core.screen.videoState(it, data.optInt("generation"), data.optInt("session"), data.optBoolean("playing"))
+            }
         }
         host = h
         h.view.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
@@ -140,19 +144,34 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     @Suppress("UNUSED_EXPRESSION") v
     var bar by remember { mutableStateOf(true) }
     val keyboard = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    LaunchedEffect(bar, login) { if (bar && !login) { delay(4000); bar = false } }
+    val s = core.screen
+    var fastLatched by remember(core.host?.id) { mutableStateOf(false) }
+    LaunchedEffect(login, core.lockView.locked, s.videoPlaying, s.videoUnavailable, s.sharing) {
+        if (!login || core.lockView.locked || !s.sharing || s.videoUnavailable) fastLatched = false
+        else if (s.videoPlaying) fastLatched = true
+    }
+    LaunchedEffect(login, core.lockView.locked, fastLatched, s.videoPlaying) {
+        if (login && !core.lockView.locked && fastLatched && !s.videoPlaying) {
+            delay(10000)
+            if (!s.videoPlaying) fastLatched = false
+        }
+    }
+    // A stale RFB crop must stay behind the regular viewer until the next lock reconnects it.
+    val fast = login && !core.lockView.locked && (s.videoPlaying || fastLatched || core.lockView.layoutStale)
+    val showLogin = login && !fast
+    LaunchedEffect(login, fast) { if (login) lockPage.present(!fast) }
+    LaunchedEffect(bar, showLogin) { if (bar && !showLogin) { delay(4000); bar = false } }
     var offered by remember(core.host?.id) { mutableStateOf(false) }
     LaunchedEffect(core.lockView.locked, core.lockView.available, login) {
         if (!core.lockView.locked) offered = false
         if (login && !core.lockView.available) closeLogin()
-        else if (core.lockView.available && !login && !offered) {
+        else if (core.lockView.locked && core.lockView.available && !login && !offered) {
             offered = true
             android.util.Log.i("TwinDeskLock", "viewer-auto-open")
             openLogin()
             bar = true
         }
     }
-    val s = core.screen
     val name = core.host?.name ?: "Mac"
     // Opened because the computer started sharing: it closes when the computer stops.
     var seenOn by remember { mutableStateOf(false) }
@@ -164,19 +183,19 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     Box(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.displayCutout)) {
         AndroidView(factory = { host.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize())
         // Keep the login fields below the viewer handle and toolbar, including in landscape.
-        if (login) Box(Modifier.fillMaxSize().padding(top = if (bar && !keyboard) 92.dp else 8.dp)) {
+        if (login) Box(Modifier.fillMaxSize().zIndex(if (fast) -1f else 0f).padding(top = if (bar && !keyboard) 92.dp else 8.dp)) {
             AndroidView(factory = { lockPage.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize())
-            if (lockPage.credentialsRequested) AndroidView(
+            if (showLogin && lockPage.credentialsRequested) AndroidView(
                 factory = { lockPage.authView.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } },
                 modifier = Modifier.align(Alignment.Center).fillMaxHeight().widthIn(max = 480.dp).fillMaxWidth().imePadding(),
             )
         }
         // A small handle at the top: tap for the bar (the rest of the screen is the Mac's).
-        if (!login || !keyboard) Box(
+        if (!showLogin || !keyboard) Box(
             Modifier.align(Alignment.TopCenter).padding(top = 4.dp).width(72.dp).height(18.dp)
                 .clip(RoundedCornerShape(9.dp)).background(Color(0x55FFFFFF)).clickable { bar = !bar },
         )
-        AnimatedVisibility(bar && !(login && keyboard), enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp)) {
+        AnimatedVisibility(bar && !(showLogin && keyboard), enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp)) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124))
@@ -188,26 +207,26 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                         modifier = Modifier.padding(start = 8.dp).widthIn(max = 160.dp))
                     // Which way the picture comes: the USB cable, or Wi-Fi.
                     Text(
-                        if (core.link.wired) "USB" else "Wi-Fi", color = Color.White, fontSize = 11.sp,
+                        if (core.link.wired) "USB" else if (Tailnet.isTailnet(core.link.endpoint()?.first.orEmpty())) "Tailscale" else "Wi-Fi", color = Color.White, fontSize = 11.sp,
                         modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(6.dp))
                             .background(if (core.link.wired) Color(0xFF30D158).copy(alpha = 0.35f) else Color(0x33FFFFFF)).padding(horizontal = 6.dp, vertical = 2.dp),
                     )
-                    if (s.remote && !login) {
+                    if (s.remote && !showLogin) {
                         for (mode in listOf("mirror", "extend")) {
                             val on = s.sharing && s.mode == mode
                             val label = if (mode == "mirror") tr("Mirror") else tr("Extend")
                             if (on) FilledTonalButton(onClick = { bar = true }) { Text(label) }
                             else TextButton(onClick = { s.pick(mode); bar = true }) { Text(label, color = Color.White) }
                         }
-                        if (s.sharing) TextButton(onClick = { s.control(share = false) }) { Text(tr("Stop"), color = Color.White) }
+                        if (s.sharing) TextButton(onClick = { closeLogin(); s.control(share = false) }) { Text(tr("Stop"), color = Color.White) }
                     }
-                    if (core.lockView.available && !login) TextButton(onClick = { openLogin(); bar = true }) { Text(tr("Open Mac login screen"), color = Color.White) }
-                    if (login) TextButton(onClick = { closeLogin(); s.control(share = false); bar = true }) { Text(tr("Stop"), color = Color.White) }
-                    if (login) TextButton(onClick = { closeLogin(); bar = true }) { Text(tr("Back"), color = Color.White) }
-                    TextButton(onClick = { if (login) lockPage.keyboard(!keyboard) else s.keyboard(!keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
+                    if (core.lockView.locked && core.lockView.available && !login) TextButton(onClick = { openLogin(); bar = true }) { Text(tr("Open Mac login screen"), color = Color.White) }
+                    if (showLogin) TextButton(onClick = { closeLogin(); s.control(share = false); bar = true }) { Text(tr("Stop"), color = Color.White) }
+                    if (showLogin) TextButton(onClick = { closeLogin(); bar = true }) { Text(tr("Back"), color = Color.White) }
+                    TextButton(onClick = { if (showLogin) lockPage.keyboard(!keyboard) else s.keyboard(!keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
                     TextButton(onClick = { closeLogin(); s.end(); close() }) { Text(tr("Close"), color = Color.White) }
                 }
-                if (!login && s.remote && s.displays.size > 1) {
+                if (!showLogin && s.remote && s.displays.size > 1) {
                     Row(
                         Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124)).padding(horizontal = 8.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.Center,

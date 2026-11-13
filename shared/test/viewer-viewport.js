@@ -5,19 +5,25 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 function fixture(local = true, touch = 'direct') {
-  const events = new Map(), docEvents = new Map(), videoEvents = new Map(), sent = [], timers = new Map(), frames = [];
+  const events = new Map(), docEvents = new Map(), videoEvents = new Map(), sent = [], timers = new Map(), frames = [], videoFrames = [], videoStates = [], peers = [];
   let now = 10000, timerId = 0;
-  const video = { videoWidth: 1920, videoHeight: 1080, style: {}, addEventListener(k, fn) { videoEvents.set(k, fn); } };
+  const video = { videoWidth: 1920, videoHeight: 1080, style: {}, play: async () => {}, requestVideoFrameCallback: fn => videoFrames.push(fn), addEventListener(k, fn) { videoEvents.set(k, fn); } };
   const ctx = { setTransform() {}, clearRect() {} };
   const nodes = { video, audio: {}, overlay: { classList: { toggle() {} } }, kbd: { value: '', addEventListener() {}, blur() {}, focus() {} } };
   const window = { innerWidth: 1000, innerHeight: 800, devicePixelRatio: 1,
     addEventListener(k, fn) { events.set(k, fn); },
-    TD: { send: (m) => sent.push(JSON.parse(m)), ready() {}, playing() {}, haptic() {} } };
+    TD: { send: (m) => sent.push(JSON.parse(m)), ready() {}, playing() {}, videoState: (generation, session, playing) => videoStates.push({ generation, session, playing }), haptic() {} } };
   const document = { hidden: false, getElementById: (id) => nodes[id], addEventListener(k, fn) { docEvents.set(k, fn); },
     documentElement: { addEventListener() {} }, body: { appendChild() {}, classList: { toggle() {} } },
     createElement: () => ({ style: {}, getContext: () => ctx }) };
+  class Peer {
+    constructor() { peers.push(this); this.connectionState = 'connected'; this.localDescription = { sdp: 'fixture' }; }
+    close() { this.connectionState = 'closed'; }
+    async setRemoteDescription() {} async addIceCandidate() {} async createAnswer() { return {}; } async setLocalDescription() {}
+    getReceivers() { return []; }
+  }
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../android/app/src/main/assets/web/viewer.js'), 'utf8'), {
-    window, document, console: { log() {} }, performance: { now: () => now },
+    RTCPeerConnection: Peer, MediaStream: class { constructor(tracks) { this.tracks = tracks; } }, window, document, console: { log() {} }, performance: { now: () => now },
     setTimeout: (fn, delay = 0) => { const id = ++timerId; timers.set(id, { fn, at: now + delay }); return id; }, clearTimeout: (id) => timers.delete(id), requestAnimationFrame: fn => frames.push(fn),
   });
   const pointer = (type, id, x, y, extra = {}) => events.get(type)({ pointerId: id, pointerType: 'touch', button: 0,
@@ -28,12 +34,40 @@ function fixture(local = true, touch = 'direct') {
     now += ms;
     for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); }
   };
-  return { window, video, overlay: nodes.overlay, sent, pointer, events, recv, document, docEvents, videoEvents,
+  return { window, video, peers, videoStates, videoFrame() { for (const fn of videoFrames.splice(0)) fn(); }, overlay: nodes.overlay, sent, pointer, events, recv, document, docEvents, videoEvents,
     frame() { for (const fn of frames.splice(0)) fn(); },
     advance, hold() { advance(600); } };
 }
 const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
-function pinchPanAndControl() {
+async function pinchPanAndControl() {
+  const playback = fixture();
+  playback.recv({ t: 'rtc.offer', session: 1, viewerGeneration: 10, sdp: 'fixture' });
+  await new Promise(resolve => setImmediate(resolve));
+  playback.peers[0].ontrack({ track: { kind: 'video' }, receiver: {} });
+  playback.videoEvents.get('resize')();
+  assert.deepStrictEqual(playback.videoStates, [], 'dimensions alone do not permit handoff');
+  playback.videoEvents.get('playing')();
+  playback.recv({ t: 'rtc.offer', session: 2, viewerGeneration: 11, sdp: 'fixture' });
+  await new Promise(resolve => setImmediate(resolve));
+  playback.videoFrame();
+  assert.ok(!playback.videoStates.some(s => s.playing), 'old offer frame cannot permit handoff');
+  playback.peers[1].ontrack({ track: { kind: 'video' }, receiver: {} });
+  playback.videoEvents.get('playing')(); playback.videoFrame();
+  assert.deepStrictEqual(playback.videoStates.at(-1), { generation: 11, session: 2, playing: true });
+  playback.videoEvents.get('playing')();
+  playback.recv({ t: 'viewer.probe', session: 2, viewerGeneration: 12, accept: false });
+  playback.videoFrame();
+  assert.ok(!playback.videoStates.some(s => s.generation === 12 && s.playing), 'locked state cancels queued playback');
+  playback.recv({ t: 'viewer.probe', session: 2, viewerGeneration: 13, accept: true });
+  assert.ok(!playback.videoStates.some(s => s.generation === 13 && s.playing), 'unlock waits for a fresh frame');
+  playback.videoFrame();
+  assert.deepStrictEqual(playback.videoStates.at(-1), { generation: 13, session: 2, playing: true });
+  playback.peers[1].connectionState = 'disconnected'; playback.peers[1].onconnectionstatechange();
+  assert.strictEqual(playback.videoStates.at(-1).playing, false);
+  playback.peers[1].connectionState = 'connected'; playback.peers[1].onconnectionstatechange(); playback.videoFrame();
+  assert.strictEqual(playback.videoStates.at(-1).playing, true, 'transport recovery observes a frame without another playing event');
+  playback.recv({ t: 'stream.stop' }); playback.videoEvents.get('playing')(); playback.videoFrame();
+  assert.strictEqual(playback.videoStates.at(-1).playing, false, 'stop revokes playback readiness');
   const f = fixture();
   f.pointer('pointerdown', 1, 400, 400); f.pointer('pointerdown', 2, 600, 400); f.sent.length = 0;
   f.pointer('pointermove', 2, 800, 400);
@@ -150,5 +184,4 @@ function cancellationAndBounds() {
   const pos = Number(/^translate\(([^p]+)/.exec(offscreen.video.style.transform)[1]);
   assert.ok((-1500 + pos + 2000) >= 32 && (-1500 + pos + 2000) <= 968, 'tap brings the touchpad cursor into view');
 }
-pinchPanAndControl(); cancellationAndBounds();
-console.log('viewer-viewport: gestures, input mapping, legacy behavior and cancellation passed');
+pinchPanAndControl().then(() => { cancellationAndBounds(); console.log('viewer-viewport: gestures, input mapping, legacy behavior and cancellation passed'); }).catch(e => { console.error(e); process.exitCode = 1; });

@@ -179,7 +179,9 @@ async function mainPath() {
     assert.strictEqual(await readLocked(async (file, args) => file === '/usr/sbin/ioreg' ? 'disposable plist' : args[1] === envelope ? JSON.stringify(users) : null, 502), true);
   }
   await wireCase(true, 30);
-  const f = fixture(false, { metadata: () => ({ account: 'fixture-account', primaryView: primary }) });
+  const screenEvents = new EventEmitter();
+  let currentPrimary = primary;
+  const f = fixture(false, { screens: screenEvents, metadata: () => ({ account: 'fixture-account', primaryView: currentPrimary }) });
   try {
     await turn();
     assert.strictEqual(f.control.sent.at(-1).can, false);
@@ -236,12 +238,30 @@ async function mainPath() {
     assert(!tcp.destroyed, 'confirmed unlock retains the authenticated viewer');
     assert.strictEqual(ws.readyState, 1);
     assert(f.control.sent.some((m) => m.t === P.T.LOCK_STATE && m.locked === false && m.continuing === true));
+    const idleBefore = f.server.lockview.active.idle;
+    f.send({ t: P.T.LOCK_KEEP, request: 'cd'.repeat(16) });
+    assert.strictEqual(f.server.lockview.active.idle, idleBefore, 'another request cannot extend this session');
+    f.send({ t: P.T.LOCK_KEEP, request: REQUEST });
+    assert.notStrictEqual(f.server.lockview.active.idle, idleBefore, 'the current foreground viewer extends its session');
     f.lockState(true);
     f.power.emit('lock-screen');
     assert.strictEqual(ws.readyState, 1, 'locking again keeps the same authorized viewer');
-    f.permit(false);
-    assert(tcp.destroyed, 'revoking screen access still closes the continuing viewer');
+    f.lockState(false);
+    f.power.emit('unlock-screen');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    currentPrimary = { ...primary, x: 0 };
+    screenEvents.emit('display-metrics-changed');
+    assert.strictEqual(ws.readyState, 1, 'topology changes preserve the unlocked keeper');
+    assert(f.control.sent.some((m) => m.t === P.T.LOCK_STATE && m.layoutStale === true));
+    const writesBefore = tcp.written.length;
+    ws.emit('message', bytes, true);
+    assert.strictEqual(tcp.written.length, writesBefore, 'stale RFB input is suspended');
+    f.lockState(true);
+    f.power.emit('lock-screen');
+    assert(tcp.destroyed, 're-lock closes the stale crop before it can receive input');
     assert.strictEqual(ws.readyState, 3);
+    // Revocation remains safe after the stale session has ended.
+    f.permit(false);
   } finally { f.server.close(); }
   // A user open during an obsolete availability probe must perform a fresh probe, not inherit failure.
   let release, calls = 0;

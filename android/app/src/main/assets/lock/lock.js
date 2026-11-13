@@ -13,6 +13,7 @@ let ended = false;
 let asked = false;
 let submitted = false;
 let connected = false;
+let foreground = true;
 let primaryView = null;
 const clearCredentials = () => { keyboard.value = ''; };
 function close() {
@@ -71,7 +72,7 @@ window.lockRecv = message => {
         });
         rfb.addEventListener('securityfailure', () => { LockBridge.phase('security-failed'); fail(); });
         rfb.addEventListener('disconnect', () => { LockBridge.phase('rfb-disconnected'); close(); });
-        rfb.addEventListener('connect', () => { LockBridge.phase('rfb-connected'); connected = true; clearCredentials(); status.textContent = t('Waiting for the computer…'); LockBridge.keyboard(); });
+        rfb.addEventListener('connect', () => { LockBridge.phase('rfb-connected'); connected = true; clearCredentials(); status.textContent = t('Waiting for the computer…'); if (foreground) LockBridge.keyboard(); });
         rfb.addEventListener('twindeskframe', () => { LockBridge.phase('framebuffer-data'); });
         rfb.addEventListener('twindeskdraw', () => {
             LockBridge.phase('framebuffer-drawn');
@@ -105,7 +106,7 @@ window.lockCredentials = (generation, username, password) => {
 };
 const resetKeyboard = () => { keyboard.value = '\u200b'; keyboard.setSelectionRange(1, 1); };
 window.lockKeyboard = () => {
-    if (ended || !rfb) return false;
+    if (ended || !rfb || !foreground) return false;
     if (connected) {
         // Keep a canvas tap from taking focus away from the private IME field.
         rfb.focusOnClick = false;
@@ -115,7 +116,7 @@ window.lockKeyboard = () => {
     return true;
 };
 function typeKeyboard() {
-    if (ended || !rfb) return;
+    if (ended || !rfb || !foreground) return;
     for (const char of keyboard.value.replaceAll('\u200b', '')) {
         const cp = char.codePointAt(0);
         rfb.sendKey(cp < 256 ? cp : 0x01000000 + cp);
@@ -123,7 +124,7 @@ function typeKeyboard() {
     resetKeyboard();
 }
 keyboard.addEventListener('beforeinput', event => {
-    if (ended || !rfb || event.isComposing) return;
+    if (ended || !rfb || !foreground || event.isComposing) return;
     if (event.cancelable !== false && (event.inputType === 'deleteContentBackward' || event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph')) {
         event.preventDefault();
         rfb.sendKey(event.inputType === 'deleteContentBackward' ? 0xff08 : 0xff0d);
@@ -132,7 +133,7 @@ keyboard.addEventListener('beforeinput', event => {
 });
 keyboard.addEventListener('compositionend', typeKeyboard);
 keyboard.addEventListener('input', event => {
-    if (event.isComposing || ended || !rfb) return;
+    if (event.isComposing || ended || !rfb || !foreground) return;
     // Some IMEs issue a non-cancellable beforeinput. Its input event is authoritative.
     if (event.inputType === 'deleteContentBackward' || event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph') {
         rfb.sendKey(event.inputType === 'deleteContentBackward' ? 0xff08 : 0xff0d);
@@ -140,15 +141,30 @@ keyboard.addEventListener('input', event => {
     } else typeKeyboard();
 });
 keyboard.addEventListener('keydown', event => {
-    if (ended || !rfb || event.isComposing || event.keyCode === 229) return;
+    if (ended || !rfb || !foreground || event.isComposing || event.keyCode === 229) return;
     const keys = { Enter: 0xff0d, Backspace: 0xff08, Tab: 0xff09, Escape: 0xff1b, ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54 };
     if (keys[event.key]) { event.preventDefault(); rfb.sendKey(keys[event.key]); resetKeyboard(); }
 });
+window.lockForeground = (generation, on) => {
+    if (generation !== pageId || ended || typeof on !== 'boolean') return false;
+    foreground = on;
+    if (rfb) {
+        if (!on) {
+            if (rfb._mouseButtonMask && Number.isFinite(rfb._mousePos?.x) && Number.isFinite(rfb._mousePos?.y)) rfb._handleMouseButton(rfb._mousePos.x, rfb._mousePos.y, 0);
+            rfb._keyboard?.ungrab();
+            keyboard.blur();
+            clearCredentials();
+        }
+        rfb.viewOnly = !on;
+        rfb.framebufferPaused = !on;
+    }
+    return true;
+};
 window.lockClose = close;
 window.addEventListener('resize', () => {
     if (rfb && !ended) requestAnimationFrame(() => { if (rfb && !ended) rfb.scaleViewport = true; });
 });
-document.getElementById('screen').addEventListener('pointerup', () => { if (connected && !ended) LockBridge.keyboard(); });
+document.getElementById('screen').addEventListener('pointerup', () => { if (foreground && connected && !ended) LockBridge.keyboard(); });
 window.addEventListener('pagehide', close);
 document.addEventListener('visibilitychange', () => { if (document.hidden) fail(); });
 LockBridge.ready();

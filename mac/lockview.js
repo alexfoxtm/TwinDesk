@@ -173,7 +173,7 @@ function ardAvailable({ connect = net.connect, verifyPeer = verifyScreenSharingP
 function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLocked, probe = ardAvailable, connect, verifyPeer = verifyScreenSharingPeer, metadata = ticketMetadata, screens = displayEvents(), unlockConfirmMs = 750 }) {
   let locked = false, available = false, stopped = false, epoch = 0, lastOpen = -Infinity, sent = '', request = null;
   let probing = null, nextProbe = 0, reading = false, unlockTimer = null;
-  let displayKey = null;
+  let displayKey = null, layoutStale = false;
   const allowed = () => (locked || !!tunnel.active?.continuing) && available && remoteAllowed();
   const tunnel = new LockTunnel({ current: () => server.current, allowed, verifyPeer,
     ended: (ctx, id, reason) => { if (request?.id === id) { request = null; displayKey = null; } server.send(ctx, { t: P.T.LOCK_END, request: id, reason }); },
@@ -184,6 +184,7 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
     const pending = request, active = !!tunnel.active;
     request = null;
     displayKey = null;
+    layoutStale = false;
     tunnel.end(reason);
     if (pending && !active) server.send(pending.ctx, { t: P.T.LOCK_END, request: pending.id, reason });
   };
@@ -192,7 +193,7 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
     if (!allowed() && (request || tunnel.active || tunnel.pending)) cancel(locked ? 'unavailable' : 'unlocked');
     const ctx = server.current;
     if (!ctx || ctx.os !== P.OS.ANDROID) return;
-    const value = { t: P.T.LOCK_STATE, locked, can: tunnel.eligible(ctx), continuing: !!tunnel.active?.continuing && tunnel.active.ctx === ctx };
+    const value = { t: P.T.LOCK_STATE, locked, can: tunnel.eligible(ctx), continuing: !!tunnel.active?.continuing && tunnel.active.ctx === ctx, layoutStale: layoutStale && tunnel.active?.ctx === ctx };
     const key = JSON.stringify(value);
     if (key !== sent) { sent = key; server.send(ctx, value); }
   };
@@ -227,7 +228,7 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
     if (locked !== on) {
       // The active Screen Sharing session may own the unlocked desktop. Closing it here can
       // immediately lock the console again, so retain this exact paired viewer until it ends.
-      const keep = on ? !!tunnel.active?.continuing && tunnel.valid(tunnel.active) : tunnel.continueUnlocked(server.current);
+      const keep = on ? !!tunnel.active?.continuing && !layoutStale && tunnel.valid(tunnel.active) : tunnel.continueUnlocked(server.current);
       locked = on;
       if (on && keep) tunnel.active.armLocked();
       if (!keep) { available = false; nextProbe = 0; cancel(on ? 'ended' : 'unlocked'); }
@@ -266,10 +267,11 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
   const deviceClosed = (id) => { if (server.current?.deviceId === id || request?.ctx.deviceId === id) cancel('session-ended'); };
   const transport = () => { cancel('session-ended'); sent = ''; state(); };
   const message = async (msg, ctx, source) => {
-    if (msg.t !== P.T.LOCK_OPEN && msg.t !== P.T.LOCK_END && msg.t !== P.T.LOCK_READY) return;
+    if (msg.t !== P.T.LOCK_OPEN && msg.t !== P.T.LOCK_END && msg.t !== P.T.LOCK_READY && msg.t !== P.T.LOCK_KEEP) return;
     if (ctx !== server.current || source !== ctx.ws || source.transport === 'ble' || !ctx.authed || ctx.released || ctx.os !== P.OS.ANDROID || ctx.transport !== 'ip') return;
     const id = typeof msg.request === 'string' && /^[a-f0-9]{32}$/.test(msg.request) ? msg.request : undefined;
     if (msg.t === P.T.LOCK_READY) { if (id && id === request?.id) tunnel.markReady(ctx, id); return; }
+    if (msg.t === P.T.LOCK_KEEP) { if (id && id === request?.id) tunnel.keep(ctx, id); return; }
     if (msg.t === P.T.LOCK_END) { if (id && id === request?.id) cancel('ended'); return; }
     const refuse = (reason = 'unavailable') => server.send(ctx, { t: P.T.LOCK_END, ...(id ? { request: id } : {}), reason });
     if (!id || !locked || !remoteAllowed() || Date.now() - lastOpen < 2000 || tunnel.active) return refuse();
@@ -309,6 +311,9 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
     const key = JSON.stringify(metadata().primaryView || null);
     if (key === displayKey) return;
     displayKey = key;
+    // Keep the authenticated desktop session alive while the fast viewer is in use. Its old
+    // crop must not be exposed for input; a subsequent re-lock closes it before it can resume.
+    if (!locked && tunnel.active?.continuing && tunnel.suspendInput(server.current)) { layoutStale = true; state(); return; }
     cancel('display-changed');
     available = false; nextProbe = 0;
     state();

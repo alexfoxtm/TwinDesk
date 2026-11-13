@@ -142,6 +142,8 @@ class LockTunnel {
     ws.on('message', (data, binary) => {
       if (!live()) return finish('session-ended');
       if (!binary || !session.verified || data.length > MAX_CHUNK || session.tcp.writableLength + data.length > MAX_BUFFER) return finish('unavailable');
+      // A changed display layout invalidates the keeper's crop and pointer coordinates.
+      if (session.inputSuspended) return;
       touch();
       try {
         const bytes = session.gate.fromClient(data);
@@ -205,6 +207,20 @@ class LockTunnel {
     const session = this.active;
     if (!session || session.ctx !== ctx || session.request !== request || session.gate.phase !== 'ard' || !this.valid(session)) return false;
     session.ready = true;
+    return true;
+  }
+
+  keep(ctx, request) {
+    const session = this.active;
+    if (!session || session.ctx !== ctx || session.request !== request || !session.ready || !session.continuing || !this.valid(session)) return false;
+    session.touch();
+    return true;
+  }
+
+  suspendInput(ctx) {
+    const session = this.active;
+    if (!session || session.ctx !== ctx || !session.continuing || !this.valid(session)) return false;
+    session.inputSuspended = true;
     return true;
   }
 
