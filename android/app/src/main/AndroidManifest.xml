@@ -68,6 +68,7 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.TwinDesk"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:supportsRtl="true">
 
         <activity

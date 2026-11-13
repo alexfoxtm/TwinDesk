@@ -1196,5 +1196,10 @@
   "Three fingers": "Три пальца",
   "Turn on Bluetooth and allow Nearby devices to approve your Mac.": "Включите Bluetooth и разрешите доступ к устройствам поблизости, чтобы подтвердить свой Mac.",
   "Upstream releases": "Версии оригинального проекта",
-  "Use a different account": "Использовать другую учётную запись"
+  "Use a different account": "Использовать другую учётную запись",
+  "Remember Screen Sharing password on this phone": "Запомнить пароль общего доступа к экрану на этом телефоне",
+  "Use saved password": "Использовать сохранённый пароль",
+  "Forget saved password": "Удалить сохранённый пароль",
+  "Could not save password on this phone": "Не удалось сохранить пароль на этом телефоне",
+  "Use saved password for {account}": "Использовать сохранённый пароль для {account}"
 }

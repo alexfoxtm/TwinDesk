@@ -1196,5 +1196,10 @@
   "Three fingers": "三指",
   "Turn on Bluetooth and allow Nearby devices to approve your Mac.": "请开启蓝牙并允许附近设备权限，以验证您的 Mac。",
   "Upstream releases": "上游版本",
-  "Use a different account": "使用其他账户"
+  "Use a different account": "使用其他账户",
+  "Remember Screen Sharing password on this phone": "在此手机上记住屏幕共享密码",
+  "Use saved password": "使用保存的密码",
+  "Forget saved password": "删除保存的密码",
+  "Could not save password on this phone": "无法在此手机上保存密码",
+  "Use saved password for {account}": "使用为 {account} 保存的密码"
 }

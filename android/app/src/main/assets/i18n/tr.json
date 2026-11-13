@@ -1196,5 +1196,10 @@
   "Three fingers": "Üç parmak",
   "Turn on Bluetooth and allow Nearby devices to approve your Mac.": "Mac’inizi onaylamak için Bluetooth’u açın ve yakındaki cihazlara erişime izin verin.",
   "Upstream releases": "Üst proje sürümleri",
-  "Use a different account": "Başka bir hesap kullan"
+  "Use a different account": "Başka bir hesap kullan",
+  "Remember Screen Sharing password on this phone": "Ekran Paylaşımı parolasını bu telefonda hatırla",
+  "Use saved password": "Kayıtlı parolayı kullan",
+  "Forget saved password": "Kayıtlı parolayı sil",
+  "Could not save password on this phone": "Parola bu telefona kaydedilemedi",
+  "Use saved password for {account}": "{account} için kayıtlı parolayı kullan"
 }

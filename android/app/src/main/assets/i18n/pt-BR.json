@@ -1196,5 +1196,10 @@
   "Three fingers": "Três dedos",
   "Turn on Bluetooth and allow Nearby devices to approve your Mac.": "Ative o Bluetooth e permita o acesso a dispositivos próximos para aprovar seu Mac.",
   "Upstream releases": "Versões do projeto original",
-  "Use a different account": "Usar outra conta"
+  "Use a different account": "Usar outra conta",
+  "Remember Screen Sharing password on this phone": "Lembrar a senha de Compartilhamento de Tela neste celular",
+  "Use saved password": "Usar senha salva",
+  "Forget saved password": "Esquecer senha salva",
+  "Could not save password on this phone": "Não foi possível salvar a senha neste celular",
+  "Use saved password for {account}": "Usar senha salva para {account}"
 }

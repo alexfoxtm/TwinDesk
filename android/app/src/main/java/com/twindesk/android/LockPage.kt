@@ -7,6 +7,7 @@ import android.view.Gravity
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -39,13 +40,37 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     private val secret: EditText = credentialField(true)
     private var suggestedAccount: String? = null
     private var manualAccount = false
+    private val vault = LockVault(activity)
+    private var pendingSave: Triple<Host, String, String>? = null
+    private var usedSavedHost: String? = null
+    private val rememberPassword = CheckBox(activity).apply {
+        text = tr("Remember Screen Sharing password on this phone")
+        setTextColor(0xffffffff.toInt())
+        isChecked = false
+        minHeight = dp(48)
+    }
+    private val useSaved = Button(activity).apply {
+        text = tr("Use saved password")
+        visibility = View.GONE
+        setOnClickListener {
+            val host = core.host ?: return@setOnClickListener
+            val saved = vault.load(host) ?: return@setOnClickListener
+            usedSavedHost = host.id
+            submitCredentials(saved.first, saved.second, false)
+        }
+    }
+    private val forgetSaved = Button(activity).apply {
+        text = tr("Forget saved password")
+        visibility = View.GONE
+        setOnClickListener { core.host?.let { vault.forget(it.id) }; updateSaved() }
+    }
     private val accountLabel = TextView(activity).apply {
         text = tr("Mac account name"); labelFor = account.id; setTextColor(0xffffffff.toInt()); textSize = 14f
         setPadding(0, dp(8), 0, dp(4))
     }
     private val changeAccount = Button(activity).apply {
         text = tr("Use a different account"); visibility = View.GONE
-        setOnClickListener { manualAccount = true; updateAccountFields(); focusedField = account; account.requestFocus() }
+        setOnClickListener { manualAccount = true; updateAccountFields(); updateSaved(); focusedField = account; account.requestFocus() }
     }
     private val authError = TextView(activity).apply { setTextColor(0xffffb4ab.toInt()); visibility = View.GONE; isSaveEnabled = false }
     private var focusedField: EditText = account
@@ -66,6 +91,9 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
             label(tr("Mac account password"), secret)
             addView(secret, LinearLayout.LayoutParams(-1, dp(52)))
             addView(authError, LinearLayout.LayoutParams(-1, -2))
+            addView(rememberPassword, LinearLayout.LayoutParams(-1, -2))
+            addView(useSaved, LinearLayout.LayoutParams(-1, -2))
+            addView(forgetSaved, LinearLayout.LayoutParams(-1, -2))
             addView(Button(activity).apply {
                 text = tr("Sign in"); minHeight = dp(48); setOnClickListener { submitCredentials() }
             }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
@@ -92,6 +120,15 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     }
 
     private fun clearCredentials() { account.text.clear(); secret.text.clear(); authError.text = ""; authError.visibility = View.GONE }
+    private fun updateSaved() {
+        val saved = core.host?.let { vault.account(it) }
+        val usable = vault.secure && saved != null
+        useSaved.visibility = if (usable) View.VISIBLE else View.GONE
+        useSaved.text = if (usable) tr("Use saved password for {account}", "account" to saved) else tr("Use saved password")
+        forgetSaved.visibility = if (core.host?.let { vault.has(it.id) } == true) View.VISIBLE else View.GONE
+        rememberPassword.visibility = if (vault.secure) View.VISIBLE else View.GONE
+        if (!vault.secure) rememberPassword.isChecked = false
+    }
     private fun updateAccountFields() {
         val automatic = suggestedAccount != null && !manualAccount
         account.visibility = if (automatic) View.GONE else View.VISIBLE
@@ -99,10 +136,10 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         accountLabel.visibility = View.VISIBLE
         changeAccount.visibility = if (automatic) View.VISIBLE else View.GONE
     }
-    private fun submitCredentials() {
+    private fun submitCredentials(savedAccount: String? = null, savedPassword: String? = null, save: Boolean = rememberPassword.isChecked) {
         if (!visible || !ready || !credentialsRequested) return
-        val username = if (!manualAccount) suggestedAccount ?: account.text.toString() else account.text.toString()
-        val password = secret.text.toString()
+        val username = savedAccount ?: if (!manualAccount) suggestedAccount ?: account.text.toString() else account.text.toString()
+        val password = savedPassword ?: secret.text.toString()
         if (username.isEmpty() || password.isEmpty()) return
         if (username.toByteArray(Charsets.UTF_8).size > 63 || password.toByteArray(Charsets.UTF_8).size > 63) {
             authError.text = tr("Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.")
@@ -110,8 +147,11 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
             return
         }
         val mine = generation
+        pendingSave = if (save && vault.secure) core.host?.let { Triple(it.copy(), username, password) } else null
         view.evaluateJavascript("window.lockCredentials && window.lockCredentials($mine, ${JSONObject.quote(username)}, ${JSONObject.quote(password)});") { result ->
             if (visible && mine == generation && result != "true") {
+                pendingSave = null
+                usedSavedHost = null
                 credentialsRequested = true
                 authError.text = tr("Login-screen connection ended. Close this view and try again.")
                 authError.visibility = View.VISIBLE
@@ -119,6 +159,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         }
         clearCredentials()
         credentialsRequested = false
+        rememberPassword.isChecked = false
         activity.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(secret.windowToken, 0)
     }
     val view = object : WebView(activity) {
@@ -171,6 +212,9 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         visible = true
         ready = false
         credentialsRequested = false
+        pendingSave = null
+        usedSavedHost = null
+        rememberPassword.isChecked = false
         clearCredentials()
         suggestedAccount = null
         manualAccount = false
@@ -215,6 +259,9 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         visible = false
         ready = false
         credentialsRequested = false
+        pendingSave = null
+        usedSavedHost = null
+        rememberPassword.isChecked = false
         clearCredentials()
         suggestedAccount = null
         manualAccount = false
@@ -235,6 +282,18 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         @JavascriptInterface fun pageId(): Int = mine
         @JavascriptInterface fun phase(value: String) {
             if (current() && value == "rfb-connected") core.lockView.markReady(token)
+            if (value == "rfb-connected" || value == "security-failed" || value == "rfb-disconnected") activity.runOnUiThread {
+                if (!current()) return@runOnUiThread
+                val pending = pendingSave
+                pendingSave = null
+                if (value == "security-failed") usedSavedHost?.let { vault.forget(it); updateSaved() }
+                if (value != "rfb-disconnected") usedSavedHost = null
+                if (value == "rfb-connected" && pending != null && core.host?.let { it.id == pending.first.id && it.fp == pending.first.fp } == true) {
+                    if (!vault.save(pending.first, pending.second, pending.third)) {
+                        android.widget.Toast.makeText(activity, tr("Could not save password on this phone"), android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
             if (current() && value in setOf("credentials-requested", "credentials-submitted", "security-failed", "rfb-connected", "rfb-disconnected", "framebuffer-data", "framebuffer-drawn"))
                 android.util.Log.i("TwinDeskLock", value)
         }
@@ -245,6 +304,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         @JavascriptInterface fun credentials() = activity.runOnUiThread {
             if (current() && ready && !credentialsRequested) {
                 clearCredentials(); updateAccountFields()
+                updateSaved()
                 focusedField = if (suggestedAccount != null && !manualAccount) secret else account
                 credentialsRequested = true
             }
@@ -259,9 +319,10 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
                     manualAccount = false
                     updateAccountFields()
                     if (suggestedAccount != null) focusedField = secret
+                    updateSaved()
                     message.remove("account") // The local web page needs only display geometry.
                 }
-                if (message.optString("t") == "closed") { credentialsRequested = false; clearCredentials() }
+                if (message.optString("t") == "closed") { credentialsRequested = false; pendingSave = null; clearCredentials() }
                 if (message.optString("t") == "unlocked") unlocked()
                 else view.evaluateJavascript("window.lockRecv && window.lockRecv($message);", null)
             }
