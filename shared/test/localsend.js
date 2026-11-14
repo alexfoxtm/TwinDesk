@@ -224,7 +224,7 @@ async function main() {
   assert.strictEqual(fs.statSync(path.join(b.save, 'album', 'empty.dat')).size, 0);
   assert.ok(!fs.existsSync(path.join(b.save, 'album', 'link.json')));
   assert.deepStrictEqual(in1.saved.map((p) => path.basename(p)).sort(), ['album', 'hello.txt']);
-  assert.ok(!fs.existsSync(path.join(tmp, 'Phone B-data', 'localsend-incoming', in1.id.slice(3)))); // nothing left on its way
+  await until(() => !fs.existsSync(path.join(tmp, 'Phone B-data', 'localsend-incoming', in1.id.slice(3))), 'incoming staging cleanup');
 
   // The same again: nothing is replaced, and the folder is a new one.
   const t2 = a.send(peerB.id, [path.join(src, 'hello.txt'), path.join(src, 'album')]);
