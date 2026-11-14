@@ -93,6 +93,11 @@ const DEFAULT_SETTINGS = {
     plain: false, // Encrypt file transfers off: plain HTTP for file bytes where both allow it (shared/fastfile.js fxPlain)
     shortcuts: false, copyKeys: 'Control+Alt+C', pasteKeys: 'Control+Alt+V' }, // Copy/paste files
   notifs: { send: false, receive: false, hideText: false, muted: [] },
+  // Notifications › Silence together (shared/silence.js, silence-mac.js): peers {deviceId: {send, follow}},
+  // each off until switched on for that phone; on / off / probe: the person's shortcuts {id, name} that set
+  // a Focus and read it; dedicated: their word that the Focus is TwinDesk's alone; proof: what the check
+  // on the page showed; held: a Focus TwinDesk turned on and hasn't seen off (found again after a restart).
+  silence: { peers: {}, on: null, off: null, probe: null, dedicated: false, proof: null, held: null },
   apps: { offer: false, onVirtual: false, moveWindows: false, moveKey: 'MetaRight' }, // The PC can list and open this Mac's apps; onVirtual: they open on the virtual display, in Mirror mode too (off: on the shared display, as always); moveWindows: a window dragged past the edge with moveKey held moves there (movewin.js)
   papps: { on: false }, // PC apps on this Mac, each window here with its own Dock icon
   // A phone as the peer: its screen window, apps and setup.
@@ -122,7 +127,8 @@ function loadSettings() {
   const s = read('settings.json', {});
   if (s.sharing) s.sharing.on = false; // screen sharing never starts by itself
   const out = { ...DEFAULT_SETTINGS, ...s };
-  for (const k of ['wake', 'sharing', 'virtual', 'kvm', 'keys', 'clipboard', 'ui', 'app', 'audio', 'terminal', 'files', 'smb', 'apps', 'receive', 'papps', 'notifs', 'updates', 'phone', 'mount', 'hub', 'camera', 'remote', 'web', 'localsend']) out[k] = { ...DEFAULT_SETTINGS[k], ...(s[k] || {}) };
+  for (const k of ['wake', 'sharing', 'virtual', 'kvm', 'keys', 'clipboard', 'ui', 'app', 'audio', 'terminal', 'files', 'smb', 'apps', 'receive', 'papps', 'notifs', 'updates', 'phone', 'mount', 'hub', 'camera', 'remote', 'web', 'localsend', 'silence']) out[k] = { ...DEFAULT_SETTINGS[k], ...(s[k] || {}) };
+  if (!out.silence.peers || typeof out.silence.peers !== 'object') out.silence.peers = {};
   out.rezume = require('../shared/rezume.js').normalize(s.rezume);
   out.modules = require('../shared/modules.js').normalize(s.modules); // General › Modules
   out.ui.language = require('../shared/i18n.js').savedLanguage(out.ui.language);

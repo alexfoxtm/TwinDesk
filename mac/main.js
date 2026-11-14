@@ -277,6 +277,7 @@ function pushState() {
     if (svc) state.terminal = { ...settings.terminal, ...svc.terminal.view, toPc: svc.sshClient.view };
     if (svc) state.files = { ...settings.files, ...svc.drop.view, ...svc.fileSend.view, clip: svc.fileClip.view };
     if (svc) state.notifs = { ...settings.notifs, ...svc.notifs.view };
+    state.silence = svc && svc.silence ? { ...svc.silence.view, mac: svc.silence.mac.view } : null; // Notifications › Silence together
     state.history = svc && svc.history ? svc.history.view() : null; // Keep history (shared/histkeeper.js)
     state.chats = svc && svc.chats ? svc.chats.view() : null; // Messages' WhatsApp, Instagram… conversations
     if (svc) {
@@ -713,6 +714,26 @@ app.whenReady().then(() => {
     },
   });
   svc.devctl.on('change', pushState);
+  // Notifications › Silence together (shared/silence.js): this Mac's Focus and an Android phone's
+  // Do not disturb, each way only where its person switched it on for that pair. This Mac's part
+  // is silence-mac.js: the person's own shortcuts read and set its Focus, once checked on the page.
+  {
+    const { SilenceSync } = require('../shared/silence.js');
+    const { MacSilence } = require('./silence-mac.js');
+    const local = new MacSilence({ cfg: () => settings.silence, save: () => store.saveSettings(settings) });
+    svc.silence = new SilenceSync({
+      link: {
+        on: (ev, fn) => (ev === 'welcome' ? peer.on('client', fn) : ev === 'closed' ? peer.on('closed', fn) : peer.on('t:' + ev, fn)),
+        send: (m) => peer.sendToClient(m),
+        get current() { return peer.current; },
+      },
+      local,
+      opts: (id) => settings.silence.peers[id],
+      allow: (ctx) => ctx.os === P.OS.ANDROID,
+    });
+    svc.silence.mac = local;
+    svc.silence.on('change', pushState);
+  }
   // TwinDesk iPhone (shared/iossign.js): TwinDesk for iPhone signed with the person's Apple ID.
   if (!modulesAtStart.includes('iossign')) svc.iosSign = require('../shared/iossign-host.js').create({ // off in General › Modules: not loaded
     app, safeStorage: require('electron').safeStorage,
@@ -1475,7 +1496,17 @@ app.on('window-all-closed', () => {}); // keep running in the menu bar
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
 });
-app.on('before-quit', () => {
+let silenceQuitting = false;
+app.on('before-quit', (event) => {
+  if (!silenceQuitting && svc && svc.silence) {
+    event.preventDefault();
+    silenceQuitting = true;
+    svc.silence.stop();
+    // Shortcuts finish asynchronously. Keep the app alive for release; an unreadable Focus
+    // retains its durable record for the next start instead of running Off blindly.
+    svc.silence.mac.close().catch(() => {}).finally(() => app.quit());
+    return;
+  }
   if (svc && svc.mic) svc.mic.shutdown();
   if (svc && svc.rzShelf) svc.rzShelf.shutdown();
   if (svc && svc.rz) svc.rz.shutdown();

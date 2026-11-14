@@ -95,6 +95,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val appList = AppList(this) // the phone's apps, for the pages that pick some (Notifications, Banking apps)
     val bank = BankGuard(this) // a banking app opened: debugging off, and TwinDesk exits (General › Banking apps)
     val pcMedia = PcMedia(this) // what plays on the computer: the Media page and a media notification here
+    val silence = Silence(this) // Notifications › Silence together: Do not disturb here and the Mac's Focus, each way when switched on
     // Connect with Android: another phone, on a session of its own beside the computer's (Peer.kt).
     // Not a Feature: the computer's messages never reach it, nor its the computer.
     val peer = Peer(this)
@@ -102,11 +103,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // shown and its features hear nothing from the computer.
     val modulesAtStart: Set<String> = Modules.off(store)
     fun moduleOn(id: String) = id in Modules.FIXED || id !in modulesAtStart
-    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia, deck)
+    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia, deck, silence)
         .filter { f ->
             when (f) {
                 clip, fclip -> moduleOn("clipboard")
-                notifs, companion -> moduleOn("notifications")
+                notifs, companion, silence -> moduleOn("notifications")
                 rezume -> moduleOn("rezume")
                 remote -> moduleOn("remote")
                 pcMedia, nowPlaying -> moduleOn("media")
@@ -378,6 +379,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     fun disconnect() {
+        silence.stop() // the phone silenced for the computer is let go now (and the computer told)
         stopReturn()
         resumeUntil = 0
         resumeHost = null
@@ -431,6 +433,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     fun forget(id: String) {
+        silence.forget(id)
         if (returnHost()?.id == id) stopReturn()
         companion.forget(id)
         if (link.host?.id == id) link.disconnect()

@@ -149,10 +149,12 @@ function setupIpc(ctx) {
       ctx.phone.connect(String(deviceId));
     },
     disconnectPhone() {
+      if (ctx.silence) ctx.silence.stop(); // a Focus turned on for the phone ends with the session
       ctx.phone.disconnect();
     },
     // Disconnect the session (phone or computer); Connect again / Take over the Mac we're a guest of.
     disconnect() {
+      if (ctx.silence) ctx.silence.stop();
       if (ctx.server.current && P.isPhoneOs(ctx.server.current.os)) return ctx.phone.disconnect();
       ctx.server.disconnect();
     },
@@ -383,6 +385,31 @@ function setupIpc(ctx) {
       setGroup('notifs', partial);
       ctx.notifs.applySettings();
       if (partial && partial.receive === true) void ctx.notifs.nativePermission.request();
+    },
+    // Notifications › Silence together (shared/silence.js): this pair's two switches (the phone
+    // in the session), each this Mac's own choice.
+    setSilence(arg) {
+      const c = ctx.server.current;
+      if (!ctx.silence || !c || !c.deviceId || c.os !== P.OS.ANDROID) return;
+      const cur = { send: false, follow: false, ...(settings.silence.peers[c.deviceId] || {}) };
+      for (const k of ['send', 'follow']) if (arg && typeof arg[k] === 'boolean') cur[k] = arg[k];
+      settings.silence.peers[c.deviceId] = { send: cur.send === true, follow: cur.follow === true };
+      save();
+      if ((cur.send === true || cur.follow === true) && !ctx.silence.mac.list) ctx.silence.mac.loadShortcuts(); // switched on: the shortcuts to pick from
+      ctx.silence.refresh();
+    },
+    // … and this Mac's setup, each on a click (silence-mac.js): the list of shortcuts, the three
+    // picked, the person's word that the two that set a Focus are TwinDesk's alone, and the check
+    // that runs them. No shortcut is run before that click.
+    silenceDo(arg) {
+      const a = arg || {};
+      const mac = ctx.silence && ctx.silence.mac;
+      if (!mac) return;
+      if (a.do === 'shortcuts') mac.loadShortcuts().then(() => ctx.silence.refresh());
+      else if (a.do === 'openShortcuts') shell.openExternal('shortcuts://');
+      else if (a.do === 'pick' && ['on', 'off', 'probe'].includes(a.which)) { mac.pick(a.which, typeof a.id === 'string' ? a.id.slice(0, 40) : ''); ctx.silence.refresh(); }
+      else if (a.do === 'dedicated') { mac.setDedicated(a.on === true); ctx.silence.refresh(); }
+      else if (a.do === 'check') mac.check().then(() => ctx.silence.refresh());
     },
     muteNotifApp(arg) {
       if (arg && typeof arg.app === 'string') ctx.notifs.setMuted(arg.app.slice(0, 200), !!arg.muted);
@@ -695,6 +722,11 @@ function setupIpc(ctx) {
       ctx.pairing.respond(!!allow);
     },
     forget(deviceId) {
+      if (ctx.silence) { // Silence together: its lease and its switches go with the pairing
+        ctx.silence.forget(String(deviceId));
+        delete settings.silence.peers[String(deviceId)];
+        store.saveSettings(settings);
+      }
       if (ctx.link.hosts.some((h) => h.id === String(deviceId))) return ctx.link.forget(String(deviceId));
       ctx.pairing.forget(String(deviceId));
       ctx.terminal.forget(String(deviceId));

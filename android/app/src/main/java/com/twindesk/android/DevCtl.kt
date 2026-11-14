@@ -207,6 +207,7 @@ class DevCtl(core: Core) : Feature(core) {
     // Do not disturb: the notification listener may set it (the full app), else with Do not
     // disturb access, else its settings open.
     private fun dnd(on: Boolean) {
+        if (!on) core.silence.personOff() // … and what Silence together turned on for the computer: its own rule, which this filter doesn't reach
         val f = if (on) NotificationManager.INTERRUPTION_FILTER_PRIORITY else NotificationManager.INTERRUPTION_FILTER_ALL
         val nm = ctx.getSystemService(NotificationManager::class.java)
         if (nm.isNotificationPolicyAccessGranted) { nm.setInterruptionFilter(f); return }

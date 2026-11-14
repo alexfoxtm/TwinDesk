@@ -1544,6 +1544,7 @@ private fun NotificationsPage(core: Core, v: Int) {
         !companionBluetooth -> tr("Turn on Bluetooth and allow Nearby devices to approve your Mac.")
         else -> tr("Android can let TwinDesk read sensitive notifications, including security codes. Notifications sent to {name} still follow your app filters and hidden-text setting.", "name" to name)
     }
+    val silence = core.silence.view()
     if (!supported) Note(
         tr("This version of TwinDesk can’t read notifications, as Play Protect restricts downloaded apps. ") +
             tr("Once wireless debugging is set up, install the full version from the Phone page on {name}. Your settings and pairings are kept.", "name" to name),
@@ -1574,6 +1575,7 @@ private fun NotificationsPage(core: Core, v: Int) {
         DirHead(name, false, me, true)
         SwitchRow(tr("Show {name}’s notifications here", "name" to name), tr("{count} shown", "count" to shown), inOn, first = true) { core.sync.set("notifs", "in", it) }
     }
+    if (silence.peer) SilenceCard(core, silence, name)
     // Each app on its own (#102): every app on the phone, as a block list or an allow list (AppCards.kt).
     if (core.notifs.supported) NotifAppsCard(core, name)
     HistoryCard(core, "notifs") // History.kt
@@ -1582,6 +1584,49 @@ private fun NotificationsPage(core: Core, v: Int) {
     if (recent.isNotEmpty()) MacCard(tr("Recent")) {
         recent.forEachIndexed { i, e ->
             MacRow(listOf(e.app, e.title).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { e.text.take(80) }, e.text.replace('\n', ' ').take(140), first = i == 0)
+        }
+    }
+}
+
+// Silence together (Silence.kt), with a Mac: this phone's Do not disturb and the Mac's Focus, each
+// way its own switch here and on the Mac. Only "silenced or not" is shared. Do Not Disturb access
+// is asked for only by the button, and each hint says what is so, not what was wished. This phone
+// is silenced with a rule of TwinDesk's own, so the person's Do not disturb and modes are never changed.
+@Composable
+private fun SilenceCard(core: Core, s: Silence.View, name: String) {
+    val ctx = LocalContext.current
+    val failed = s.remote == true && s.last?.r == "failed"
+    val sendHint = when {
+        !s.send -> tr("Only whether it is silenced is shared, never which mode")
+        !s.known -> tr("{name} needs a newer TwinDesk", "name" to name)
+        !s.peerFollow -> tr("Switch it on on {name} too", "name" to name)
+        !s.peerSet -> tr("Finish setting it up on {name}", "name" to name)
+        s.ack == "applied" -> tr("{name} is silenced too", "name" to name)
+        s.ack == "kept" -> tr("{name} was silenced already", "name" to name)
+        s.ack == "overridden" -> tr("Turned off on {name}: left off", "name" to name)
+        s.ack == "failed" || s.ack == "refused" -> tr("{name} couldn’t be silenced", "name" to name)
+        else -> tr("While Do not disturb or a mode is on here")
+    }
+    val followHint = when {
+        !s.follow -> tr("Do not disturb you turned on yourself is never turned off")
+        !s.canSet -> tr("Needs Do Not Disturb access")
+        s.ruleOff -> tr("TwinDesk’s Do not disturb rule is off in Settings")
+        !s.known -> tr("{name} needs a newer TwinDesk", "name" to name)
+        !s.peerSend -> tr("Switch it on on {name} too", "name" to name)
+        !s.peerRead -> tr("Finish setting it up on {name}", "name" to name)
+        s.stale -> tr("Do not disturb turned on for {name} couldn’t be turned off", "name" to name)
+        s.leased -> tr("This phone is silenced with {name}", "name" to name)
+        s.overridden -> tr("You turned it off: left off until {name} is off and on again", "name" to name)
+        failed && s.last?.why == "flapping" -> tr("Stopped: it kept being turned off")
+        failed -> tr("Do not disturb couldn’t be turned on")
+        s.remote == true && s.state == true -> tr("Do not disturb was on already: left alone")
+        else -> tr("Only while {name} is connected", "name" to name)
+    }
+    MacCard(tr("Silence together")) {
+        SwitchRow(tr("Silence {name} when this phone is on Do not disturb", "name" to name), sendHint, s.send, first = true) { core.silence.set("send", it) }
+        SwitchRow(tr("Silence this phone when {name} is in a Focus", "name" to name), followHint, s.follow) { core.silence.set("follow", it) }
+        if (s.follow && !s.canSet) MacRow(tr("Do Not Disturb access"), tr("TwinDesk adds its own Do not disturb rule and never changes yours")) {
+            Primary(tr("Allow")) { runCatching { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)) } }
         }
     }
 }
