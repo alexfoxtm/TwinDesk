@@ -153,6 +153,27 @@ class InputService : AccessibilityService() {
         dispatchGesture(b.build(), null, null)
     }
 
+    // Fork c49da681 phone.in {a:'z', x, y, v}: x,y are fractions of this screen, v is the magnification.
+    fun pinchLegacy(nx: Double, ny: Double, amount: Double) {
+        val dm = resources.displayMetrics
+        val fingers = legacyFingers(nx, ny, amount, dm.widthPixels.toFloat(), dm.heightPixels.toFloat(), dm.density, dm.densityDpi) ?: return
+        val builder = GestureDescription.Builder()
+        for (sign in listOf(-1f, 1f)) {
+            val p = Path().apply {
+                moveTo(
+                    fingers.x + if (fingers.horizontal) sign * fingers.start else 0f,
+                    fingers.y + if (fingers.horizontal) 0f else sign * fingers.start,
+                )
+                lineTo(
+                    fingers.x + if (fingers.horizontal) sign * fingers.end else 0f,
+                    fingers.y + if (fingers.horizontal) 0f else sign * fingers.end,
+                )
+            }
+            builder.addStroke(GestureDescription.StrokeDescription(p, 0, 100))
+        }
+        dispatchGesture(builder.build(), null, null)
+    }
+
     private fun gesture(p: Path, ms: Long) {
         val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, ms)).build()
         dispatchGesture(g, null, null)
@@ -316,7 +337,13 @@ class Input(core: Core) : Feature(core) {
                 when (val a = m.optString("a")) {
                     "d", "m", "u" -> s.touch(a, x, y)
                     "s" -> s.scroll(x, y, m.optDouble("h", 0.0), m.optDouble("v", 0.0))
-                    "z" -> s.pinch(x, y, m.optDouble("from", 0.0).toFloat(), m.optDouble("to", 0.0).toFloat(), m.optInt("vert") == 1)
+                    "z" -> when (PinchWire.kind(m.has("from"), m.has("to"), m.has("vert"), m.has("v"))) {
+                        // Upstream pixels. Missing from/to never reach here: that shape is rejected.
+                        PinchWire.Kind.STROKE -> s.pinch(x, y, m.optDouble("from", 0.0).toFloat(), m.optDouble("to", 0.0).toFloat(), m.optInt("vert") == 1)
+                        // Fork c49da681 reads x,y again as fractions. The touch locals above default a missing coordinate to 0.
+                        PinchWire.Kind.LEGACY -> s.pinchLegacy(m.optDouble("x", Double.NaN), m.optDouble("y", Double.NaN), m.optDouble("v", Double.NaN))
+                        PinchWire.Kind.REJECT -> Unit
+                    }
                     "k" -> s.key(m.optInt("d") == 1, m.optInt("k"), m.optInt("m"))
                 }
             }

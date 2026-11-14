@@ -45,27 +45,53 @@ class Pinch {
     this.timer = null;
   }
 
-  get active() { return this.on || !!this.batch; }
+  get active() { return this.on || !!this.batch || !!(this.ctl && this.ctl.pinching); }
+
+  // Fork Accessibility (input.pinch, no input.pinch.stroke). Scrcpy still holds two fingers:
+  // that phone lays the legacy stroke out itself, and a touch channel is not that path.
+  _legacy(ctl) {
+    return !!(ctl && typeof ctl.touch !== 'function' && typeof ctl.pinchLegacy === 'function' && typeof ctl.pinchWire === 'function' && ctl.pinchWire() === 'legacy');
+  }
 
   feed(ctl, m, at, d) {
     if (!m || m.g !== 'zoom') return false;
-    if (m.phase === 'end') { this._end(); return true; }
+    const legacy = this._legacy(ctl);
+    if (m.phase === 'end') {
+      // The fork phone applies the summed v when the 180 ms batch ends. Ending the gesture
+      // does not drop what was already gathered, and it is not an upstream stroke.
+      if (legacy) return true;
+      this._end();
+      return true;
+    }
     // A button held is a drag, not a pinch; nothing to put the fingers on: let go.
-    if (!ctl || !at || at.buttons || !d || !(d.w > 0) || !(d.h > 0)) { this._end(); return true; }
-    if (m.phase === 'begin') this._end();
-    if (this.active && (this.ctl !== ctl || this.d.w !== d.w || this.d.h !== d.h)) this._end(); // another session or a turn
+    // A legacy sample with a button is ignored. The click itself cancels (phone-bridge).
+    if (!ctl || !at || at.buttons || !d || !(d.w > 0) || !(d.h > 0)) {
+      if (legacy) return true;
+      this._end();
+      return true;
+    }
+    if (m.phase === 'begin' && !legacy) this._end();
+    if (this.active && !legacy && this.d && (this.ctl !== ctl || this.d.w !== d.w || this.d.h !== d.h)) this._end(); // another session or a turn
     const v = Number(m.v);
     if (Number.isFinite(v) && v !== 0) {
       const k = Math.max(0.5, Math.min(2, 1 + v)); // the fingers' gap changes as the magnification does
       if (typeof ctl.touch === 'function') this._touch(ctl, at, d, v, k);
+      else if (legacy) this._legacyFeed(ctl, at, d, v);
       else if (typeof ctl.pinch === 'function') this._stroke(ctl, at, d, v, k);
     }
     if (this.on) this._idle();
     return true;
   }
 
+  _legacyFeed(ctl, at, d, v) {
+    this.ctl = ctl;
+    this.d = d;
+    ctl.pinchLegacy(at.x, at.y, d.w, d.h, v);
+  }
+
   cancel() {
     if (this.batch) { clearTimeout(this.batch.timer); this.batch = null; }
+    if (this.ctl && typeof this.ctl.cancelPinch === 'function') this.ctl.cancelPinch();
     this._up();
   }
 

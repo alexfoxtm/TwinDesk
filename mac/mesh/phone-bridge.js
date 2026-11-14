@@ -85,7 +85,8 @@ class PhoneBridge extends EventEmitter {
     this.control = null; // control-only session
     // Without wireless debugging: the phone applies the input itself (shared/phoneinput.js), when
     // it says it can (phone.input {on}).
-    this.input = new PhoneInput((m) => this.server.sendToClient(m));
+    // phone.info picks the pinch dialect (shared/pinchwire.js). Read at send time: it arrives after this.
+    this.input = new PhoneInput((m) => this.server.sendToClient(m), () => this.phone && this.phone.info);
     this.phoneInput = false;
     this.kvm = null; // the pointer while the Mac drives the phone: {route, x, y, push}
     this.keys = new KeyState();
@@ -605,13 +606,17 @@ class PhoneBridge extends EventEmitter {
   handle(m) {
     if (this.pan && m.t !== T.K_WHEEL && m.t !== T.KVM_LOCK) this.pan.end();
     // A pinch's fingers are down (shared/pinch.js): the pointer and the wheel wait; a click or a
-    // key lifts them first. That interruption also holds until the gesture begins again, so a
-    // leftover magnification does not plant new contacts.
-    if (this.pinch && this.pinch.active) {
-      if (m.t === T.K_MOVE || m.t === T.K_WHEEL) return;
+    // key lifts them first. That interruption holds until the gesture begins again. An Accessibility
+    // batch flush clears pinch.active until the next sample, so a click, key, take, or release in
+    // that gap still cancels and blocks a leftover magnification. The wheel is held only while the
+    // fingers are actually down, and map pan keeps moving in the gap.
+    const pinchActive = !!(this.pinch && this.pinch.active);
+    if (pinchActive || this.nativePinchOpen) {
+      if (pinchActive && (m.t === T.K_MOVE || m.t === T.K_WHEEL)) return;
       if (m.t === T.K_DOWN || m.t === T.K_UP || m.t === T.K_KEY_DOWN || m.t === T.K_KEY_UP || m.t === T.KVM_TAKE || m.t === T.KVM_RELEASE) {
-        this.pinch.cancel();
+        if (this.pinch) this.pinch.cancel();
         this.nativePinchBlocked = true;
+        this.nativePinchOpen = false;
       }
     }
     switch (m.t) {
@@ -910,6 +915,7 @@ class PhoneBridge extends EventEmitter {
       if (!this.kvm || this.kvm.mouse === false) return;
       if (m.phase === 'begin') this.nativePinchBlocked = false;
       if (this.nativePinchBlocked) return;
+      this.nativePinchOpen = m.phase !== 'end';
       return void (this.pinch || (this.pinch = new (require('../../shared/pinch.js').Pinch)())).feed(this.ctl, m, this.kvm, this._display());
     }
     if (!this.ctl || m.phase === 'begin' || m.phase === 'change') return;

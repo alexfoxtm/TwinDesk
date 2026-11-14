@@ -364,8 +364,13 @@ class MeshClipImages extends ClipImages {
     if (img.isEmpty()) return;
     for (const p of this.peers.values()) p.out.cancel(); // theirs is newer than a picture of ours still going
     this.sig.received = sigOf(img);
-    await writeClipImage(this.clipboard, img, pic.png);
-    this.sig.received = sigOf(await this._read()) || sigOf(img);
+    if (this.o.onReceiveStart) this.o.onReceiveStart();
+    try {
+      await writeClipImage(this.clipboard, img, pic.png);
+      this.sig.received = sigOf(await this._read()) || sigOf(img);
+    } finally {
+      if (this.o.onReceiveEnd) this.o.onReceiveEnd();
+    }
     const name = this.o.peerName(from) || 'another device';
     this.o.remember('in', this._item({ png: pic.png, w: pic.w || img.getSize().width, h: pic.h || img.getSize().height }, img, pic.shot), name);
     this.o.popup('driven', `${pic.shot ? 'Screenshot' : 'Picture'} from ${name} copied: paste it with ${this.o.pasteKeys || 'Ctrl+V'}`, { key: pic.shot ? 'Screenshot from {name} copied: paste it with {keys}' : 'Picture from {name} copied: paste it with {keys}', vars: { name, keys: this.o.pasteKeys || 'Ctrl+V' } });

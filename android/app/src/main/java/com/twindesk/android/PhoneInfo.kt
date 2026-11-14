@@ -120,7 +120,9 @@ class PhoneInfo(core: Core) : Feature(core) {
                 "release" to Build.VERSION.RELEASE, "sdk" to Build.VERSION.SDK_INT, "battery" to battery, "charging" to charging,
                 "colors" to jsonArray(colors()), "display" to display(),
                 // This app's version and what it can do that older ones can't (the computer picks by them).
-                "app" to BuildConfig.VERSION_NAME, "caps" to jsonArray(listOf("mirror.native") + if (BuildConfig.ACCESSIBILITY) listOf("input.pinch") else emptyList()),
+                // input.pinch stays so a fork Mac (c49da681) still sends normalized phone.in z.
+                // input.pinch.stroke is the upstream pixel dialect; input.pinch alone is not that.
+                "app" to BuildConfig.VERSION_NAME, "caps" to jsonArray(listOf("mirror.native") + PinchWire.caps(BuildConfig.ACCESSIBILITY)),
             )
             val key = m.toString()
             if (withWallpaper && !core.link.ble) wallpaperImage()?.let { m.put("wallpaper", it) } // too big for Bluetooth
