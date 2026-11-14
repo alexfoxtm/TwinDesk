@@ -1201,5 +1201,7 @@
   "Use saved password": "Usar senha salva",
   "Forget saved password": "Esquecer senha salva",
   "Could not save password on this phone": "Não foi possível salvar a senha neste celular",
-  "Use saved password for {account}": "Usar senha salva para {account}"
+  "Use saved password for {account}": "Usar senha salva para {account}",
+  "New photos and videos": "Novas fotos e vídeos",
+  "{name} shows a notification when the camera takes one. Only how many is sent, never the picture.": "{name} mostra uma notificação quando a câmera tira uma foto ou grava um vídeo. Só a quantidade é enviada, nunca a imagem."
 }

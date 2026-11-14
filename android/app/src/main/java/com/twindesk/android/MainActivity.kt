@@ -945,6 +945,8 @@ private fun PhotosPage(core: Core, v: Int) {
     MacCard(tr("On {name}", "name" to name)) {
         MacRow(tr("Photos, videos and screenshots"), tr("Newest first, in Photos on {name}", "name" to name), first = true)
         MacRow(tr("Save"), tr("Saved to the Downloads folder on {name}", "name" to name))
+        // Switched on on the computer (MediaAlerts.kt): said here while it is.
+        if (core.hub.mediaAlertsOn) MacRow(tr("New photos and videos"), tr("{name} shows a notification when the camera takes one. Only how many is sent, never the picture.", "name" to name))
     }
 }
 

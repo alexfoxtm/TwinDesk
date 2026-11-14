@@ -1201,5 +1201,7 @@
   "Use saved password": "使用保存的密码",
   "Forget saved password": "删除保存的密码",
   "Could not save password on this phone": "无法在此手机上保存密码",
-  "Use saved password for {account}": "使用为 {account} 保存的密码"
+  "Use saved password for {account}": "使用为 {account} 保存的密码",
+  "New photos and videos": "新照片和视频",
+  "{name} shows a notification when the camera takes one. Only how many is sent, never the picture.": "相机拍摄时，{name} 会显示通知。只发送数量，不发送图片。"
 }

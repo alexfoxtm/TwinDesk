@@ -2251,4 +2251,12 @@
   "Upstream releases": "Üst proje sürümleri",
   "macOS could not show the notification. Check this app’s notification settings.": "macOS bildirimi gösteremedi. Bu uygulamanın bildirim ayarlarını kontrol edin.",
   "macOS notifications": "macOS bildirimleri",
+  "Notify about new photos and videos": "Yeni fotoğraf ve videoları bildir",
+  "Shows a notification on {me} when the phone’s camera takes a photo or a video, not for screenshots or pictures saved from elsewhere. Nothing is copied here until you save it.": "Telefonun kamerası fotoğraf veya video çektiğinde {me} üzerinde bildirim gösterir; ekran görüntüleri ve başka yerden kaydedilen resimler için göstermez. Siz kaydedene kadar buraya hiçbir şey kopyalanmaz.",
+  "New photo on {phone}": "{phone} üzerinde yeni fotoğraf",
+  "{count} new photos on {phone}": "{phone} üzerinde {count} yeni fotoğraf",
+  "New video on {phone}": "{phone} üzerinde yeni video",
+  "{count} new videos on {phone}": "{phone} üzerinde {count} yeni video",
+  "{count} new photos and videos on {phone}": "{phone} üzerinde {count} yeni fotoğraf ve video",
+  "Click to open Photos": "Fotoğraflar’ı açmak için tıklayın",
 });

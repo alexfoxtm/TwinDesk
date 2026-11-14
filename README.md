@@ -617,6 +617,8 @@ Install .apk files on the phone straight from the computer.
 ## 🖼 Photos, phone files and Mount
 
 Browse the phone's **photos and videos**, open any of them big, save or remove one or many.
+On a Mac, Photos can also **notify you when an Android phone's camera takes a photo or a video**
+(off until you switch it on; the phone says only how many, and nothing is copied until you save it).
 **Phone Files** browses the phone's whole storage: save, upload, rename, delete, or just drop files
 on the page. **Shared folders work both ways.** On a Mac, **Mount** puts the phone in Finder like
 any drive.

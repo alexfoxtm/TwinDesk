@@ -2251,4 +2251,12 @@
   "Upstream releases": "Versões do projeto original",
   "macOS could not show the notification. Check this app’s notification settings.": "O macOS não conseguiu mostrar a notificação. Verifique os ajustes de notificações deste app.",
   "macOS notifications": "Notificações do macOS",
+  "Notify about new photos and videos": "Avisar sobre novas fotos e vídeos",
+  "Shows a notification on {me} when the phone’s camera takes a photo or a video, not for screenshots or pictures saved from elsewhere. Nothing is copied here until you save it.": "Mostra uma notificação em {me} quando a câmera do celular tira uma foto ou grava um vídeo; não vale para capturas de tela nem para imagens salvas de outros lugares. Nada é copiado para cá até você salvar.",
+  "New photo on {phone}": "Nova foto em {phone}",
+  "{count} new photos on {phone}": "{count} novas fotos em {phone}",
+  "New video on {phone}": "Novo vídeo em {phone}",
+  "{count} new videos on {phone}": "{count} novos vídeos em {phone}",
+  "{count} new photos and videos on {phone}": "{count} novas fotos e vídeos em {phone}",
+  "Click to open Photos": "Clique para abrir Fotos",
 });

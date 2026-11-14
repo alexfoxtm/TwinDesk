@@ -2251,4 +2251,12 @@
   "Upstream releases": "Версии оригинального проекта",
   "macOS could not show the notification. Check this app’s notification settings.": "macOS не удалось показать уведомление. Проверьте настройки уведомлений этого приложения.",
   "macOS notifications": "Уведомления macOS",
+  "Notify about new photos and videos": "Уведомлять о новых фото и видео",
+  "Shows a notification on {me} when the phone’s camera takes a photo or a video, not for screenshots or pictures saved from elsewhere. Nothing is copied here until you save it.": "Показывает уведомление на {me}, когда камера телефона снимает фото или видео; о снимках экрана и картинках, сохранённых из других мест, не сообщает. Сюда ничего не копируется, пока вы не сохраните сами.",
+  "New photo on {phone}": "Новое фото на {phone}",
+  "{count} new photos on {phone}": "Новых фото на {phone}: {count}",
+  "New video on {phone}": "Новое видео на {phone}",
+  "{count} new videos on {phone}": "Новых видео на {phone}: {count}",
+  "{count} new photos and videos on {phone}": "Новых фото и видео на {phone}: {count}",
+  "Click to open Photos": "Нажмите, чтобы открыть «Фото»",
 });

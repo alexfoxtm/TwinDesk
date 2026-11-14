@@ -250,6 +250,14 @@ class Link(
         return w.send(m.toString())
     }
 
+    // An asynchronous producer must never send an old session's data on a replacement socket.
+    internal fun sendFor(marker: Any?, m: JSONObject): Boolean {
+        val w = ws ?: return false
+        if (marker == null || w !== marker || state != "connected" || parting) return false
+        if (quietSince != 0L && probeAt == 0L) probeAt = System.currentTimeMillis()
+        return w.send(m.toString())
+    }
+
     // send() for the pointer's hot path (WebHost's TD.move): the line written into one builder, made
     // once. Never held for Wi-Fi (Netlink.holdOut holds only files). kind: 0 remote.mm, 1 remote.wh,
     // 2 in.mm (WebHost).

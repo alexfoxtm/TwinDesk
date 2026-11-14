@@ -1201,5 +1201,7 @@
   "Use saved password": "Использовать сохранённый пароль",
   "Forget saved password": "Удалить сохранённый пароль",
   "Could not save password on this phone": "Не удалось сохранить пароль на этом телефоне",
-  "Use saved password for {account}": "Использовать сохранённый пароль для {account}"
+  "Use saved password for {account}": "Использовать сохранённый пароль для {account}",
+  "New photos and videos": "Новые фото и видео",
+  "{name} shows a notification when the camera takes one. Only how many is sent, never the picture.": "{name} показывает уведомление, когда камера делает снимок или видео. Отправляется только количество, не само изображение."
 }

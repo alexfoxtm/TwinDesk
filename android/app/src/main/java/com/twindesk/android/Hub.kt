@@ -2,7 +2,7 @@
 // Calls, Messages, Photos and Files on the computer (shared/phonehub.js there). Each is off until it is
 // switched on (its page on the computer, or Overview here), and while it's off nothing of it runs:
 // no receiver, no observer, no thread, and the classes that do the work (Calls.kt, Messages.kt,
-// Media.kt, FsBrowse.kt) aren't even made. Switched off, or the session gone: all of it stops at once.
+// Media.kt, MediaAlerts.kt, FsBrowse.kt) aren't even made. Switched off, or the session gone: all of it stops at once.
 // What each needs is asked for when it's switched on (here, or Allow at the top of its page on
 // the computer), never in Setup.
 package com.twindesk.android
@@ -35,6 +35,7 @@ class Hub(core: Core) : Feature(core) {
     @Volatile var callsOn = false; private set
     @Volatile var messagesOn = false; private set
     @Volatile var mediaOn = false; private set
+    @Volatile var mediaAlertsOn = false; private set // the computer shows a notification for new camera photos and videos (its own switch)
     @Volatile var filesOn = false; private set // the computer browses this phone's storage (All files access)
     @Volatile var btAudio = false; private set // the computer takes calls' sound over Bluetooth
     @Volatile private var btAddress = "" // the computer's Bluetooth address (hub.bt)
@@ -43,6 +44,7 @@ class Hub(core: Core) : Feature(core) {
     private var calls: Calls? = null
     private var messages: Messages? = null
     private var media: Media? = null
+    private var alerts: MediaAlerts? = null
     private var fs: FsBrowse? = null
 
     // One background thread for the three's queries: made when one is first used, gone when all are off.
@@ -62,7 +64,7 @@ class Hub(core: Core) : Feature(core) {
     // A new session, or none: all off until the computer says (hub.policy).
     private fun reset() {
         peer = false
-        callsOn = false; messagesOn = false; mediaOn = false; filesOn = false; btAudio = false
+        callsOn = false; messagesOn = false; mediaOn = false; mediaAlertsOn = false; filesOn = false; btAudio = false
         btAddress = ""
         lastState = ""
         apply()
@@ -79,6 +81,7 @@ class Hub(core: Core) : Feature(core) {
                 callsOn = m.optBoolean("calls")
                 messagesOn = m.optBoolean("messages")
                 mediaOn = m.optBoolean("media")
+                mediaAlertsOn = m.optBoolean("mediaAlerts") // only a computer that shows them sends it
                 filesOn = m.optBoolean("files")
                 btAudio = m.optBoolean("bt")
                 apply()
@@ -125,10 +128,18 @@ class Hub(core: Core) : Feature(core) {
         if (live && callsOn) (calls ?: Calls(this, core).also { calls = it }).start() else { calls?.stop(); calls = null }
         if (live && messagesOn) (messages ?: Messages(this, core).also { messages = it }).start() else { messages?.stop(); messages = null }
         if (!(live && mediaOn)) { media?.stop(); media = null }
+        synchronized(this) {
+            if (alertsLive()) (alerts ?: MediaAlerts(this, core).also { alerts = it }).start() else { alerts?.stop(); alerts = null }
+        }
         if (!(live && filesOn)) fs = null
         if (!(live && (callsOn || messagesOn || mediaOn || filesOn))) synchronized(this) { io?.shutdownNow(); io = null }
         watchBonds(live && callsOn && btAudio)
     }
+
+    // New camera photos and videos are told to the computer (MediaAlerts.kt): it asked for them, in
+    // this session, with Photos on here and there and all of the gallery allowed (with only chosen
+    // photos allowed a new one can't be seen). Anything else: nothing watches, asks or sends.
+    fun alertsLive() = core.link.connected && peer && mediaOn && mediaAlertsOn && perm("media") == "ok"
 
     // The person switched one here: the computer follows (it keeps the setting).
     fun set(what: String, on: Boolean) {
@@ -155,7 +166,7 @@ class Hub(core: Core) : Feature(core) {
                 .put("sims", calls?.sims() ?: JSONArray()).put("companion", CallCompanion.allowed(core.ctx)),
             "messages" to JSONObject().put("perm", perm("messages")).put("missing", jsonArray(missing("messages"))).put("sims", messages?.sims() ?: JSONArray())
                 .put("mms", true), // pictures and group texts (sms.send image, addrs)
-            "media" to JSONObject().put("perm", perm("media")).put("remove", true), // media.delete
+            "media" to JSONObject().put("perm", perm("media")).put("remove", true).put("alerts", true), // media.delete, media.new
             "files" to JSONObject().put("perm", perm("files")),
             "bt" to if (callsOn) bt() else JSONObject(),
             "opens" to Settings.canDrawOverlays(core.ctx), // Allow on the computer opens the prompt here (else a notification)

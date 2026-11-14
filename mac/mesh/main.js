@@ -1137,6 +1137,7 @@ function loadHub() {
     shareSheet: (paths) => new (require('electron').ShareMenu)({ filePaths: paths }).popup(win && !win.isDestroyed() ? { browserWindow: win } : {}), // Photos › Share
     choose: () => dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, { properties: ['openFile', 'openDirectory', 'multiSelections'] })
       .then((r) => (r.canceled ? [] : r.filePaths)),
+    mediaAlert: require('../photoalert.js').photoAlerts({ Notification, t, open: goTab }), // Photos › Notify about new photos and videos
     share: { // shared folders with the phone (shared/foldershare.js)
       mounter: require('../phonedrive').mounter, adb: svc && svc.phone.bridge.adb, serialOf: (id) => svc && svc.wired && svc.wired.serialOf(id),
       chooseFolder: () => dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, { properties: ['openDirectory', 'createDirectory'] }).then((r) => (r.canceled ? '' : r.filePaths[0])),

@@ -2252,4 +2252,12 @@
   "Upstream releases": "Upstream releases",
   "macOS could not show the notification. Check this app’s notification settings.": "macOS could not show the notification. Check this app’s notification settings.",
   "macOS notifications": "macOS notifications",
+  "Notify about new photos and videos": "Notify about new photos and videos",
+  "Shows a notification on {me} when the phone’s camera takes a photo or a video, not for screenshots or pictures saved from elsewhere. Nothing is copied here until you save it.": "Shows a notification on {me} when the phone’s camera takes a photo or a video, not for screenshots or pictures saved from elsewhere. Nothing is copied here until you save it.",
+  "New photo on {phone}": "New photo on {phone}",
+  "{count} new photos on {phone}": "{count} new photos on {phone}",
+  "New video on {phone}": "New video on {phone}",
+  "{count} new videos on {phone}": "{count} new videos on {phone}",
+  "{count} new photos and videos on {phone}": "{count} new photos and videos on {phone}",
+  "Click to open Photos": "Click to open Photos",
 });

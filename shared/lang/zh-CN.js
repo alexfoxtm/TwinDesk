@@ -2252,4 +2252,12 @@
   "Upstream releases": "上游版本",
   "macOS could not show the notification. Check this app’s notification settings.": "macOS 无法显示通知。请检查此应用的通知设置。",
   "macOS notifications": "macOS 通知",
+  "Notify about new photos and videos": "有新照片和视频时通知",
+  "Shows a notification on {me} when the phone’s camera takes a photo or a video, not for screenshots or pictures saved from elsewhere. Nothing is copied here until you save it.": "手机相机拍下照片或视频时，在 {me} 上显示通知；截图和从别处保存的图片不会通知。在你保存之前，不会复制任何内容到这里。",
+  "New photo on {phone}": "{phone} 上有新照片",
+  "{count} new photos on {phone}": "{phone} 上有 {count} 张新照片",
+  "New video on {phone}": "{phone} 上有新视频",
+  "{count} new videos on {phone}": "{phone} 上有 {count} 个新视频",
+  "{count} new photos and videos on {phone}": "{phone} 上有 {count} 个新照片和视频",
+  "Click to open Photos": "点击打开“照片”",
 });

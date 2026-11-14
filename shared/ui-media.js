@@ -4,6 +4,8 @@
 // files here (into Downloads, as Send does); Remove deletes them from the phone (asks once more
 // here; without All files access the phone shows Android's own confirmation too). On USB, Wi-Fi or Wi-Fi Direct; over Bluetooth it says
 // so and loads nothing (thumbnails there slowed everything else down).
+// On a computer that has it (hub.canMediaAlerts) with a phone that does (media.alerts): a switch for
+// a notification here when the phone's camera takes a photo or a video (how many, nothing loaded).
 'use strict';
 
 (() => {
@@ -76,7 +78,13 @@ UI.tab({
       el('div', { class: 'hub-viewer-stage' }, [prev, bigImg, next]),
       el('div', { class: 'hub-viewer-bar' }, [el('div', { class: 'hub-grow' }, [bigName, bigSub]), bigRemove, bigCopy, bigShare, bigSave, closeBtn]),
     ]);
-    body.append(top.el, wrap, viewer);
+    // A notification here for new camera photos and videos: off until switched on, and shown only
+    // where it works (this computer shows them, the connected phone tells them).
+    const alertSw = UI.switch((v) => UI.api.hub({ do: 'opt', mediaAlerts: v }), { label: tr('Notify about new photos and videos') });
+    const alertCard = UI.card('', [UI.row(tr('Notify about new photos and videos'),
+      tr('Shows a notification on {me} when the phone’s camera takes a photo or a video, not for screenshots or pictures saved from elsewhere. Nothing is copied here until you save it.'), [alertSw])]);
+    alertCard.hidden = true;
+    body.append(top.el, alertCard, wrap, viewer);
 
     let items = []; // {id, video, at, w, h, size, name, dur, album}
     let nextKey = '';
@@ -292,6 +300,8 @@ UI.tab({
     return (s) => {
       top.render(s);
       bigSave.textContent = tr('Save to {me}', { me: UI.fill('{me}') });
+      alertCard.hidden = !(s.hub && s.hub.canMediaAlerts && UI.hubReady(s, 'media') && s.hub.perm.media.alerts && s.hub.perm.media.perm === 'ok'); // not with only chosen photos allowed
+      alertSw.set(!!(s.hub && s.hub.mediaAlerts));
       const ready = UI.hubReady(s, 'media') && !UI.onBle(s); // over Bluetooth: the Wi-Fi Direct note only
       wrap.hidden = !ready;
       if (!ready) { loaded = false; view(null); return; }

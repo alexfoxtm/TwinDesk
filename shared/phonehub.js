@@ -12,6 +12,10 @@
 // share: shared folders' options (foldershare.js), when this computer has them.
 // shareSheet(paths, title): the system's Share for files here (the Mac's share menu, Windows' Share
 // through the helper); none on Linux. Photos' Copy and Share use the picture the viewer shows.
+// mediaAlert({photos, videos, name, current()}): this computer's notification for new camera photos
+// and videos on the phone (media.new: how many, nothing else). A computer that passes none has no
+// such option: its switch isn't shown, hub.policy never asks the phone for them, media.new is dropped.
+// current(): still that phone's session with Photos on (for the notification's click).
 //
 // Events: 'change' (view), 'data' (a reply for the window: forwarded as is), 'call' (call, before).
 'use strict';
@@ -62,9 +66,9 @@ const PAIR_POLL_MS = 3000;
 class PhoneHub extends EventEmitter {
   // audioLimit: what this computer can't do with the calls' sound, said under its switch (Windows).
   // audioStore: the Microsoft Store's build, which has no calls' sound (Calls says so instead).
-  constructor({ server, getSettings, save, audio, audioLimit, audioStore, btSettings, send, choose, share, shareSheet, photoTempName = 'TwinDesk Photos' }) {
+  constructor({ server, getSettings, save, audio, audioLimit, audioStore, btSettings, send, choose, share, shareSheet, photoTempName = 'TwinDesk Photos', mediaAlert }) {
     super();
-    Object.assign(this, { server, getSettings, save, makeAudio: audio || null, audioLimit: audioLimit || '', audioStore: !!audioStore, btSettings: btSettings || null, sendFiles: send || null, choose: choose || null, shareSheet: shareSheet || null });
+    Object.assign(this, { server, getSettings, save, makeAudio: audio || null, audioLimit: audioLimit || '', audioStore: !!audioStore, btSettings: btSettings || null, sendFiles: send || null, choose: choose || null, shareSheet: shareSheet || null, mediaAlert: mediaAlert || null });
     this.photoTempName = photoTempName;
     this.pairTimer = null; // looking for the phone's pairing (watchPair)
     this.share = null;
@@ -78,6 +82,7 @@ class PhoneHub extends EventEmitter {
     this.unread = 0; // texts that came in since the Messages page was last looked at
     this.audio = null;
     this.muted = false;
+    this.mediaAlertSession = 0;
 
     server.on('client', (ctx) => isPhone(ctx) && this.started());
     server.on('closed', (ctx) => isPhone(ctx) && this.stopped());
@@ -102,7 +107,7 @@ class PhoneHub extends EventEmitter {
           sims: m.messages && Array.isArray(m.messages.sims) ? m.messages.sims.filter((x) => x && Number.isInteger(x.id)).slice(0, 4).map((x) => ({ id: x.id, label: str(x.label, 40) })) : [], // texts' SIMs (two or more)
           mms: !!(m.messages && m.messages.mms), // sends pictures and group texts
         },
-        media: { perm: perm(m.media), remove: !!(m.media && m.media.remove) }, // remove: takes media.delete
+        media: { perm: perm(m.media), remove: !!(m.media && m.media.remove), alerts: !!(m.media && m.media.alerts) }, // remove: takes media.delete; alerts: can send media.new
         files: { perm: perm(m.files) },
         bt: {
           allowed: bt.allowed !== false, radio: bt.radio !== false, name: str(bt.name, 100), bonded: bt.bonded === true ? true : bt.bonded === false ? false : null,
@@ -127,6 +132,7 @@ class PhoneHub extends EventEmitter {
     on(T.SHARE_OFFER, (m) => { if (this.share) { this.share.onOffer(m); this.share.host(); } });
     on(T.SHARE_SET, (m) => this.share && this.share.act('serve', { on: !!m.serve })); // switched on the phone
     for (const t of Object.keys(ANSWERS)) on(t, (m) => this.onAnswer(m));
+    server.on(`t:${T.MEDIA_NEW}`, (m, ctx) => this.onMediaNew(m, ctx));
   }
 
   get settings() {
@@ -140,6 +146,7 @@ class PhoneHub extends EventEmitter {
 
   // A phone's session started (or this was loaded while one is connected).
   started() {
+    ++this.mediaAlertSession;
     this.state = null;
     this.call = null;
     this.unread = 0;
@@ -150,6 +157,7 @@ class PhoneHub extends EventEmitter {
   }
 
   stopped() {
+    ++this.mediaAlertSession;
     if (this.share) this.share.stopped();
     const had = this.call;
     this.state = null;
@@ -161,12 +169,15 @@ class PhoneHub extends EventEmitter {
 
   policy() {
     const s = this.settings;
-    this.server.sendToClient({ t: T.HUB_POLICY, calls: !!s.calls, messages: !!s.messages, media: !!s.media, files: !!s.files, bt: !!(this.makeAudio && s.calls && s.callAudio) }); // bt: be this computer's hands-free (none on a Mac)
+    this.server.sendToClient({
+      t: T.HUB_POLICY, calls: !!s.calls, messages: !!s.messages, media: !!s.media, files: !!s.files, bt: !!(this.makeAudio && s.calls && s.callAudio), // bt: be this computer's hands-free (none on a Mac)
+      ...(this.mediaAlert && s.media && s.mediaAlerts ? { mediaAlerts: true } : {}), // new camera photos and videos (media.new): only when switched on here
+    });
   }
 
   // ---- from the window ----
 
-  // {do: 'set', what, on} | {do: 'opt', callAudio?, btDevice?} | {do: 'ask', what} | {do: 'seen'}
+  // {do: 'set', what, on} | {do: 'opt', callAudio?, btDevice?, mediaAlerts?} | {do: 'ask', what} | {do: 'seen'}
   // | {do: 'send', msg} | {do: 'audio', a: 'here'|'phone'|'connect'|'check'|'settings'|'forget'} | {do: 'call', a, number?, on?}
   // | {do: 'upload', path, paths? (none: chosen here first)} | {do: 'share', a: 'mount'|'unmount'|'auto'|'serve'|'choose'|'default', on?}
   // | {do: 'copyImage', data} | {do: 'shareImage', data, name}: Photos' viewer, its picture (a data: URL)
@@ -183,6 +194,7 @@ class PhoneHub extends EventEmitter {
         return this.emit('change');
       case 'opt':
         if (typeof r.callAudio === 'boolean') s.callAudio = r.callAudio;
+        if (typeof r.mediaAlerts === 'boolean' && this.mediaAlert) s.mediaAlerts = r.mediaAlerts;
         if (typeof r.btDevice === 'string') this.btDevice(r.btDevice.slice(0, 400)); // Windows' device ids are long
         this.save();
         if (this.phone) this.policy();
@@ -378,6 +390,30 @@ class PhoneHub extends EventEmitter {
     this.emit('change');
   }
 
+  // New camera photos and videos on the phone: how many, to this computer's notification. Dropped
+  // unless it was switched on here with Photos on, the phone is allowed all its photos and says it does
+  // this, and it comes from the session connected now. Only the two counts are read.
+  onMediaNew(m, ctx) {
+    const s = this.settings;
+    const st = this.state && this.state.media;
+    const phone = this.phone;
+    if (!this.mediaAlert || !s.media || !s.mediaAlerts || !ctx || !phone) return;
+    // A mesh route creates a fresh view each time; its authenticated socket stays the same.
+    if (ctx !== phone && (!ctx.ws || ctx.ws !== phone.ws || ctx.deviceId !== phone.deviceId)) return;
+    if (!st || !st.alerts || st.perm !== 'ok') return; // with only chosen photos allowed, the phone can't see a new one
+    const count = (v) => (Number.isInteger(v) && v > 0 ? Math.min(v, 999) : 0);
+    const photos = count(m && m.photos);
+    const videos = count(m && m.videos);
+    if (!photos && !videos) return;
+    const generation = this.mediaAlertSession, socket = ctx.ws, id = ctx.deviceId;
+    this.mediaAlert({ photos, videos, name: str(ctx.name, 100), current: () => {
+      const now = this.phone, media = this.state && this.state.media;
+      return !!now && generation === this.mediaAlertSession && now.deviceId === id &&
+        (socket ? now.ws === socket : now === ctx) && !!this.settings.media && !!this.settings.mediaAlerts &&
+        !!media && media.alerts && media.perm === 'ok';
+    } });
+  }
+
   onAnswer(m) {
     if (!this.settings[ANSWERS[m.t]]) return;
     if ('data' in m) m = { ...m, data: picture(m.data, 12e6) }; // pictures only (thumbnails, previews, MMS)
@@ -484,6 +520,7 @@ class PhoneHub extends EventEmitter {
       btSettings: !!this.btSettings, pairWatch: !!this.pairTimer, // pairing for the calls' sound: Open Bluetooth settings, looking for the phone
       share: this.share ? this.share.view : null,
       shareSheet: !!this.shareSheet, // Photos' Share (none on Linux)
+      mediaAlerts: !!s.mediaAlerts, canMediaAlerts: !!this.mediaAlert, // new camera photos and videos as a notification here (computers that have it)
     };
   }
 }

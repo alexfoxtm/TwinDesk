@@ -25,6 +25,7 @@ When you pair devices, TwinDesk sends the content of the features you use direct
 - calls (ringing, answering, dialling, contact names and numbers, and call audio)
 - text messages, contacts and call history the phone app shows
 - photos and files you choose to open from the phone
+- how many new photos and videos the phone's camera took, when you switch on that notification on a Mac (a count only: no picture, name, place or time)
 - the apps you open from the other device
 - shared folders, and the terminal when you turn it on
 

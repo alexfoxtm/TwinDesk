@@ -162,6 +162,7 @@ object Proto {
         const val MEDIA_VIEW = "media.view"
         const val MEDIA_SAVE = "media.save"
         const val MEDIA_DELETE = "media.delete"
+        const val MEDIA_NEW = "media.new" // phone->computer {photos, videos}: new camera photos and videos, how many (MediaAlerts.kt)
         const val FS_LIST = "fs.list"
         const val FS_DO = "fs.do"
         const val FS_DONE = "fs.done"
