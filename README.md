@@ -660,6 +660,9 @@ to show what's on your screen. Use touch as the mouse, or switch on touchpad mod
 
 - **Files.** *Send to computer* or *Copy to computer* from any Android app's share menu; from the
   computer, the Share menu, *Send to*, a drag across the screen edge or <kbd>⌃⌥C</kbd> / <kbd>Ctrl+Alt+C</kbd>.
+- **Files with LocalSend-compatible apps** (Mac and Android, off until you turn it on): find devices
+  that speak the LocalSend protocol, send them files and accept theirs one transfer at a time. See
+  [docs/localsend.md](docs/localsend.md).
 - **Clipboard.** Text and pictures both ways, the phone's screenshots included.
 - **Notifications.** The phone's on the computer as native notifications, per app, and the other way around.
 - **Media.** What's playing on the phone, with play, pause, skip and seek on the computer, and the

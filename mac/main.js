@@ -121,6 +121,7 @@ let quitting = false;
 let startHidden = process.argv.includes('--hidden');
 let settings, id, server, pairing, discovery, link, peer, svc, actions, pairSync, updates;
 let web = null; // TwinDesk Web: this Mac as a page for iPhones and browsers (setupWeb)
+let localsend = null; // files with LocalSend-compatible apps (mac/localsend.js), off until turned on in Files
 let phoneHub = null; // Calls, Messages and Photos (loadHub); svc.hub is the Mac's sound capture (audiohub.js)
 
 const state = {
@@ -298,6 +299,7 @@ function pushState() {
     state.hub = phoneHub ? phoneHub.view : { ...settings.hub, connected: false };
     if (updates) state.updates = updates.view;
     state.web = web ? web.view() : { cfg: { ...settings.web }, devices: [] }; // TwinDesk Web (shared/web/webwire.js)
+    state.localsend = localsend ? localsend.view() : { cfg: { on: !!(settings.localsend && settings.localsend.on) }, peers: [], offers: [], transfers: [] }; // Files › LocalSend-compatible devices
     if (pairSync) pairSync.check();
     sendScreenState();
     if (win && !win.isDestroyed()) win.webContents.send('state', state);
@@ -1018,6 +1020,10 @@ app.whenReady().then(() => {
   // The system accent colour changed (General › Appearance › System follows it).
   try { systemPreferences.subscribeNotification('AppleColorPreferencesChangedNotification', () => pushState()); } catch {}
   setupWeb();
+  localsend = require('./localsend.js').setupLocalSend({
+    settings: () => settings, save: () => store.saveSettings(settings), pushState, t, window: () => win,
+    name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),
+  });
   actions = setupIpc({ state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link, ...svc, hub: loadHub, login, refreshPermissions, updates });
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'assets', 'trayTemplate.png'))); // "Template": macOS tints it
   hud = new Hud(() => settings);

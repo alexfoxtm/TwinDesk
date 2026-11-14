@@ -66,6 +66,10 @@ UI.tab({
     const copyRow = UI.row(I18n.t('Copy'), I18n.t('Select files in Finder first'), [copyRec]);
     const pasteRow = UI.row(I18n.t('Paste'), '', [pasteRec], { literalHint: true });
 
+    // Other devices on the network that run a LocalSend-compatible app (shared/ui-localsend.js): their
+    // own cards, since they work without the other computer.
+    const lan = UI.localsend ? UI.localsend() : null;
+
     body.append(
       UI.card('', [sendRow, zone], { cls: 'keep-on' }),
       UI.card('', [keysRow, copyRow, pasteRow], { cls: 'keep-on' }),
@@ -75,6 +79,7 @@ UI.tab({
       ),
       UI.card('', [dragRow, encryptRow], { cls: 'keep-on' }),
       progress,
+      ...(lan ? lan.els : []),
       UI.card(I18n.t('Arriving files'), [
         folderRow,
         UI.row(I18n.t('Show in Finder'), '', [reveal]),
@@ -85,6 +90,7 @@ UI.tab({
     let key = '';
     let progressKey = '';
     return (s) => {
+      if (lan) lan.update(s);
       const f = s.files;
       const m = s.smb;
       if (!f || !m) return;

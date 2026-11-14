@@ -1598,7 +1598,11 @@ private fun FilesPage(core: Core, v: Int) {
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris -> if (uris.isNotEmpty()) core.files.send(core.files.describe(uris), "send") }
     val pickCopy = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris -> if (uris.isNotEmpty()) core.fclip.copy(core.files.describe(uris)) }
     PageHead(tr("Files"), tr("Send, copy and drag files between your devices."))
-    if (host == null) return NotConnected(core, v)
+    LocalSendOffers(core, v) // a LocalSend-compatible device asking: before everything else
+    if (host == null) {
+        NotConnected(core, v)
+        return LocalSendCards(core, v) // these need no computer
+    }
 
     core.fclip.incoming?.let { o ->
         MacCard(tr("Copied on {name}", "name" to name)) {
@@ -1669,6 +1673,7 @@ private fun FilesPage(core: Core, v: Int) {
         MacRow(tr("Clear this list"), tr("Only the list here. The files stay where they are.")) { Secondary(tr("Clear")) { core.files.clearRecent() } }
         MacRow(tr("Downloads"), "") { Secondary(tr("Show")) { ctx.startActivity(Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
     }
+    LocalSendCards(core, v)
 }
 
 // ---- Sound ----
@@ -2038,6 +2043,7 @@ private fun AboutPage(core: Core, v: Int) {
         }
         MacRow(tr("Screen, input and sound over wireless debugging"), "scrcpy-server (Apache-2.0)")
         MacRow(tr("Network"), "OkHttp (Apache-2.0)")
+        MacRow(tr("Files with LocalSend-compatible apps"), "LocalSendCore.kt: MPL-2.0, adapted from NectarLink. Source: github.com/InukaAsith/TwinDesk") { Secondary(tr("Read")) { open("https://www.mozilla.org/MPL/2.0/") } }
     }
     Text(tr("Crafted with ☕ and ❤️ in Sri Lanka 🇱🇰"), color = pal.muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp))

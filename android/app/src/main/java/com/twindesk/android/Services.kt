@@ -120,6 +120,9 @@ class ActionReceiver : BroadcastReceiver() {
             PC_MEDIA -> core.pcMedia.control(arg.ifEmpty { "toggle" }) // the computer's media notification, or Play/Pause on ours
             RING_PC -> core.dev.ask("ring")
             FILES_CANCEL -> core.files.cancel(arg) // a transfer's notification: Cancel
+            LS_ACCEPT -> core.localSend.answer(arg, true) // a LocalSend-compatible device's offer: its notification's buttons
+            LS_DECLINE -> core.localSend.answer(arg, false)
+            LS_CANCEL -> core.localSend.cancel(arg)
             LOCK_PC -> core.dev.ask("lock")
             PAIR_CODE -> {
                 val code = android.app.RemoteInput.getResultsFromIntent(intent)?.getCharSequence("code")?.toString() ?: ""
@@ -144,6 +147,9 @@ class ActionReceiver : BroadcastReceiver() {
         const val RING_PC = "com.twindesk.android.RING_PC"
         const val LOCK_PC = "com.twindesk.android.LOCK_PC"
         const val FILES_CANCEL = "com.twindesk.android.FILES_CANCEL"
+        const val LS_ACCEPT = "com.twindesk.android.LS_ACCEPT"
+        const val LS_DECLINE = "com.twindesk.android.LS_DECLINE"
+        const val LS_CANCEL = "com.twindesk.android.LS_CANCEL"
     }
 }
 

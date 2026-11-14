@@ -63,6 +63,10 @@ cp -R "$ROOT/shared/lang" "$STAGE/shared/"
 # the phone app's screen viewer and remote, which the page shows as they are.
 mkdir -p "$STAGE/shared/web" "$STAGE/web" "$STAGE/android-web"
 cp "$ROOT"/shared/web/*.js "$ROOT"/shared/web/*.html "$STAGE/shared/web/"
+# Files with LocalSend-compatible apps (shared/localsend): core.js is MPL-2.0, so its licence goes along.
+mkdir -p "$STAGE/shared/localsend" "$STAGE/licenses"
+cp "$ROOT"/shared/localsend/*.js "$STAGE/shared/localsend/"
+cp "$ROOT/licenses/MPL-2.0.txt" "$STAGE/licenses/"
 rsync -a --exclude shortcuts-src "$ROOT/web/" "$STAGE/web/"
 cp -R "$ROOT/android/app/src/main/assets/web/." "$STAGE/android-web/"
 cp "$ROOT"/mac-helper/.build/release/macshare-helper "$ROOT"/mac-helper/.build/release/macshare-helper-multi "$ROOT"/mac-helper/.build/release/macshare-dockstub "$ROOT"/mac-helper/.build/release/macshare-calls "$ROOT"/mac-helper/.build/release/macshare-iosusb "$ROOT"/mac-helper/.build/release/libtwindesk-nowplaying.dylib "$STAGE/mac-helper/.build/release/"

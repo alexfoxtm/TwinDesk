@@ -127,6 +127,30 @@ is built (windows/scripts/fetch-adb.js) and included in it, for wireless debuggi
 adb for Linux likewise when the Linux packages are built (linux/scripts/fetch-adb.js).
 
 
+NectarLink — the LocalSend-compatible file transfer
+---------------------------------------------------
+Source:  https://github.com/thtbee/nectarlink (commit a1a7d885),
+         core/nectarlink-core/src/localsend.rs and core/nectarlink-core/src/transfer.rs
+License: MPL-2.0 (see licenses/MPL-2.0.txt) — Copyright (C) 2026 The NectarLink contributors
+
+Adapted code (each file carries the MPL-2.0 notice and a "Portions adapted from NectarLink" notice,
+and stays under the MPL-2.0; the rest of TwinDesk is GPL-3.0, combined with it as MPL-2.0
+section 3.3 allows):
+  - shared/localsend/core.js                                          JavaScript rewrite for the Mac, Windows and Linux apps
+  - android/app/src/main/java/com/twindesk/android/LocalSendCore.kt   Kotlin rewrite for the Android app
+What was taken: the self-signed certificate written as DER, the certificate fingerprint check on
+every connection, the refusal to move a known HTTPS device to HTTP, the upload session rules and the
+file name rules. Changed from the original: no plain HTTP, every discovered device is checked over
+TLS before it is listed as verified, the hash is taken while the bytes arrive.
+The source of both files is in this repository (https://github.com/InukaAsith/TwinDesk).
+The apps carry this file and the licence text: the Mac app in its Resources, the Android app as
+assets/licenses/ (About › Files with LocalSend-compatible apps names the source).
+
+The protocol they speak is LocalSend Protocol v2.2 (https://github.com/localsend/protocol, MIT —
+Copyright (c) 2022-2024 Tien Do Nam). No LocalSend code is included. "LocalSend" is used only to
+name the protocol; TwinDesk is not affiliated with or endorsed by LocalSend or NectarLink.
+
+
 Downloaded at run time (not included in this repository)
 --------------------------------------------------------
 Virtual Display Driver — https://github.com/VirtualDrivers/Virtual-Display-Driver — MIT.

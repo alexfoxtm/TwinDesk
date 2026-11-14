@@ -66,6 +66,15 @@ android {
     }
 }
 
+// LocalSendCore.kt is MPL-2.0: the licence text and the notices (which say where its source is) go
+// into the APK as assets/licenses/, from the repository's own copies.
+val licenseAssets = tasks.register<Copy>("licenseAssets") {
+    from(rootProject.file("../licenses/MPL-2.0.txt"), rootProject.file("../THIRD_PARTY_NOTICES"))
+    into(layout.buildDirectory.dir("generated/licenseAssets/licenses"))
+}
+android.sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("generated/licenseAssets").get().asFile)
+tasks.named("preBuild") { dependsOn(licenseAssets) }
+
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.compose.material3:material3")

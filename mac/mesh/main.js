@@ -98,6 +98,7 @@ let startHidden = process.argv.includes('--hidden');
 // peer: the SELECTED device for the one-to-one features; phonePeer: the phone, wherever it is selected.
 let autoJoin, settings, id, server, pairing, discovery, links, hub, mesh, layoutSync, peer, phonePeer, svc, actions, pairSync, updates;
 let web = null; // TwinDesk Web (shared/web/webwire.js), beside the mesh as in the one-to-one app
+let localsend = null; // files with LocalSend-compatible apps (mac/localsend.js), off until turned on in Files
 let phoneHub = null; // Calls, Messages and Photos (loadHub); svc.hub is not used: the mesh's hub is `hub`
 let devctl = null; // Overview's controls of the selected device (shared/devctl.js)
 let chats = null; // Messages' chat apps from a phone, kept per phone (shared/chats.js)
@@ -260,6 +261,7 @@ function publishState() {
     // ReZume tab; mesh: why it isn't here (only with one phone, shared/rezume-solo.js)
     state.rezume = svc ? { ...(svc.rz ? svc.rz.view : { ...settings.rezume, connected: false }), mesh: svc.rzSolo ? svc.rzSolo.blocked() : '' } : null;
     state.web = web ? web.view() : { cfg: { ...settings.web }, devices: [] }; // TwinDesk Web
+    state.localsend = localsend ? localsend.view() : { cfg: { on: !!(settings.localsend && settings.localsend.on) }, peers: [], offers: [], transfers: [] }; // Files › LocalSend-compatible devices
     state.chats = chats ? chats.view() : null; // Messages' WhatsApp, Instagram… conversations
     if (svc) {
       const { secret, ...smb } = settings.smb; // never send the share password to the window
@@ -920,6 +922,10 @@ app.whenReady().then(() => {
   Look.applyTheme(nativeTheme, settings.ui.theme);
   nativeTheme.on('updated', () => pushState());
   setupWeb();
+  localsend = require('../localsend.js').setupLocalSend({
+    settings: () => settings, save: () => store.saveSettings(settings), pushState, t, window: () => win,
+    name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),
+  });
   actions = setupIpc({ devctl: () => devctl, chats: () => chats, state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link: links, ...svc, hub, layoutSync, autoJoin, phoneHub: loadHub, login, refreshPermissions, updates });
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, '..', 'assets', 'trayTemplate.png'))); // "Template": macOS tints it
   hud = new Hud(() => settings);

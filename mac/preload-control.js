@@ -14,6 +14,7 @@ const ACTIONS = [
   'deviceDo', 'setOverview', 'setChats', 'notifReply', 'adbQr', // the redesign: Overview, General › Overview, Messages, QR codes
   'webSet', 'webNewCode', 'webAllow', 'webChooseFolder', 'webForget', 'webDisconnect', 'webRename', 'webSendText', 'webSendFiles', 'webChooseFiles', 'webDeleteItem', 'webClearChat', 'webStopScreen', 'webStopCam', 'webShowScr', 'webAudio', 'webRemotePad', 'webOpenItem', 'webSaveItem', 'webCopy', 'webShareSet', 'webShareFolder', // TwinDesk Web (shared/web/webwire.js)
   'iosSign', 'iosSignIpa', // TwinDesk iPhone (shared/iossign.js)
+  'lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal', // Files › LocalSend-compatible devices (shared/localsend/wire.js)
   'setUpdates', 'skipUpdate', 'unskipUpdate', 'checkUpdates', 'openUpdate', 'openLink', 'setNet', 'netJoinHotspot', 'netCancel', 'netWifi', 'hub',
 ];
 

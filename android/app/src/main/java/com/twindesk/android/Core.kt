@@ -62,6 +62,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val companion = CompanionApproval(this)
     val history = History(this) // the clipboard's and notifications' history, kept encrypted when asked (History.kt)
     val files = Files(this)
+    val localSend = LocalSend(this) // files with LocalSend-compatible apps: off until turned on (LocalSend.kt)
     val fclip = FileClip(this)
     val info = PhoneInfo(this)
     val apps = Apps(this)
@@ -130,6 +131,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         bg.scheduleWithFixedDelay({ runCatching { returnTick() }.onFailure { Log.e("TwinDesk", "reconnect", it) } }, 3, 3, TimeUnit.SECONDS)
         runCatching { peer.start() }.onFailure { Log.e("TwinDesk", "peer", it) }
         Notify.channels(ctx)
+        runCatching { localSend.start() }.onFailure { Log.e("TwinDesk", "localsend", it) }
         updates.start()
         if (store.flag("remote.btpad", false)) btPad.start()
         runCatching { bank.start() }.onFailure { Log.e("TwinDesk", "bank", it) }
