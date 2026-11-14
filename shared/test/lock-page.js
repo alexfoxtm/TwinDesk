@@ -93,6 +93,7 @@ async function main() {
     viewport._updateClip(); viewport._updateScale();
     assert.equal(viewport._display.absX(180), 7680, 'portrait fit keeps crop input aligned');
     await ardFixture();
+    authFixture('main');
     f.recv({ t: 'closed' });
     assert.match(f.element('status').textContent, /connection ended/);
 }
@@ -138,7 +139,38 @@ async function ardFixture() {
     cryptoDone(new Uint8Array(16)); await new Promise(resolve => setImmediate(resolve));
     assert.equal(writes, 2); assert.equal(ctx._rfbInitState, 'SecurityResult'); assert.deepEqual(ctx._rfbCredentials, {});
 }
+function authFixture(mode) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'twindesk-lock-auth-'));
+    try {
+        const test = path.join(dir, 'LockAuthFixture.java');
+        fs.writeFileSync(test, `package com.twindesk.android;
+public final class LockAuthFixture {
+    public static void main(String[] args) {
+        String mode = args[0];
+        if (mode.equals("main")) {
+            if (!"submit".equals(LockAuth.decide(true, true, "local-user", "local-secret"))) throw new AssertionError("enrolled secure credential is used");
+            if (!"submit".equals(LockAuth.decide(true, true, "a", "b"))) throw new AssertionError("short enrolled credential is used");
+        } else if (mode.equals("failure")) {
+            if (!"prompt".equals(LockAuth.decide(false, true, "local-user", "local-secret"))) throw new AssertionError("unlocked phone must not use the secret");
+            if (!"prompt".equals(LockAuth.decide(true, false, "local-user", "local-secret"))) throw new AssertionError("missing enrollment must prompt");
+            if (!"prompt".equals(LockAuth.decide(true, true, "", "local-secret"))) throw new AssertionError("empty account must prompt");
+            if (!"prompt".equals(LockAuth.decide(true, true, "local-user", ""))) throw new AssertionError("empty secret must prompt");
+            if (!"prompt".equals(LockAuth.decide(true, true, null, "local-secret"))) throw new AssertionError("missing account must prompt");
+            if (!"prompt".equals(LockAuth.decide(true, true, "local-user", null))) throw new AssertionError("missing secret must prompt");
+            String longValue = "é".repeat(32);
+            if (!"prompt".equals(LockAuth.decide(true, true, longValue, "local-secret"))) throw new AssertionError("long account must prompt");
+            if (!"prompt".equals(LockAuth.decide(true, true, "local-user", longValue))) throw new AssertionError("long secret must prompt");
+            if ("submit".equals(LockAuth.decide(false, false, null, null))) throw new AssertionError("decision invented a credential");
+        } else throw new AssertionError("unknown mode");
+    }
+}`);
+        const source = path.join(base, '../java/com/twindesk/android/LockAuth.java');
+        execFileSync('javac', ['-encoding', 'UTF-8', '-d', dir, source, test], { stdio: 'pipe' });
+        execFileSync('java', ['-cp', dir, 'com.twindesk.android.LockAuthFixture', mode], { stdio: 'pipe', timeout: 10000 });
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
 function failure() {
+    authFixture('failure');
     const rfb = fs.readFileSync(path.join(base, 'novnc/core/rfb.js'), 'utf8');
     const select = rfb.match(/_isSupportedSecurityType\(type\) \{([\s\S]*?)\n    \}/)[1];
     const supports = new Function('type', 'securityTypeARD', select);

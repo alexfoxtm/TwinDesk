@@ -43,6 +43,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
     private val vault = LockVault(activity)
     private var pendingSave: Triple<Host, String, String>? = null
     private var usedSavedHost: String? = null
+    private var signingIn = false
     private val rememberPassword = CheckBox(activity).apply {
         text = tr("Remember Screen Sharing password on this phone")
         setTextColor(0xffffffff.toInt())
@@ -136,22 +137,25 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         accountLabel.visibility = View.VISIBLE
         changeAccount.visibility = if (automatic) View.VISIBLE else View.GONE
     }
-    private fun submitCredentials(savedAccount: String? = null, savedPassword: String? = null, save: Boolean = rememberPassword.isChecked) {
-        if (!visible || !ready || !credentialsRequested) return
+    private fun submitCredentials(savedAccount: String? = null, savedPassword: String? = null, save: Boolean = rememberPassword.isChecked, automatic: Boolean = false) {
+        if (!visible || !ready || signingIn || (!credentialsRequested && !automatic)) return
         val username = savedAccount ?: if (!manualAccount) suggestedAccount ?: account.text.toString() else account.text.toString()
         val password = savedPassword ?: secret.text.toString()
         if (username.isEmpty() || password.isEmpty()) return
-        if (username.toByteArray(Charsets.UTF_8).size > 63 || password.toByteArray(Charsets.UTF_8).size > 63) {
+        if (LockAuth.decide(true, true, username, password) != "submit") {
             authError.text = tr("Screen Sharing cannot use this account name or password because it exceeds 63 UTF-8 bytes.")
             authError.visibility = View.VISIBLE
+            if (automatic) credentialsRequested = true
             return
         }
+        signingIn = true
         val mine = generation
         pendingSave = if (save && vault.secure) core.host?.let { Triple(it.copy(), username, password) } else null
         view.evaluateJavascript("window.lockCredentials && window.lockCredentials($mine, ${JSONObject.quote(username)}, ${JSONObject.quote(password)});") { result ->
             if (visible && mine == generation && result != "true") {
                 pendingSave = null
                 usedSavedHost = null
+                signingIn = false
                 credentialsRequested = true
                 authError.text = tr("Login-screen connection ended. Close this view and try again.")
                 authError.visibility = View.VISIBLE
@@ -214,6 +218,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         credentialsRequested = false
         pendingSave = null
         usedSavedHost = null
+        signingIn = false
         rememberPassword.isChecked = false
         clearCredentials()
         suggestedAccount = null
@@ -261,6 +266,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
         credentialsRequested = false
         pendingSave = null
         usedSavedHost = null
+        signingIn = false
         rememberPassword.isChecked = false
         clearCredentials()
         suggestedAccount = null
@@ -302,12 +308,19 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
                 android.util.Log.i("TwinDeskLock", "geometry framebuffer=${fw}x$fh canvas=${cw}x$ch viewport=${vw}x$vh")
         }
         @JavascriptInterface fun credentials() = activity.runOnUiThread {
-            if (current() && ready && !credentialsRequested) {
-                clearCredentials(); updateAccountFields()
-                updateSaved()
-                focusedField = if (suggestedAccount != null && !manualAccount) secret else account
-                credentialsRequested = true
+            if (!current() || !ready || credentialsRequested || signingIn) return@runOnUiThread
+            // Use only a secret this phone already stored for this paired host. Never save one here.
+            val host = core.host
+            val saved = if (host != null && vault.secure) vault.load(host) else null
+            if (host != null && saved != null && LockAuth.decide(vault.secure, true, saved.first, saved.second) == "submit") {
+                usedSavedHost = host.id
+                submitCredentials(saved.first, saved.second, false, true)
+                return@runOnUiThread
             }
+            clearCredentials(); updateAccountFields()
+            updateSaved()
+            focusedField = if (suggestedAccount != null && !manualAccount) secret else account
+            credentialsRequested = true
         }
         @JavascriptInterface fun ready() = activity.runOnUiThread {
             if (!current() || ready) return@runOnUiThread
@@ -322,7 +335,7 @@ class LockPage(private val activity: ComponentActivity, private val core: Core, 
                     updateSaved()
                     message.remove("account") // The local web page needs only display geometry.
                 }
-                if (message.optString("t") == "closed") { credentialsRequested = false; pendingSave = null; clearCredentials() }
+                if (message.optString("t") == "closed") { credentialsRequested = false; pendingSave = null; signingIn = false; clearCredentials() }
                 if (message.optString("t") == "unlocked") unlocked()
                 else view.evaluateJavascript("window.lockRecv && window.lockRecv($message);", null)
             }
