@@ -1777,7 +1777,11 @@ private fun ModulesCard(core: Core) {
         for (t in Tab.entries) {
             val id = t.name.lowercase()
             if (id in Modules.FIXED) continue
-            SwitchRow(tr(t.title), "", id !in off) { Modules.set(core.store, id, it); off = Modules.off(core.store) }
+            SwitchRow(tr(t.title), "", id !in off) {
+                Modules.set(core.store, id, it)
+                off = Modules.off(core.store)
+                if (id == "files") core.localSend.start()
+            }
         }
     }
 }

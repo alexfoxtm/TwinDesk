@@ -559,6 +559,7 @@ function setupIpc(ctx) {
       const Mods = require('../../shared/modules.js');
       settings.modules = typeof m.restored === 'string' ? Mods.restored(settings.modules, m.restored) : Mods.set(settings.modules, String(m.id), m.on === true, m.wasOn === true);
       save();
+      if (ctx.onModulesChanged) ctx.onModulesChanged();
       ctx.pushState();
     },
     // TwinDesk iPhone (shared/iossign.js): one action, and Choose an IPA….

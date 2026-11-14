@@ -33,7 +33,7 @@ class LocalSend(private val core: Core) : LsEvents {
     // What the page shows of a transfer of ours that asked for a PIN: the same files again, with it.
     private class Again(val peer: String, val sources: List<LsSource>)
 
-    val on: Boolean get() = core.store.flag(FLAG, false)
+    val on: Boolean get() = core.moduleOn("files") && "files" !in Modules.off(core.store) && core.store.flag(FLAG, false)
     @Volatile var starting = false; private set
     @Volatile var adding = false; private set
     @Volatile var addError = ""; private set
@@ -55,7 +55,7 @@ class LocalSend(private val core: Core) : LsEvents {
     fun asksPin(id: String): Boolean = synchronized(lock) { again.containsKey(id) }
 
     // With the rest of TwinDesk (Core.start): not after Exit, and not before Core is whole.
-    fun start() { if (on) apply() }
+    fun start() { apply() }
 
     fun set(value: Boolean) {
         core.store.setFlag(FLAG, value)

@@ -132,7 +132,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         bg.scheduleWithFixedDelay({ runCatching { returnTick() }.onFailure { Log.e("TwinDesk", "reconnect", it) } }, 3, 3, TimeUnit.SECONDS)
         runCatching { peer.start() }.onFailure { Log.e("TwinDesk", "peer", it) }
         Notify.channels(ctx)
-        runCatching { localSend.start() }.onFailure { Log.e("TwinDesk", "localsend", it) }
+        runCatching { if (moduleOn("files")) localSend.start() }.onFailure { Log.e("TwinDesk", "localsend", it) }
         updates.start()
         if (store.flag("remote.btpad", false)) btPad.start()
         runCatching { bank.start() }.onFailure { Log.e("TwinDesk", "bank", it) }

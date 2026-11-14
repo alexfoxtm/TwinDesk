@@ -23,6 +23,10 @@ const { LocalSend, API } = ls;
 const ROOT = path.join(__dirname, '../..');
 const CORE = path.join(ROOT, 'android/app/src/main/java/com/twindesk/android/LocalSendCore.kt');
 const HARNESS = path.join(ROOT, 'android/tools/LocalSendHarness.kt');
+const adapter = fs.readFileSync(path.join(ROOT, 'android/app/src/main/java/com/twindesk/android/LocalSend.kt'), 'utf8');
+assert.match(adapter, /val on: Boolean get\(\) = core\.moduleOn\("files"\) && "files" !in Modules\.off\(core\.store\) && core\.store\.flag\(FLAG, false\)/, 'the Android listener requires the loaded Files module and its current switch');
+assert.match(adapter, /fun start\(\) \{ apply\(\) \}/, 'module changes also stop an already running listener');
+assert.match(fs.readFileSync(path.join(ROOT, 'android/app/src/main/java/com/twindesk/android/MainActivity.kt'), 'utf8'), /if \(id == "files"\) core\.localSend\.start\(\)/, 'the Files module reapplies the saved LocalSend preference');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
 

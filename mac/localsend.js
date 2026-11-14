@@ -25,6 +25,7 @@ function setupLocalSend({ settings, save, pushState, t, name, receivedDir, windo
   const ls = startLocalSend({
     dir: path.join(app.getPath('userData'), 'localsend'),
     settings, save, pushState, t, name, receivedDir, log, say,
+    enabled: () => require('../shared/modules.js').isOn(settings().modules, 'files'),
     reveal: (p) => shell.showItemInFolder(p),
     // One offer: who it says it is, from where, whether it proved which device it is (its
     // certificate), whether that device is one known from before, and what. The signal ends the

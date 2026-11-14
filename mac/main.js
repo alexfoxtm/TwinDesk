@@ -717,7 +717,9 @@ app.whenReady().then(() => {
   // Notifications › Silence together (shared/silence.js): this Mac's Focus and an Android phone's
   // Do not disturb, each way only where its person switched it on for that pair. This Mac's part
   // is silence-mac.js: the person's own shortcuts read and set its Focus, once checked on the page.
-  {
+  function loadSilence() {
+    if (svc.silence) return svc.silence;
+    if (!Mods.isOn(settings.modules, 'notifications')) return null;
     const { SilenceSync } = require('../shared/silence.js');
     const { MacSilence } = require('./silence-mac.js');
     const local = new MacSilence({ cfg: () => settings.silence, save: () => store.saveSettings(settings) });
@@ -728,12 +730,14 @@ app.whenReady().then(() => {
         get current() { return peer.current; },
       },
       local,
-      opts: (id) => settings.silence.peers[id],
-      allow: (ctx) => ctx.os === P.OS.ANDROID,
+      opts: (id) => Mods.isOn(settings.modules, 'notifications') ? settings.silence.peers[id] : null,
+      allow: (ctx) => Mods.isOn(settings.modules, 'notifications') && ctx.os === P.OS.ANDROID,
     });
     svc.silence.mac = local;
     svc.silence.on('change', pushState);
+    return svc.silence;
   }
+  loadSilence();
   // TwinDesk iPhone (shared/iossign.js): TwinDesk for iPhone signed with the person's Apple ID.
   if (!modulesAtStart.includes('iossign')) svc.iosSign = require('../shared/iossign-host.js').create({ // off in General › Modules: not loaded
     app, safeStorage: require('electron').safeStorage,
@@ -1045,7 +1049,16 @@ app.whenReady().then(() => {
     settings: () => settings, save: () => store.saveSettings(settings), pushState, t, window: () => win,
     name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),
   });
-  actions = setupIpc({ state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link, ...svc, hub: loadHub, login, refreshPermissions, updates });
+  let silenceModuleOn = Mods.isOn(settings.modules, 'notifications');
+  svc.onModulesChanged = () => {
+    localsend.apply();
+    const on = Mods.isOn(settings.modules, 'notifications');
+    if (on === silenceModuleOn) return;
+    silenceModuleOn = on;
+    if (on) loadSilence().start();
+    else if (svc.silence) svc.silence.stop();
+  };
+  actions = setupIpc({ state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link, ...svc, get silence() { return svc.silence; }, hub: loadHub, login, refreshPermissions, updates });
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'assets', 'trayTemplate.png'))); // "Template": macOS tints it
   hud = new Hud(() => settings);
   hud.keep = () => !!peer.current; // the popup's window lives while a session is on (mac/hud.js)

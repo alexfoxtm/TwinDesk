@@ -28,13 +28,13 @@ function pair() {
   let up = false;
   const mk = (me, other, peerId) => {
     const bus = new EventEmitter();
-    const e = { bus, ctx: null, local: new Dnd(), opts: { send: false, follow: false }, sent: [] };
+    const e = { bus, ctx: null, local: new Dnd(), opts: { send: false, follow: false }, enabled: true, sent: [] };
     e.link = {
       on: (t, fn) => bus.on(t, fn),
       send: (m) => { e.sent.push(m); if (up) ends[other].bus.emit(m.t, JSON.parse(JSON.stringify(m)), ends[other].ctx); },
       get current() { return up ? e.ctx : null; },
     };
-    e.sync = new SilenceSync({ link: e.link, local: e.local, opts: () => e.opts, grace: 60 });
+    e.sync = new SilenceSync({ link: e.link, local: e.local, opts: () => e.enabled ? e.opts : null, allow: () => e.enabled, grace: 60 });
     e.connect = () => { e.ctx = { deviceId: peerId }; };
     ends[me] = e;
     return e;
@@ -136,5 +136,31 @@ function pair() {
   mac.local.user(false);
   await settle();
   assert.strictEqual(phone.local.state(), false, 'and it still ends with the Mac’s');
+  {
+    const p = pair();
+    p.mac.enabled = false;
+    p.mac.opts.follow = true;
+    p.phone.opts.send = true;
+    p.phone.local.user(true);
+    p.connect();
+    await settle();
+    assert.strictEqual(p.mac.local.state(), false, 'Notifications off at startup does not follow');
+    p.mac.enabled = true;
+    p.mac.sync.start();
+    await settle();
+    assert.strictEqual(p.mac.local.state(), true, 'enabling Notifications starts the current session');
+    p.mac.enabled = false;
+    p.mac.sync.stop();
+    await settle();
+    assert.strictEqual(p.mac.local.state(), false, 'disabling Notifications releases its lease');
+    assert.strictEqual(p.mac.opts.follow, true, 'the saved direction is preserved');
+    p.mac.enabled = true;
+    p.mac.sync.start();
+    await settle();
+    assert.strictEqual(p.mac.local.state(), true, 're-enabling resumes without reconnecting');
+    p.mac.sync.stop();
+    p.phone.sync.stop();
+    await settle();
+  }
   console.log('silence: off until switched on, both ways without an echo, the person’s own kept, their off held, no flap on a drop');
 })().catch((e) => { console.error(e); process.exit(1); });

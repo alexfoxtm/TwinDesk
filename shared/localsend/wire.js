@@ -96,13 +96,14 @@ function startLocalSend(o) {
   }
 
   function apply() {
-    if (cfg().on && !node) {
+    const on = cfg().on && (!o.enabled || o.enabled());
+    if (on && !node) {
       const n = make();
       node = n;
       starting = true;
       // Turned off, or off and on again, before it had started: that is another node's "starting" now.
       n.start().catch((e) => { if (o.log) o.log(`[localsend] ${e.message}`); }).then(() => { if (node === n) starting = false; push(); });
-    } else if (!cfg().on && node) {
+    } else if (!on && node) {
       const n = node;
       node = null;
       starting = false;
@@ -200,7 +201,7 @@ function startLocalSend(o) {
   };
 
   apply();
-  return { view, actions, shutdown: () => { if (node) { node.stop(); node = null; } }, get node() { return node; } };
+  return { view, actions, apply, shutdown: () => { if (node) { node.stop(); node = null; } }, get node() { return node; } };
 }
 
 module.exports = { startLocalSend, quarantine, ACTIONS: ['lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal'] };

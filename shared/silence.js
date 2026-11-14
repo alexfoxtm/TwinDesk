@@ -381,6 +381,11 @@ class SilenceSync extends EventEmitter {
     this._sync();
   }
 
+  // A module switched back on resumes only the current authenticated session.
+  start() {
+    this._welcome(this.link.current);
+  }
+
   // Stop (the person disconnected) and quitting: the lease ends now, not after the grace.
   stop() {
     const p = this.peer;

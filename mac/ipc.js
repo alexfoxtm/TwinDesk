@@ -389,6 +389,7 @@ function setupIpc(ctx) {
     // Notifications › Silence together (shared/silence.js): this pair's two switches (the phone
     // in the session), each this Mac's own choice.
     setSilence(arg) {
+      if (!require('../shared/modules.js').isOn(settings.modules, 'notifications')) return;
       const c = ctx.server.current;
       if (!ctx.silence || !c || !c.deviceId || c.os !== P.OS.ANDROID) return;
       const cur = { send: false, follow: false, ...(settings.silence.peers[c.deviceId] || {}) };
@@ -402,6 +403,7 @@ function setupIpc(ctx) {
     // picked, the person's word that the two that set a Focus are TwinDesk's alone, and the check
     // that runs them. No shortcut is run before that click.
     silenceDo(arg) {
+      if (!require('../shared/modules.js').isOn(settings.modules, 'notifications')) return;
       const a = arg || {};
       const mac = ctx.silence && ctx.silence.mac;
       if (!mac) return;
@@ -754,6 +756,7 @@ function setupIpc(ctx) {
       const Mods = require('../shared/modules.js');
       settings.modules = typeof m.restored === 'string' ? Mods.restored(settings.modules, m.restored) : Mods.set(settings.modules, String(m.id), m.on === true, m.wasOn === true);
       save();
+      if (ctx.onModulesChanged) ctx.onModulesChanged();
     },
   };
 

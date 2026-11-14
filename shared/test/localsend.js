@@ -16,7 +16,7 @@ const tls = require('tls');
 const ls = require('../localsend/core.js');
 
 const { execFileSync } = require('child_process');
-const { quarantine } = require('../localsend/wire.js');
+const { quarantine, startLocalSend } = require('../localsend/wire.js');
 const { LocalSend, API } = ls;
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'twindesk-localsend-')));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -625,6 +625,29 @@ async function main() {
   assert.ok(crowd.peers().some((p) => p.id === real.id && p.verified), 'the proven device is listed');
 
   // ---- off means off ----
+  {
+    let enabled = false;
+    const cfg = { localsend: { on: true } };
+    const service = startLocalSend({
+      dir: path.join(tmp, 'module-data'), settings: () => cfg, enabled: () => enabled,
+      name: () => 'Module fixture', receivedDir: () => tmp, pushState() {}, save() {},
+      core: { host: '127.0.0.1', port: 0, multicast: false },
+    });
+    closers.push(() => service.shutdown());
+    assert.strictEqual(service.node, null, 'disabled Files module never starts a listener');
+    enabled = true;
+    service.apply();
+    await until(() => service.view().running, 'Files module starts LocalSend');
+    const port = service.node.port;
+    enabled = false;
+    service.apply();
+    assert.strictEqual(service.node, null);
+    assert.strictEqual(await accepts(port), false, 'Files module stops LocalSend');
+    assert.strictEqual(cfg.localsend.on, true, 'module changes preserve the saved feature preference');
+    enabled = true;
+    service.apply();
+    await until(() => service.view().running, 'Files module restarts LocalSend');
+  }
   b.stop();
   assert.strictEqual(b.peers().length, 0);
   assert.ok((await raw(b.port, 'GET', `${API}/info`)).error);
