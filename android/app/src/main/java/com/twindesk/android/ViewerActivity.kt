@@ -222,7 +222,7 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                     )
                     if (s.remote && !showLogin) {
                         for (mode in listOf("mirror", "extend")) {
-                            val on = s.sharing && s.mode == mode
+                            val on = s.sharing && (s.mode == mode || (mode == "mirror" && s.mode == "custom" && s.displayId.isNotEmpty()))
                             val label = if (mode == "mirror") tr("Mirror") else tr("Extend")
                             if (on) FilledTonalButton(onClick = { bar = true }) { Text(label) }
                             else TextButton(onClick = { s.pick(mode); bar = true }) { Text(label, color = Color.White) }

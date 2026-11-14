@@ -568,6 +568,12 @@ class PhoneBridge extends EventEmitter {
   }
 
   handle(m) {
+    // A pinch's fingers are down (shared/pinch.js): the pointer and the wheel wait; a click or a
+    // key lifts them first.
+    if (this.pinch && this.pinch.active) {
+      if (m.t === T.K_MOVE || m.t === T.K_WHEEL) return;
+      if (m.t === T.K_DOWN || m.t === T.K_KEY_DOWN || m.t === T.KVM_TAKE || m.t === T.KVM_RELEASE) this.pinch.cancel();
+    }
     switch (m.t) {
       case T.KVM_TAKE: return this._take(m);
       case T.KVM_RELEASE: return this._kvmEnd(false);
@@ -762,6 +768,7 @@ class PhoneBridge extends EventEmitter {
   }
 
   _kvmEnd(tellKvm) {
+    if (this.pinch) this.pinch.cancel();
     const k = this.kvm;
     if (!k) return;
     const d = this._display();
@@ -840,6 +847,8 @@ class PhoneBridge extends EventEmitter {
   }
 
   _gesture(m) {
+    // A pinch: two fingers on the phone (shared/pinch.js, #222).
+    if (m.g === 'zoom') return void (this.pinch || (this.pinch = new (require('../shared/pinch.js').Pinch)())).feed(this.ctl, m, this.kvm, this._display());
     if (!this.ctl || m.phase === 'begin' || m.phase === 'change') return;
     const key = { back: ANDROID.BACK, overview: ANDROID.APP_SWITCH, appWindows: ANDROID.APP_SWITCH, desktop: ANDROID.HOME, launcher: ANDROID.ALL_APPS }[m.g];
     if (key) this.ctl.tap(key);

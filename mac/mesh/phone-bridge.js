@@ -30,7 +30,6 @@ const { KeyState, ANDROID } = require('../android-keys');
 const chat = require('../../shared/phonechat.js');
 const { uhidKey } = require('../../shared/uhidkbd.js');
 const { PhoneInput } = require('../../shared/phoneinput.js');
-const { PhonePinch } = require('../../shared/phonepinch.js');
 const { PhonePan } = require('../../shared/phonepan.js');
 const Modes = require('../../shared/phonemodes.js');
 const { NativeScreen } = require('../../shared/nativescreen.js');
@@ -605,11 +604,11 @@ class PhoneBridge extends EventEmitter {
 
   handle(m) {
     if (this.pan && m.t !== T.K_WHEEL && m.t !== T.KVM_LOCK) this.pan.end();
-    if ((this.pinch?.active || this.input?.pinching) && (m.t === T.K_MOVE || m.t === T.K_WHEEL)) return;
-    if ([T.K_DOWN, T.K_UP, T.K_KEY_DOWN, T.K_KEY_UP, T.KVM_TAKE, T.KVM_RELEASE].includes(m.t)) {
-      if (this.pinch) this.pinch.cancel();
-      if (this.input) this.input.cancelPinch();
-      this.nativePinchBlocked = true;
+    // A pinch's fingers are down (shared/pinch.js): the pointer and the wheel wait; a click or a
+    // key lifts them first.
+    if (this.pinch && this.pinch.active) {
+      if (m.t === T.K_MOVE || m.t === T.K_WHEEL) return;
+      if (m.t === T.K_DOWN || m.t === T.K_KEY_DOWN || m.t === T.KVM_TAKE || m.t === T.KVM_RELEASE) this.pinch.cancel();
     }
     switch (m.t) {
       case T.KVM_TAKE: return this._take(m);
@@ -900,17 +899,11 @@ class PhoneBridge extends EventEmitter {
   }
 
   _gesture(m) {
+    // A pinch: two fingers on the phone (shared/pinch.js, #222).
+    // A session that is not driving the pointer does not pinch.
     if (m.g === 'zoom') {
       if (!this.kvm || this.kvm.mouse === false) return;
-      if (this.ctl === this.input) {
-        const d = this._display();
-        if (m.phase === 'begin') this.nativePinchBlocked = false;
-        if (!this.nativePinchBlocked && !this.kvm.buttons && d && Modes.caps(this.phone.info).has('input.pinch') && m.phase !== 'end') this.input.pinch(this.kvm.x, this.kvm.y, d.w, d.h, Number(m.v));
-        return;
-      }
-      if (this.input) this.input.cancelPinch();
-      if (!this.pinch) this.pinch = new PhonePinch();
-      return this.pinch.gesture(this.ctl, this._display(), this.kvm, m);
+      return void (this.pinch || (this.pinch = new (require('../../shared/pinch.js').Pinch)())).feed(this.ctl, m, this.kvm, this._display());
     }
     if (!this.ctl || m.phase === 'begin' || m.phase === 'change') return;
     const key = { back: ANDROID.BACK, overview: ANDROID.APP_SWITCH, appWindows: ANDROID.APP_SWITCH, desktop: ANDROID.HOME, launcher: ANDROID.ALL_APPS }[m.g];

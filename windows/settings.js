@@ -31,6 +31,13 @@ const hotspots = (v) => {
 const KEY = /^(?:(?:Control|Alt|Shift|Super)\+){1,4}(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Space|Tab|Backspace|Delete|Enter|Up|Down|Left|Right)$/;
 const accel = (v, d) => (typeof v === 'string' && KEY.test(v) && /Control|Alt|Super/.test(v) ? v : d);
 const num = (v, d, min, max) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Math.min(max, Math.max(min, Number(v))) : d);
+// The Extend screen's size: follow the viewer ('mac'), a preset, or a custom 'WxH' the list lacks
+// (16:10, 3:2…), with the same 320–7680 bounds as pcscreen.js _extendSize().
+const extendSizeOf = (v) => {
+  if (v === 'mac' || ['1920x1080', '2560x1440', '3840x2160'].includes(v)) return v;
+  const m = /^(\d{3,4})x(\d{3,4})$/.exec(String(v || ''));
+  return m && +m[1] >= 320 && +m[1] <= 7680 && +m[2] >= 320 && +m[2] <= 7680 ? v : 'mac';
+};
 
 function normalize(s) {
   s = s || {};
@@ -54,6 +61,7 @@ function normalize(s) {
   const wk = s.wake || {};
   const ph = s.phone || {};
   const mt = s.mount || {};
+  const dr = s.drive || {};
   const hub = s.hub || {};
   const nt = s.net || {};
   return {
@@ -177,9 +185,9 @@ function normalize(s) {
     pcScreen: { // Display › PC → Mac; Off/Mirror/Extend itself is never saved
       monitor: typeof pcs.monitor === 'string' ? pcs.monitor : '', // Electron display id for Mirror ('' = main)
       mbps: [10, 20, 30, 50, 80].includes(pcs.mbps) ? pcs.mbps : 30, // same presets as the Mac
-      maxHeight: [0, 1080, 1440, 2160].includes(pcs.maxHeight) ? pcs.maxHeight : 1080, // stream size (0 = full pixels)
+      maxHeight: [0, 1080, 1440, 2160, 'extend'].includes(pcs.maxHeight) ? pcs.maxHeight : 1080, // 0 = full pixels; 'extend' follows Size
       fps: [0, 30, 60].includes(pcs.fps) ? pcs.fps : 0, // frame rate cap (0 = the display's refresh rate)
-      extendSize: ['mac', '1920x1080', '2560x1440', '3840x2160'].includes(pcs.extendSize) ? pcs.extendSize : 'mac', // the virtual monitor
+      extendSize: extendSizeOf(pcs.extendSize), // the virtual monitor
       sound: bool(pcs.sound, false), // the screen's sound in the same session
       input: bool(pcs.input, true), // the Mac's mouse and keyboard drive this PC
       codec: pcs.codec === 'h265' ? 'h265' : 'h264', // Encoder (shared/screencodec.js)
@@ -214,6 +222,7 @@ function normalize(s) {
     // bleWifiOff: none at all while the session is on the same Wi-Fi (blepolicy.js wifiQuiet)
     net: { ble: bool(nt.ble, true), blePc: bool(nt.blePc, false), bleWifiOff: bool(nt.bleWifiOff, true), hotspots: hotspots(nt.hotspots), tailscale: bool(nt.tailscale, true), bleInput: bool(nt.bleInput, false) }, // tailscale: shared/tailnet.js; bleInput: shared/bleinput.js
     mount: { on: bool(mt.on, false) }, // the phone as a drive (phonedrive.js), only when Mount is clicked
+    drive: { on: bool(dr.on, false), folder: typeof dr.folder === 'string' ? dr.folder.slice(0, 1024) : '' }, // File Sharing › TwinDesk Drive (shared/drive-host.js); '' = ~/TwinDesk Drive
     // Calls, Messages, Photos and Files from a phone (shared/phonehub.js), each off until switched on.
     // callAudio: the calls' sound here over Bluetooth; btDevices: which paired Bluetooth device each
     // phone is (its device id -> the Bluetooth device's id), found by its name or picked.

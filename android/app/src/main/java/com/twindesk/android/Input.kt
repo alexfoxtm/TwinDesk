@@ -135,31 +135,22 @@ class InputService : AccessibilityService() {
         gesture(Path().apply { moveTo(x, y); lineTo(toX, toY) }, 120)
     }
 
-    // Accessibility can dispatch two completed strokes, but cannot hold them across messages.
-    fun pinch(nx: Double, ny: Double, amount: Double) {
-        if (!nx.isFinite() || !ny.isFinite() || !amount.isFinite() || amount == 0.0) return
+    // A touchpad's pinch (shared/pinch.js): two fingers on each side of (x, y) along the long side
+    // (vertical: up and down), from `from` px off the middle to `to`. One stroke each, as
+    // Accessibility can't hold a touch open across messages; each batch is a pinch of its own.
+    fun pinch(x: Float, y: Float, from: Float, to: Float, vertical: Boolean) {
+        if (!x.isFinite() || !y.isFinite() || !from.isFinite() || !to.isFinite() || abs(to - from) < 2) return
         val dm = resources.displayMetrics
-        val w = dm.widthPixels.toFloat(); val h = dm.heightPixels.toFloat()
-        val margin = maxOf(8f, dm.density * 48f)
-        val horizontal = w >= h
-        val length = if (horizontal) w else h; val cross = if (horizontal) h else w
-        val min = dm.densityDpi * 0.6f
-        val max = minOf((length - 2 * margin - 2) / 2, length * 0.3f, dm.densityDpi * 1.6f)
-        if (min >= max || cross <= 2 * margin) return
-        val start = if (amount > 0) min else max
-        val end = (start * kotlin.math.exp(amount.coerceIn(-1.0, 1.0) * 1.6)).toFloat().coerceIn(min, max)
-        val along = (if (horizontal) nx.toFloat() * w else ny.toFloat() * h).coerceIn(margin + max, length - 1 - margin - max)
-        val across = (if (horizontal) ny.toFloat() * h else nx.toFloat() * w).coerceIn(margin, cross - 1 - margin)
-        val x = if (horizontal) along else across; val y = if (horizontal) across else along
-        val builder = GestureDescription.Builder()
-        for (sign in listOf(-1f, 1f)) {
-            val p = Path().apply {
-                moveTo(x + if (horizontal) sign * start else 0f, y + if (horizontal) 0f else sign * start)
-                lineTo(x + if (horizontal) sign * end else 0f, y + if (horizontal) 0f else sign * end)
-            }
-            builder.addStroke(GestureDescription.StrokeDescription(p, 0, 100))
+        val w = dm.widthPixels - 1f
+        val h = dm.heightPixels - 1f
+        val b = GestureDescription.Builder()
+        for (sign in floatArrayOf(-1f, 1f)) {
+            val p = Path()
+            if (vertical) { p.moveTo(x.coerceIn(1f, w), (y + sign * from).coerceIn(1f, h)); p.lineTo(x.coerceIn(1f, w), (y + sign * to).coerceIn(1f, h)) }
+            else { p.moveTo((x + sign * from).coerceIn(1f, w), y.coerceIn(1f, h)); p.lineTo((x + sign * to).coerceIn(1f, w), y.coerceIn(1f, h)) }
+            b.addStroke(GestureDescription.StrokeDescription(p, 0, 150))
         }
-        dispatchGesture(builder.build(), null, null)
+        dispatchGesture(b.build(), null, null)
     }
 
     private fun gesture(p: Path, ms: Long) {
@@ -325,7 +316,7 @@ class Input(core: Core) : Feature(core) {
                 when (val a = m.optString("a")) {
                     "d", "m", "u" -> s.touch(a, x, y)
                     "s" -> s.scroll(x, y, m.optDouble("h", 0.0), m.optDouble("v", 0.0))
-                    "z" -> s.pinch(m.optDouble("x", Double.NaN), m.optDouble("y", Double.NaN), m.optDouble("v", Double.NaN))
+                    "z" -> s.pinch(x, y, m.optDouble("from", 0.0).toFloat(), m.optDouble("to", 0.0).toFloat(), m.optInt("vert") == 1)
                     "k" -> s.key(m.optInt("d") == 1, m.optInt("k"), m.optInt("m"))
                 }
             }

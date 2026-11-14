@@ -8,6 +8,8 @@
 //   phone.in {a: 'd'|'m'|'u', x, y}            touch down / move / up (phone pixels)
 //   phone.in {a: 's', x, y, h, v}              scroll (wheel steps, + = up / left)
 //   phone.in {a: 'k', d: 0|1, k, m}            key (Android keycode, meta state)
+//   phone.in {a: 'z', x, y, from, to, vert}    pinch: two fingers from `from` px off (x, y) to `to`,
+//                                              up and down when vert is 1 (shared/pinch.js)
 'use strict';
 
 const P = require('./protocol.js');
@@ -23,9 +25,6 @@ class PhoneInput {
     this.closed = false;
     this.lastMove = 0;
     this.scrollAcc = null;
-    this.pinchAcc = null;
-    this.pinching = false;
-    this.pinchIdle = null;
   }
 
   mouse(action, x, y, w, h, actionButton, buttons) {
@@ -53,26 +52,8 @@ class PhoneInput {
     }, SCROLL_MS);
   }
 
-  pinch(x, y, w, h, v) {
-    if (!Number.isFinite(v) || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0 || !v) return;
-    this.pinching = true;
-    clearTimeout(this.pinchIdle);
-    this.pinchIdle = setTimeout(() => { this.pinching = false; this.pinchIdle = null; }, 500);
-    const acc = this.pinchAcc || (this.pinchAcc = { x: Math.max(0, Math.min(1, x / w)), y: Math.max(0, Math.min(1, y / h)), v: 0 });
-    acc.v = Math.max(-1, Math.min(1, acc.v + v));
-    if (acc.timer) return;
-    acc.timer = setTimeout(() => {
-      this.pinchAcc = null;
-      if (acc.v && !this.closed) this.send({ t: P.T.PHONE_IN, a: 'z', x: acc.x, y: acc.y, v: acc.v });
-    }, 180);
-  }
-
-  cancelPinch() {
-    if (this.pinchAcc) clearTimeout(this.pinchAcc.timer);
-    this.pinchAcc = null;
-    clearTimeout(this.pinchIdle);
-    this.pinchIdle = null;
-    this.pinching = false;
+  pinch(x, y, from, to, vertical) {
+    if (!this.closed) this.send({ t: P.T.PHONE_IN, a: 'z', x: Math.round(x), y: Math.round(y), from: Math.round(from), to: Math.round(to), vert: vertical ? 1 : 0 });
   }
 
   key(action, keycode, meta = 0) {
@@ -88,7 +69,7 @@ class PhoneInput {
     if (action === ACTION.DOWN) this.tap(4); // KEYCODE_BACK
   }
 
-  stop() { this.cancelPinch(); if (this.scrollAcc) clearTimeout(this.scrollAcc.timer); this.scrollAcc = null; }
+  stop() { if (this.scrollAcc) clearTimeout(this.scrollAcc.timer); this.scrollAcc = null; }
 }
 
 module.exports = { PhoneInput };

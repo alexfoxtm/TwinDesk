@@ -38,6 +38,8 @@
   <a href="#apps"><b>Every app</b></a> ·
   <a href="#compare"><b>How it compares</b></a> ·
   <a href="#get-started"><b>Get started</b></a> ·
+  <a href="docs/guide/README.md"><b>User guide</b></a> ·
+  <a href="CHANGELOG.md"><b>Changelog</b></a> ·
   <a href="https://twin-desk.vercel.app"><b>Website</b></a>
 </p>
 
@@ -538,9 +540,9 @@ each talking straight to the others with no hub in between.
 Turn it on in the **Multi-device** page, and off again any time with everything as you left it.
 Connecting just two devices? Keep it off: the one-to-one mode does the same with less. The one-to-one
 app's pages are here too: files (the fast way, over HTTPS), the Camera, the Remote, the Deck,
-TwinDesk iPhone, Modules and pictures on the clipboard. ReZume works while a phone is the only
-device connected. Not yet: the Bluetooth mouse and keyboard, and files dragged to more than one
-device at a time. The phone connects to
+TwinDesk iPhone, Modules and pictures on the clipboard. ReZume works with one device at a time,
+picked on its page (picking a computer picks this one there too). The mouse and keyboard over
+Bluetooth work between Macs and Windows PCs. Not yet: files dragged to more than one device at a time. The phone connects to
 one computer at a time, and Linux joins over the same Wi-Fi only. Mesh uses the tdv2 lane in Node.
 See [docs/mesh.md](docs/mesh.md).
 
@@ -994,6 +996,9 @@ November 2026. If something here is out of date or wrong, please
 2. **Open it on both.** They find each other on the same network, over Bluetooth, or over a USB cable for a phone.
 3. **Pair once** by comparing a code or scanning a QR code (on a USB cable, just click Allow). From then on they connect by themselves.
 4. **Turn on what you want.** Every feature starts off and isn't even loaded until you switch it on.
+
+The [user guide](docs/guide/README.md) has the steps for each OS, [troubleshooting](docs/guide/troubleshooting.md)
+and the [known limitations](docs/guide/known-limitations.md).
 
 For an Android phone's screen, apps and camera in windows, TwinDesk walks you through turning on
 wireless debugging once ([details](#wireless-debugging)). Files, clipboard, calls and photos work
