@@ -50,14 +50,21 @@ try {
   global.setTimeout = (fn, ms) => { const id = ++nextId; timers.set(id, { fn, ms }); return id; };
   global.clearTimeout = id => { timers.delete(id); };
   const messages = [], input = new PhoneInput(m => messages.push(m));
-  input.pinch(540, 1200, 1080, 2400, 0.1);
-  input.pinch(540, 1200, 1080, 2400, 0.2);
-  const send = [...timers].find(([, timer]) => timer.ms === 180);
-  timers.delete(send[0]); send[1].fn();
+  // Accessibility strokes are one message each (shared/pinch.js): from/to, not a summed magnification.
+  input.pinch(540, 1200, 100, 180, true);
   assert.equal(messages.length, 1);
   assert.equal(messages[0].a, 'z');
-  assert.ok(Math.abs(messages[0].v - 0.3) < 1e-9);
-  input.pinch(540, 1200, 1080, 2400, 0.1);
+  assert.equal(messages[0].x, 540);
+  assert.equal(messages[0].y, 1200);
+  assert.equal(messages[0].from, 100);
+  assert.equal(messages[0].to, 180);
+  assert.equal(messages[0].vert, 1);
+  input.closed = true;
+  input.pinch(1, 2, 3, 4, false);
+  assert.equal(messages.length, 1, 'a closed session does not send another pinch');
+  input.closed = false;
+  input.scroll(10, 20, 1080, 2400, 0, 1);
+  assert.equal(timers.size, 1);
   input.stop();
-  assert.equal(timers.size, 0, 'stopping input cancels pending native pinch');
+  assert.equal(timers.size, 0, 'stopping input cancels a pending scroll');
 } finally { global.setTimeout = originalSet; global.clearTimeout = originalClear; }
