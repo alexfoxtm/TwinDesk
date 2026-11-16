@@ -14,7 +14,7 @@ function page() {
   const UI = {
     tab(v) { tab = v; }, el: () => node('div'), peer: () => ({}),
     api: { allowNativeNotifications() { calls.push('allow'); } },
-    switch: () => node('switch'), button: (text, click) => node('button', { textContent: text, click }),
+    switch: () => node('switch'), select: () => node('select'), button: (text, click) => node('button', { textContent: text, click }),
     row(label, hint, controls) { const row = node('row', { label, hint, controls, setHint(v) { this.hint = v; } }); rows.push(row); return row; },
     pair: () => node('pair'), dir: () => node('dir'), card: () => node('card'),
     historyCard: () => ({ el: node('history'), update() {} }),
