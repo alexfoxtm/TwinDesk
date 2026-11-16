@@ -92,17 +92,19 @@ class ViewerActivity : ComponentActivity() {
         setContent { Theme {
             val revision by core.version.collectAsState()
             LaunchedEffect(revision) {
-                // A singleTask viewer can be reused after the connected computer changes.
-                val os = core.host?.os ?: return@LaunchedEffect
-                val orientation = if (os == "mac") android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                    else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                // A singleTask viewer is reused after the connected computer changes. Reapply the
+                // rail's choice with the host rule: a lock stays locked, a Mac may be portrait,
+                // and any other computer stays landscape.
+                val auto = getSharedPreferences(ViewerOrientation.PREFS, android.content.Context.MODE_PRIVATE)
+                    .getBoolean(ViewerOrientation.AUTO, true)
+                val orientation = ViewerOrientation.apply(requestedOrientation, core.host?.os, auto)
                 if (requestedOrientation != orientation) requestedOrientation = orientation
             }
             Viewer(core, h, locked, login, openLogin = {
             login = true
             locked.open()
         }, closeLogin = { login = false; locked.close() }) { finish() } } }
-        MirrorRail(this).attach() // the side rail: Auto-rotate, Screenshot
+        MirrorRail(this, orient = { on -> ViewerOrientation.requested(Core.get(this).host?.os, on) }).attach()
     }
 
     override fun onStart() {

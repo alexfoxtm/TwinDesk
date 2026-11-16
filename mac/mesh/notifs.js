@@ -195,7 +195,29 @@ class Notifs extends EventEmitter {
       try { n.close(); } catch {}
       this.live.delete(n);
     }
+    // The popup is independent of history and of the system toast. A cleared list still closes
+    // a window whose origin is this session. A missing or different origin stays up.
+    this._closeMatchingPopup(id, from);
     if (this.history.length !== before) this.changed();
+  }
+
+  // The device id stored on the one popup for this id, or ''. Absent, empty, or ambiguous origins
+  // fail closed. History is not consulted.
+  _explicitPopupOrigin(id) {
+    const pop = this.pop;
+    if (!pop || !id || !Array.isArray(pop.wins)) return '';
+    const wins = pop.wins.filter((w) => w && w.id === id);
+    if (wins.length !== 1 || !wins[0].item) return '';
+    const origin = wins[0].item.from;
+    return typeof origin === 'string' && origin !== '' ? origin : '';
+  }
+
+  _closeMatchingPopup(id, from) {
+    const pop = this.pop;
+    if (!pop || typeof pop.gone !== 'function') return false;
+    if (!from || this._explicitPopupOrigin(id) !== from) return false;
+    pop.gone(id);
+    return true;
   }
 
   // TwinDesk Web's devices that show this Mac's notifications (shared/web/webhub.js notifSource).
@@ -321,7 +343,9 @@ Notifs.prototype.send = function (message) {
 };
 Notifs.prototype.dismiss = function (id) {
   const items = (this.history || []).filter((item) => item.id === id);
-  if (!items.length) return false;
+  // History can already be cleared while TwinDesk's window is still up. Close that window only
+  // from its own origin, and do not invent a device to notify.
+  if (!items.length) return this._closeMatchingPopup(id, this._explicitPopupOrigin(id));
   // A stale or ambiguous item can still be dismissed locally; never send to the wrong peer.
   if (items.length === 1) this._sendCurrent(items[0], { t: 'notif.dismiss', id });
   this._goneFrom(id, items[0].from);

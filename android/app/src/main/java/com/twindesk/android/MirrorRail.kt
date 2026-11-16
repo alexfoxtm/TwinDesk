@@ -27,8 +27,13 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 
-class MirrorRail(private val activity: Activity, private val surface: () -> SurfaceView? = { null }) {
-    private val prefs = activity.getSharedPreferences("mirror-rail", Context.MODE_PRIVATE)
+class MirrorRail(
+    private val activity: Activity,
+    // Null: this screen follows the phone (another phone). The computer viewer passes its own rule.
+    private val orient: ((Boolean) -> Int?)? = null,
+    private val surface: () -> SurfaceView? = { null },
+) {
+    private val prefs = activity.getSharedPreferences(ViewerOrientation.PREFS, Context.MODE_PRIVATE)
     private val dp = activity.resources.displayMetrics.density
     private lateinit var rail: LinearLayout
     private lateinit var tab: TextView
@@ -60,7 +65,7 @@ class MirrorRail(private val activity: Activity, private val surface: () -> Surf
         activity.addContentView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         root.isClickable = false
         show(prefs.getBoolean("shown", false))
-        setAuto(prefs.getBoolean("auto", true))
+        setAuto(prefs.getBoolean(ViewerOrientation.AUTO, true))
     }
 
     private fun button(glyph: String, onClick: () -> Unit) = TextView(activity).apply {
@@ -84,13 +89,17 @@ class MirrorRail(private val activity: Activity, private val surface: () -> Surf
     private fun setAuto(on: Boolean) {
         auto = on
         // Off: locked the way it is now (Android keeps the current orientation).
-        activity.requestedOrientation = if (on) ActivityInfo.SCREEN_ORIENTATION_FULL_USER else ActivityInfo.SCREEN_ORIENTATION_LOCKED
+        // The computer viewer supplies the host rule. Another phone's screen turns with this one.
+        val chosen = if (orient != null) orient.invoke(on)
+        else if (on) ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+        else ActivityInfo.SCREEN_ORIENTATION_LOCKED
+        if (chosen != null) activity.requestedOrientation = chosen
         rotateBtn.alpha = if (on) 1f else 0.5f
         rotateBtn.text = if (on) "⟳" else "🔒"
         val label = if (on) tr("Auto-rotate is on: the screen turns with this phone") else tr("Auto-rotate is off: the screen stays as it is")
         rotateBtn.contentDescription = label
-        if (on != prefs.getBoolean("auto", true)) Toast.makeText(activity, label, Toast.LENGTH_SHORT).show()
-        prefs.edit().putBoolean("auto", on).apply()
+        if (on != prefs.getBoolean(ViewerOrientation.AUTO, true)) Toast.makeText(activity, label, Toast.LENGTH_SHORT).show()
+        prefs.edit().putBoolean(ViewerOrientation.AUTO, on).apply()
     }
 
     // The picture as it is on this screen (PixelCopy: the video too), into Pictures › TwinDesk.

@@ -75,7 +75,10 @@ object CompanionLink {
             if (Build.VERSION.SDK_INT >= 33) {
                 m.associate(req, ctx.mainExecutor, object : CompanionDeviceManager.Callback() {
                     override fun onAssociationPending(sender: IntentSender) = ask(sender)
-                    override fun onAssociationCreated(info: AssociationInfo) { watch(ctx) }
+                    override fun onAssociationCreated(info: AssociationInfo) {
+                        watch(ctx)
+                        CompanionApproval.associationsChanged(ctx)
+                    }
                     override fun onFailure(error: CharSequence?) = failed(error?.toString() ?: "")
                 })
             } else {
@@ -93,6 +96,7 @@ object CompanionLink {
         val m = cdm(ctx) ?: return
         unwatch(ctx, l)
         runCatching { if (Build.VERSION.SDK_INT >= 33 && l.id != 0) m.disassociate(l.id) else @Suppress("DEPRECATION") m.disassociate(l.mac) }
+        CompanionApproval.associationsChanged(ctx)
     }
 
     // ---- Start TwinDesk when it's near ----

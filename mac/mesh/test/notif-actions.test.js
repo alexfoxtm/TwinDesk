@@ -73,9 +73,84 @@ function refusesRelayAndDisconnectedActions() {
   assert.deepStrictEqual(f.sent, [], 'local dismiss does not send to a disconnected or replaced session');
 }
 
+function goneClosesOnlyThatSessionsPopup() {
+  const f = fixture();
+  const closed = [];
+  f.notifs.history = [
+    { id: 'n1', from: 'phone', title: 'Phone' },
+    { id: 'n1', from: 'other', title: 'Other' },
+  ];
+  f.notifs.pop = {
+    wins: [{ id: 'n1', item: { from: 'phone' } }],
+    gone(id) { closed.push(id); this.wins = this.wins.filter((w) => w.id !== id); },
+  };
+  f.bus.emit('notif.gone', { id: 'n1' }, 'other');
+  assert.deepStrictEqual(closed, [], 'a different session does not close this popup');
+  assert.ok(f.notifs.history.some((item) => item.from === 'phone'));
+  assert.ok(!f.notifs.history.some((item) => item.from === 'other'), 'that session still leaves its own history');
+  f.bus.emit('notif.gone', { id: 'n1' }, 'phone');
+  assert.deepStrictEqual(closed, ['n1'], 'the phone dismiss closes its TwinDesk window');
+  assert.ok(!f.notifs.history.some((item) => item.from === 'phone'));
+
+  const dismissed = [];
+  f.notifs.history = [{ id: 'n2', from: 'phone', title: 'Again' }];
+  f.notifs.pop = {
+    wins: [{ id: 'n2', item: { from: 'phone' } }],
+    gone(id) { dismissed.push(id); this.wins = this.wins.filter((w) => w.id !== id); },
+  };
+  assert.strictEqual(f.notifs.dismiss('n2'), true);
+  assert.deepStrictEqual(dismissed, ['n2'], 'a local dismiss closes the popup too');
+  assert.ok(!f.notifs.history.some((item) => item.id === 'n2'));
+
+  const stayed = [];
+  f.notifs.history = [{ id: 'n3', from: 'phone', title: 'No origin' }];
+  f.notifs.pop = {
+    wins: [{ id: 'n3', item: {} }],
+    gone(id) { stayed.push(id); },
+  };
+  assert.strictEqual(f.notifs.dismiss('n3'), true, 'history can still be dismissed');
+  assert.deepStrictEqual(stayed, [], 'a popup with no origin stays up');
+}
+
+function goneClosesPopupAfterHistoryCleared() {
+  const f = fixture();
+  const closed = [];
+  f.notifs.history = [];
+  f.notifs.live = new Set();
+  f.notifs.pop = {
+    wins: [
+      { id: 'n1', item: { from: 'phone' } },
+      { id: 'bare', item: {} },
+      { id: 'blank', item: { from: '' } },
+      { id: 'other', item: { from: 'other' } },
+      { id: 'both', item: { from: 'phone' } },
+      { id: 'both', item: { from: 'other' } },
+    ],
+    gone(id) { closed.push(id); this.wins = this.wins.filter((w) => w.id !== id); },
+  };
+  f.bus.emit('notif.gone', { id: 'n1' }, 'phone');
+  assert.deepStrictEqual(closed, ['n1'], 'a cleared history still closes the matching popup');
+  f.bus.emit('notif.gone', { id: 'bare' }, 'phone');
+  f.bus.emit('notif.gone', { id: 'blank' }, 'phone');
+  f.bus.emit('notif.gone', { id: 'other' }, 'phone');
+  f.bus.emit('notif.gone', { id: 'both' }, 'phone');
+  f.bus.emit('notif.gone', { id: 'n1' }, '');
+  assert.deepStrictEqual(closed, ['n1'], 'absent, blank, mismatched, and ambiguous origins stay up');
+  assert.strictEqual(f.notifs.dismiss('n1'), false, 'dismiss does not invent an origin');
+  f.notifs.pop.wins = [{ id: 'left', item: { from: 'phone' } }];
+  assert.strictEqual(f.notifs.dismiss('left'), true);
+  assert.deepStrictEqual(closed, ['n1', 'left'], 'dismiss uses the popup origin when history is gone');
+  assert.deepStrictEqual(f.sent, [], 'no device is notified from a cleared history');
+  f.notifs.pop = { gone(id) { closed.push('untracked:' + id); } };
+  f.bus.emit('notif.gone', { id: 'n1' }, 'phone');
+  assert.deepStrictEqual(closed, ['n1', 'left'], 'a popup that does not expose origins is left alone');
+}
+
 try {
   actionsStayWithOrigin();
   refusesRelayAndDisconnectedActions();
+  goneClosesOnlyThatSessionsPopup();
+  goneClosesPopupAfterHistoryCleared();
   console.log('notif-actions: ok');
 } finally {
   Module._load = load;

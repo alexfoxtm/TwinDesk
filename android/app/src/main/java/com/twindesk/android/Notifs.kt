@@ -78,8 +78,9 @@ class Notifs(core: Core) : Feature(core) {
         override fun removeEldestEntry(e: MutableMap.MutableEntry<String, Bitmap>?) = size > 100
     }
     // Each sent notification's reply action (a chat's Reply), for notif.reply from the computer.
-    private val replies = object : LinkedHashMap<String, Notification.Action>(32, 0.75f, true) {
-        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, Notification.Action>?) = size > 80
+    // The ticket is the session that was allowed to see it. A later socket cannot use it.
+    private val replies = object : LinkedHashMap<String, ReplyBind>(32, 0.75f, true) {
+        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, ReplyBind>?) = size > 80
     }
     // Messages' chat apps on the computer (shared/chats.js): while it asks (chat.want), each chat
     // app conversation's recent messages as its notification shows them (chat.conv), whether or not
@@ -91,9 +92,11 @@ class Notifs(core: Core) : Feature(core) {
     )
     // Each sent notification's other buttons (Mark as read, Archive…), by key, for notif.act; and the
     // keys the computer has, so it hears when they go from here (notif.gone).
-    private val actions = object : LinkedHashMap<String, List<Notification.Action>>(32, 0.75f, true) {
-        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, List<Notification.Action>>?) = size > 80
+    private val actions = object : LinkedHashMap<String, ActionBind>(32, 0.75f, true) {
+        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, ActionBind>?) = size > 80
     }
+    private class ActionBind(val ticket: SensitiveNotif.ActionTicket, val actions: List<Notification.Action>)
+    private class ReplyBind(val ticket: SensitiveNotif.ActionTicket, val action: Notification.Action)
     private val recentSent = object : LinkedHashMap<String, Long>(32, 0.75f, true) {
         override fun removeEldestEntry(e: MutableMap.MutableEntry<String, Long>?) = size > 64
     }
@@ -125,6 +128,93 @@ class Notifs(core: Core) : Feature(core) {
         peerAccepts = false
         chatsWanted = false
         synchronized(iconsSent) { iconsSent.clear() }
+        // The session that owned these buttons is gone. Ordinary and privileged alike.
+        synchronized(actions) { actions.clear() }
+        synchronized(replies) { replies.clear() }
+        clearChatPictures()
+    }
+
+    // Consent was removed, or the listener is being held. Privileged buttons and picture files go.
+    // An action stored while the listener was not privileged stays for its own live session.
+    internal fun invalidatePrivileged() {
+        // Buttons and replies go. The key stays so this same session can still dismiss the
+        // notification. An ordinary, unprivileged bind is left as it is.
+        synchronized(actions) {
+            for ((key, bind) in actions.toList()) {
+                if (bind.ticket.privileged) actions[key] = ActionBind(bind.ticket, emptyList())
+            }
+        }
+        synchronized(replies) {
+            val it = replies.entries.iterator()
+            while (it.hasNext()) if (it.next().value.ticket.privileged) it.remove()
+        }
+        clearChatPictures()
+    }
+
+    private fun clearChatPictures() {
+        val dir = java.io.File(core.ctx.cacheDir, "mms")
+        runCatching { dir.listFiles()?.forEach { if (it.name.startsWith("chat-")) it.delete() } }
+    }
+
+    // The computer on the socket right now. Read this before any notification or chat text.
+    private fun captureComputer(): SensitiveNotif.Recipient? {
+        if (!core.link.connected) return null
+        val marker = core.link.sessionMarker() ?: return null
+        val host = core.link.host ?: return null
+        if (host.id.isEmpty() || host.fp.isEmpty()) return null
+        return SensitiveNotif.Recipient(marker, host.id, host.fp, host.os == "mac")
+    }
+
+    // toPhone is never given this Mac's approval, even when the ids would otherwise match.
+    internal fun releasePlan(recipient: SensitiveNotif.Recipient, toPhone: Boolean): SensitiveNotif.Plan {
+        val feature = core.companion.supported
+        val privileged = core.companion.maySeeSensitive()
+        val bound = NotifListener.running != null && hasAccess && !CompanionApproval.holdNotifications(core.ctx)
+        val approved = !toPhone && recipient.mac && feature && bound &&
+            core.companion.approvedIdentity(recipient.id, recipient.fingerprint)
+        return SensitiveNotif.plan(
+            featureSupported = feature,
+            listenerMaySeeSensitive = privileged,
+            recipient = recipient,
+            toPhone = toPhone,
+            sessionLive = true,
+            listenerBound = bound,
+            approvedForRecipient = approved,
+        )
+    }
+
+    // The plan captured before the read, checked again against whoever the socket is now.
+    private fun commit(plan: SensitiveNotif.Plan): Boolean {
+        val current = captureComputer()
+        return SensitiveNotif.deliver(plan, current, current?.let { releasePlan(it, toPhone = false) })
+    }
+
+    private fun listenerBound() = NotifListener.running != null && hasAccess && !CompanionApproval.holdNotifications(core.ctx)
+
+    private fun allowAction(ticket: SensitiveNotif.ActionTicket): Boolean {
+        val current = captureComputer()
+        val approved = ticket.mac && current != null && current.id == ticket.id && current.fingerprint == ticket.fingerprint &&
+            core.companion.approvedIdentity(ticket.id, ticket.fingerprint)
+        return SensitiveNotif.actionAllowed(
+            ticket,
+            current,
+            sessionLive = current != null && core.link.connected,
+            listenerBound = listenerBound(),
+            featureSupported = core.companion.supported,
+            listenerMaySeeSensitive = core.companion.maySeeSensitive(),
+            approvedForTicketRecipient = approved,
+        )
+    }
+
+    private fun rememberActions(key: String, ticket: SensitiveNotif.ActionTicket, buttons: List<Notification.Action>, reply: Notification.Action?) {
+        synchronized(actions) { actions[key] = ActionBind(ticket, buttons) }
+        if (reply != null) synchronized(replies) { replies[key] = ReplyBind(ticket, reply) }
+        else synchronized(replies) { replies.remove(key) }
+    }
+
+    private fun forgetActions(key: String, marker: Any) {
+        synchronized(actions) { if (actions[key]?.ticket?.marker === marker) actions.remove(key) }
+        synchronized(replies) { if (replies[key]?.ticket?.marker === marker) replies.remove(key) }
     }
 
     // Extract title from standard, big title, conversation title, etc.
@@ -206,8 +296,13 @@ class Notifs(core: Core) : Feature(core) {
 
     // A chat app's conversation for the computer's Messages: its MessagingStyle messages (sender,
     // text, time; the user's own have no sender), else the notification's text as one message.
+    // The recipient is fixed before the messages, the snapshot or the avatar are read. A replacement
+    // or a revoked approval drops the whole conversation, including its picture.
     private fun chatPosted(sbn: StatusBarNotification) {
-        if (!chatsWanted || !core.link.connected) return
+        if (!chatsWanted || CompanionApproval.holdNotifications(core.ctx)) return
+        val captured = captureComputer() ?: return
+        val plan = releasePlan(captured, toPhone = false)
+        if (!plan.includeSensitive) return
         val n = sbn.notification ?: return
         if (sbn.packageName !in chatApps && !otherChat(sbn, n)) return
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
@@ -217,8 +312,10 @@ class Notifs(core: Core) : Feature(core) {
         val x = n.extras
         val title = extractTitle(x)
         val convTitle = x.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString()?.trim().orEmpty()
-        val name = convTitle.ifEmpty { title }
-        val key = (if (Build.VERSION.SDK_INT >= 26) n.shortcutId else null)?.takeIf { it.isNotEmpty() } ?: name
+        val rawName = convTitle.ifEmpty { title }
+        val name = if (shareText(rawName, plan)) rawName else appNameOf(sbn.packageName)
+        val shortcut = (if (Build.VERSION.SDK_INT >= 26) n.shortcutId else null)?.takeIf { it.isNotEmpty() && shareText(it, plan) }
+        val key = shortcut ?: name
         if (key.isEmpty()) return
         val items = JSONArray()
         val msgs = messages(x)
@@ -226,28 +323,34 @@ class Notifs(core: Core) : Feature(core) {
             for (p in msgs) {
                 if (p !is Bundle) continue
                 val text = p.getCharSequence("text")?.toString()?.trim().orEmpty()
-                if (text.isEmpty()) continue
+                if (!shareText(text, plan)) continue
                 val person = senderOf(p)
                 val sender = p.getCharSequence("sender")
                 val me = person == null && sender == null
                 val from = if (me) "" else (person?.name ?: sender)?.toString()?.trim().orEmpty()
-                items.put(JSONObject().put("at", p.getLong("time", sbn.postTime)).put("from", from.take(120)).put("text", text.take(4000)).put("me", me))
+                val who = if (shareText(from, plan)) from else ""
+                items.put(JSONObject().put("at", p.getLong("time", sbn.postTime)).put("from", who.take(120)).put("text", text.take(4000)).put("me", me))
             }
         } else {
             val text = extractText(x)
-            if (text.isNotEmpty()) items.put(JSONObject().put("at", sbn.postTime).put("from", title.take(120)).put("text", text.take(4000)).put("me", false))
+            if (shareText(text, plan)) items.put(JSONObject().put("at", sbn.postTime).put("from", name.take(120)).put("text", text.take(4000)).put("me", false))
         }
         if (items.length() == 0) return
         val reply = n.actions?.firstOrNull { a -> a.remoteInputs?.any { it.allowFreeFormInput } == true }
-        if (reply != null) synchronized(replies) { replies[sbn.key] = reply }
         val group = x.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION, false)
-        core.send(
-            msg(
-                "chat.conv", "key" to key.take(300), "app" to sbn.packageName, "appName" to appNameOf(sbn.packageName),
-                "name" to name.take(200), "group" to group, "id" to sbn.key.take(200), "reply" to (reply != null), "items" to items,
-                "pic" to true, // takes a picture from the computer (chat.pic)
-            ).apply { avatarOf(n)?.let { put("avatar", it) } }, // the contact's or the group's picture
-        )
+        val payload = msg(
+            "chat.conv", "key" to key.take(300), "app" to sbn.packageName, "appName" to appNameOf(sbn.packageName),
+            "name" to name.take(200), "group" to group, "id" to sbn.key.take(200), "reply" to (reply != null), "items" to items,
+            "pic" to true, // takes a picture from the computer (chat.pic)
+        ).apply { avatarOf(n)?.let { put("avatar", it) } } // the contact's or the group's picture
+        if (!commit(plan)) return
+        val ticket = SensitiveNotif.ticket(plan)
+        if (reply != null) synchronized(replies) { replies[sbn.key] = ReplyBind(ticket, reply) }
+        // Consent and the socket are read again immediately before the write. A revoke or a
+        // replacement after the picture was encoded drops this conversation and the reply just stored.
+        if (!commit(plan) || !core.link.sendFor(captured.marker, payload)) {
+            if (reply != null) synchronized(replies) { if (replies[sbn.key]?.ticket?.marker === captured.marker) replies.remove(sbn.key) }
+        }
     }
 
     // Another app's conversation (Viber, LINE, Discord, Slack…): a message notification in Android's
@@ -271,7 +374,10 @@ class Notifs(core: Core) : Feature(core) {
         if (CompanionApproval.holdNotifications(core.ctx)) return
         runCatching { chatPosted(sbn) }
         runCatching { core.peer.notifPosted(sbn, this) } // and to a phone connected with Connect with Android (Peer.kt)
-        if (!peerAccepts || !core.sync.get("notifs", "out") || !core.link.connected) return
+        if (!peerAccepts || !core.sync.get("notifs", "out")) return
+        // Fixed before the title, the text, the buttons or any picture is read. sendFor uses this marker.
+        val captured = captureComputer() ?: return
+        val plan = releasePlan(captured, toPhone = false)
         val n = sbn.notification ?: return
         val pkg = sbn.packageName
         if (pkg == core.ctx.packageName) return
@@ -288,25 +394,40 @@ class Notifs(core: Core) : Feature(core) {
         if (!sends(pkg)) return
 
         val x = n.extras
-        val title = extractTitle(x)
-        val text = extractText(x)
+        val rawTitle = extractTitle(x)
+        val rawText = extractText(x)
+        if (rawTitle.isEmpty() && rawText.isEmpty()) return
+        val reply = n.actions?.firstOrNull { a -> a.remoteInputs?.any { it.allowFreeFormInput } == true }
+        // Its other buttons (no typing): the computer shows them, and taps them here (notif.act).
+        val buttons = n.actions.orEmpty().filter { a -> a !== reply && a.actionIntent != null && a.title?.isNotBlank() == true && a.remoteInputs.isNullOrEmpty() }.take(3)
+        val hide = core.store.flag("notifs.hideText", false)
+        val subtitle = x.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString() ?: ""
+        val out = outgoing(rawTitle, subtitle, if (hide) "" else rawText, buttons.map { it.title.toString().take(40) }, pictures = peerRich && !hide, bound = plan)
+        val title = if (out.redacted && out.title.isEmpty()) appNameOf(pkg) else out.title
+        val text = out.body
         if (title.isEmpty() && text.isEmpty()) return
-
+        // Indexes match the titles we send. A redacted title is not a button the computer can press.
+        val remain = out.actions.toMutableList()
+        val kept = buttons.filter { b ->
+            val i = remain.indexOf(b.title.toString().take(40))
+            if (i < 0) false else { remain.removeAt(i); true }
+        }
         // Deduplicate rapid duplicate notifications (e.g. summary + child sent at same instant);
-        // a progress bar instead: once a second, and always its end.
-        val now = System.currentTimeMillis()
+        // a progress bar instead: once a second, and always its end. Claimed before the picture
+        // is built, and given back when the send is dropped, so the next peer is not suppressed.
+        val nowMs = System.currentTimeMillis()
+        val hash = "$pkg|$title|$text"
         if (live != null) {
             synchronized(liveAt) {
-                if (!live.optBoolean("done") && now - (liveAt[sbn.key] ?: 0L) < 1000L) return
-                liveAt[sbn.key] = now
+                if (!live.optBoolean("done") && nowMs - (liveAt[sbn.key] ?: 0L) < 1000L) return
+                liveAt[sbn.key] = nowMs
                 if (liveAt.size > 50) liveAt.keys.firstOrNull()?.let { liveAt.remove(it) }
             }
         } else {
-            val hash = "$pkg|$title|$text"
             synchronized(recentSent) {
                 val last = recentSent[hash] ?: 0L
-                if (now - last < 2000L) return
-                recentSent[hash] = now
+                if (nowMs - last < 2000L) return
+                recentSent[hash] = nowMs
             }
         }
 
@@ -319,39 +440,63 @@ class Notifs(core: Core) : Feature(core) {
             else -> runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
         }
 
-        val reply = n.actions?.firstOrNull { a -> a.remoteInputs?.any { it.allowFreeFormInput } == true }
-        if (reply != null) synchronized(replies) { replies[sbn.key] = reply }
-        // Its other buttons (no typing): the computer shows them, and taps them here (notif.act).
-        val buttons = n.actions.orEmpty().filter { a -> a !== reply && a.actionIntent != null && a.title?.isNotBlank() == true && a.remoteInputs.isNullOrEmpty() }.take(3)
-        synchronized(actions) { actions[sbn.key] = buttons }
-        val hide = core.store.flag("notifs.hideText", false)
-        val icon = if (synchronized(iconsSent) { iconsSent.add(pkg) }) appIcon(pkg) else null
-        core.send(
-            msg(
-                Proto.T.NOTIF, "id" to sbn.key.take(200), "app" to pkg, "appName" to appName,
-                "title" to title.take(300), "subtitle" to (x.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString() ?: "").take(200),
-                "body" to if (hide) "" else text.take(1000), "at" to sbn.postTime,
-            ).apply {
-                if (icon != null) put("icon", icon)
-                if (reply != null) put("reply", true) // the computer may answer it (notif.reply)
-                if (buttons.isNotEmpty()) put("actions", jsonArray(buttons.map { it.title.toString().take(40) }))
-                if (live != null) put("live", live)
-                if (peerRich && !hide) {
-                    picOf(n)?.let { put("pic", it) } // a big picture (a photo sent in a chat, a screenshot)
-                    avatarOf(n)?.let { put("avatar", it) } // the sender's or the chat's picture
-                }
-            },
-        )
+        val icon = if (synchronized(iconsSent) { pkg in iconsSent }) null else appIcon(pkg)
+        val actionTitles = out.actions
+        val payload = msg(
+            Proto.T.NOTIF, "id" to sbn.key.take(200), "app" to pkg, "appName" to appName,
+            "title" to title.take(300), "subtitle" to out.subtitle.take(200),
+            "body" to text.take(1000), "at" to sbn.postTime,
+        ).apply {
+            if (icon != null) put("icon", icon)
+            if (reply != null && !out.redacted) put("reply", true) // the computer may answer it (notif.reply)
+            if (actionTitles.isNotEmpty()) put("actions", jsonArray(actionTitles))
+            if (live != null) put("live", live)
+            if (out.pictures) {
+                picOf(n)?.let { put("pic", it) } // a big picture (a photo sent in a chat, a screenshot)
+                avatarOf(n)?.let { put("avatar", it) } // the sender's or the chat's picture
+            }
+        }
+        fun releaseClaim() {
+            if (live != null) synchronized(liveAt) { if (liveAt[sbn.key] == nowMs) liveAt.remove(sbn.key) }
+            else synchronized(recentSent) { if (recentSent[hash] == nowMs) recentSent.remove(hash) }
+        }
+        if (!commit(plan)) return releaseClaim()
+        val ticket = SensitiveNotif.ticket(plan)
+        val replyBind = if (reply != null && !out.redacted) reply else null
+        rememberActions(sbn.key, ticket, if (out.redacted) emptyList() else kept, replyBind)
+        // Checked again after the buttons are stored and immediately before the socket write.
+        if (!commit(plan) || !core.link.sendFor(captured.marker, payload)) {
+            forgetActions(sbn.key, captured.marker)
+            return releaseClaim()
+        }
+        if (icon != null) synchronized(iconsSent) { iconsSent.add(pkg) }
         sent++
         core.changed()
     }
 
+    // toPhone: Connect with Android. That phone never inherits the Mac's approval. When the
+    // listener may be privileged, its text, buttons and pictures are held back. bound is the
+    // recipient captured before this text was read; without one, nothing sensitive is forwarded.
+    fun outgoing(title: String, subtitle: String, body: String, actions: List<String> = emptyList(), pictures: Boolean = false, toPhone: Boolean = false, bound: SensitiveNotif.Plan? = null): SensitiveNotif.Text {
+        val plan = bound ?: captureComputer()?.let { releasePlan(it, toPhone) }
+        if (plan == null || (toPhone && plan.recipient.mac)) return SensitiveNotif.forward(false, true, title, subtitle, body, emptyList(), false)
+        return SensitiveNotif.forward(plan.includeSensitive, !plan.includeSensitive, title, subtitle, body, if (plan.includeSensitive) actions else emptyList(), pictures && plan.includeSensitive)
+    }
+
+    // Chat text uses the plan captured for this recipient. A pattern miss is not proof that the
+    // message is ordinary.
+    private fun shareText(text: String, plan: SensitiveNotif.Plan) = text.isNotEmpty() && plan.includeSensitive
+
     // From NotifListener: gone from this phone (swiped, opened, or the app took it back): from the
     // computer's list too.
     fun removed(sbn: StatusBarNotification) {
-        val had = synchronized(actions) { actions.remove(sbn.key) } != null
+        val set = synchronized(actions) { actions.remove(sbn.key) }
         synchronized(replies) { replies.remove(sbn.key) }
-        if (had && peerAccepts && core.link.connected) core.send(msg("notif.gone", "id" to sbn.key.take(200)))
+        if (set == null || !peerAccepts) return
+        val payload = msg("notif.gone", "id" to sbn.key.take(200))
+        val current = captureComputer() ?: return
+        if (!SensitiveNotif.sameSession(set.ticket, current)) return
+        core.link.sendFor(current.marker, payload)
     }
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
@@ -359,12 +504,23 @@ class Notifs(core: Core) : Feature(core) {
             // Dismissed on the computer: from this phone too.
             "notif.dismiss" -> {
                 val key = m.str("id", 200)
-                if (key.isNotEmpty() && synchronized(actions) { actions.containsKey(key) }) runCatching { NotifListener.running?.cancelNotification(key) }
+                val set = if (key.isEmpty()) null else synchronized(actions) { actions[key] }
+                // Dismiss is not a content release. It still has to be this session, checked again
+                // immediately before the listener is asked to remove it.
+                if (set != null) runCatching {
+                    if (!SensitiveNotif.sameSession(set.ticket, captureComputer())) error("session")
+                    NotifListener.running?.cancelNotification(key)
+                }
             }
-            // One of its buttons, clicked on the computer.
+            // One of its buttons, clicked on the computer. The session and, when it was privileged, the consent are checked again.
             "notif.act" -> {
-                val a = synchronized(actions) { actions[m.str("id", 200)] }?.getOrNull(m.optInt("i", -1)) ?: return true
-                runCatching { a.actionIntent.send() }
+                val bind = synchronized(actions) { actions[m.str("id", 200)] } ?: return true
+                val a = bind.actions.getOrNull(m.optInt("i", -1)) ?: return true
+                if (!allowAction(bind.ticket)) return true
+                runCatching {
+                    if (!allowAction(bind.ticket)) error("session")
+                    a.actionIntent.send()
+                }
             }
             Proto.T.NOTIF_POLICY -> { peerAccepts = m.optBoolean("accept"); peerRich = m.optBoolean("rich") }
             "chat.want" -> {
@@ -384,12 +540,15 @@ class Notifs(core: Core) : Feature(core) {
             "notif.reply" -> {
                 val key = m.str("id", 200)
                 val text = m.str("text", 5000)
-                val a = synchronized(replies) { replies[key] } ?: return true
-                if (text.isNotEmpty()) runCatching {
+                val bind = synchronized(replies) { replies[key] } ?: return true
+                if (text.isEmpty() || !allowAction(bind.ticket)) return true
+                val a = bind.action
+                runCatching {
                     val intent = android.content.Intent()
                     val results = Bundle()
                     for (ri in a.remoteInputs.orEmpty()) results.putCharSequence(ri.resultKey, text)
                     android.app.RemoteInput.addResultsToIntent(a.remoteInputs, intent, results)
+                    if (!allowAction(bind.ticket)) error("session")
                     a.actionIntent.send(core.ctx, 0, intent)
                 }
             }
@@ -403,32 +562,64 @@ class Notifs(core: Core) : Feature(core) {
     }
 
     private fun chatPicture(m: JSONObject) {
+        val started = captureComputer() ?: return
         val ref = m.str("ref", 60)
+        fun still() = SensitiveNotif.sameRecipient(started, captureComputer())
+        fun open(): Boolean {
+            val current = captureComputer()
+            val plan = current?.let { releasePlan(it, toPhone = false) }
+            return SensitiveNotif.pictureAllowed(started, current, plan?.privileged == true, plan?.consented == true)
+        }
+        fun done(ok: Boolean, opened: Boolean, error: String?) {
+            if (!still()) return
+            if (!open()) {
+                core.link.sendFor(started.marker, msg("chat.picd", "ref" to ref, "ok" to false, "opened" to false, "error" to "That picture was not sent"))
+                return
+            }
+            core.link.sendFor(started.marker, msg("chat.picd", "ref" to ref, "ok" to ok, "opened" to opened, "error" to error))
+        }
+        if (!open()) return done(false, false, "That picture was not sent")
         val app = m.str("app", 200)
         val chat = m.str("chat", 300)
         val text = m.str("text", 5000).trim()
-        val done = { ok: Boolean, opened: Boolean, error: String? -> core.send(msg("chat.picd", "ref" to ref, "ok" to ok, "opened" to opened, "error" to error)); Unit }
         val raw = runCatching { Base64.decode(m.str("image", 6_000_000).substringAfter("base64,", ""), Base64.DEFAULT) }.getOrNull()
         if (raw == null || raw.isEmpty() || !Regex("^[A-Za-z][\\w]*(\\.[\\w]+)+$").matches(app)) return done(false, false, "That picture can't be read")
+        if (!open()) return done(false, false, "That picture was not sent")
         val ctx = core.ctx
         val dir = java.io.File(ctx.cacheDir, "mms").apply { mkdirs() }
         dir.listFiles()?.forEach { if (it.name.startsWith("chat-") && System.currentTimeMillis() - it.lastModified() > 3_600_000) it.delete() }
         val file = java.io.File(dir, "chat-" + System.currentTimeMillis() + ".jpg").apply { writeBytes(raw) }
+        if (!open()) {
+            file.delete()
+            return done(false, false, "That picture was not sent")
+        }
         val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", file)
         // 1. The Reply takes pictures (RemoteInput's data types): sent from here, like a typed answer.
-        val a = synchronized(replies) { replies[m.str("id", 200)] }
+        // The cached reply has to be this session's, and consent has to still hold when it was required.
+        val bind = synchronized(replies) { replies[m.str("id", 200)] }
+        val a = bind?.action
         val takes = a?.remoteInputs.orEmpty().firstOrNull { ri -> ri.allowedDataTypes.orEmpty().any { it == "image/*" || it == "image/jpeg" } }
-        if (a != null && takes != null) {
+        if (a != null && takes != null && allowAction(bind.ticket) && open()) {
             val sent = runCatching {
+                if (!allowAction(bind.ticket) || !open()) error("session")
                 ctx.grantUriPermission(app, uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 val intent = android.content.Intent()
                 android.app.RemoteInput.addDataResultToIntent(takes, intent, mapOf("image/jpeg" to uri))
                 if (text.isNotEmpty()) a.remoteInputs.filter { it.allowFreeFormInput && it !== takes }.forEach { ri ->
                     android.app.RemoteInput.addResultsToIntent(arrayOf(ri), intent, Bundle().apply { putCharSequence(ri.resultKey, text) })
                 }
+                if (!allowAction(bind.ticket) || !open()) {
+                    ctx.revokeUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    file.delete()
+                    return done(false, false, "That picture was not sent")
+                }
                 a.actionIntent.send(ctx, 0, intent)
             }.isSuccess
             if (sent) return done(true, false, null)
+        }
+        if (!open()) {
+            file.delete()
+            return done(false, false, "That picture was not sent")
         }
         // 2. The app's own share screen, on that conversation (its shortcut), the picture and text in it.
         if (!(Settings.canDrawOverlays(ctx) || MainActivity.shown)) return done(false, false, "Allow TwinDesk to display over other apps on the phone")
@@ -440,6 +631,10 @@ class Notifs(core: Core) : Feature(core) {
         if (chat.isNotEmpty()) {
             share.putExtra(android.content.Intent.EXTRA_SHORTCUT_ID, chat) // Android's direct share: that conversation
             if ('@' in chat) share.putExtra("jid", chat) // WhatsApp's own
+        }
+        if (!open()) {
+            file.delete()
+            return done(false, false, "That picture was not sent")
         }
         if (runCatching { ctx.startActivity(share) }.isSuccess) done(true, true, null)
         else done(false, false, "That app doesn't take pictures")

@@ -406,6 +406,33 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         else -> false
     }
 
+    // The phone captured before a notification is read. A replacement socket does not get that payload.
+    internal fun notificationRecipient(): SensitiveNotif.Recipient? {
+        if (!connected || peerId.isEmpty()) return null
+        return when (role) {
+            "host" -> {
+                val marker = hostWs?.takeIf { it.open } ?: return null
+                SensitiveNotif.Recipient(marker, peerId, peerId, mac = false)
+            }
+            "guest" -> {
+                val marker = link.sessionMarker() ?: return null
+                val host = link.host ?: return null
+                if (host.id != peerId) return null
+                SensitiveNotif.Recipient(marker, peerId, host.fp.ifEmpty { peerId }, mac = false)
+            }
+            else -> null
+        }
+    }
+
+    fun sendFor(marker: Any?, m: JSONObject): Boolean = when (role) {
+        "host" -> {
+            val w = hostWs
+            if (marker == null || w == null || w !== marker || !w.open) false else w.send(m.toString())
+        }
+        "guest" -> link.sendFor(marker, m)
+        else -> false
+    }
+
     fun queued(): Long = when (role) { "host" -> hostWs?.queued() ?: 0; "guest" -> link.queued(); else -> 0 }
 
     private fun started() {
@@ -549,6 +576,9 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
     // From Notifs.posted: this phone's notification, to the other phone too.
     fun notifPosted(sbn: StatusBarNotification, n: Notifs) {
         if (!connected || !notifsOn) return
+        // This phone is not the Mac that completed companion approval. Captured before the text is read.
+        val captured = notificationRecipient() ?: return
+        val plan = n.releasePlan(captured, toPhone = true)
         val no = sbn.notification ?: return
         val pkg = sbn.packageName
         if (pkg == ctx.packageName || sbn.isOngoing || no.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
@@ -557,10 +587,22 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         val title = n.titleOf(no.extras)
         val text = if (store.flag("notifs.hideText", false)) "" else n.textOf(no.extras)
         if (title.isEmpty() && text.isEmpty()) return
-        val hash = "$pkg|$title|$text"
+        val out = n.outgoing(title, "", text, toPhone = true, bound = plan)
+        val showTitle = if (out.redacted && out.title.isEmpty()) n.appName(pkg) else out.title
+        val showText = out.body
+        if (showTitle.isEmpty() && showText.isEmpty()) return
+        val hash = "$pkg|$showTitle|$showText"
         val now = System.currentTimeMillis()
-        synchronized(recentNotifs) { if (now - (recentNotifs[hash] ?: 0L) < 2000L) return; recentNotifs[hash] = now }
-        send(msg("notif", "id" to sbn.key.take(200), "app" to pkg, "appName" to n.appName(pkg), "title" to title.take(300), "body" to text.take(1000), "at" to sbn.postTime))
+        synchronized(recentNotifs) {
+            if (now - (recentNotifs[hash] ?: 0L) < 2000L) return
+            recentNotifs[hash] = now
+        }
+        val payload = msg("notif", "id" to sbn.key.take(200), "app" to pkg, "appName" to n.appName(pkg), "title" to showTitle.take(300), "body" to showText.take(1000), "at" to sbn.postTime)
+        val current = notificationRecipient()
+        val fresh = current?.let { n.releasePlan(it, toPhone = true) }
+        if (!SensitiveNotif.deliver(plan, current, fresh) || !sendFor(captured.marker, payload)) {
+            synchronized(recentNotifs) { if (recentNotifs[hash] == now) recentNotifs.remove(hash) }
+        }
     }
 
     private fun notifIn(m: JSONObject) {

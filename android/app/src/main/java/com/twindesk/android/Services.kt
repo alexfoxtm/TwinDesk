@@ -102,6 +102,9 @@ class NotifListener : NotificationListenerService() {
             runCatching { Core.get(this) } // reconcile a recorded, interrupted approval first
             if (CompanionApproval.holdNotifications(this)) { requestUnbind(); return }
         }
+        // Count associations before this listener is the one that may forward. A failed count
+        // stays privileged. Trust does not drop until this connect is observed with none.
+        CompanionApproval.noteBind(CompanionApproval.associationCount(this))
         running = this
         CompanionApproval.listenerConnected(this)
         runCatching { Core.get(this).also { it.nowPlaying.retry(); it.changed() } }

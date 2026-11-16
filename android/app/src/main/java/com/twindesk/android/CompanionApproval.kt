@@ -52,6 +52,40 @@ class CompanionApproval(core: Core) : Feature(core) {
         fun listenerConnected(ctx: Context) {
             if (!holdNotifications(ctx)) ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(REBIND).apply()
         }
+
+        // The listener's trust is fixed at bind. Until the next bind is observed, an association
+        // change leaves the previous answer unknown, so callers hold notification text back.
+        @Volatile private var bindObserved = false
+        @Volatile private var boundWithAssociation = true
+
+        fun noteBind(associationCount: Int?) {
+            bindObserved = true
+            boundWithAssociation = associationCount == null || associationCount > 0
+        }
+
+        fun noteAssociationChanged() {
+            bindObserved = false
+            boundWithAssociation = true
+        }
+
+        fun bindWasObserved(): Boolean = bindObserved
+        fun boundWhileAssociated(): Boolean = boundWithAssociation
+
+        // null: the query failed. Callers then treat the listener as privileged.
+        fun associationCount(ctx: Context): Int? {
+            if (Build.VERSION.SDK_INT < 35) return 0
+            val manager = ctx.getSystemService(CompanionDeviceManager::class.java) ?: return 0
+            return runCatching { manager.myAssociations.size }.getOrNull()
+        }
+
+        fun associationsChanged(ctx: Context) {
+            noteAssociationChanged()
+            if (Build.VERSION.SDK_INT < 35 || !BuildConfig.NOTIF_LISTENER) return
+            val core = runCatching { Core.get(ctx) }.getOrNull() ?: return
+            if (!core.companion.supported) return
+            core.companion.rebindListener()
+            core.changed()
+        }
     }
 
     private val prefs = core.ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -59,6 +93,7 @@ class CompanionApproval(core: Core) : Feature(core) {
     private val manager get() = core.ctx.getSystemService(CompanionDeviceManager::class.java)
     @Volatile var state = State.IDLE; private set
     @Volatile private var attempt: Attempt? = null
+    private var rebindForDrop = false
 
     private class Attempt(val host: Host, val session: Any, val id: String, val baseline: Set<Int>, val launch: (IntentSender) -> Unit) {
         @Volatile var until = SystemClock.elapsedRealtime() + 60000
@@ -73,9 +108,40 @@ class CompanionApproval(core: Core) : Feature(core) {
 
     init { main.post { reconcile() } }
 
+    fun maySeeSensitive(): Boolean = SensitiveNotif.listenerMaySeeSensitive(supported, bindWasObserved(), boundWhileAssociated())
+
+    // The Mac on this live socket, and only while its stored approval still matches that socket.
+    // A disconnected session, a replaced host, or a removed proof is false on the next call.
     fun readyFor(hostId: String): Boolean {
+        if (holdNotifications(core.ctx) || NotifListener.running == null || !core.notifs.hasAccess) return false
+        val live = core.link.host
+        val proof = proofs().optJSONObject(hostId)
+        val stored = core.store.hosts().find { it.id == hostId }
+        val pin = proof?.optString("pin").orEmpty()
+        val associationOk = proof != null && pin.isNotEmpty() && stored?.fp == pin &&
+            associations().any { it.id == proof.optInt("association", -1) }
+        return SensitiveNotif.consent(
+            featureSupported = supported,
+            recipientMac = live?.os == "mac",
+            recipientId = live?.id.orEmpty(),
+            recipientFingerprint = live?.fp.orEmpty(),
+            sessionLive = core.link.connected && core.link.sessionMarker() != null,
+            listenerBound = true,
+            approvedId = if (associationOk && live?.id == hostId) hostId else null,
+            approvedFingerprint = if (associationOk && live?.id == hostId) pin else null,
+        )
+    }
+
+    // The stored approval for this exact computer. Does not look at whichever socket is live now.
+    fun approvedIdentity(hostId: String, fingerprint: String): Boolean {
         if (!supported || holdNotifications(core.ctx) || NotifListener.running == null || !core.notifs.hasAccess) return false
-        return hasApproval(hostId)
+        if (hostId.isEmpty() || fingerprint.isEmpty()) return false
+        val proof = proofs().optJSONObject(hostId) ?: return false
+        val pin = proof.optString("pin")
+        if (pin.isEmpty() || pin != fingerprint) return false
+        val stored = core.store.hosts().find { it.id == hostId } ?: return false
+        if (stored.fp != fingerprint) return false
+        return associations().any { it.id == proof.optInt("association", -1) }
     }
 
     fun hasApproval(hostId: String): Boolean {
@@ -97,7 +163,10 @@ class CompanionApproval(core: Core) : Feature(core) {
         val pending = JSONObject().put("request", a.id).put("baseline", JSONArray(baseline.toList()))
         if (!prefs.edit().putString(PENDING, pending.toString()).commit()) return fail()
         attempt = a
+        // The current bind stays trusted until it drops. Hold text from this moment.
+        noteAssociationChanged()
         NotifListener.running?.suspendForApproval()
+        core.notifs.invalidatePrivileged()
         core.ble.scan(false)
         setState(State.WAITING)
         if (!core.link.send(msg(WIRE, "on" to true, "requestId" to a.id))) return finish(a, false)
@@ -200,10 +269,16 @@ class CompanionApproval(core: Core) : Feature(core) {
     fun forget(hostId: String) {
         if (attempt?.host?.id == hostId) cancel()
         val p = proofs()
-        val id = p.optJSONObject(hostId)?.optInt("association", -1) ?: return
-        if (id >= 0 && !removeOwned(id)) { setState(State.RECOVERY); return }
+        val proof = p.optJSONObject(hostId) ?: return
+        val id = proof.optInt("association", -1)
+        if (id >= 0 && !removeOwned(id)) {
+            setState(State.RECOVERY)
+            core.notifs.invalidatePrivileged()
+            return
+        }
         p.remove(hostId)
         prefs.edit().putString(PROOFS, p.toString()).commit()
+        core.notifs.invalidatePrivileged()
         rebind()
         setState(State.IDLE)
     }
@@ -240,6 +315,7 @@ class CompanionApproval(core: Core) : Feature(core) {
 
     private fun reconcile() {
         if (!supported || busy) return
+        rebindForDrop = false
         for (id in prefs.getStringSet(CLEANUP, emptySet()).orEmpty().mapNotNull { it.toIntOrNull() }) {
             if (!removeOwned(id)) { setState(State.RECOVERY); return }
         }
@@ -256,15 +332,24 @@ class CompanionApproval(core: Core) : Feature(core) {
         }
         val saved = proofs()
         val keys = saved.keys().asSequence().toList()
+        var droppedProof = false
         for (hostId in keys) {
             val proof = saved.optJSONObject(hostId) ?: continue
             if (core.store.hosts().none { it.id == hostId && it.fp == proof.optString("pin") }) {
                 val id = proof.optInt("association", -1)
-                if (id >= 0 && !removeOwned(id)) { setState(State.RECOVERY); return }
+                if (id >= 0 && !removeOwned(id)) {
+                    setState(State.RECOVERY)
+                    core.notifs.invalidatePrivileged()
+                    return
+                }
                 saved.remove(hostId)
+                droppedProof = true
             }
         }
         prefs.edit().putString(PROOFS, saved.toString()).apply()
+        if (droppedProof) core.notifs.invalidatePrivileged()
+        // A removed association does not untrust the listener that is already bound.
+        if (rebindForDrop) rebind()
         if (state == State.RECOVERY) setState(State.IDLE) else core.changed()
     }
 
@@ -273,6 +358,11 @@ class CompanionApproval(core: Core) : Feature(core) {
     private fun proofs(): JSONObject = runCatching { JSONObject(prefs.getString(PROOFS, "{}")!!) }.getOrDefault(JSONObject())
     private fun pending(): JSONObject? = prefs.getString(PENDING, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
     private fun removeOwned(id: Int): Boolean {
+        val present = runCatching { manager.myAssociations.any { it.id == id } }.getOrNull()
+        if (present == null || present == true) {
+            noteAssociationChanged()
+            rebindForDrop = true
+        }
         val removed = runCatching {
             if (manager.myAssociations.any { it.id == id }) manager.disassociate(id)
             true
@@ -281,7 +371,12 @@ class CompanionApproval(core: Core) : Feature(core) {
         prefs.edit().putStringSet(CLEANUP, if (removed) cleanup - id.toString() else cleanup + id.toString()).commit()
         return removed
     }
+    fun rebindListener() = rebind()
+
     private fun rebind() {
+        // The bind that was trusted stays trusted until Android connects the listener again.
+        rebindForDrop = false
+        noteAssociationChanged()
         if (!BuildConfig.NOTIF_LISTENER || holdNotifications(core.ctx)) return
         prefs.edit().putBoolean(REBIND, true).commit()
         val listener = NotifListener.running

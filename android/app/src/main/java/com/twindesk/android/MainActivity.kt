@@ -1524,25 +1524,30 @@ private fun NotificationsPage(core: Core, v: Int) {
     val canApprove = companionHost != null && access && !core.link.ble && companionBluetooth
     val canToggleSensitive = !companionBusy && companionState != CompanionApproval.State.RECOVERY &&
         (protectedReady || (canApprove && !companionApproved))
+    // Android does not say which notifications are sensitive. While a companion association may
+    // have privileged the listener, unapproved recipients get the app name only.
+    val contentHeld = companion.supported && companion.maySeeSensitive() && !protectedReady
     val approve = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == android.app.Activity.RESULT_CANCELED) companion.cancel()
     }
     DisposableEffect(companion) { onDispose { companion.cancel() } }
     val companionHint = when {
         companionState == CompanionApproval.State.RECOVERY -> tr("Review TwinDesk’s companion-device associations in Android settings, then try again. Notification forwarding is paused.")
-        protectedReady -> tr("Sensitive notifications are allowed. Removing this approval keeps your Mac paired. Your app filters and hidden-text setting still apply.")
-        companionApproved -> tr("Approval is saved. Waiting for Android’s notification service to reconnect…")
+        protectedReady -> tr("Message text is sent only to {name} on this connection. A phone does not get it from this approval, and another Mac does not either. Android does not tell TwinDesk which notifications are sensitive. Turning this off holds text, buttons, and pictures back immediately. App filters and hidden text still apply.", "name" to name)
+        companionApproved -> tr("Approval is saved for {name}. Text, buttons, and pictures stay held back until Android reconnects the notification listener. This does not apply to a phone.", "name" to name)
         companionBusy -> when (companionState) {
             CompanionApproval.State.WAITING -> tr("Waiting for {name}…", "name" to name)
             CompanionApproval.State.CHOOSING -> tr("Choose your Mac in Android’s companion-device approval.")
             else -> tr("Checking the selected Mac…")
         }
         companionState == CompanionApproval.State.FAILED -> tr("Approval did not complete. Check Bluetooth on both devices and try again.")
+        companionHost == null && contentHeld -> tr("Connect to your paired Mac to allow sensitive notifications. While a companion device is linked, message text, buttons, pictures, and chat messages are held back, because Android does not say which notifications are sensitive. A notification can still show the app name. A phone does not receive the held text.")
         companionHost == null -> tr("Connect to your paired Mac to allow sensitive notifications.")
         !access -> tr("Allow Notification access first.")
         core.link.ble -> tr("Connect over Wi-Fi or USB to approve sensitive notifications.")
         !companionBluetooth -> tr("Turn on Bluetooth and allow Nearby devices to approve your Mac.")
-        else -> tr("Android can let TwinDesk read sensitive notifications, including security codes. Notifications sent to {name} still follow your app filters and hidden-text setting.", "name" to name)
+        contentHeld -> tr("A companion-device link can let TwinDesk see notification text that Android would otherwise hold back. There is no public Android API that says which notifications those are, so message text, buttons, pictures, and chat messages are held back until you approve {name}. A notification can still show the app name. A phone does not inherit that approval.", "name" to name)
+        else -> tr("Approving {name} lets TwinDesk send that Mac the original notification text, including security codes. Until then, Android is not supposed to give an untrusted listener that text. TwinDesk cannot check what was removed. This approval does not apply to a phone. App filters and hidden text still apply.", "name" to name)
     }
     val silence = core.silence.view()
     if (!supported) Note(

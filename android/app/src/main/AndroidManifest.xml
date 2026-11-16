@@ -62,7 +62,6 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
     <uses-feature android:name="android.software.companion_device_setup" android:required="false" />
     <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
-    <uses-feature android:name="android.software.companion_device_setup" android:required="false" />
 
     <!-- The phone's apps for the Mac's app windows. -->
     <queries>
