@@ -48,6 +48,7 @@ const { PcScreenSet } = require('./pcscreenset');
 const PcApps = require('../pcapps');
 const PeerApps = require('../peerapps');
 const Sender = require('./sender');
+require('../native-screen').setting = () => settings && settings.pcScreen && settings.pcScreen.capture; // Share screen › Capture
 const Vdd = require('../vdd');
 const Hud = require('../hud');
 const Notifs = require('./notifs');
@@ -236,11 +237,14 @@ function start() {
   // Overview's controls of the selected device (a computer or a phone), and this computer's for it.
   const { DevCtl } = require('../../shared/devctl.js');
   const { DevLocal } = require('../../shared/devlocal.js');
-  devctl = new DevCtl({ link, local: new DevLocal(), version: app.getVersion(), adb: () => {
+  devctl = new DevCtl({
+    watching: () => !!(mainWin && !mainWin.isDestroyed() && mainWin.isVisible() && !mainWin.isMinimized()), // Overview may show the other side's controls (shared/devctl.js Looking)
+    link, local: new DevLocal(), version: app.getVersion(), adb: () => {
     const br = phone && phone.bridge;
     return br && br.state === 'ready' && br.serial ? { adb: br.adb, serial: br.serial } : null;
   } });
   devctl.on('change', pushState);
+  app.on('browser-window-focus', () => devctl && devctl.look()); // back on screen: a fresh state of the other side now
   // The selected device runs an older TwinDesk (shared/appinfo.js): say so once.
   devctl.on('outdated', (o) => {
     const { FEATURES } = require('../../shared/appinfo.js');
@@ -270,14 +274,25 @@ function start() {
   });
   terminal = new Terminal({ link, settings, onChange: pushState });
   sshd = new Sshd({ link, settings, save: saveSettings, onChange: pushState });
-  fileDrop = new FileDrop({ link, settings, onProgress: (v) => { screen.sendDropProgress({ ...v, peerName: peerName() }); pushState(); } });
+  fileDrop = new FileDrop({ link, settings, outboxFile: path.join(app.getPath('userData'), 'outbox.json'), peer: () => { const v = link.snapshot().session; return v ? { id: v.id || v.name || '', name: v.name || '' } : null; }, onProgress: (v) => { screen.sendDropProgress({ ...v, peerName: peerName() }); pushState(); } });
   screen.fileDrop = fileDrop;
+  // Monitor 2 shows the selected device's screen. Open and showing nothing, it follows a device that
+  // starts sharing (#256: a PC driving this one shared its Extend screen while another device was
+  // selected, and nothing came).
+  hub.bus.on(P.T.SCREEN_STATE, (m, from) => {
+    if (m.on !== true || from === hub.selectedId || screen.state.state === 'on') return;
+    const w = screen.win;
+    if (!w || w.isDestroyed() || !w.isVisible()) return;
+    console.log(`[screen] Monitor 2 follows ${from}: it shares its screen`);
+    hub.select(from);
+  });
   apps = new Apps({ link, allowed: () => settings.macApps.on, getLanguage: () => i18n.locale, getMonitor: () => screen.win, popup: (kind, text) => hud && hud.show(kind, text), peerName, onChange: pushState, onWatch: () => screen.policy() });
   screen.apps = apps;
   sound = new Sound({ link: hub.audioLink(), settings, onChange: pushState, meshHub: hub });
   loadMic();
   smb = new Smb({ link, settings, save: saveSettings, onChange: pushState });
   helper = new Helper();
+  require('../../shared/web/pcmedia.js').PcMedia.useHelper((cmd, args) => helper.request(cmd, args, 8000)); // what plays, without PowerShell
   if (require('../../shared/edition.js').fullKvm()) require('../fullkvm/manager.js').attach({ helper }); // the Full KVM build: its tab and service (docs/full-kvm.md)
   fileRecv = new FileRecv({ link, helper, settings, onChange: pushState });
   const dragRecv = new DragRecv({ link, helper, settings, isDriven: () => kvm && kvm.mode === 'driven', onChange: pushState });
@@ -411,11 +426,15 @@ function start() {
   peerApps = new PeerApps({ link, settings, popup: (kind, text) => hud.show(kind, text), peerName, onChange: pushState });
   // Apps › Move windows: a window grabbed with the move key crossed with the pointer. A
   // copy of the other computer's window goes home there (peerapps.js); one of this PC's goes over (pcapps.js).
+  // In Multi-device it goes to the device the pointer went to, selected first, with what that
+  // device said about taking windows (shared/mesh-movewin.js: #250, #251).
+  const meshMoves = require('../../shared/mesh-movewin.js').meshMoves(hub, P.T);
   kvm.onMoveWindow = (m, to) => {
     const wid = Number(m.moving);
-    if (to && to !== hub.selectedId) return; // apps and windows go to the selected device only
     if (!wid || peerApps.returnWindow(wid)) return;
-    if (settings.pcApps.moveWindows) pcApps.moveOut(wid);
+    if (!settings.pcApps.moveWindows) return;
+    if (!meshMoves.ready(to, (v) => { pcApps.macAccepts = v; })) return;
+    pcApps.moveOut(wid, { x: Number(m.fromX), y: Number(m.fromY) }).then((ok) => ok || console.log(`[apps] window not moved: ${pcApps.macAccepts ? 'it can’t go (Bluetooth, gone, already there)' : 'Move windows is off on the other computer'}`));
   };
   helper.on('exit', pushState);
   setupNet();
@@ -683,6 +702,7 @@ function loadHub() {
       wifi: (on) => (!net ? Promise.resolve(false) : on ? net.need('folder') : Promise.resolve(net.release('folder'))), // through Bluetooth
     },
   });
+  phoneHub.on('asked', () => { if (fileRecv) fileRecv.askedSends(); }); // its files come back as a Send (#239)
   phoneHub.on('change', pushState);
   phoneHub.on('data', (m) => mainWin && !mainWin.isDestroyed() && mainWin.webContents.send('hub', m));
   const popup = () => {

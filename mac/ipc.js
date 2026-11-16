@@ -5,6 +5,8 @@
 const { ipcMain, shell, app, screen, dialog, clipboard, Menu, systemPreferences } = require('electron');
 const P = require('../shared/protocol.js');
 const CL = require('../shared/cursorlock.js');
+const emergencyShortcut = require('./emergency-shortcut');
+const Portals = require('../shared/cursor-portals.js');
 const { LINKS: ABOUT_LINKS } = require('../shared/about.js');
 const LINKS = {
   ...ABOUT_LINKS,
@@ -43,21 +45,21 @@ const SCHEMA = {
   virtual: { enabled: bool, width: (v) => Math.round(clamp(640, 3840, 1920)(v)), height: (v) => Math.round(clamp(480, 2160, 1080)(v)), hiDPI: bool, hz: oneOf([30, 60], 60) },
   kvm: {
     pcSide: oneOf(P.SIDES, 'right'), mouse: bool, keyboard: bool, driveOther: bool, beDriven: bool,
-    resistancePx: (v) => Math.round(clamp(0, 400, 120)(v)), speed: clamp(0.25, 4, 1), reverseScroll: bool, hotkeySwitch: bool, linked: bool, gestures: bool, ble: bool, syncPads: bool, shakeHome: bool,
+    resistancePx: (v) => Math.round(clamp(0, 400, 120)(v)), crossingModifier: oneOf(['', 'Command', 'Control', 'Alt', 'Shift'], ''), speed: clamp(0.25, 4, 1), reverseScroll: bool, hotkeySwitch: bool, linked: bool, gestures: bool, ble: bool, syncPads: bool, shakeHome: bool,
   },
-  keys: { swapCtrlCmd: bool, hotkey: oneOf(P.HOTKEYS, 'AltRight'), lockKeys: (v) => CL.validKeys(v, CL.DEFAULT_KEYS.mac) },
-  app: { openAtLogin: bool, keepAwake: bool, hud: bool, inputProtocol: oneOf(['udp', 'tcp'], 'udp'), keepPinging: bool },
+  keys: { swapCtrlCmd: bool, hotkey: oneOf(P.HOTKEYS, 'AltRight'), lockKeys: (v) => CL.validKeys(v, CL.DEFAULT_KEYS.mac), emergencyKeys: emergencyShortcut.valid },
+  app: { openAtLogin: bool, keepAwake: bool, hud: bool, inputProtocol: oneOf(['udp', 'tcp'], 'udp'), keepPinging: bool, localApi: bool },
   updates: { auto: bool, skipped: (v) => (typeof v === 'string' ? v.slice(0, 40) : ''), install: bool },
   audio: { send: bool, receive: bool, muteLocal: bool, engine: oneOf(['helper', 'system'], 'helper'), volume: clamp(0, 1, 1), phoneMedia: bool, micSend: bool, micReceive: bool, micDevice: devId, micOut: devId }, // mic*: shared/mic.js
   terminal: { allowPc: bool, connectPc: bool },
-  files: { acceptDrops: bool, reveal: bool, dragEdge: bool, plain: bool, shortcuts: bool, copyKeys: accel('Control+Alt+C'), pasteKeys: accel('Control+Alt+V') },
+  files: { acceptDrops: bool, reveal: bool, dragEdge: bool, outboxHours: oneOf([0, 1, 24, 168], 24), clipReceived: bool, plain: bool, shortcuts: bool, copyKeys: accel('Control+Alt+C'), pasteKeys: accel('Control+Alt+V') },
   notifs: { send: bool, receive: bool, hideText: bool },
   smb: { connectPc: bool },
   apps: { offer: bool, onVirtual: bool, moveWindows: bool, moveKey: oneOf(['ControlRight', 'ControlLeft', 'ShiftRight', 'ShiftLeft', 'AltRight', 'AltLeft', 'MetaRight', 'MetaLeft'], 'MetaRight') }, // moveWindows: Apps › Move windows (movewin.js)
   receive: { on: bool, fullScreen: bool, input: bool, framegen: bool },
   sharing: { remote: bool, pace: oneOf(['fast', 'smooth', 'steady'], 'fast'), codec: oneOf(['h264', 'h265'], 'h264'), fps: oneOf([0, 30, 60], 0) },
   papps: { on: bool },
-  phone: { sound: bool, bitrateMbps: (v) => Math.round(clamp(2, 40, 8)(v)), maxSize: oneOf([0, 1920, 1600, 1280, 1024], 0), wallpaper: bool, input: oneOf(['adb', 'phone'], 'adb'), inputPicked: bool, mirror: oneOf(['auto', 'adb', 'native'], 'auto'), soundVia: oneOf(['auto', 'adb', 'native'], 'auto'), enterSends: bool, arrowSwipe: bool, uhid: bool },
+  phone: { sound: bool, bitrateMbps: (v) => Math.round(clamp(2, 40, 8)(v)), maxSize: oneOf([0, 1920, 1600, 1280, 1024], 0), wallpaper: bool, input: oneOf(['adb', 'phone'], 'adb'), inputPicked: bool, mirror: oneOf(['auto', 'adb', 'native'], 'auto'), soundVia: oneOf(['auto', 'adb', 'native'], 'auto'), enterSends: bool, arrowSwipe: bool, uhid: bool, direct: bool, lowLatency: bool },
   mount: { on: bool },
   clipboard: {
     enabled: bool, send: bool, receive: bool, mode: oneOf(['switch', 'instant'], 'instant'),
@@ -180,6 +182,9 @@ function setupIpc(ctx) {
       if (open === false) {
         for (const v of ctx.phoneViews.list()) if (v.kind === 'camera') ctx.phoneViews.close(v.id);
       } else ctx.phoneViews.openCamera(opts);
+    },
+    takePhoto() { // Camera › Take a photo with the phone (shared/phonephoto.js)
+      return !!ctx.takePhoto && ctx.takePhoto();
     },
     phoneListCameras() {
       return ctx.phone && ctx.phone.bridge ? ctx.phone.bridge.listCameras() : [];
@@ -316,7 +321,9 @@ function setupIpc(ctx) {
     // Extend: Monitor 2 is the TwinDesk virtual display. Mirror: it shows this Mac's main screen.
     setDisplayMode(mode) {
       if (mode === 'mirror') {
-        settings.sharing.displayId = screen.getPrimaryDisplay().id;
+        const primary = ctx.displays.list().find((d) => d.primary && !d.virtual);
+        // A placeholder or temporary virtual primary is not a physical mirror preference.
+        if (primary) settings.sharing.displayId = primary.id;
         settings.virtual.enabled = false;
       } else {
         settings.sharing.displayId = null;
@@ -344,6 +351,18 @@ function setupIpc(ctx) {
     },
     identifyDisplays() {
       ctx.kvm.map.identify();
+    },
+    setPortals(value) {
+      const peer = ctx.server.current;
+      const rules = Portals.normalize(value);
+      if (!peer || !rules || ctx.kvm.mode !== 'home') return;
+      const previous = Portals.normalize((settings.kvm.portalsByPeer || {})[peer.deviceId]) || [];
+      // Keep an unchanged missing-display rule while removing another; never add or edit an invalid one.
+      if (rules.some((r) => (!Portals.usableSource(ctx.kvm.map.mine, r) || !Portals.usableTarget(ctx.kvm.map.theirs, r.target)) &&
+        !previous.some((p) => JSON.stringify(p) === JSON.stringify(r)))) return;
+      settings.kvm.portalsByPeer = { ...(settings.kvm.portalsByPeer || {}), [peer.deviceId]: rules };
+      save();
+      ctx.kvm.config();
     },
     setKvm(partial) {
       const prev = { ...settings.kvm };
@@ -398,14 +417,19 @@ function setupIpc(ctx) {
     // Send files (paths from the drop zone or the Choose… dialog).
     sendFiles(paths) {
       const list = (Array.isArray(paths) ? paths : []).filter((p) => typeof p === 'string' && p.startsWith('/')).slice(0, 1000);
-      if (list.length && ctx.server.current) ctx.fileSend.sendBatch(list, 'send');
+      if (list.length) ctx.fileSend.send(list); // now, or when the device is back (shared/outbox.js)
     },
+    pauseSend(batch) { if (typeof batch === 'string') ctx.fileSend.pause(batch); },
+    resumeSend(id) { if (typeof id === 'string') ctx.fileSend.resume(id); },
+    forgetSend(id) { if (typeof id === 'string') ctx.fileSend.forget(id); },
     async chooseSendFiles() {
       const r = await dialog.showOpenDialog({ properties: ['openFile', 'openDirectory', 'multiSelections'], buttonLabel: t('Send') });
       if (!r.canceled) actions.sendFiles(r.filePaths);
     },
     setNotifs(partial) {
       setGroup('notifs', partial);
+      Object.assign(settings.notifs, require('../shared/notifrules.js').clean(partial, settings.notifs)); // style, otpCopy, quiet, phoneApps
+      save();
       ctx.notifs.applySettings();
       if (partial && partial.receive === true) void ctx.notifs.nativePermission.request();
     },
@@ -533,7 +557,9 @@ function setupIpc(ctx) {
       if (typeof partial.bleWifiOff === 'boolean') settings.net.bleWifiOff = partial.bleWifiOff; // blepolicy.js wifiQuiet
       if (typeof partial.tailscale === 'boolean') settings.net.tailscale = partial.tailscale; // shared/tailnet.js
       if (typeof partial.bleInput === 'boolean') settings.net.bleInput = partial.bleInput; // shared/bleinput.js
+      if (partial.relay !== undefined) settings.net.relay = require('../shared/relay.js').clean(partial.relay); // your own relay
       save();
+      if (partial.relay !== undefined && ctx.applyRelay) ctx.applyRelay();
       ctx.ble.apply();
       if (partial.blePc === false && ctx.bleLook) ctx.bleLook.look(false); // computers off: stop looking now, not at the next tick
       pushState();
@@ -598,6 +624,7 @@ function setupIpc(ctx) {
       else if (m.do === 'vcamRemove' && vcam) vcam.remove();
       else if (m.do === 'vcamTarget' && vcam) vcam.setTarget(m.target);
       else if (m.do === 'rotate' && vcam) vcam.turn();
+      else if (m.do === 'mirror' && vcam) vcam.setMirror(m.on === true);
     },
     // ReZume tab (shared/rezume.js): loaded when it's first turned on.
     setRezume(m) {
@@ -638,6 +665,7 @@ function setupIpc(ctx) {
       setGroup('app', partial);
       ctx.login.apply(settings.app.openAtLogin);
       ctx.updateAwake();
+      if (ctx.applyLocalApi) ctx.applyLocalApi();
     },
     setUpdates(partial) {
       setGroup('updates', partial);
@@ -670,6 +698,12 @@ function setupIpc(ctx) {
     },
     copyHistory(index) {
       ctx.clipboard.copyHistory(Number(index));
+    },
+    // Recent's Open / Email / Call (shared/clipact.js): from the app's own copy of the item.
+    openClip(index) {
+      const h = (ctx.clipboard.history || [])[Number(index)];
+      const a = h && !h.image && require('../shared/clipact.js').of(h.text);
+      if (a) shell.openExternal(a.url);
     },
     clearHistory() {
       ctx.clipboard.clearHistory();
@@ -711,7 +745,7 @@ function setupIpc(ctx) {
     },
     // A phone chat's notification answered here (its own Reply).
     notifReply(r) {
-      if (r && typeof r === 'object' && r.chat) return void (ctx.chats && ctx.chats.reply(String(r.chat), r.text, r.image)); // a chat app's conversation (shared/chats.js)
+      if (r && typeof r === 'object' && r.chat) return void (ctx.chats && ctx.chats.reply(String(r.chat), r.text, r.image, r.remove === true)); // a chat app's conversation (shared/chats.js)
       if (!r || typeof r !== 'object' || !ctx.notifs) return;
       if (r.dismiss) return void ctx.notifs.dismiss(String(r.id || '')); // Overview's × (shared/notifacts.js)
       if (Number.isInteger(r.act)) return void ctx.notifs.act(String(r.id || ''), r.act); // one of its buttons
@@ -795,7 +829,9 @@ function setupIpc(ctx) {
     return r.canceled || !r.filePaths.length ? '' : r.filePaths[0];
   })(o));
   ipcMain.handle('deckRun', (_e, a) => (ctx.deck && a && typeof a === 'object' ? ctx.deck.exec(a).then(() => ({ ok: true }), (e) => ({ ok: false, why: e.message })) : { ok: false })); // Try
-  ipcMain.handle('deckState', () => (ctx.deck ? ctx.deck.state().catch(() => ({})) : {})); // its sound, Bluetooth and display pickers
+  ipcMain.handle('deckState', (_e, obs) => (ctx.deck ? ctx.deck.state(obs === true, obs === 'mix').catch(() => ({})) : {})); // its sound, Bluetooth and display pickers (OBS's: obs)
+  ipcMain.handle('deckObs', () => (ctx.deck ? ctx.deck.obsConfig() : null)); // OBS Studio's port, and whether a password is kept
+  ipcMain.handle('deckSetObs', (_e, v) => (ctx.deck && v && typeof v === 'object' ? ctx.deck.setObs(v) : { on: false })); // → OBS's state with them
   ipcMain.handle('phoneAssets', () => ctx.phone.assetsView());
   ipcMain.handle('qrPair', () => (ctx.qrPair ? ctx.qrPair() : { url: '' })); // Connection: the phone pairing QR code's link
   for (const [name, fn] of Object.entries(actions)) ipcMain.on(name, (_e, arg) => fn(arg));

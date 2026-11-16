@@ -154,6 +154,7 @@ class Clipboard extends EventEmitter {
     const sequence = ++this.readSequence, peer = this.server.current;
     const valid = () => sequence === this.readSequence && peer === this.server.current && !this.receiving && this.cfg.enabled && this.cfg.send && this.peerAccepts;
     const text = await readText();
+    if (require('../shared/otp.js').isQuiet(text)) return; // a code copied by itself (Notifications): kept here only
     // Files copied in Finder: the clipboard also holds their names and icon, which aren't the copy.
     // Files go with the Files tab's shortcuts (fclip.js).
     const src = await this.helper.request('fileSource').catch(() => ({}));

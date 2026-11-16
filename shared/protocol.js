@@ -133,6 +133,7 @@
       KVM_CAPS: 'kvm.caps', // either {on}: my Caps Lock as I hand my input over (take, or home); the other side turns its own that way (shared/capsync.js, #131)
       KVM_NEXT: 'kvm.next', // multi-device: {route, to, side, offset}: a device we drive reached an edge that leads to device `to` (docs/mesh.md)
       K_MOVE: 'k.mm',
+      K_CROSSING_MODIFIERS: 'k.mod', // physical modifier state for a compatible peer's return edge
       K_DOWN: 'k.md',
       K_UP: 'k.mu',
       K_WHEEL: 'k.wh',
@@ -163,13 +164,13 @@
       SSH_KEY: 'ssh.key', // W->M {pub}
       SSH_INFO: 'ssh.info', // M->W {enabled, user, port, hostKeys, why?}
       SSH_FORGET: 'ssh.forget', // W->M
-      FILE_OFFER: 'file.offer', // W->M {id, name, size, x?, y?, index, count}
+      FILE_OFFER: 'file.offer', // W->M {id, name, size, x?, y?, index, count, cont?} (cont: the first batch's id, the rest of a paused or cut-off Send files batch, shared/outbox.js)
       FILE_ACCEPT: 'file.accept', // M->W {id}
       FILE_REFUSE: 'file.refuse', // M->W {id, why}
       FILE_CHUNK: 'file.chunk', // W->M {id, seq, data (base64)}
       FILE_END: 'file.end', // W->M {id, sha256}
       FILE_DONE: 'file.done', // M->W {id, ok, path?, error?}
-      FILE_CANCEL: 'file.cancel', // either {id}
+      FILE_CANCEL: 'file.cancel', // either {id, pause?} (pause: the sender paused its batch; it ends quietly)
       // TwinDesk Drive (docs/drive.md, shared/drive-link.js): one folder kept the same on every device
       // that turns it on. An app without it never answers drive.hello, so it never starts.
       DRIVE_HELLO: 'drive.hello', // either {v: 1, again?}: Drive is on here (again: send me everything once more)
@@ -359,6 +360,7 @@
       SMS_SEND: 'sms.send', // computer->phone {to, body, ref, sim? (a subscription id from hub.state messages.sims), addrs? (a group: everyone, 2–20), image? (a JPEG data: URL)}: with addrs or image, an MMS (hub.state messages.mms)
       SMS_SENT: 'sms.sent', // phone->computer {ref, ok, error?}
       SMS_NEW: 'sms.new', // phone->computer {thread, summary, msg}: a message arrived or was sent on the phone
+      MEDIA_ALBUMS: 'media.albums', // computer->phone {} | phone->computer {items: [{id, name, n, cover}]}: Photos' albums (an older phone never answers)
       MEDIA_LIST: 'media.list', // computer->phone {kind: 'all'|'photos'|'videos'|'screenshots', before?, n} | phone->computer {kind, before, items: [{id, video, at, w, h, size, name, dur, album}], more}
       MEDIA_THUMB: 'media.thumb', // computer->phone {ids}: these next (the ones still waiting are dropped) | phone->computer {id, data}
       MEDIA_VIEW: 'media.view', // computer->phone {id} | phone->computer {id, data}: a big preview

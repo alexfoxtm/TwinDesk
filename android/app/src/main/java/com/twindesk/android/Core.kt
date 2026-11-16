@@ -174,6 +174,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // MainActivity on screen: a session put off by Reconnect in the background, and a look at the
     // current one.
     fun foreground() {
+        bank.opened() // Banking apps: Restore when TwinDesk opens
         link.wake()
         if (returnHost() != null) { returnAfter = 0L; returnTick(); return }
         val h = resumeLater ?: return
@@ -184,6 +185,13 @@ class Core private constructor(val ctx: Context) : Link.Events {
         bg.execute { connect(known) }
     }
     fun background() { if (inBackground() && returnHost() != null) link.pauseConnecting() }
+    // A linked computer came near (CompanionLink): the return to it starts now rather than at the next
+    // tick. Only a return (a Mac this phone was in a session with, never taking over): nothing else.
+    fun near() {
+        if (bank.pending) return // a banking app is open: connecting would turn debugging back on under it
+        link.wake()
+        if (returnHost() != null) { returnAfter = 0L; returnTick() }
+    }
     private fun inBackground() = !reconnectBg && !MainActivity.shown
 
     // Every 2 s: Bluetooth scans while it may be needed (not connected, or connected through it),
@@ -276,7 +284,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         resumeUntil = 0
         // The computer's screen, input and sound through ADB need wireless debugging: switch it on as
         // we connect (unless that computer said it doesn't use it: all through Native there).
-        if (adb.canEnable && !adb.wifiDebugging && adb.neededBy(h)) adb.enable(true)
+        if (adb.canEnable && !adb.wifiDebugging && adb.neededBy(h) && !bank.pending) adb.enable(true)
         val seen = if (skipNet) null else discovery.found[h.id]
         if (seen != null && (seen.address != h.address || seen.port != h.port)) {
             h.address = seen.address
@@ -305,9 +313,25 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 return
             }
         }
+        // Not seen here either way: every other Connect through the computer's own relay, if it has one.
+        val r = h.relay
+        if (seen == null && r != null) {
+            relayTurn = !relayTurn
+            if (relayTurn) {
+                bg.execute {
+                    val port = Relay.open(r)
+                    if (port != null) {
+                        Log.i("TwinDesk", "${h.name} isn’t on this network: through its relay")
+                        link.connect(h.copy(address = "127.0.0.1", port = port))
+                    } else link.connect(h)
+                }
+                return
+            }
+        }
         link.connect(h)
     }
     @Volatile private var tailTurn = false
+    @Volatile private var relayTurn = false
 
     // A PC opened a pipe on its own (its Pair or Connect, an invite): a paired one connects through
     // it now, an unpaired one is shown as an invite (Pair asks it for a pipe again).
@@ -608,6 +632,6 @@ class Core private constructor(val ctx: Context) : Link.Events {
             instance ?: Core(ctx.applicationContext).also { instance = it; it.start() }
         }
 
-        fun wake(ctx: Context): Core = get(ctx).also { it.store.setFlag("exited", false); it.start() }
+        fun wake(ctx: Context): Core = get(ctx).also { it.store.setFlag("exited", false); it.bank.opened(); it.start() } // opened: what a banking app had switched off comes back first
     }
 }

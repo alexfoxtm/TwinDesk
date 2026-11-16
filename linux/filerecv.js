@@ -43,18 +43,33 @@ class FileRecv {
     this.batches = new Map(); // Batch → {kind, dir, count, done, ok, tops: Map, placed: []}
     this.bfiles = new Map();  // id → batch file {id, batch, name, size, final, tmp, got, seq, hash, out}
     this.expected = new Map(); // batch (fclip id) → {dir, bytes} chosen when this PC pasted
+    // Send files batches that didn't finish (paused, cut off): their folders, so the rest (file.offer
+    // cont: the first batch's id, shared/outbox.js) goes into them, not into "Photos 2".
+    this.kept = new Map(); // first batch id → {dir, tops, placed, at}
     const link = this.link;
     link.on(T.FILE_OFFER, (m) => this._offer(m));
     link.on(T.FILE_CHUNK, (m) => this._chunk(m));
     link.on(T.FILE_END, (m) => this._end(m));
-    link.on(T.FILE_CANCEL, (m) => (this.bfiles.has(m.id) ? this._batchFail(this.bfiles.get(m.id), null) : this._drop(m.id)));
+    link.on(T.FILE_CANCEL, (m) => {
+      const f = this.bfiles.get(m.id);
+      if (!f) return this._drop(m.id);
+      if (m.pause) this._paused(f.batch); // the sender paused it: the batch ends here quietly
+      this._batchFail(f, null);
+    });
     link.on('closed', () => {
+      for (const [batch, b] of this.batches) this._keep(batch, b);
       for (const id of [...this.files.keys()]) this._drop(id);
       for (const f of [...this.bfiles.values()]) this._batchFail(f, null);
       this.batches.clear();
       this.target = null;
     });
     try { fs.rmSync(this.dir, { recursive: true, force: true }); } catch (_) { /* leftovers */ }
+  }
+
+  // The phone was asked for files here (Photos › Save, Files › Save: PhoneHub 'asked'): a Send batch
+  // starting in the next 2 minutes is taken whatever Take files from says (#239).
+  askedSends(ms = 120000) {
+    this.askedUntil = Date.now() + ms;
   }
 
   _offer(m) {
@@ -174,16 +189,25 @@ class FileRecv {
     if (!b) {
       const pasted = this.expected.get(m.batch);
       if ((m.drop === 'paste' || m.drop === 'rezume') && !pasted) return refuse('not_allowed'); // we never asked for it
-      if (m.drop === 'send' && !this.settings.files.acceptFromMac) return refuse('not_allowed');
+      if (m.drop === 'send' && !this.settings.files.acceptFromMac && !(Date.now() < this.askedUntil)) return refuse('not_allowed');
       // total: the whole batch's bytes (file.offer `bytes`, or what fclip.offer said); 0 = unknown.
       const total = Number(m.bytes) > 0 ? Number(m.bytes) : pasted ? pasted.bytes : 0;
-      b = { kind: m.drop, dir: pasted ? pasted.dir : receivedDir(this.settings, app.getPath('downloads')), reveal: pasted ? pasted.reveal : true, count, done: 0, ok: 0, tops: new Map(), placed: [], total, got: 0, at: Date.now() };
+      const was = m.drop === 'send' && typeof m.cont === 'string' ? this.kept.get(m.cont) : null; // the rest of an earlier one
+      b = { kind: m.drop, dir: was ? was.dir : pasted ? pasted.dir : receivedDir(this.settings, app.getPath('downloads')), reveal: pasted ? pasted.reveal : true, count, done: 0, ok: 0, tops: was ? was.tops : new Map(), placed: was ? was.placed : [], cont: was ? m.cont : '', total, got: 0, at: Date.now() };
       this.batches.set(m.batch, b);
       this.expected.delete(m.batch);
     }
     const segs = rel.split('/');
+    // The rest of a paused or cut-off batch resends only files that never arrived, so a file of its
+    // own name here now is another one (sent meanwhile): this one gets a new name, nothing is replaced.
+    if (b.cont && segs.length === 1 && b.tops.has(segs[0])) {
+      const old = path.join(b.dir, b.tops.get(segs[0]));
+      if (fs.existsSync(old)) { b.tops.delete(segs[0]); const i = b.placed.indexOf(old); if (i >= 0) b.placed.splice(i, 1); }
+    }
     if (!b.tops.has(segs[0])) { // "Photos 2" when Photos is already there
-      const top = uniquePath(b.dir, segs[0]);
+      // Not a name another batch is still writing (two "IMG_1.jpg" at once would share one .part).
+      const reserved = new Set([...this.batches.values()].filter((o) => o !== b).flatMap((o) => o.placed));
+      const top = uniquePath(b.dir, segs[0], reserved);
       b.tops.set(segs[0], path.basename(top));
       b.placed.push(top);
     }
@@ -219,6 +243,24 @@ class FileRecv {
     });
   }
 
+  // A Send files batch not finished: its folders, for the rest.
+  _keep(batch, b) {
+    if (b.kind !== 'send') return;
+    this.kept.set(b.cont || batch, { dir: b.dir, tops: b.tops, placed: b.placed, at: Date.now() });
+    for (const [k, v] of this.kept) if (this.kept.size > 20 || Date.now() - v.at > 7 * 86400000) this.kept.delete(k);
+  }
+
+  // file.cancel {pause}: the batch ends here without a files.done (the sender let it go), its
+  // folders kept; the files on their way are dropped by the caller.
+  _paused(batch) {
+    const b = this.batches.get(batch);
+    if (!b) return;
+    this.batches.delete(batch);
+    this._keep(batch, b);
+    this.last = { name: b.placed.length === 1 ? path.basename(b.placed[0]) : b.placed.length + ' items', ok: true, text: 'Paused', at: Date.now() };
+    this.onChange();
+  }
+
   // error null: cancelled or disconnected (nothing to tell the sender).
   _batchFail(f, error) {
     if (!this.bfiles.delete(f.id)) return;
@@ -236,10 +278,14 @@ class FileRecv {
     if (ok) b.ok++;
     if (b.done < b.count) return this.onChange();
     this.batches.delete(batch);
+    if (b.ok < b.count) this._keep(batch, b);
+    else if (b.cont) this.kept.delete(b.cont);
     this.link.send({ t: T.FILES_DONE, batch, ok: b.ok === b.count, where: b.dir, files: b.ok });
     const name = b.placed.length === 1 ? path.basename(b.placed[0]) : b.placed.length + ' items';
     this.last = { name, ok: b.ok > 0, text: b.ok === b.count ? 'Saved to ' + b.dir : (b.count - b.ok) + ' of ' + b.count + ' failed', at: Date.now() };
     if (b.ok && b.reveal) fm.showItems(b.placed);
+    // Files › Put received files on the clipboard: Send files and shares, ready for Ctrl+V.
+    if (b.ok && b.kind === 'send' && this.settings.files.clipReceived) require('../shared/pastefiles.js').toClipboard(b.placed).catch(() => {});
     if (this.onBatch) this.onBatch({ kind: b.kind, files: b.ok, count: b.count, ok: b.ok === b.count, placed: b.placed });
     this.onChange();
   }
@@ -275,11 +321,12 @@ function safeRel(rel) {
 }
 
 // "name.txt" → "name 2.txt", "name 3.txt"… if taken.
-function uniquePath(dir, name) {
+// reserved: paths other batches have taken but not finished yet.
+function uniquePath(dir, name, reserved = new Set()) {
   const ext = path.extname(name);
   const base = name.slice(0, name.length - ext.length);
   let p = path.join(dir, name);
-  for (let i = 2; fs.existsSync(p); i++) p = path.join(dir, base + ' ' + i + ext);
+  for (let i = 2; fs.existsSync(p) || reserved.has(p); i++) p = path.join(dir, base + ' ' + i + ext);
   return p;
 }
 

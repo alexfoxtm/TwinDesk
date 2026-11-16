@@ -56,6 +56,7 @@ UI.tab({
     const blePcRow = UI.row(t('Bluetooth with computers'), '', [blePcSw]);
     // Bluetooth off altogether while the session is on the same Wi-Fi (blepolicy.js wifiQuiet).
     // Tailscale (#161, shared/tailnet.js): reaching a paired device away from its network.
+    const relayCard = UI.relayCard ? UI.relayCard() : null; // General › Your own relay
     const tailSw = UI.switch((v) => api.setNet({ tailscale: v }), { label: t('Connect through Tailscale') });
     const tailRow = UI.row(t('Connect through Tailscale'), '', [tailSw]);
     const tailHere = UI.row(t('This computer on Tailscale'), '', []);
@@ -97,6 +98,9 @@ UI.tab({
     // session nothing uses stops pinging every second so a phone or laptop can sleep; on, as before.
     const pingSw = UI.switch((v) => api.setApp({ keepPinging: v }), { label: t('Prioritize performance over battery life') });
     const pingRow = UI.row(t('Prioritize performance over battery life'), t('Checks the connection every second, even when nothing is in use. Off: an idle connection is checked every few minutes, and at once when something starts, so phones and laptops can sleep'), [pingSw]);
+    // Local API (shared/localapi.js): the person's own scripts on this computer.
+    const apiSw = UI.switch((v) => api.setApp({ localApi: v }), { label: t('Local API') });
+    const apiRow = UI.row(t('Local API'), '', [apiSw], { literalHint: true });
     const engines = UI.enginesRows(); // Engines in use, while connected (shared/ui-engines.js)
     const modules = UI.modulesCard ? UI.modulesCard() : { card: null, update() {} }; // General › Modules (shared/ui-modules.js; not in Multi-device)
     const sections = UI.sections([
@@ -127,8 +131,9 @@ UI.tab({
       UI.card(t('Overview'), partRows),
       UI.card(t('Network and Bluetooth'), [bleRow, blePcRow, bleWifiRow, wakeRow, shareRow]),
       UI.card(t('Tailscale'), [tailRow, tailHere, tailHow]),
+      relayCard ? relayCard.el : null, // your own relay (shared/ui-relay.js)
       UI.card(t('This computer'), [deviceRow, helperRow]),
-      UI.card(t('Connections'), [pingRow]),
+      UI.card(t('Connections'), [pingRow, apiRow]),
       ...(modules.card ? [modules.card] : []),
       UI.card(t('Advanced'), [protoRow, ...engines.rows]),
     ]);
@@ -170,6 +175,11 @@ UI.tab({
         awakeSw.set(s.app.keepAwake);
         hudSw.set(s.app.hud !== false);
         pingSw.set(s.app.keepPinging === true);
+        apiRow.hidden = !s.localApi;
+        if (s.localApi) {
+          apiSw.set(!!s.localApi.on);
+          apiRow.setHint(s.localApi.on ? t('For your own scripts here: its address and key are in {file}, and the key changes each time it starts', { file: s.localApi.file }) : t('Lets your own scripts on this computer send files and set the clipboard. Nothing from a browser'));
+        }
       }
       const w = s.wake || {};
       wakeSw.set(w.womp === true);
@@ -182,6 +192,7 @@ UI.tab({
         tailSw.set(s.net.tailscale !== false);
         tailRow.setHint(s.net.tailscale === false ? t('Off: only this network, Bluetooth and the cable') : t('When the other device isn’t on this network, TwinDesk tries its Tailscale address'));
         tailHere.setHint((s.net.tailnet || []).length ? s.net.tailnet.join(' · ') : t('Not on Tailscale now'));
+        if (relayCard) relayCard.update(s.net.relay);
         bleWifiRow.setHint(s.net.bleWifiOff === false ? t('Bluetooth stays on beside the Wi-Fi, the way back if it drops')
           : s.net.bleOff ? t('Off now: the session is on the same Wi-Fi. Bluetooth comes back when it ends')
             : t('On the same Wi-Fi network (not Wi-Fi Direct), Bluetooth goes off until the session ends. With a computer, phones can’t find this one meanwhile'));

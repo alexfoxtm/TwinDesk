@@ -217,11 +217,14 @@ function start() {
   // Overview's controls of the selected device (a computer or a phone), and this computer's for it.
   const { DevCtl } = require('../../shared/devctl.js');
   const { DevLocal } = require('../../shared/devlocal.js');
-  devctl = new DevCtl({ link, local: new DevLocal(), version: app.getVersion(), adb: () => {
+  devctl = new DevCtl({
+    watching: () => !!(mainWin && !mainWin.isDestroyed() && mainWin.isVisible() && !mainWin.isMinimized()), // Overview may show the other side's controls (shared/devctl.js Looking)
+    link, local: new DevLocal(), version: app.getVersion(), adb: () => {
     const br = phone && phone.bridge;
     return br && br.state === 'ready' && br.serial ? { adb: br.adb, serial: br.serial } : null;
   } });
   devctl.on('change', pushState);
+  app.on('browser-window-focus', () => devctl && devctl.look()); // back on screen: a fresh state of the other side now
   // The selected device runs an older TwinDesk (shared/appinfo.js): say so once.
   devctl.on('outdated', (o) => {
     const { FEATURES } = require('../../shared/appinfo.js');
@@ -249,8 +252,18 @@ function start() {
     onChange: pushState,
     isQuitting: () => quitting,
   });
-  fileDrop = new FileDrop({ link, settings, onProgress: (v) => { screen.sendDropProgress(fillAll(v)); pushState(); } });
+  fileDrop = new FileDrop({ link, settings, outboxFile: path.join(app.getPath('userData'), 'outbox.json'), peer: () => { const v = link.snapshot().session; return v ? { id: v.id || v.name || '', name: v.name || '' } : null; }, onProgress: (v) => { screen.sendDropProgress(fillAll(v)); pushState(); } });
   screen.fileDrop = fileDrop;
+  // Monitor 2 shows the selected device's screen. Open and showing nothing, it follows a device that
+  // starts sharing (#256: a PC driving this one shared its Extend screen while another device was
+  // selected, and nothing came).
+  hub.bus.on(P.T.SCREEN_STATE, (m, from) => {
+    if (m.on !== true || from === hub.selectedId || screen.state.state === 'on') return;
+    const w = screen.win;
+    if (!w || w.isDestroyed() || !w.isVisible()) return;
+    console.log(`[screen] Monitor 2 follows ${from}: it shares its screen`);
+    hub.select(from);
+  });
   sound = new Sound({ link: hub.audioLink(), settings, onChange: pushState, meshHub: hub });
   loadMic();
   smb = new Smb({ link, settings, save: saveSettings, onChange: pushState });
@@ -372,11 +385,15 @@ function start() {
   peerApps = new PeerApps({ link, settings, popup: (kind, text) => hud.show(kind, text), peerName, onChange: pushState });
   // Apps › Move windows: a window grabbed with the move key crossed with the pointer. A
   // copy of the other computer's window goes home there (peerapps.js); one of this PC's goes over (pcapps.js).
+  // In Multi-device it goes to the device the pointer went to, selected first, with what that
+  // device said about taking windows (shared/mesh-movewin.js: #250, #251).
+  const meshMoves = require('../../shared/mesh-movewin.js').meshMoves(hub, P.T);
   kvm.onMoveWindow = (m, to) => {
     const wid = Number(m.moving);
-    if (to && to !== hub.selectedId) return; // apps and windows go to the selected device only
     if (!wid || peerApps.returnWindow(wid)) return;
-    if (settings.pcApps.moveWindows) pcApps.moveOut(wid);
+    if (!settings.pcApps.moveWindows) return;
+    if (!meshMoves.ready(to, (v) => { pcApps.macAccepts = v; })) return;
+    pcApps.moveOut(wid, m.fromX !== undefined ? { x: Number(m.fromX), y: Number(m.fromY) } : undefined).then((ok) => ok || console.log(`[apps] window not moved: ${pcApps.macAccepts ? 'it can’t go (Bluetooth, gone, already there)' : 'Move windows is off on the other computer'}`));
   };
   helper.on('exit', pushState);
   helper.on('ready', () => { sendScreens(); pushState(); });
@@ -635,6 +652,7 @@ function loadHub() {
       wifi: (on) => (!net ? Promise.resolve(false) : on ? net.need('folder') : Promise.resolve(net.release('folder'))), // through Bluetooth
     },
   });
+  phoneHub.on('asked', () => { if (fileRecv) fileRecv.askedSends(); }); // its files come back as a Send (#239)
   phoneHub.on('change', pushState);
   phoneHub.on('data', (m) => mainWin && !mainWin.isDestroyed() && mainWin.webContents.send('hub', m));
   const popup = () => {

@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <base href="../"><!-- multi-device: this page is mac/mesh/control.html; everything else loads from mac/ -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:">
   <title>TwinDesk</title>
   <link rel="stylesheet" href="mesh/control.css">
   <link rel="stylesheet" href="mesh/control-pages.css">
@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="../shared/ui-monitor-map.css">
   <link rel="stylesheet" href="../shared/ui-look.css">
   <link rel="stylesheet" href="../shared/ui-arrange.css">
+  <link rel="stylesheet" href="../shared/ui-tour.css">
   <link rel="stylesheet" href="../shared/ui-web.css">
   <link rel="stylesheet" href="../shared/ui-glass.css">
   <script src="../shared/look-early.js"></script>
@@ -81,6 +82,8 @@
   <script src="../shared/modload.js" data-src="mesh/ui-cursor.js"></script>
   <script src="../shared/modload.js" data-src="ui-keyboard.js"></script>
   <script src="../shared/ui-history.js"></script>
+  <script src="../shared/clipact.js"></script>
+  <script src="../shared/ui-notifrules.js"></script>
   <script src="../shared/modload.js" data-src="ui-clipboard.js"></script>
   <script src="../shared/ui-nowplaying.js"></script>
   <script src="../shared/modload.js" data-src="../shared/ui-mic.js"></script>
@@ -97,6 +100,7 @@
   <script src="../shared/modload.js" data-src="ui-notifs.js"></script>
   <script src="../shared/ui-localsend.js"></script>
   <script src="../shared/modload.js" data-src="../shared/ui-drive.js"></script>
+  <script src="../shared/modload.js" data-src="../shared/ui-outbox.js"></script>
   <script src="../shared/modload.js" data-src="ui-files.js"></script>
   <script src="../shared/modload.js" data-src="ui-mount.js"></script>
   <script src="../shared/modload.js" data-src="ui-apps.js"></script>
@@ -128,6 +132,7 @@
   <script src="../shared/pairpop.js"></script>
   <script src="../shared/ui-updater-modal.js"></script>
   <script src="../shared/qr.js"></script>
+  <script src="../shared/ui-tour.js"></script>
   <script src="../shared/ui-adbqr.js"></script>
   <script src="../shared/ui-qrpair.js"></script>
   <script src="../shared/ui-web.js"></script>

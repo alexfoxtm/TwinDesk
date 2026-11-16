@@ -47,6 +47,14 @@ The driving side sums pointer deltas and sends `k.mm {dx, dy}` on the session. I
 back (still summed) while 64 KB wait on the socket. Clicks and keys (`k.md`, `k.mu`, `k.wh`, `k.kd`,
 `k.ku`, `k.ge`) go on the same stream.
 
+Mac one-to-one input can optionally require a held modifier at an edge. A compatible driver says
+`crossingModifierV1: true` and the physical modifier bits in `crossingFlags` on `kvm.take`; a
+compatible receiver echoes the capability on `kvm.accept`. After that the driver sends `k.mod`
+with `flags` whenever the physical modifiers change. Bits 0–3 represent Command, Control, Option
+and Shift. These messages are ordered and fenced with pointer movement on tdv2, and do not inject
+key events. If the driver does not advertise the capability, the receiver leaves the return edge
+ungated so older peers cannot trap the pointer.
+
 That's simple and reliable, but TCP delivers bytes strictly in order. On Wi-Fi:
 
 - **Head-of-line blocking.** One lost packet holds back every move behind it until it's resent,
@@ -277,6 +285,22 @@ Files › Encrypt file transfers, on by default. Turned off, file bytes can go o
 A synced folder with its own `drive.*` messages on the session. Its bytes go over HTTPS on the
 host's session port, as fx's do: the guest GETs and PUTs on `/twindesk/drive/`, pinning the host's
 certificate and showing the session's fx token. Never over Bluetooth. See [drive.md](drive.md).
+
+### Waiting to send, Pause and the rest of a batch
+
+Send files keeps what can't go now in an outbox (`shared/outbox.js` on the computers, `Files.Waiting`
+on Android): files sent while no device is connected, a batch's rest after Pause, and the files a
+dropped connection cut off. Only the paths are kept, never copies. Nothing polls: the outbox is
+looked at when a device connects.
+
+- **`file.cancel {id, pause: true}`:** the sender paused its batch. The receiver drops that file as
+  for a cancel, ends the batch without `files.done` and remembers its folders.
+- **`file.offer {…, cont}`:** a batch that carries on an earlier one. `cont` is the first batch's id.
+  A receiver that remembers it puts the files into the same folders (no "Photos 2"), and a receiver
+  that doesn't simply ignores it. Only files that didn't arrive (no `file.done ok`) are offered again.
+  A file is sent from its start.
+
+Both fields are optional: an older app ignores them, so no capability is needed.
 
 ### File size
 

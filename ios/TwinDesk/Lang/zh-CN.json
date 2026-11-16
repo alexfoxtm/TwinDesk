@@ -951,5 +951,18 @@
   "{systemName} {systemVersion}": "{systemName} {systemVersion}",
   "{what}. Save to this {device}?": "{what}。保存到此 {device}？",
   "Search button": "搜索按钮",
-  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "无法捕捉 {name} 的屏幕。请检查 Mac 的锁定状态和屏幕录制设置。正在重试…"
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "无法捕捉 {name} 的屏幕。请检查 Mac 的锁定状态和屏幕录制设置。正在重试…",
+  "Not live": "未直播",
+  "Not recording": "未录制",
+  "OBS is off": "OBS 未运行",
+  "Open OBS Studio on the computer to choose. Its connection is set on the computer’s Deck page.": "在电脑上打开 OBS Studio 后即可选择。连接在电脑的 Deck 页面中设置。",
+  "Paused": "已暂停",
+  "Recording": "正在录制",
+  "Showing": "正在显示",
+  "Loading…": "正在加载…",
+  "Auto-rotate": "自动旋转",
+  "Screenshot": "屏幕截图",
+  "Couldn’t take the screenshot": "无法截图",
+  "Screenshot saved in Photos": "截图已保存到“照片”",
+  "Allow TwinDesk to add photos in Settings": "请在“设置”中允许 TwinDesk 添加照片"
 }

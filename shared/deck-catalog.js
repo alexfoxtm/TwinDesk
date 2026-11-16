@@ -11,6 +11,7 @@
     { id: 'keyboard', name: 'Keyboard' },
     { id: 'media', name: 'Media' },
     { id: 'sound', name: 'Sound' },
+    { id: 'spotify', name: 'Spotify' },
     { id: 'bluetooth', name: 'Bluetooth' },
     { id: 'display', name: 'Display' },
     { id: 'windows', name: 'Windows' },
@@ -18,6 +19,7 @@
     { id: 'open', name: 'Apps and websites' },
     { id: 'files', name: 'Files and scripts' },
     { id: 'clipboard', name: 'Clipboard' },
+    { id: 'obs', name: 'OBS Studio' },
     { id: 'widgets', name: 'Widgets' },
     { id: 'deck', name: 'Deck navigation' },
   ];
@@ -46,8 +48,17 @@
     e('sound', 'Mute microphone', 'Mutes the default microphone.', { k: 'mic', what: 'mute' }, { needs: 'mic' }),
     e('sound', 'Unmute microphone', 'Unmutes the default microphone.', { k: 'mic', what: 'unmute' }, { needs: 'mic' }),
     e('sound', 'Microphone level', 'A slider for the input level of the default microphone.', { k: 'slider', what: 'mic' }, { needs: 'mic', wide: true }),
+    e('sound', 'App volume slider', 'A slider for one app’s volume, as the volume mixer has it. Type the app’s name, or pick one that is playing.', { k: 'slider', what: 'app', name: '' }, { needs: 'mixer', wide: true }),
+    e('sound', 'Mute an app', 'Mutes or unmutes one app, such as a game or a browser, leaving the rest.', { k: 'mix', what: 'toggle', name: '' }, { needs: 'mixer' }),
     e('sound', 'Audio output', 'Makes a chosen speaker or headset the default output, or cycles through them.', { k: 'output', id: '', name: '' }, { needs: 'outputs' }),
     e('sound', 'Audio input', 'Makes a chosen microphone the default input.', { k: 'input', id: '', name: '' }, { needs: 'outputs' }),
+
+    e('spotify', 'Play a playlist, album or song', 'Opens it in the Spotify app: paste its link (Share › Copy link). Spotify’s own link, nothing goes over the internet from TwinDesk.', { k: 'spotify', what: 'play', uri: '', name: '' }, { needs: 'spotify' }),
+    e('spotify', 'Play or pause', 'Plays or pauses Spotify, or what is playing.', { k: 'media', what: 'playpause' }),
+    e('spotify', 'Next song', 'Skips to the next song.', { k: 'media', what: 'next' }),
+    e('spotify', 'Previous song', 'Goes back to the previous song.', { k: 'media', what: 'prev' }),
+    e('spotify', 'Shuffle', 'Turns Spotify’s shuffle on or off.', { k: 'spotify', what: 'shuffle' }, { needs: 'spotifyModes' }),
+    e('spotify', 'Repeat', 'Turns Spotify’s repeat on or off.', { k: 'spotify', what: 'repeat' }, { needs: 'spotifyModes' }),
 
     e('bluetooth', 'Connect or disconnect', 'Connects a paired device, or disconnects it if it is connected.', { k: 'bt', what: 'toggleconn', id: '', name: '' }, { needs: 'bt' }),
     e('bluetooth', 'Connect device', 'Connects a paired device, such as headphones or a speaker.', { k: 'bt', what: 'connect', id: '', name: '' }, { needs: 'bt' }),
@@ -99,6 +110,14 @@
     e('clipboard', 'Cut', 'Cuts the selection.', { k: 'clip', what: 'cut' }),
     e('clipboard', 'Paste', 'Pastes the clipboard.', { k: 'clip', what: 'paste' }),
     e('clipboard', 'Send clipboard to the phone', 'Sends what is copied on this computer to the device’s clipboard.', { k: 'clip', what: 'send' }),
+
+    e('obs', 'Record', 'Starts or stops recording in OBS Studio. The tile shows whether it records.', { k: 'obs', what: 'record' }),
+    e('obs', 'Pause recording', 'Pauses or resumes the recording in OBS Studio.', { k: 'obs', what: 'pause' }),
+    e('obs', 'Stream', 'Starts or stops streaming in OBS Studio. The tile shows whether it is live.', { k: 'obs', what: 'stream' }),
+    e('obs', 'Scene', 'Switches OBS Studio to a scene.', { k: 'obs', what: 'scene', name: '' }),
+    e('obs', 'Mute a source', 'Mutes or unmutes one of OBS Studio’s audio sources, like a microphone.', { k: 'obs', what: 'mute', name: '' }),
+    e('obs', 'Save replay', 'Saves the replay buffer in OBS Studio (turn the replay buffer on in OBS first).', { k: 'obs', what: 'replay' }),
+    e('obs', 'Virtual camera', 'Starts or stops OBS Studio’s virtual camera.', { k: 'obs', what: 'vcam' }),
 
     e('widgets', 'Clock', 'The time and date, on the device.', { k: 'widget', what: 'clock' }, { device: true, wide: true }),
     e('widgets', 'Media player', 'What is playing on this computer, with play, pause and skip.', { k: 'widget', what: 'media' }, { device: true, wide: true }),

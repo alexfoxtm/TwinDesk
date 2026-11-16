@@ -16,6 +16,7 @@
   // while that's on (shared/vcam-feed.js); Camera › Rotate turns it here too.
   const vcam = kind === 'camera' && window.CamOut ? window.CamOut() : null;
   let turn = 0;
+  let mirrored = false; // Camera › Mirror (shared/vcam-feed.js)
   document.body.classList.add(kind);
   const titleKey = q.get('titleKey');
   const localTitle = ['Phone', 'Phone Camera', 'Phone sound', '{name} Camera'].includes(titleKey);
@@ -88,12 +89,21 @@
       },
       error: (e) => {
         console.warn('decoder', e.message);
+        // A decoder that failed (a broken VA-API driver, a high H.264 level) takes nothing more: the
+        // window waited for the picture for good (#233). Software from then on.
+        if (hwDecode) {
+          hwDecode = false;
+          console.warn('decoder: trying software decoding');
+          setTimeout(() => { makeDecoder(codec); waitingKey = true; needKey(); }, 0);
+          return;
+        }
         needKey();
       },
     });
     // No preference: many Linux setups have no hardware H.264 decoding (VA-API) for Chromium.
-    decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: 'no-preference' });
+    decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: hwDecode ? 'no-preference' : 'prefer-software' });
   }
+  let hwDecode = true;
 
   api.on('video', (p) => {
     const data = p.data instanceof Uint8Array ? p.data : new Uint8Array(p.data);
@@ -153,16 +163,16 @@
     const k = Math.min(stage.clientWidth / (side ? h : w), stage.clientHeight / (side ? w : h));
     canvas.style.width = `${Math.floor(w * k)}px`;
     canvas.style.height = `${Math.floor(h * k)}px`;
-    canvas.style.transform = turn ? `rotate(${turn}deg)` : '';
+    canvas.style.transform = [mirrored ? 'scaleX(-1)' : '', turn ? `rotate(${turn}deg)` : ''].join(' ').trim(); // Camera › Mirror: after the turn
   }
-  if (vcam) vcam.onRotate((deg) => { turn = deg; fit(); });
+  if (vcam) vcam.onRotate((deg, mir) => { turn = deg; mirrored = !!mir; fit(); });
   new ResizeObserver(() => {
     fit();
     // An app window: its virtual display follows the window (device pixels).
     if (kind === 'app') {
       clearTimeout(fit.timer);
       const stage = document.getElementById('stage');
-      fit.timer = setTimeout(() => api.send({ t: 'resize', w: stage.clientWidth * appScale(), h: stage.clientHeight * appScale() }), 250);
+      fit.timer = setTimeout(() => api.send({ t: 'resize', w: stage.clientWidth * appScale(), h: stage.clientHeight * appScale(), cw: stage.clientWidth, ch: stage.clientHeight }), 250);
     }
   }).observe(document.getElementById('stage'));
 
@@ -324,6 +334,10 @@
   window.addEventListener('keydown', onKey);
   // The title bar's panel and fullscreen buttons (phoneview.js keeps both; 'opts' says which is on).
   const panelBtn = document.getElementById('panelBtn');
+  // Keep on top: this window over the others (phoneview.js toggles it), lit while it is.
+  const pinBtn = document.getElementById('b-pin');
+  if (pinBtn) pinBtn.onclick = () => { api.send({ t: 'pin' }); canvas.focus(); };
+  api.on('opts', (m) => { if (m && pinBtn && typeof m.pinned === 'boolean') { pinBtn.classList.toggle('on', m.pinned); pinBtn.setAttribute('aria-pressed', String(m.pinned)); } });
   document.getElementById('fullBtn').onclick = () => { api.send({ t: 'full' }); canvas.focus(); };
   panelBtn.onclick = () => { api.send({ t: 'panel' }); canvas.focus(); };
   window.addEventListener('keydown', (e) => { if (e.key === 'F11') { e.preventDefault(); e.stopImmediatePropagation(); api.send({ t: 'full' }); } }, true);
@@ -381,6 +395,8 @@
       api.send({ t: 'cameraTorch', on: torchOn });
     };
   }
+  // The Camera page's Light button: lit here too.
+  api.on('opts', (m) => { if (bTorch && m && typeof m.torch === 'boolean') { torchOn = m.torch; bTorch.classList.toggle('active', torchOn); } });
   const bFlip = document.getElementById('b-flip');
   if (bFlip) {
     bFlip.onclick = () => {
@@ -391,5 +407,12 @@
   if (bZoomIn) bZoomIn.onclick = () => api.send({ t: 'cameraZoomIn' });
   const bZoomOut = document.getElementById('b-zoomout');
   if (bZoomOut) bZoomOut.onclick = () => api.send({ t: 'cameraZoomOut' });
+  // The side rail (shared/mirror-rail.js): Screenshot, Record, volume, Rotate, Power; its button sits
+  // next to Keep on top. Not in the hidden sound and mic windows.
+  if (window.MirrorRail && kind !== 'sound' && kind !== 'mic' && kind !== 'netsound') {
+    const r = window.MirrorRail({ api, canvas, kind, sound: () => (actx && player ? { actx, node: player } : null) }).mount(null);
+    const pin = document.getElementById('b-pin');
+    pin.parentNode.insertBefore(r.btn, pin);
+  }
   canvas.focus();
 })();

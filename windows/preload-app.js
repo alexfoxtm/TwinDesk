@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('macshare', {
   forget: call('forget'),
   disconnect: call('disconnect'),
   connectAgain: call('connectAgain'),
+  setRoute: call('setRoute'), // the network to the paired computer ('' automatic)
   connectGuest: call('connectGuest'),
   respondPair: call('respondPair'),
   forgetGuest: call('forgetGuest'),
@@ -55,12 +56,13 @@ contextBridge.exposeInMainWorld('macshare', {
   setMonitor: call('setMonitor'),
   setClipboard: call('setClipboard'),
   copyHistory: call('copyHistory'),
+  openClip: call('openClip'),
   clearHistory: call('clearHistory'),
   history: call('history'),
   setTab: call('setTab'),
   setMulti: call('setMulti'),
   setModules: call('setModules'), // General › Modules
-  deckSave: call('deckSave'), deckTry: call('deckTry'), deckApps: call('deckApps'), deckState: call('deckState'), deckRun: call('deckRun'), deckPick: call('deckPick'), // the Deck page
+  deckSave: call('deckSave'), deckTry: call('deckTry'), deckApps: call('deckApps'), deckState: call('deckState'), deckObs: call('deckObs'), deckSetObs: call('deckSetObs'), deckRun: call('deckRun'), deckPick: call('deckPick'), // the Deck page
   relaunch: call('relaunch'),
   setEncoder: call('setEncoder'),
   setAudio: call('setAudio'),
@@ -79,6 +81,9 @@ contextBridge.exposeInMainWorld('macshare', {
   resetDriveFolder: call('resetDriveFolder'),
   openDriveFolder: call('openDriveFolder'),
   cancelDrop: call('cancelDrop'),
+  pauseSend: call('pauseSend'),
+  resumeSend: call('resumeSend'),
+  forgetSend: call('forgetSend'),
   clearFiles: call('clearFiles'),
   setShareOn: call('setShareOn'),
   chooseReceivedFolder: call('chooseReceivedFolder'),
@@ -101,6 +106,7 @@ contextBridge.exposeInMainWorld('macshare', {
   phonePair: call('phonePair'),
   phoneScreen: call('phoneScreen'),
   phoneCamera: call('phoneCamera'),
+  takePhoto: call('takePhoto'),
   phoneListCameras: call('phoneListCameras'),
   phoneOpenApp: call('phoneOpenApp'),
   phoneCloseView: call('phoneCloseView'),

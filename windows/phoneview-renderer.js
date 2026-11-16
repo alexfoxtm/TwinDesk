@@ -16,6 +16,7 @@
   // while that's on (shared/vcam-feed.js); Camera › Rotate turns it here too.
   const vcam = kind === 'camera' && window.CamOut ? window.CamOut() : null;
   let turn = 0;
+  let mirrored = false; // Camera › Mirror (shared/vcam-feed.js)
   document.body.classList.add(kind);
   const titleKey = q.get('titleKey');
   const localTitle = ['Phone', 'Phone Camera', 'Phone sound', '{name} Camera'].includes(titleKey);
@@ -88,11 +89,20 @@
       },
       error: (e) => {
         console.warn('decoder', e.message);
+        // The GPU's decoder refused this stream (some drivers, a high H.264 level): the window waited
+        // for the picture for good (#233), as a closed decoder takes nothing more. Software from then on.
+        if (hwDecode) {
+          hwDecode = false;
+          console.warn('decoder: trying software decoding');
+          setTimeout(() => { makeDecoder(codec); waitingKey = true; needKey(); }, 0);
+          return;
+        }
         needKey();
       },
     });
-    decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+    decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: hwDecode ? 'prefer-hardware' : 'prefer-software' });
   }
+  let hwDecode = true;
 
   api.on('video', (p) => {
     const data = p.data instanceof Uint8Array ? p.data : new Uint8Array(p.data);
@@ -152,16 +162,16 @@
     const k = Math.min(stage.clientWidth / (side ? h : w), stage.clientHeight / (side ? w : h));
     canvas.style.width = `${Math.floor(w * k)}px`;
     canvas.style.height = `${Math.floor(h * k)}px`;
-    canvas.style.transform = turn ? `rotate(${turn}deg)` : '';
+    canvas.style.transform = [mirrored ? 'scaleX(-1)' : '', turn ? `rotate(${turn}deg)` : ''].join(' ').trim(); // Camera › Mirror: after the turn
   }
-  if (vcam) vcam.onRotate((deg) => { turn = deg; fit(); });
+  if (vcam) vcam.onRotate((deg, mir) => { turn = deg; mirrored = !!mir; fit(); });
   new ResizeObserver(() => {
     fit();
     // An app window: its virtual display follows the window (device pixels).
     if (kind === 'app') {
       clearTimeout(fit.timer);
       const stage = document.getElementById('stage');
-      fit.timer = setTimeout(() => api.send({ t: 'resize', w: stage.clientWidth * appScale(), h: stage.clientHeight * appScale() }), 250);
+      fit.timer = setTimeout(() => api.send({ t: 'resize', w: stage.clientWidth * appScale(), h: stage.clientHeight * appScale(), cw: stage.clientWidth, ch: stage.clientHeight }), 250);
     }
   }).observe(document.getElementById('stage'));
 
@@ -408,6 +418,7 @@
     notifications: '<path d="M5.5 13.5V9a4.5 4.5 0 0 1 9 0v4.5l1.5 1.5h-12z M8.5 16.5a1.5 1.5 0 0 0 3 0"/>',
     settings: '<path d="M4 6h12 M4 10h12 M4 14h12"/><circle cx="7.5" cy="6" r="1.6"/><circle cx="12.5" cy="10" r="1.6"/><circle cx="8.5" cy="14" r="1.6"/>',
     rotate: '<path d="M4.5 10a5.5 5.5 0 1 0 1.6-3.9 M4.5 3.5v3h3"/>',
+    autoRotate: '<rect x="6.5" y="4" width="7" height="12" rx="1.5"/><path d="M3 8.5a7.5 7.5 0 0 1 2-4 M17 11.5a7.5 7.5 0 0 1-2 4 M3.5 4.2l1.5.3-.2 1.6 M16.5 15.8l-1.5-.3.2-1.6"/>',
     volumeUp: '<path d="M3.5 8h2.5l3.5-3v10l-3.5-3H3.5z M14 7.5v5 M11.5 10h5"/>',
     volumeDown: '<path d="M3.5 8h2.5l3.5-3v10l-3.5-3H3.5z M11.5 10h5"/>',
     mute: '<path d="M3.5 8h2.5l3.5-3v10l-3.5-3H3.5z M12 8l4 4 M16 8l-4 4"/>',
@@ -416,6 +427,7 @@
     enterSends: '<path d="M3.5 10l13-5.5-4 11-2.5-4.5z M10 11l6.5-6.5"/>',
     arrowSwipe: '<path d="M10 3.5v13 M7.5 6 10 3.5 12.5 6 M7.5 14l2.5 2.5 2.5-2.5"/>',
     shot: '<path d="M3.5 6.5h3l1.5-2h4l1.5 2h3v9h-13z"/><circle cx="10" cy="11" r="2.8"/>',
+    rec: '<circle cx="10" cy="10" r="6"/><circle class="dot" cx="10" cy="10" r="3"/>',
     pin: '<path d="M8 3.5h4l-.5 5 2.5 2.5h-8l2.5-2.5z M10 11v5.5"/>',
     torch: '<path d="M7 3.5h6v3.5l-2 3v6.5H9v-6.5l-2-3z M7 7h6"/>',
     flip: '<path d="M3.5 7h11 M12 4.5 14.5 7 12 9.5 M16.5 13h-11 M8 10.5 5.5 13 8 15.5"/>',
@@ -426,6 +438,8 @@
   // (the side panel's foot, or first in the title bar); toggle: lit while on (phoneview.js says, 'opts').
   const PHONE = ['screen', 'app'];
   const CAMERA = ['torch', 'flip', 'zoomIn', 'zoomOut'];
+  // Record (shared/mirror-rail.js, its recorder without a rail of its own: the side panel is ours).
+  const recorder = window.MirrorRail && !['sound', 'mic', 'netsound'].includes(kind) ? window.MirrorRail({ api, canvas, kind, sound: () => (actx && player ? { actx, node: player } : null) }) : null;
   const CONTROLS = [
     { k: 'volumeUp', title: 'Volume up' },
     { k: 'volumeDown', title: 'Volume down' },
@@ -435,11 +449,13 @@
     { k: 'flip', title: 'Front or back camera', in: ['camera'] },
     { k: 'zoomIn', title: 'Zoom in', in: ['camera'] },
     { k: 'zoomOut', title: 'Zoom out', in: ['camera'] },
-    { k: 'shot', title: 'Screenshot (copies it: paste with Ctrl+V)', in: ['screen', 'app', 'camera'] },
+    { k: 'shot', title: 'Screenshot (copied, and saved in Pictures › TwinDesk)', in: ['screen', 'app', 'camera'] },
+    { k: 'rec', title: 'Record (saved in Videos › TwinDesk)', in: ['screen', 'app', 'camera'] },
     { k: 'notifications', title: 'Notifications', in: ['screen'] },
     { k: 'settings', title: 'Quick settings', in: ['screen'] },
     { k: 'power', title: 'Power (lock or wake the phone)', in: ['screen'] },
-    { k: 'screenOff', title: 'Phone screen off (it keeps showing here, and saves the battery)', in: ['screen'], toggle: true },
+    { k: 'autoRotate', title: kind === 'app' ? 'Auto-rotate: the window turns with the app' : 'Auto-rotate: the window turns with the phone', in: ['screen', 'app'], toggle: true },
+    { k: 'screenOff', title: 'Phone screen off (it keeps showing here, and saves the battery)', in: ['screen', 'app'], toggle: true },
     { k: 'enterSends', title: 'Enter sends in WhatsApp, Instagram and Telegram (Shift+Enter: a new line)', toggle: true },
     { k: 'arrowSwipe', title: 'Arrow keys swipe the screen (feeds, Reels, Shorts)', toggle: true },
     { k: 'pin', title: 'Keep on top', in: ['screen', 'app', 'camera'], toggle: true },
@@ -449,19 +465,21 @@
   ].filter((c) => (c.in || PHONE).includes(kind));
   // The title bar has what the Mac's has: Back, Home, Recents, Notifications, and a camera's own.
   // Rotate, Phone screen off, Enter sends and Arrow keys swipe are on the Phone page.
-  const TOP = ['notifications', ...CAMERA];
-  const OPT = { pin: 'pinned', screenOff: 'screenOff', enterSends: 'enterSends', arrowSwipe: 'arrowSwipe', torch: 'torch' };
+  const TOP = ['notifications', ...CAMERA, 'pin'];
+  const OPT = { pin: 'pinned', screenOff: 'screenOff', autoRotate: 'autoRotate', enterSends: 'enterSends', arrowSwipe: 'arrowSwipe', torch: 'torch' };
   for (const c of CONTROLS) {
     c.el = document.createElement('button');
     c.el.className = 'ctl';
+    c.el.dataset.k = c.k;
     c.el.dataset.i18nTitle = c.title;
     c.el.dataset.i18nLabel = c.title;
     playerI18n.translate(c.el);
     c.el.innerHTML = `<svg viewBox="0 0 20 20">${ICONS[c.k]}</svg>`;
     c.el.onclick = () => {
       if (c.k === 'shot') return shot();
+      if (c.k === 'rec') return recorder && recorder.controls.find((x) => x.k === 'rec').el.click(); // shared/mirror-rail.js
       if (c.k === 'pin') return api.send({ t: 'pin' });
-      if (c.k === 'enterSends' || c.k === 'arrowSwipe') api.send({ t: 'toggle', what: c.k });
+      if (c.k === 'enterSends' || c.k === 'arrowSwipe' || c.k === 'autoRotate') api.send({ t: 'toggle', what: c.k });
       else if (c.k === 'screenOff') api.send({ t: 'nav', key: 'screenPower' });
       else if (CAMERA.includes(c.k)) api.send({ t: 'camera', what: c.k });
       else api.send({ t: 'nav', key: c.k });
@@ -472,6 +490,9 @@
   const els = (list) => list.map((c) => c.el);
   const fullBtn = document.getElementById('fullBtn');
   fullBtn.onclick = () => { api.send({ t: 'full' }); canvas.focus(); };
+  // The title bar's side panel button (Phone › Side panel, at hand): lit while it's down the right.
+  const sideBtn = document.getElementById('b-rail');
+  if (sideBtn) sideBtn.onclick = () => { api.send({ t: 'sidePanel' }); canvas.focus(); };
   window.addEventListener('keydown', (e) => { if (e.key === 'F11') { e.preventDefault(); e.stopPropagation(); api.send({ t: 'full' }); } }, true);
   function layout(mode) {
     mode = mode === 'side' ? 'side' : 'top';
@@ -487,9 +508,11 @@
     } else tools.append(...nav, ...els(TOP.map((k) => CONTROLS.find((c) => c.k === k)).filter(Boolean)));
   }
   layout(q.get('controls'));
+  if (sideBtn) sideBtn.classList.toggle('on', q.get('controls') === 'side');
   api.on('opts', (m) => {
     if (!m) return;
     if (m.controls) layout(m.controls);
+    if (m.controls && sideBtn) { sideBtn.classList.toggle('on', m.controls === 'side'); sideBtn.setAttribute('aria-pressed', String(m.controls === 'side')); }
     if (typeof m.full === 'boolean') { document.body.classList.toggle('full', m.full); fit(); }
     for (const c of CONTROLS) if (c.toggle && typeof m[OPT[c.k]] === 'boolean') c.el.classList.toggle('on', m[OPT[c.k]]);
   });
@@ -497,7 +520,7 @@
   // The picture as it is now, as a PNG (phoneview.js puts it on the clipboard).
   function shot() {
     if (!canvas.width || !canvas.height) return;
-    canvas.toBlob((blob) => { if (blob) blob.arrayBuffer().then((b) => api.send({ t: 'shot', png: new Uint8Array(b) })); }, 'image/png');
+    canvas.toBlob((blob) => { if (blob) blob.arrayBuffer().then((b) => api.send({ t: 'shot', png: new Uint8Array(b), save: true })); }, 'image/png');
   }
 
   canvas.focus();

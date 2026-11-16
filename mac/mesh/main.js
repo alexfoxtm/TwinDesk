@@ -352,7 +352,7 @@ function shareAs(mode) {
 function displayMode() {
   const t = svc && svc.displays.target();
   if (!t) return 'custom';
-  if (t.virtual) return 'extend';
+  if (t.virtual) return svc.displays.fallbackOnly() ? 'mirror' : 'extend';
   return t.primary && !settings.virtual.enabled ? 'mirror' : 'custom';
 }
 
@@ -601,6 +601,8 @@ app.whenReady().then(() => {
     const { DevCtl } = require('../../shared/devctl.js');
     const { DevLocal } = require('../../shared/devlocal.js');
     devctl = new DevCtl({
+    watching: () => !!(win && !win.isDestroyed() && win.isVisible() && !win.isMinimized()), // Overview may show the other side's controls (shared/devctl.js Looking)
+   
       link: {
         on: (ev, fn) => (ev === 'welcome' ? peer.on('client', fn) : ev === 'closed' ? peer.on('closed', fn) : peer.on('t:' + ev, fn)),
         send: (m) => peer.sendToClient(m),
@@ -614,6 +616,7 @@ app.whenReady().then(() => {
       },
     });
     devctl.on('change', pushState);
+    app.on('browser-window-focus', () => devctl && devctl.look()); // back on screen: a fresh state of the other side now
     // The selected device runs an older TwinDesk (shared/appinfo.js): say so once.
     devctl.on('outdated', (o) => {
       const { FEATURES } = require('../../shared/appinfo.js');
@@ -660,11 +663,15 @@ app.whenReady().then(() => {
   if (settings.drive.on) svc.loadDrive();
   // Apps › Move windows: a window grabbed with the move key crossed with the pointer. A
   // copy of the other computer's window goes home there (pcapps.js); one of this Mac's goes over (appsend.js).
+  // In Multi-device it goes to the device the pointer went to, selected first, with what that
+  // device said about taking windows (shared/mesh-movewin.js: #250, #251).
+  const meshMoves = require('../../shared/mesh-movewin.js').meshMoves(hub, P.T);
   svc.kvm.onMoveWindow = (m, to) => {
     const wid = Number(m.moving);
-    if (to && to !== hub.selectedId) return; // apps and windows go to the selected device only
     if (!wid || svc.pcApps.returnWindow(wid)) return;
-    if (settings.apps.moveWindows) svc.appSend.moveOut(wid, Number(m.movingPid));
+    if (!settings.apps.moveWindows) return;
+    if (!meshMoves.ready(to, (v) => { svc.appSend.accepts = v; })) return;
+    svc.appSend.moveOut(wid, Number(m.movingPid));
   };
   if (settings.app.openAtLogin !== login.isOn()) login.apply(settings.app.openAtLogin);
 

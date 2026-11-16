@@ -56,10 +56,12 @@ const DEFAULT_SETTINGS = {
     driveOther: true,
     beDriven: true,
     resistancePx: 120,
+    crossingModifier: '', // optional modifier held while leaving this Mac at an edge
     speed: 1.0,
     reverseScroll: false,
     linked: true, // mouse and keyboard sharing on (the hotkey's double-tap switches it); synced with the peer
     linkedBy: {}, // The last `linked` per paired device id, restored on connect
+    portalsByPeer: {}, // opt-in directional display-edge portals, stored per paired device
     gestures: true, // Trackpad gestures work on the other computer (synced per pair)
     shakeHome: false, // shake this Mac's mouse while driving: the pointer comes home (the helper's Shake.swift)
     syncPads: false, // every mouse and trackpad moves the one pointer; off: a computer's own takes it back (synced per pair)
@@ -68,7 +70,7 @@ const DEFAULT_SETTINGS = {
   },
   // swap: keys from the PC, Ctrl -> Cmd, Win -> Control. hotkey: double-tap = everything home. lockKeys: cursor lock
   // on/off (shared/cursorlock.js): F14, where a PC keyboard's Scroll Lock lands on a Mac
-  keys: { swapCtrlCmd: true, hotkey: 'AltRight', lockKeys: 'F14' },
+  keys: { swapCtrlCmd: true, hotkey: 'AltRight', lockKeys: 'F14', emergencyKeys: 'Control+Alt+Command+Escape' },
   clipboard: {
     enabled: false,
     send: true, // this Mac -> PC
@@ -82,7 +84,7 @@ const DEFAULT_SETTINGS = {
   // setupSkipped: the missing items when Setup was skipped; setupDone: Setup has been through once
   // (everything allowed, or skipped), so it never takes over the window again (General shows the rest).
   ui: { tab: 'overview', setupSkipped: '', setupDone: false, language: '', style: 'glass', theme: 'system', accent: '' }, // style/theme/accent: General › Appearance
-  app: { openAtLogin: false, keepAwake: true, hud: true, inputProtocol: 'udp', keepPinging: false }, // inputProtocol: udp = tdv2 input lane, tcp = tdv1 // hud = popup when switching computers
+  app: { openAtLogin: false, keepAwake: true, hud: true, inputProtocol: 'udp', keepPinging: false, localApi: false }, // localApi: General › Local API (shared/localapi.js), off // inputProtocol: udp = tdv2 input lane, tcp = tdv1 // hud = popup when switching computers
   updates: { auto: true, notified: '', skipped: '', install: false }, // check GitHub for new releases; notified = last version announced, skipped = version ignored
   audio: { send: false, receive: false, muteLocal: false, engine: 'helper', volume: 1, phoneMedia: false, micSend: false, micReceive: false, micDevice: '', micOut: '' }, // Independent, both ways; phoneMedia: a phone's media controls on Overview
   rezume: require('../shared/rezume.js').DEFAULTS, // ReZume tab (shared/rezume.js): off until turned on; what goes, which ways, where it shows
@@ -90,9 +92,11 @@ const DEFAULT_SETTINGS = {
   camera: { on: false, share: false, device: '', virtual: false, rotate: 0, target: 'obs' }, // Camera tab (shared/camshare.js): this Mac's camera to the other computer, off until turned on; virtual: the running camera's picture also goes to the virtual camera (shared/vcam.js); rotate: its picture turned clockwise; target: the virtual camera it feeds, 'obs' (OBS Virtual Camera, the default) or 'twindesk'
   terminal: { allowPc: false, connectPc: false }, // the other computer -> this Mac shell; this Mac -> the other one (`ssh twindesk`)
   files: { acceptDrops: false, folder: '', reveal: true, dragEdge: false, // '' = Downloads; dragEdge = drag.policy
+    clipReceived: false, // Put received files on the clipboard (drop.js), off unless switched on
+    outboxHours: 24, // Keep files to send: hours they wait for the other device (shared/outbox.js), 0 = off
     plain: false, // Encrypt file transfers off: plain HTTP for file bytes where both allow it (shared/fastfile.js fxPlain)
     shortcuts: false, copyKeys: 'Control+Alt+C', pasteKeys: 'Control+Alt+V' }, // Copy/paste files
-  notifs: { send: false, receive: false, hideText: false, muted: [] },
+  notifs: { send: false, receive: false, hideText: false, muted: [], style: '', otpCopy: false, quiet: { on: false, from: '22:00', to: '07:00' }, phoneApps: {} }, // style…phoneApps: how a phone's show here (shared/notifrules.js)
   // Notifications › Silence together (shared/silence.js, silence-mac.js): peers {deviceId: {send, follow}},
   // each off until switched on for that phone; on / off / probe: the person's shortcuts {id, name} that set
   // a Focus and read it; dedicated: their word that the Focus is TwinDesk's alone; proof: what the check
@@ -101,13 +105,14 @@ const DEFAULT_SETTINGS = {
   apps: { offer: false, onVirtual: false, moveWindows: false, moveKey: 'MetaRight' }, // The PC can list and open this Mac's apps; onVirtual: they open on the virtual display, in Mirror mode too (off: on the shared display, as always); moveWindows: a window dragged past the edge with moveKey held moves there (movewin.js)
   papps: { on: false }, // PC apps on this Mac, each window here with its own Dock icon
   // A phone as the peer: its screen window, apps and setup.
-  phone: { sound: false, bitrateMbps: 8, maxSize: 0, wallpaper: true, input: 'adb', inputPicked: false, mirror: 'auto', soundVia: 'auto', enterSends: true, arrowSwipe: false, uhid: false }, // mirror, soundVia: 'auto' | 'adb' | 'native' (shared/phonemodes.js) // input: 'adb' | 'phone' (phone-bridge.js ctl), automatic until picked (inputMode)
+  phone: { sound: false, bitrateMbps: 8, maxSize: 0, wallpaper: true, input: 'adb', inputPicked: false, mirror: 'auto', soundVia: 'auto', enterSends: true, arrowSwipe: false, uhid: false, direct: false, lowLatency: false }, // mirror, soundVia: 'auto' | 'adb' | 'native' (shared/phonemodes.js) // input: 'adb' | 'phone' (phone-bridge.js ctl), automatic until picked (inputMode)
   mount: { on: false }, // the phone in Finder (phonedrive.js), only when Mount is clicked
   drive: { on: false, folder: '' }, // File Sharing › TwinDesk Drive (shared/drive-host.js): off until turned on; folder '' = ~/TwinDesk Drive
   // Calls, Messages, Photos and Files from a phone (shared/phonehub.js), each off until switched on.
   // callAudio: the calls' sound on this Mac over Bluetooth (btDevices: which paired device each phone is).
   // mediaAlerts: a notification here for new camera photos and videos on the phone (photoalert.js), with media on.
-  hub: { calls: false, messages: false, media: false, files: false, mediaAlerts: false, callAudio: true, shareMount: false, shareServe: false, shareFolder: '' }, // share*: shared folders (foldershare.js)
+  // callPause: Calls › Pause what plays here (shared/callpause.js).
+  hub: { calls: false, messages: false, media: false, files: false, mediaAlerts: false, callAudio: true, callPause: false, shareMount: false, shareServe: false, shareFolder: '' }, // share*: shared folders (foldershare.js)
   // Not on one network: Bluetooth for the session (blepipe.js), Wi-Fi for files and screens
   // (netlink.js). hotspots: {deviceId: {ssid, pass (safeStorage)}}, a phone's hotspot as typed once.
   net: { ble: true, blePc: false, bleWifiOff: true, hotspots: {}, tailscale: true, bleInput: false }, // ble: with phones, blePc: with computers; bleWifiOff: none on the same Wi-Fi (blepolicy.js wifiQuiet); tailscale: shared/tailnet.js; bleInput: mouse and keyboard over Bluetooth beside Wi-Fi (shared/bleinput.js)
@@ -130,6 +135,7 @@ function loadSettings() {
   const out = { ...DEFAULT_SETTINGS, ...s };
   for (const k of ['wake', 'sharing', 'virtual', 'kvm', 'keys', 'clipboard', 'ui', 'app', 'audio', 'terminal', 'files', 'smb', 'apps', 'receive', 'papps', 'notifs', 'updates', 'phone', 'mount', 'drive', 'hub', 'camera', 'remote', 'web', 'localsend', 'silence']) out[k] = { ...DEFAULT_SETTINGS[k], ...(s[k] || {}) };
   if (!out.silence.peers || typeof out.silence.peers !== 'object') out.silence.peers = {};
+  if (!['', 'Command', 'Control', 'Alt', 'Shift'].includes(out.kvm.crossingModifier)) out.kvm.crossingModifier = '';
   out.rezume = require('../shared/rezume.js').normalize(s.rezume);
   out.modules = require('../shared/modules.js').normalize(s.modules); // General › Modules
   out.ui.language = require('../shared/i18n.js').savedLanguage(out.ui.language);

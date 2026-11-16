@@ -238,6 +238,7 @@ class Clip extends EventEmitter {
     const text = await this._readText();
     if (!this._fresh(generation)) return;
     if (!text) return this._picture(why, generation);
+    if (require('../../shared/otp.js').isQuiet(text)) return; // a code copied by itself (Notifications): kept here only
     if (text === this.lastSync.sent || text === this.lastSync.received) return;
     if (c.skipConcealed && (await this._isConcealed(why))) {
       if (!this._fresh(generation)) return;

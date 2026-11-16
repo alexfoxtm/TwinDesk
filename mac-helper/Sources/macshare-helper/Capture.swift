@@ -62,6 +62,10 @@ final class Capture {
   private var edgeEnabled = false   // driveOther && mouse && link up (main decides)
   private var cfgKeyboard = true    // capture the keyboard when crossing at the edge
   private var dragFiles = true      // carry file drags across the edge (drag.policy, both sides)
+  var crossingModifier = ""         // empty: the normal edge needs no held modifier
+  var returnRequiresModifier = false // false for an older driver without modifier-state support
+  var remoteCrossingFlags: CGEventFlags = []
+  private var crossingWatch = false
   // capture
   private(set) var capturing = false
   private var capMouse = false, capKeyboard = false
@@ -82,6 +86,16 @@ final class Capture {
   private var ret = (push: 0.0, at: 0.0, since: 0.0)
   private var returnSide: String?
 #endif
+  // The emergency return shortcut (#178), one-to-one and Multi-device.
+  var emergencyActive = false
+  var emergencyShortcut = EmergencyShortcut(EmergencyShortcut.fallback)
+  private var emergencyGate = EmergencyInputGate()
+  var allowsRemoteInput: Bool { emergencyGate.allowsInput }
+
+  func setEmergencyActive(_ on: Bool) {
+    emergencyActive = on
+    emergencyGate.session(active: on)
+  }
   private var returnResistance = 120.0
   // Driven (armReturn on): the first input from this Mac's own mouse or trackpad takes the Mac back
   // (`local`): main sends the input home, so the driver gets its own pointer again where it left
@@ -99,6 +113,25 @@ final class Capture {
   // the bounding box, as `offset`): the edge and the way back only cross inside them. nil: anywhere.
   var edgeZones: [Zone]?
   var returnZones: [Zone]?
+#if !MULTI
+  // Explicit portals are opt-in. Invalid or disconnected displays are ignored by the callback.
+  struct Portal {
+    let id: String, side: String
+    let display: CGDirectDisplayID
+    let from: Double, to: Double
+    let flags: CGEventFlags
+    let key: UInt16?
+  }
+  struct PortalReturn {
+    let display: CGDirectDisplayID
+    let side: String
+    let from: Double, to: Double
+  }
+  var portalReturn: PortalReturn?
+  var portals: [Portal] = [] { didSet { portalPush.removeAll(); lastPortalPoint = nil } }
+  private var portalPush: [String: (push: Double, at: Double, since: Double)] = [:]
+  private var lastPortalPoint: (point: CGPoint, at: Double)?
+#endif
   // No new crossing within `cooldown` of the last one, either way (kvmConfig `cooldownMs`,
   // KVM_CROSS_COOLDOWN_MS). After arriving, the edge it came through only counts once the pointer
   // moved 8 pt inward or `guardWindow` passed, so the end of a flick doesn't bounce straight back.
@@ -187,17 +220,22 @@ final class Capture {
 
   // MARK: capture
 
-  func startCapture(mouse: Bool, keyboard: Bool) {
+  func startCapture(mouse: Bool, keyboard: Bool, pin: CGPoint? = nil) {
     if capturing { stopCapture(side: nil, offset: nil) }
     capturing = true
     capMouse = mouse
     capKeyboard = keyboard
+    crossingWatch = false
     lastCross = now()
     arrival = nil
     if mouse {
       CGAssociateMouseAndMouseCursorPosition(0) // pointer frozen, deltas still arrive
-      pinnedAt = CGEvent(source: nil)?.location
+      if let pin = pin { CGWarpMouseCursorPosition(pin) }
+      pinnedAt = pin ?? CGEvent(source: nil)?.location
       leftAt = pinnedAt
+#if !MULTI
+      lastPortalPoint = nil
+#endif
       // Hide it once the leaving animation and a drag hand-off at the edge had their moment.
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
         if let self = self, self.capturing, self.capMouse { PointerVisibility.hide() }
@@ -215,6 +253,7 @@ final class Capture {
   func stopCapture(side: String?, offset: Double?) {
     guard capturing else { return }
     capturing = false
+    crossingWatch = false
     hkPending = nil
     deadman?.invalidate()
     deadman = nil
@@ -237,6 +276,12 @@ final class Capture {
     swallowUps.formUnion(remoteDown)
     remoteDown.removeAll()
     arrived(side: side)
+  }
+
+  func watchCrossingFlags() {
+    guard capturing && capMouse else { return }
+    crossingWatch = true
+    ev(["t": "k.mod", "flags": crossingBits(CGEventSource.flagsState(.combinedSessionState))])
   }
 
   /// Our own injected pointer (a window moved to the other computer, used from its copy there while
@@ -272,12 +317,22 @@ final class Capture {
 #if MULTI
     return returnSides
 #else
+    if portalReturn != nil { return [] }
     if !stopsKnown || stopsSide != returnSide {
       stopsKnown = true
       stopsSide = returnSide
       stopsList = returnSide.map { [$0] } ?? []
     }
     return stopsList
+#endif
+  }
+
+  var portalReturnStop: PortalReturnStop? {
+#if MULTI
+    return nil
+#else
+    guard let portal = portalReturn, returnSide != nil, CGDisplayIsActive(portal.display) != 0 else { return nil }
+    return PortalReturnStop(display: CGDisplayBounds(portal.display), side: portal.side, range: portal.from...portal.to)
 #endif
   }
 
@@ -296,8 +351,9 @@ final class Capture {
 
   /// Return-edge check while driven; called for local moves and for injected relative moves.
   /// Any armed side counts: the way back to the driver, or an edge that leads on to another device.
-  func checkReturn(_ p: CGPoint, dx: Double, dy: Double) {
+  func checkReturn(_ p: CGPoint, dx: Double, dy: Double, flags: CGEventFlags) {
     guard !returnSides.isEmpty else { return }
+    guard !returnRequiresModifier || allowsCrossing(required: crossingModifier, flags: flags) else { retBy.removeAll(); return }
     var hit: (side: String, offset: Double)? = nil
     for side in returnSides {
       var st = retBy[side] ?? (push: 0.0, at: 0.0, since: 0.0)
@@ -330,14 +386,17 @@ final class Capture {
 #else
   func armReturn(on: Bool, side: String, resistance: Double) {
     watchLocal(on)
+    if !on { portalReturn = nil }
     returnSide = on ? side : nil
     returnResistance = resistance
     ret.push = 0
   }
 
   /// Return-edge check while driven; called for local moves and for injected relative moves.
-  func checkReturn(_ p: CGPoint, dx: Double, dy: Double) {
-    guard let side = returnSide, let off = push(&ret, p, dx, dy, side, returnResistance, returnZones) else { return }
+  func checkReturn(_ p: CGPoint, dx: Double, dy: Double, flags: CGEventFlags) {
+    guard !returnRequiresModifier || allowsCrossing(required: crossingModifier, flags: flags) else { ret.push = 0; return }
+    let portalEdge: Bool? = portalReturn == nil ? nil : (portalReturnStop.map { portalReturnContains(p, stop: $0) } ?? false)
+    guard let side = returnSide, let off = push(&ret, p, dx, dy, side, returnResistance, returnZones, edgeOverride: portalEdge) else { return }
     returnSide = nil
     lastCross = now()
     Flash.shared.leave(at: p, side: side)
@@ -403,7 +462,7 @@ final class Capture {
 
   /// Accumulate outward motion on an outer edge; returns the offset when it went through.
   private func push(_ st: inout (push: Double, at: Double, since: Double), _ p: CGPoint, _ dx: Double, _ dy: Double,
-                    _ side: String, _ resistance: Double, _ zones: [Zone]?) -> Double? {
+                    _ side: String, _ resistance: Double, _ zones: [Zone]?, edgeOverride: Bool? = nil) -> Double? {
     let out = side == "right" ? dx : side == "left" ? -dx : side == "bottom" ? dy : -dy
     let t = now()
     if t - st.at > 0.3 { st.push = 0 }
@@ -420,7 +479,7 @@ final class Capture {
       }
       arrival = nil
     }
-    guard out > 0, Screens.isOuterEdge(p, side: side),
+    guard out > 0, (edgeOverride ?? Screens.isOuterEdge(p, side: side)),
           zones.map({ z in z.contains { ($0.side == nil || $0.side == side) && $0.range.contains(Screens.offset(p, side: side)) } }) ?? true else {
       st.push = 0
       return nil
@@ -432,6 +491,54 @@ final class Capture {
     st.push = 0
     return Screens.offset(p, side: side)
   }
+
+#if !MULTI
+  private func portalCovers(_ p: CGPoint, side: String) -> Bool {
+    portals.contains { portal in
+      guard portal.side == side, CGDisplayIsActive(portal.display) != 0 else { return false }
+      let rect = CGDisplayBounds(portal.display)
+      guard rect.contains(p) else { return false }
+      let vertical = side == "left" || side == "right"
+      let length = vertical ? rect.height : rect.width
+      guard length > 0 else { return false }
+      let offset = Double(((vertical ? p.y : p.x) - (vertical ? rect.minY : rect.minX)) / length)
+      return offset >= portal.from && (offset < portal.to || (portal.to == 1 && offset == 1))
+    }
+  }
+
+  private func portalCrossing(_ event: CGEvent, dx: Double, dy: Double, previous: CGPoint?) -> (id: String, side: String, offset: Double, pin: CGPoint?)? {
+    let p = event.location
+    for portal in portals {
+      guard CGDisplayIsActive(portal.display) != 0 else { continue }
+      let rect = CGDisplayBounds(portal.display)
+      let vertical = portal.side == "left" || portal.side == "right"
+      let coord = vertical ? p.y : p.x
+      let origin = vertical ? rect.minY : rect.minX
+      let length = vertical ? rect.height : rect.width
+      if let previous = previous, (portal.flags.rawValue != 0 || portal.key != nil),
+         event.flags.contains(portal.flags), portal.key.map({ localDown.contains($0) }) ?? true,
+         now() - lastCross >= cooldown,
+         !(arrival.map { $0.side == portal.side && now() - $0.at < guardWindow && $0.inward < 8 } ?? false),
+         let hit = portalSharedEdgeHit(from: previous, to: p, display: rect, side: portal.side,
+                                       range: portal.from...portal.to, displays: Screens.displays()) {
+        portalPush.removeValue(forKey: portal.id)
+        return (portal.id, portal.side, hit.offset, hit.pin)
+      }
+      guard rect.contains(p), length > 0 else { portalPush.removeValue(forKey: portal.id); continue }
+      let offset = Double((coord - origin) / length)
+      guard offset >= portal.from, (offset < portal.to || (portal.to == 1 && offset == 1)),
+            event.flags.contains(portal.flags), portal.key.map({ localDown.contains($0) }) ?? true else {
+        portalPush.removeValue(forKey: portal.id)
+        continue
+      }
+      var state = portalPush[portal.id] ?? (push: 0.0, at: 0.0, since: 0.0)
+      let hit = push(&state, p, dx, dy, portal.side, resistance, nil)
+      portalPush[portal.id] = state
+      if hit != nil { return (portal.id, portal.side, offset, nil) }
+    }
+    return nil
+  }
+#endif
 
   // MARK: tap callback
 
@@ -463,6 +570,10 @@ final class Capture {
 
   /// Returns true to swallow.
   private func onFlags(_ e: CGEvent) -> Bool {
+    if !capturing && edgeEnabled { _ = crossingAllowed(e.flags) }
+    if capturing && capMouse && crossingWatch {
+      ev(["t": "k.mod", "flags": crossingBits(e.flags)])
+    }
     let kc = UInt16(e.getIntegerValueField(.keyboardEventKeycode))
     let flags = e.flags.rawValue
     if let dev = hkKeys[kc] { // the hotkey
@@ -578,6 +689,32 @@ final class Capture {
     hkStage = 0
     if down { flushHotkey() }
     let kc = UInt16(e.getIntegerValueField(.keyboardEventKeycode))
+    // Stop locally before asking main to release the peer. This still works if main is delayed,
+    // provided the event tap and helper are responsive. Never intercept the chord at home.
+    if emergencyActive || capturing {
+      if emergencyShortcut.matches(keyCode: kc, flags: e.flags, down: down, kbType: e.getIntegerValueField(.keyboardEventKeyboardType)) {
+        let wasCapturing = capturing
+        emergencyGate.stop()
+        if wasCapturing { stopCapture(side: nil, offset: nil) }
+        else {
+          DragIn.shared.cancel() // avoid dropping a file when releasing the injected mouse button
+          injector.releaseAll()
+        }
+#if MULTI
+        returnSides = []
+        edgeBy.removeAll()
+#else
+        returnSide = nil
+#endif
+        localWatch = false
+        emergencyActive = false
+        edgeEnabled = false
+        swallowUps.insert(kc)
+        emit(["event": "emergency"])
+        return true
+      }
+    }
+    if down && swallowUps.contains(kc) { return true } // suppress autorepeat until the release
     if capturing && capKeyboard {
       if !down && localDown.remove(kc) != nil { return false }
       guard let code = KeyCodes.code(kc, kbType: e.getIntegerValueField(.keyboardEventKeyboardType)) else { return true }
@@ -601,6 +738,16 @@ final class Capture {
     hkStage = 0
     ev(["t": state == 0x0A ? "k.kd" : "k.ku", "code": code])
     return true
+  }
+
+  private func crossingAllowed(_ flags: CGEventFlags) -> Bool {
+    return crossingModifierGate(required: crossingModifier, flags: flags) {
+#if MULTI
+      edgeBy.removeAll()
+#else
+      edge.push = 0
+#endif
+    }
   }
 
   private func onMouse(_ type: CGEventType, _ e: CGEvent) -> Bool {
@@ -654,10 +801,11 @@ final class Capture {
     }
 
     if noteLocal(type, dx, dy) { return false } // ours again: the event goes on here as it is
+    let allowed = !capturing && edgeEnabled ? crossingAllowed(e.flags) : true
     if type == .leftMouseDown { dragPbCount = NSPasteboard(name: .drag).changeCount }
     // A file drag pushed through the crossing edge carries the files over.
 #if MULTI
-    if type == .leftMouseDragged, !capturing, edgeEnabled, dragFiles,
+    if type == .leftMouseDragged, !capturing, edgeEnabled, dragFiles, allowed,
        let hit = edgeCrossing(e.location, dx: dx, dy: dy) {
       let paths = draggedFiles()
       log("edge: drag through the edge, \(paths.count) file(s) on the drag pasteboard")
@@ -670,7 +818,7 @@ final class Capture {
       }
     }
 #else
-    if type == .leftMouseDragged, !capturing, edgeEnabled, dragFiles,
+    if type == .leftMouseDragged, !capturing, edgeEnabled, dragFiles, allowed, !portalCovers(e.location, side: side),
        let off = push(&edge, e.location, dx, dy, side, resistance, edgeZones) {
       let paths = draggedFiles()
       log("edge: drag through the edge, \(paths.count) file(s) on the drag pasteboard")
@@ -678,7 +826,7 @@ final class Capture {
         startCapture(mouse: true, keyboard: cfgKeyboard)
         DragIn.shared.swallowLocalDrag(at: e.location) // Finder's drag ends here, quietly
         Flash.shared.leave(at: e.location, side: side)
-        emit(["event": "edge", "offset": off, "drag": ["paths": paths]])
+        emit(["event": "edge", "offset": off, "crossingFlags": crossingBits(e.flags), "drag": ["paths": paths]])
         return true
       }
     }
@@ -687,7 +835,7 @@ final class Capture {
       // The system's own button state: counting downs and ups here stuck at 1 when the tap missed
       // an up (disabled by a timeout meanwhile), and nothing crossed again until a restart.
 #if MULTI
-      if !capturing, edgeEnabled, NSEvent.pressedMouseButtons == 0 || grab.grabbing,
+      if !capturing, edgeEnabled, allowed, NSEvent.pressedMouseButtons == 0 || grab.grabbing,
          let hit = edgeCrossing(e.location, dx: dx, dy: dy) {
         startCapture(mouse: true, keyboard: cfgKeyboard) // capture first, so no motion leaks
         Flash.shared.leave(at: e.location, side: hit.side)
@@ -698,18 +846,29 @@ final class Capture {
         return true
       }
 #else
-      if !capturing, edgeEnabled, NSEvent.pressedMouseButtons == 0 || grab.grabbing,
+      let previous = lastPortalPoint.flatMap { now() - $0.at <= 0.25 ? $0.point : nil }
+      lastPortalPoint = (e.location, now())
+      if !capturing, edgeEnabled, allowed, !portals.isEmpty, NSEvent.pressedMouseButtons == 0,
+         let hit = portalCrossing(e, dx: dx, dy: dy, previous: previous) {
+        startCapture(mouse: true, keyboard: cfgKeyboard, pin: hit.pin)
+        Flash.shared.leave(at: hit.pin ?? e.location, side: hit.side)
+        emit(["event": "portal", "id": hit.id, "offset": hit.offset])
+        return true
+      }
+      // A portal owns its range: the automatic path must not bypass its shortcut.
+      if portalCovers(e.location, side: side) { checkReturn(e.location, dx: dx, dy: dy, flags: e.flags); return false }
+      if !capturing, edgeEnabled, allowed, NSEvent.pressedMouseButtons == 0 || grab.grabbing,
          let off = push(&edge, e.location, dx, dy, side, resistance, edgeZones) {
         startCapture(mouse: true, keyboard: cfgKeyboard) // capture first, so no motion leaks
         Flash.shared.leave(at: e.location, side: side)
-        var out: [String: Any] = ["event": "edge", "offset": off]
+        var out: [String: Any] = ["event": "edge", "offset": off, "crossingFlags": crossingBits(e.flags)]
         let moving = grab.take(keepUp: true)
         if moving != 0 { out["moving"] = moving; out["movingPid"] = WindowGrab.shared.pid } // a grabbed window goes along
         emit(out)
         return true
       }
 #endif
-      checkReturn(e.location, dx: dx, dy: dy)
+      checkReturn(e.location, dx: dx, dy: dy, flags: e.flags)
     }
     return false
   }

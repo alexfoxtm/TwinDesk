@@ -122,9 +122,11 @@ UI.tab({
         : !m.seen.other ? I18n.t('Now turn one of your own Focus modes on and check again')
         : I18n.t('Checked on this Mac'));
     };
+    const showing = UI.notifShowCard ? UI.notifShowCard() : null; // how they show here (shared/ui-notifrules.js)
 
     body.append(
       UI.pair(UI.dir('m2w', [sendRow, fdaRow, hideRow]), UI.dir('w2m', [recvRow, nativeRow])),
+      ...(showing ? [showing.el] : []),
       silCard,
       UI.card(I18n.t('Apps'), [apps]),
       hist.el,
@@ -133,6 +135,7 @@ UI.tab({
     let key = '';
     return (s) => {
       const n = s.notifs;
+      if (showing && n) showing.update(s);
       hist.update(s);
       silence(s);
       if (!n) return;
@@ -151,7 +154,7 @@ UI.tab({
       fdaRow.hidden = n.access !== 'noAccess';
       sendRow.setHint(!n.send ? '' : n.access === 'noAccess' ? I18n.t('Needs Full Disk Access')
         : !s.client ? I18n.t('Also switches it on the other computer') : n.sent ? I18n.t('{count} sent', { count: n.sent }) : I18n.t('As native notifications there'));
-      recvRow.setHint(n.receive && n.shown ? I18n.t('{count} shown', { count: n.shown }) : I18n.t('As native notifications, from TwinDesk'));
+      recvRow.setHint(n.receive && n.shown ? I18n.t('{count} shown', { count: n.shown }) : (n.style === 'twindesk' ? I18n.t('In TwinDesk’s own pop-ups') : I18n.t('As native notifications, from TwinDesk')));
       void p;
 
       const k = JSON.stringify([n.apps.map((a) => a.app), n.muted]);

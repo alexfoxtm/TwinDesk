@@ -951,5 +951,18 @@
   "{systemName} {systemVersion}": "{systemName} {systemVersion}",
   "{what}. Save to this {device}?": "{what}. Salvar neste {device}?",
   "Search button": "Botão de pesquisa",
-  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "A captura de tela está indisponível em {name}. Verifique o bloqueio do Mac e os ajustes de Gravação da Tela. Tentando novamente…"
+  "Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…": "A captura de tela está indisponível em {name}. Verifique o bloqueio do Mac e os ajustes de Gravação da Tela. Tentando novamente…",
+  "Not live": "Fora do ar",
+  "Not recording": "Sem gravar",
+  "OBS is off": "OBS desligado",
+  "Open OBS Studio on the computer to choose. Its connection is set on the computer’s Deck page.": "Abra o OBS Studio no computador para escolher. A conexão é definida na página Deck do computador.",
+  "Paused": "Pausado",
+  "Recording": "Gravando",
+  "Showing": "No ar",
+  "Loading…": "Carregando…",
+  "Auto-rotate": "Girar automaticamente",
+  "Screenshot": "Captura de tela",
+  "Couldn’t take the screenshot": "Não foi possível fazer a captura de tela",
+  "Screenshot saved in Photos": "Captura de tela salva em Fotos",
+  "Allow TwinDesk to add photos in Settings": "Permita que o TwinDesk adicione fotos nos Ajustes"
 }

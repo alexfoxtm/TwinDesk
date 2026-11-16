@@ -27,7 +27,7 @@
         rec {
           twindesk = pkgs.stdenv.mkDerivation rec {
             pname = "twindesk";
-            version = "3.1.1";
+            version = "3.2.1";
 
             src = self;
 
@@ -150,6 +150,7 @@ EOF
               # Copy bundled scrcpy-server if present
               if [ -f mac/vendor/scrcpy-server ]; then
                 cp mac/vendor/scrcpy-server "$share/linux/vendor/scrcpy-server"
+                cp mac/vendor/twindesk-relay.jar "$share/linux/vendor/twindesk-relay.jar"
               fi
 
               # Unpack ws dependency into node_modules

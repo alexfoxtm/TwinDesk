@@ -32,11 +32,14 @@ UI.tab({
     const encryptSw = UI.switch((v) => api.setFiles({ plain: !v }), { label: I18n.t('Encrypt file transfers') });
     const encryptRow = UI.row(I18n.t('Encrypt file transfers'), '', [encryptSw], { literalHint: true });
     const reveal = UI.switch((v) => api.setFiles({ reveal: v }), { label: I18n.t('Show in Finder') });
+    const clipSw = UI.switch((v) => api.setFiles({ clipReceived: v }), { label: I18n.t('Put received files on the clipboard') });
     const folderRow = UI.row(I18n.t('Save to'), '', [UI.button(I18n.t('Choose…'), () => api.pickDropFolder(), 'small'), UI.button(I18n.t('Downloads'), () => api.resetDropFolder(), 'small')], { literalHint: true });
     const progress = el('div');
     const list = el('div', { class: 'history' });
     // TwinDesk Drive (shared/ui-drive.js): one-to-one and Multi-device alike; hidden where the state has none.
     const drive = UI.driveCard ? UI.driveCard(api, { tilde, manager: 'Finder' }) : null;
+    // Waiting to send (shared/ui-outbox.js): sent while away, paused, cut off.
+    const outbox = UI.outboxCard ? UI.outboxCard(api) : null;
 
     // Send files: drop zone + Choose…
     const zoneText = el('div', { class: 'big', text: I18n.t('Drop files or folders here') });
@@ -83,9 +86,11 @@ UI.tab({
       ...(drive ? [drive.card] : []),
       progress,
       ...(lan ? lan.els : []),
+      ...(outbox ? [outbox.card] : []),
       UI.card(I18n.t('Arriving files'), [
         folderRow,
         UI.row(I18n.t('Show in Finder'), '', [reveal]),
+        UI.row(I18n.t('Put received files on the clipboard'), I18n.t('Files sent here are ready to paste with ⌘V'), [clipSw]),
       ]),
       UI.card(I18n.t('Recent'), [list], { actions: [UI.button(I18n.t('Clear'), () => api.clearFiles(), 'small')] }),
     );
@@ -98,11 +103,15 @@ UI.tab({
       const m = s.smb;
       if (!f || !m) return;
       if (drive) drive.update(s);
+      if (outbox) outbox.update(f);
       const pc = UI.peer(s).name;
       // Send files
       canSend = !!s.client;
-      zone.classList.toggle('off', !canSend);
-      zoneText.textContent = canSend ? I18n.t('Drop files or folders here') : I18n.t('Connect to send files');
+      // Not connected: they wait for the device last connected (shared/outbox.js), when that's on.
+      const later = !s.client && f.outboxHours !== 0 && !!f.outboxPeer;
+      zone.classList.toggle('off', !canSend && !later);
+      zoneText.textContent = canSend ? I18n.t('Drop files or folders here') : later ? I18n.t('Drop files here: they go when {device} connects', { device: f.outboxPeer }) : I18n.t('Connect to send files');
+      canSend = canSend || later;
       sendBtn.disabled = !canSend;
       // A batch is one entry (mac/filesend.js): its files left and its bytes.
       const outB = f.outBatches || [];
@@ -143,6 +152,7 @@ UI.tab({
             : m.mountError ? I18n.t('Couldn’t connect: {error}', { error: m.mountError })
               : I18n.t('Waiting for {device} to share a folder', { device: pc }));
       reveal.set(f.reveal);
+      clipSw.set(!!f.clipReceived);
       folderRow.setHint(tilde(f.folder || f.defaultFolder));
       // Files on their way: a batch as one line, a few single files, the rest counted. Redrawn only
       // when a line changes (10,000 small files made it jump for each one).
@@ -153,14 +163,16 @@ UI.tab({
         { count: b.count, name: pc, percent: b.bytes ? pctOf(b.got, b.bytes) : pctOf(b.done, b.count) })),
         ...f.receiving.map((r) => I18n.t('Receiving {file}  {progress}%', { file: r.name, progress: pctOf(r.got, r.size) })),
         ...(f.receivingMore ? [I18n.t('{count} more files waiting', { count: f.receivingMore })] : []),
-        ...outB.map((b) => I18n.t('Sending {file} to {name} · {percent} %', { file: b.items > 1 ? I18n.t('{count} items', { count: b.items }) : b.name, name: pc, percent: pctOf(b.sent, b.bytes) })),
+        ...outB.map((b) => ({ text: I18n.t('Sending {file} to {name} · {percent} %', { file: b.items > 1 ? I18n.t('{count} items', { count: b.items }) : b.name, name: pc, percent: pctOf(b.sent, b.bytes) }), pause: b.kind === 'send' ? b.id : '' })),
         ...f.sending.map((r) => I18n.t('Sending {file}  {progress}%', { file: r.name, progress: pctOf(r.sent, r.size) })),
         ...(f.sendingMore ? [I18n.t('{count} more files waiting', { count: f.sendingMore })] : []),
       ];
-      const pk = lines.join('\n');
+      const pk = lines.map((l) => (typeof l === 'string' ? l : l.text + l.pause)).join('\n');
       if (pk !== progressKey) {
         progressKey = pk;
-        progress.replaceChildren(...lines.map((l) => UI.note('info', l, { literal: true })));
+        // A Send files batch has Pause: the rest waits under Waiting to send.
+        progress.replaceChildren(...lines.map((l) => (typeof l === 'string' || !l.pause ? UI.note('info', typeof l === 'string' ? l : l.text, { literal: true })
+          : UI.row(l.text, '', [UI.button(I18n.t('Pause'), () => api.pauseSend(l.pause), 'small')], { literal: true }))));
       }
       const items = [...f.recent.map((r) => ({ ...r, dir: 'in' })), ...f.sent.map((r) => ({ ...r, dir: 'out' }))].sort((a, b) => b.at - a.at).slice(0, 30);
       const k = JSON.stringify(items.map((r) => r.at)) + Math.floor(Date.now() / 15000);

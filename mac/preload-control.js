@@ -6,11 +6,11 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const ACTIONS = [
   'setSharing', 'setStreamInput', 'selectDisplay', 'setDisplayMode', 'setVirtual', 'setStreamMaxHeight',
-  'setBitrate', 'setKvm', 'moveKvm', 'identifyDisplays', 'setApp', 'setAudio', 'camera', 'phoneMedia', 'phoneBtPick', 'setTerminal', 'setRemote', 'setRezume', 'rezumeDo', 'openSharingSettings', 'setFiles', 'setDrive', 'pickDriveFolder', 'resetDriveFolder', 'openDriveFolder', 'pickDropFolder', 'resetDropFolder', 'revealDrop', 'clearFiles', 'cancelSend', 'setSmb', 'setShareMac', 'chooseShareFolder', 'stopSharingFolder', 'openPcShare', 'setApps', 'setReceive', 'showPcView', 'closePcView', 'setPcApps', 'listPcApps', 'openPcApp', 'openPcShell', 'setScreenSound', 'setKeys', 'setClipboard', 'copyHistory', 'clearHistory', 'history', 'setTab', 'setLanguage', 'setLook', 'setSharingOpts', 'remoteScreen', 'wakePeer', 'setWakeOnLan',
+  'setBitrate', 'setKvm', 'setPortals', 'moveKvm', 'identifyDisplays', 'setApp', 'setAudio', 'camera', 'phoneMedia', 'phoneBtPick', 'setTerminal', 'setRemote', 'setRezume', 'rezumeDo', 'openSharingSettings', 'setFiles', 'setDrive', 'pickDriveFolder', 'resetDriveFolder', 'openDriveFolder', 'pickDropFolder', 'resetDropFolder', 'revealDrop', 'clearFiles', 'cancelSend', 'setSmb', 'setShareMac', 'chooseShareFolder', 'stopSharingFolder', 'openPcShare', 'setApps', 'setReceive', 'showPcView', 'closePcView', 'setPcApps', 'listPcApps', 'openPcApp', 'openPcShell', 'setScreenSound', 'setKeys', 'setClipboard', 'copyHistory', 'clearHistory', 'history', 'setTab', 'setLanguage', 'setLook', 'setSharingOpts', 'remoteScreen', 'wakePeer', 'setWakeOnLan',
   'pairRespond', 'forget', 'openSettings', 'relaunch', 'setMulti', 'setModules', 'deckSave', 'deckTry',
   'keepPcAppInDock', 'sendFiles', 'chooseSendFiles', 'setNotifs', 'muteNotifApp', 'allowFullDisk', 'allowNativeNotifications', 'setSilence', 'silenceDo',
   'connectAddress', 'pairWith', 'confirmGuestCode', 'cancelGuestPair', 'forgetHost', 'refreshDiscovery', 'copyText', 'allowPermission', 'skipSetup',
-  'connectPhone', 'disconnectPhone', 'disconnect', 'connectAgain', 'setPhone', 'phonePair', 'phoneScreen', 'phoneCamera', 'phoneListCameras', 'phoneOpenApp', 'phoneCloseView', 'phoneScreenAct', 'phoneRetry', 'phoneInstallFull', 'phoneInstallApps', 'phoneMount', 'phoneUnmount', 'setMount', 'phoneAppMenu',
+  'connectPhone', 'disconnectPhone', 'disconnect', 'connectAgain', 'setPhone', 'phonePair', 'phoneScreen', 'phoneCamera', 'takePhoto', 'phoneListCameras', 'phoneOpenApp', 'phoneCloseView', 'phoneScreenAct', 'phoneRetry', 'phoneInstallFull', 'phoneInstallApps', 'phoneMount', 'phoneUnmount', 'setMount', 'phoneAppMenu',
   'deviceDo', 'setOverview', 'setChats', 'notifReply', 'adbQr', // the redesign: Overview, General › Overview, Messages, QR codes
   'webSet', 'webNewCode', 'webAllow', 'webChooseFolder', 'webForget', 'webDisconnect', 'webRename', 'webSendText', 'webSendFiles', 'webChooseFiles', 'webDeleteItem', 'webClearChat', 'webStopScreen', 'webStopCam', 'webShowScr', 'webAudio', 'webRemotePad', 'webOpenItem', 'webSaveItem', 'webCopy', 'webShareSet', 'webShareFolder', // TwinDesk Web (shared/web/webwire.js)
   'iosSign', 'iosSignIpa', // TwinDesk iPhone (shared/iossign.js)
@@ -22,7 +22,9 @@ const api = {
   getState: () => ipcRenderer.invoke('getState'),
   phoneAssets: () => ipcRenderer.invoke('phoneAssets'),
   deckApps: () => ipcRenderer.invoke('deckApps'), // the Deck page's app picker
-  deckState: () => ipcRenderer.invoke('deckState'), // its sound, Bluetooth and display pickers
+  deckState: (obs) => ipcRenderer.invoke('deckState', obs === true || obs === 'mix' ? obs : false), // its sound, Bluetooth and display pickers (OBS's: obs)
+  deckObs: () => ipcRenderer.invoke('deckObs'), // OBS Studio's port, and whether a password is kept
+  deckSetObs: (v) => ipcRenderer.invoke('deckSetObs', v), // {port, pass} → OBS's state
   deckPick: (o) => ipcRenderer.invoke('deckPick', o), // a file, folder or script for a tile
   deckRun: (action) => ipcRenderer.invoke('deckRun', action), // Try: {ok, why}
   onState: (fn) => ipcRenderer.on('state', (_e, s) => fn(s)),

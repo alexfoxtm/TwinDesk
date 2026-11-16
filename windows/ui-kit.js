@@ -388,6 +388,27 @@ const UI = {
     return row;
   },
 
+  // How this computer captures its screen for sharing (native-screen.js): set(v) saves it; a share going
+  // on starts again with it. Returns the row with .render(value).
+  captureRow(set) {
+    const sel = UI.select([
+      { value: 'chromium', label: I18n.t('Original (Chromium)') },
+      { value: 'auto', label: I18n.t('Automatic') },
+      { value: 'dda', label: I18n.t('Desktop Duplication') },
+      { value: 'wgc', label: I18n.t('Windows Graphics Capture') },
+    ], (v) => set(v));
+    const row = UI.row(I18n.t('Capture'), '', [sel]);
+    row.render = (v) => {
+      v = ['auto', 'dda', 'wgc'].includes(v) ? v : 'chromium';
+      sel.set(v);
+      row.setHint(v === 'chromium' ? I18n.t('As before: the pointer may show smaller than on this screen')
+        : v === 'dda' ? I18n.t('The pointer at its real size, no border. Over Remote Desktop it shows no pointer')
+          : v === 'wgc' ? I18n.t('The pointer at its real size; Windows 10 draws a yellow border around the screen')
+            : I18n.t('Desktop Duplication on Windows 10, Windows Graphics Capture on Windows 11'));
+    };
+    return row;
+  },
+
   // A template with {me}, {name}, {Name}, … filled from the current state.
   fill(t) {
     if (!t || !String(t).includes('{')) return t || '';
@@ -453,11 +474,39 @@ const UI = {
 
   // "Control+Alt+C" → "Ctrl+Alt+C" (Electron accelerator → how Windows writes it).
   keysLabel(acc) {
-    return String(acc || '').split('+').map((p) => ({ Control: 'Ctrl', Super: 'Win', Scrolllock: 'Scroll Lock' }[p] || p)).join('+');
+    return String(acc || '').split('+').map((p) => ({ Control: 'Ctrl', Super: 'Win', Command: 'Win', Scrolllock: 'Scroll Lock' }[p] || p)).join('+');
+  },
+
+  // Hold a key to cross (#230) and the emergency return (#178), for the Cursor page. mesh: in
+  // Multi-device the key is for this computer's own mouse or touchpad at its edges only.
+  crossingOptions(mesh) {
+    const t = I18n.t;
+    const mod = UI.select([
+      { value: '', label: t('None') },
+      { value: 'Command', label: 'Win' },
+      { value: 'Control', label: 'Ctrl' },
+      { value: 'Alt', label: 'Alt' },
+      { value: 'Shift', label: 'Shift' },
+    ], (v) => UI.api.setKvm({ crossingModifier: v }));
+    mod.el.setAttribute('aria-label', t('Hold key to switch'));
+    const modRow = UI.row(t('Hold key to switch'), mesh ? t('Hold this key when this computer’s own mouse or touchpad leaves it at an edge.')
+      : t('Hold this key when leaving this computer. On return, the other computer needs a compatible version.'), [mod.el]);
+    const KEY = /(?:^|\+)(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|20)|Escape|Space|Tab|Backspace|Delete|Enter|Up|Down|Left|Right)$/;
+    const rec = UI.keyRecorder((v) => UI.api.setKeys({ emergencyKeys: v }), { bare: true, allowEscape: true, meta: 'Command', valid: (v) => KEY.test(v) });
+    const card = UI.card(t('Emergency return'), [UI.row(t('Return shortcut'), t('Stops input sharing and returns the pointer if the input helper responds. Set separately on each computer.'), [rec.el])]);
+    return {
+      modRow, card,
+      update(s) {
+        mod.set((s.kvm && s.kvm.crossingModifier) || '');
+        rec.set((s.keys && s.keys.emergencyKeys) || 'Control+Alt+Command+Escape');
+      },
+    };
   },
 
   // A shortcut recorder: click, press the keys (with Ctrl, Alt or Win), Esc cancels.
-  // onChange(accelerator). opts.bare: Scroll Lock and F13–F24 also count on their own.
+  // onChange(accelerator). opts.bare: Scroll Lock and F13–F24 also count on their own. opts.allowEscape:
+  // Esc with Ctrl, Alt or the Windows/Super key is a shortcut (not a cancel); opts.meta: the name the
+  // Windows/Super key gets ('Super'; the emergency shortcut says 'Command', as on a Mac); opts.valid(acc).
   keyRecorder(onChange, opts = {}) {
     const b = UI.el('button', { class: 'btn small keyrec' });
     let value = '', recording = false;
@@ -467,16 +516,18 @@ const UI = {
       if (/^Digit\d$/.test(e.code)) return e.code.slice(5);
       if (/^F\d{1,2}$/.test(e.code)) return e.code;
       if (opts.bare && e.code === 'ScrollLock') return 'Scrolllock';
-      return { Space: 'Space', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete', Enter: 'Enter', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' }[e.code] || '';
+      return { Escape: 'Escape', Space: 'Space', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete', Enter: 'Enter', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' }[e.code] || '';
     };
     const bare = (key) => opts.bare && /^(?:Scrolllock|F(?:1[3-9]|2[0-4]))$/.test(key);
     const onKey = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === 'Escape') return stop();
+      if (e.key === 'Escape' && !(opts.allowEscape && (e.ctrlKey || e.altKey || e.metaKey))) return stop();
       const key = keyOf(e);
       if (!key || !(e.ctrlKey || e.altKey || e.metaKey || bare(key))) return; // wait for a real combination
-      value = [e.ctrlKey && 'Control', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super', key].filter(Boolean).join('+');
+      const acc = [e.ctrlKey && 'Control', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && (opts.meta || 'Super'), key].filter(Boolean).join('+');
+      if (opts.valid && !opts.valid(acc)) return;
+      value = acc;
       stop();
       onChange(value);
     };

@@ -2,8 +2,9 @@
 // Banking apps (General › Banking apps): many refuse to run while USB or wireless debugging,
 // Developer options or an Accessibility service is on. When one of them comes to the front,
 // TwinDesk switches those off (with WRITE_SECURE_SETTINGS, granted over wireless debugging) and
-// exits, so the bank's app opens as on any phone. Opening TwinDesk again turns back on what was on
-// (Turn back on when TwinDesk opens).
+// closes completely (every link; nothing starts it again, not even a linked computer coming near),
+// so the bank's app opens as on any phone. A notification says so. Opening TwinDesk again (its
+// window, from the app drawer or the notification) turns back on what was on, and only then.
 //   Which apps: the ones that look like a bank's (their name or package: bank, banking, wallet, UPI…)
 //   unless switched off, and any the person switches on.
 //   Seeing one open: the Accessibility service's window changes (Input.kt), at once; without it,
@@ -71,8 +72,6 @@ class BankGuard(private val core: Core) {
     // Developer options off too (most banks check it, not only debugging).
     val devOff: Boolean get() = core.store.flag("bank.devOff", true)
     fun setDevOff(v: Boolean) { core.store.setFlag("bank.devOff", v); core.changed() }
-    val restoreOn: Boolean get() = core.store.flag("bank.restore", true)
-    fun setRestore(v: Boolean) { core.store.setFlag("bank.restore", v); core.changed() }
     // The last time it happened, for the page: "Sampath Bank · 10:42".
     val last: String get() = core.store.prefsString("bank.last", "")
 
@@ -120,7 +119,6 @@ class BankGuard(private val core: Core) {
 
     // Core.start: watch the screen going on and off; turn back on what was on before (we're open again).
     fun start() {
-        runCatching { restore() }
         val f = IntentFilter().apply { addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_SCREEN_OFF) }
         ctx.registerReceiver(object : BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) = check()
@@ -179,6 +177,13 @@ class BankGuard(private val core: Core) {
 
     private fun trip(pkg: String) {
         if (tripped || !exposed) return
+        val (label, switched) = switchOff(pkg)
+        exitTwinDesk(ctx, core)
+        notice(label, switched) // after Exit's cancelAll: this one stays
+    }
+
+    // Switch off what a bank's app minds; remembers what was on. Returns (its label, switched).
+    private fun switchOff(pkg: String): Pair<String, Boolean> {
         tripped = true
         val label = core.appList.label(pkg)
         // What was on, to turn back on later (kept if we already saved one: the first is the true one).
@@ -205,9 +210,16 @@ class BankGuard(private val core: Core) {
         if (!core.adb.canEnable) switched = false
         val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date())
         core.store.setPrefsString("bank.last", "$label · $time")
-        exitTwinDesk(ctx, core)
-        notice(label, switched) // after Exit's cancelAll: this one stays
+        core.store.setPrefsString("bank.app", pkg)
+        core.store.setPrefsString("bank.since", System.currentTimeMillis().toString())
+        return label to switched
     }
+
+    // Switched off for a banking app and not back on yet.
+    val pending: Boolean get() = core.store.prefsString("bank.was", "").isNotEmpty()
+
+    // TwinDesk's window opened (MainActivity, Core.foreground): the only way back on.
+    fun opened() { if (pending) runCatching { restore() } }
 
     // Opening TwinDesk again: what was on comes back (only what we switched off).
     fun restore() {
@@ -216,7 +228,7 @@ class BankGuard(private val core: Core) {
         core.store.setPrefsString("bank.was", "")
         tripped = false
         Notify.nm(ctx).cancel(ID)
-        if (!restoreOn || !core.adb.canEnable) return
+        if (!core.adb.canEnable) return
         val w = runCatching { JSONObject(was) }.getOrNull() ?: return
         runCatching {
             if (w.optBoolean("dev")) Settings.Global.putInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 1)
@@ -236,13 +248,13 @@ class BankGuard(private val core: Core) {
         nm.createNotificationChannel(NotificationChannel(CH, tr("Banking apps"), NotificationManager.IMPORTANCE_DEFAULT).apply {
             description = tr("TwinDesk closed so a banking app could open")
         })
-        val text = if (switched) if (devOff) tr("Debugging and Developer options are off while you use {app}. Open TwinDesk to turn them back on.", "app" to label)
-            else tr("Debugging is off while you use {app}. Open TwinDesk to turn it back on.", "app" to label)
+        val text = if (switched) if (devOff) tr("For {app}: debugging and Developer options are off. Open TwinDesk to turn them back on.", "app" to label)
+            else tr("For {app}: debugging is off. Open TwinDesk to turn it back on.", "app" to label)
         else tr("Turn off USB and wireless debugging in Developer options if {app} still refuses to open.", "app" to label)
         nm.notify(
             ID,
             Notification.Builder(ctx, CH).setSmallIcon(R.drawable.ic_stat)
-                .setContentTitle(tr("TwinDesk closed for {app}", "app" to label))
+                .setContentTitle(tr("TwinDesk is fully closed"))
                 .setContentText(text).setStyle(Notification.BigTextStyle().bigText(text))
                 .setContentIntent(PendingIntent.getActivity(ctx, 19, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE))
                 .setAutoCancel(true).build(),

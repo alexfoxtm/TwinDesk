@@ -10,8 +10,8 @@ android {
         applicationId = "io.github.alexfoxtm.twindesk.android"
         minSdk = 29 // Android 10: wireless debugging needs 11, everything else works from 10
         targetSdk = 36
-        versionCode = 30101
-        versionName = "3.1.1"
+        versionCode = 30201
+        versionName = "3.2.1"
     }
     // Two builds of the same app (same id and signature, so one installs over the other):
     //   standard — what people download: no notification access, SMS or Accessibility service, which
@@ -45,6 +45,10 @@ android {
         // Google's code scanner (src/gms) in the GitHub builds; without it in F-Droid's (src/fdroid).
         getByName("standard").kotlin.srcDir("src/gms/java")
         getByName("full").kotlin.srcDir("src/gms/java")
+        // Shizuku (Permissions › Without a computer, Elevate.kt) in the full build only.
+        getByName("full").kotlin.srcDir("src/shizuku/java")
+        getByName("standard").kotlin.srcDir("src/noshizuku/java")
+        getByName("fdroid").kotlin.srcDir("src/noshizuku/java")
     }
     buildTypes {
         release {
@@ -81,6 +85,9 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("com.squareup.okhttp3:okhttp:5.5.0")
+    // Shizuku (General › Permissions › Without a computer), full build only: its small client API; the app itself is the person's own install.
+    "fullImplementation"("dev.rikka.shizuku:api:13.1.5")
+    "fullImplementation"("dev.rikka.shizuku:provider:13.1.5")
     // Scan QR code (pairing): Google's scanner, no camera permission. Not in the F-Droid build (proprietary).
     "standardImplementation"("com.google.android.gms:play-services-code-scanner:16.1.0")
     "fullImplementation"("com.google.android.gms:play-services-code-scanner:16.1.0")

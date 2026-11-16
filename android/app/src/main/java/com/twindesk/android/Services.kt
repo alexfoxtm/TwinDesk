@@ -27,9 +27,15 @@ class TwinService : Service() {
         } catch (e: Exception) {
             Log.w("TwinDesk", "foreground service: ${e.message}")
         }
+        // Closed (Exit, or for a banking app) and Android started the service again by itself:
+        // no "Ready to connect", it stops at once. Opening TwinDesk (Core.wake) clears this.
+        if (closed(core)) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    private fun closed(core: Core) = core.store.flag("exited", false) || core.bank.pending
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
+        if (closed(Core.get(this))) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(startId); START_NOT_STICKY } else START_STICKY
 
     // Swiped away from Recents with General › Run in the background off: TwinDesk stops, as Exit does.
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -123,6 +129,7 @@ class ActionReceiver : BroadcastReceiver() {
             LS_ACCEPT -> core.localSend.answer(arg, true) // a LocalSend-compatible device's offer: its notification's buttons
             LS_DECLINE -> core.localSend.answer(arg, false)
             LS_CANCEL -> core.localSend.cancel(arg)
+            FILES_PAUSE -> core.files.pause(arg) // … Pause (Send files): the rest waits on the Files page
             LOCK_PC -> core.dev.ask("lock")
             PAIR_CODE -> {
                 val code = android.app.RemoteInput.getResultsFromIntent(intent)?.getCharSequence("code")?.toString() ?: ""
@@ -150,6 +157,7 @@ class ActionReceiver : BroadcastReceiver() {
         const val LS_ACCEPT = "com.twindesk.android.LS_ACCEPT"
         const val LS_DECLINE = "com.twindesk.android.LS_DECLINE"
         const val LS_CANCEL = "com.twindesk.android.LS_CANCEL"
+        const val FILES_PAUSE = "com.twindesk.android.FILES_PAUSE"
     }
 }
 
@@ -161,6 +169,7 @@ class WiredReceiver : BroadcastReceiver() {
         val port = intent.getIntExtra("port", 0)
         if (port <= 0 || port > 65535) return
         if (!Core.get(ctx).background && !MainActivity.shown) return // Run in the background off: only while the app is open
+        if (Core.get(ctx).bank.pending) return // closed for a banking app: only opening TwinDesk brings it back
         runCatching { TwinService.start(ctx) }
         Core.get(ctx).connectWired(id, port, intent.getStringExtra("nonce") ?: "", intent.getStringExtra("name")?.take(64) ?: "")
     }
@@ -170,6 +179,7 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         // General › Run in the background off: only when the app is opened.
         if (!Core.get(ctx).background) return
+        if (Core.get(ctx).bank.pending) return // closed for a banking app: only opening TwinDesk brings it back
         if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) TwinService.start(ctx)
     }
 }

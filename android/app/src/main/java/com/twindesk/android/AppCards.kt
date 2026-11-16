@@ -149,12 +149,12 @@ fun BankCard(core: Core, v: Int) {
         ) { b.setOn(it) }
         if (b.on) {
             SwitchRow(tr("Turn off Developer options"), tr("Checked by most banking apps"), b.devOff) { b.setDevOff(it) }
-            SwitchRow(tr("Restore when TwinDesk opens"), tr("Turns these settings back on the next time TwinDesk opens"), b.restoreOn) { b.setRestore(it) }
             if (!core.adb.canEnable) MacRow(tr("Wireless debugging required"), tr("Without it, TwinDesk closes but can’t turn debugging off")) { }
             if (b.how.isEmpty()) MacRow(tr("Usage access"), tr("Detects when a banking app opens (or use the Accessibility service)")) {
                 TextButton(onClick = { runCatching { ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }) { Text(tr("Allow"), color = pal.accent) }
             }
             if (b.last.isNotEmpty()) MacRow(tr("Last closed for"), b.last)
+            MacRow(tr("Back on"), tr("When you open TwinDesk again, what it turned off comes back on"))
             MacRow(
                 tr("Banking apps"),
                 if (banks.isEmpty()) tr("None selected") else banks.take(4).joinToString(", ") { it.label } + if (banks.size > 4) tr(" and {count} more", "count" to banks.size - 4) else "",

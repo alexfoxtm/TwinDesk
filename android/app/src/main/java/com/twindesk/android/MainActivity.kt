@@ -1646,6 +1646,7 @@ private fun FilesPage(core: Core, v: Int) {
     LocalSendOffers(core, v) // a LocalSend-compatible device asking: before everything else
     if (host == null) {
         NotConnected(core, v)
+        WaitingToSend(core, v) // files sent while away, with or without a computer connected now
         return LocalSendCards(core, v) // these need no computer
     }
 
@@ -1706,6 +1707,7 @@ private fun FilesPage(core: Core, v: Int) {
             for ((label, pct, id) in moving) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("$label · $pct%", color = pal.text, modifier = Modifier.weight(1f))
+                    if (core.files.sending.any { it.id == id && it.kind == "send" }) Secondary(tr("Pause")) { core.files.pause(id) }
                     Secondary(tr("Cancel")) { core.files.cancel(id) }
                 }
                 LinearProgressIndicator(progress = { pct / 100f }, modifier = Modifier.fillMaxWidth(), color = pal.accent, trackColor = pal.trackOff)
@@ -1713,12 +1715,33 @@ private fun FilesPage(core: Core, v: Int) {
             if (core.fclip.status.isNotEmpty()) Text(core.fclip.status, color = pal.muted)
         }
     }
+    WaitingToSend(core, v)
     if (core.files.recent.isNotEmpty()) MacCard(tr("Recent")) {
         core.files.recent.take(10).forEachIndexed { i, r -> MacRow(r, "", first = i == 0) }
         MacRow(tr("Clear this list"), tr("Only the list here. The files stay where they are.")) { Secondary(tr("Clear")) { core.files.clearRecent() } }
         MacRow(tr("Downloads"), "") { Secondary(tr("Show")) { ctx.startActivity(Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }
     }
     LocalSendCards(core, v)
+}
+
+// Files waiting to go (Files.Waiting): sent while away, paused, cut off; Resume, Remove, and how long
+// they're kept.
+@Composable
+private fun WaitingToSend(core: Core, v: Int) {
+    MacCard(tr("Waiting to send")) {
+        @Suppress("UNUSED_EXPRESSION") v // capture the revision: Remove and Resume show at once
+        core.files.waiting.forEachIndexed { i, w ->
+            MacRow(w.name, if (w.paused) tr("Paused") else tr("Waiting for {device}", "device" to w.hostName), first = i == 0) {
+                if (w.paused) Primary(tr("Resume")) { core.files.resume(w.id) }
+                Secondary(tr("Remove")) { core.files.forget(w.id) }
+            }
+        }
+        val hours = core.files.keepHours
+        val label = when (hours) { 0 -> tr("Off"); 1 -> tr("1 hour"); 168 -> tr("1 week"); else -> tr("1 day") }
+        MacRow(tr("Keep files to send"), tr("Sent while the computer isn’t connected, or cut off: they go when it’s back") + " · " + label, first = core.files.waiting.isEmpty()) {
+            Secondary(tr("Change")) { core.files.setKeepHours(when (hours) { 0 -> 1; 1 -> 24; 24 -> 168; else -> 0 }) }
+        }
+    }
 }
 
 // ---- Sound ----
@@ -1740,6 +1763,7 @@ private fun SoundPage(core: Core, v: Int) {
         @Suppress("UNUSED_EXPRESSION") v // capture the revision in this remembered content
         DirHead(me, true, name, false)
         SwitchRow(tr("Play this device’s sound on {name}", "name" to name), soundHint(core), core.sync.get("audio", "out"), first = true) { core.sync.set("audio", "out", it) }
+        SwitchRow(tr("Only on {name}", "name" to name), tr("Without wireless debugging, this phone turns its media volume down while its sound plays there, and back up after."), Quiet.on(core)) { Quiet.setOn(core, it) }
         SoundStart(core)
     }
     Note(tr("Audio from screen sharing plays in the screen view. See Screen › Playback."))
@@ -1760,7 +1784,7 @@ private fun SoundStart(core: Core) {
     if (core.mirror.wanted && !core.mirror.on) MacRow(tr("Show this screen"), core.mirror.error.ifEmpty { tr("Android asks once to share the screen") }) { Primary(tr("Start")) { core.sound.start(ctx) } }
     else if (core.mirror.on) MacRow(tr("Screen shared"), tr("Close its window on the computer, or Stop, to end it.")) { Secondary(tr("Stop")) { core.sound.stop() } }
     if (core.sound.wanted && !core.sound.on) MacRow(tr("Start the sound"), tr("Android asks for permission to capture audio")) { Primary(tr("Start")) { core.sound.start(ctx) } }
-    else if (core.sound.on) MacRow(tr("Captured sound"), tr("Audio also plays on this phone. Use wireless debugging to play it only on the computer.")) { Secondary(tr("Stop")) { core.sound.stop() } }
+    else if (core.sound.on) MacRow(tr("Captured sound"), if (Quiet.on(core)) tr("This phone stays quiet while it plays on the computer.") else tr("Audio also plays on this phone. Use wireless debugging to play it only on the computer.")) { Secondary(tr("Stop")) { core.sound.stop() } }
 }
 
 // ---- General ----
@@ -1771,10 +1795,17 @@ private fun SoundStart(core: Core) {
 private fun ModulesCard(core: Core) {
     val ctx = LocalContext.current
     var off by remember { mutableStateOf(Modules.off(core.store)) }
+    var open by remember { mutableStateOf(false) } // collapsed each time the page opens
+    val all = Tab.entries.filter { it.name.lowercase() !in Modules.FIXED }
     MacCard(tr("Modules")) {
-        MacRow(tr("Modules"), tr("A module that’s off isn’t loaded at all: no page, no menu items, nothing running. General, About, Connection and Overview are always on."), first = true)
+        MacRow(
+            tr("Modules"),
+            if (open) tr("A module that’s off isn’t loaded at all: no page, no menu items, nothing running. General, About, Connection and Overview are always on.")
+            else tr("{on} of {all} on", "on" to all.count { it.name.lowercase() !in off }, "all" to all.size),
+            first = true, onClick = { open = !open },
+        ) { Text(if (open) tr("Done") else tr("Choose"), color = pal.accent, fontSize = 14.sp) }
         if (off != core.modulesAtStart) MacRow(tr("Restart to apply"), tr("Modules load or unload when TwinDesk starts")) { Primary(tr("Restart")) { Modules.restart(ctx) } }
-        for (t in Tab.entries) {
+        if (open) for (t in Tab.entries) {
             val id = t.name.lowercase()
             if (id in Modules.FIXED) continue
             SwitchRow(tr(t.title), "", id !in off) {
@@ -1783,6 +1814,40 @@ private fun ModulesCard(core: Core) {
                 if (id == "files") core.localSend.start()
             }
         }
+    }
+}
+
+// General › Linked with Android (CompanionLink.kt): Android's companion device link with a computer.
+@Composable
+private fun LinkedCard(core: Core, v: Int) {
+    val ctx = LocalContext.current
+    if (!CompanionLink.supported(ctx)) return
+    var rev by remember { mutableStateOf(0) }
+    val linked = remember(v, rev) { CompanionLink.linked(ctx) }
+    val ask = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartIntentSenderForResult(),
+    ) { CompanionLink.watch(ctx); rev++; core.changed() }
+    MacCard(tr("Linked with Android")) {
+        @Suppress("UNUSED_EXPRESSION") v // capture the revision in this remembered content
+        MacRow(
+            if (linked.isEmpty()) tr("Link a computer") else tr("Link another computer"),
+            tr("Android then keeps TwinDesk running and connected in the background, without asking about battery optimization. Open TwinDesk on the computer, with Bluetooth on, or pair them over Bluetooth"),
+            first = true,
+        ) {
+            Secondary(tr("Link…")) {
+                CompanionLink.link(ctx, { ask.launch(androidx.activity.result.IntentSenderRequest.Builder(it).build()) }) { err ->
+                    android.widget.Toast.makeText(ctx, if (err.isBlank()) tr("No computer found nearby") else tr("Couldn’t link: {error}", "error" to err), android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        linked.forEach { l ->
+            MacRow(l.name, tr("Linked")) { TextButton(onClick = { CompanionLink.remove(ctx, l); rev++ }) { Text(tr("Remove"), color = pal.accent) } }
+        }
+        if (linked.isNotEmpty() && CompanionLink.canWatch()) SwitchRow(
+            tr("Start TwinDesk when it’s near"),
+            tr("Android watches for it over Bluetooth: when it shows up, TwinDesk starts and goes back to the session it was in"),
+            CompanionLink.near(ctx),
+        ) { CompanionLink.setNear(ctx, it); rev++ }
     }
 }
 
@@ -1803,6 +1868,7 @@ private fun GeneralPage(core: Core, v: Int) {
         SwitchRow(tr("Prioritize performance over battery life"), if (core.performance) tr("Checks the connection every second, even when nothing is in use") else tr("Checks an idle connection every few minutes, and immediately when a feature starts"), core.performance, first = true) { core.performance = it }
         SwitchRow(tr("Reconnect in the background"), if (core.reconnectBg) tr("Restores a dropped connection while TwinDesk is closed") else tr("Restores a dropped connection when TwinDesk opens"), core.reconnectBg) { core.reconnectBg = it }
     }
+    LinkedCard(core, v) // CompanionLink.kt
     TailscaleCard(core, v) // #161 (Tailnet.kt)
     // Arrange (Arrange.kt): the pages' order, and which are in the bottom bar.
     MacCard(tr("Page order")) {
@@ -1864,6 +1930,26 @@ private fun GeneralPage(core: Core, v: Int) {
             else {
                 if (!core.adb.wifiDebugging) Secondary(tr("Turn on")) { core.adb.turnOn() }
                 Primary(tr("Guide")) { Guide.open.value = true }
+            }
+        }
+        // Without a computer (Elevate.kt): the same grants through Shizuku, if the person has it.
+        val el = remember(v) { Elevate.state(ctx) }
+        if (Elevate.supported) MacRow(
+            tr("Without a computer"),
+            when {
+                Elevate.last.isNotEmpty() -> Elevate.last
+                core.adb.canEnable -> tr("Already granted")
+                el == Elevate.State.Missing -> tr("Grant what the computer would, on this phone, with Shizuku (free and open source)")
+                el == Elevate.State.Stopped -> tr("Start Shizuku in its app, then come back and Grant")
+                else -> tr("Grants what the computer would, through Shizuku")
+            },
+        ) {
+            @Suppress("UNUSED_EXPRESSION") v
+            when {
+                core.adb.canEnable && Elevate.last.isEmpty() -> Pill(tr("Allowed"), "good")
+                el == Elevate.State.Missing -> Secondary(tr("Get Shizuku")) { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/download/"))) } }
+                el == Elevate.State.Stopped -> Secondary(tr("Open Shizuku")) { ctx.packageManager.getLaunchIntentForPackage(Elevate.SHIZUKU)?.let { runCatching { ctx.startActivity(it) } } }
+                else -> Primary(if (Elevate.busy) tr("Granting…") else tr("Grant")) { Elevate.grant(ctx, core) }
             }
         }
         // Off until switched on (Adb.autoOffEnabled): only what TwinDesk switched on goes off again.

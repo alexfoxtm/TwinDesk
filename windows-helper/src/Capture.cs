@@ -39,9 +39,11 @@ namespace MacShare
         DateTime parkedAt;
         const int StaleMs = 200, StalePx = 150;
         uint mouseCaptureStoppedAt;
-        bool mouseArrivalGuard;
+        volatile bool mouseArrivalGuard;
+        Point arrivedAt; // where Stop put the pointer (the guard's reference)
         public bool HoldReturn; // DropEdge.cs is catching a file drag on the way back: it goes home with it
         readonly HashSet<uint> heldVks = new HashSet<uint>(), swallowVks = new HashSet<uint>();
+        readonly Dictionary<uint, uint> swallowSeen = new Dictionary<uint, uint>(); // swallowVks: when each was last seen (#248)
         readonly HashSet<int> heldButtons = new HashSet<int>(), swallowButtons = new HashSet<int>();
         DateTime lastCmd = DateTime.UtcNow;
         // Driven (armReturn on): the first input from this PC's own mouse or touchpad takes the PC back
@@ -241,6 +243,7 @@ namespace MacShare
             if (capturing) { capMouse = mouse; capKeys = keys; return; }
             mouseArrivalGuard = false;
             capturing = true; capMouse = mouse; capKeys = keys;
+            CrossingReset();
             heldVks.Clear(); heldButtons.Clear();
             hkPending = 0; hkRemote.Clear();
             Touch();
@@ -267,24 +270,35 @@ namespace MacShare
         public void Stop(string side, double offset)
         {
             if (!capturing) return;
+            // The guard first: a move the hook sees once capturing is off must already meet it.
+            Point p = side != null ? Screens.EdgePoint(side, offset) : saved;
+            if (capMouse)
+            {
+                arrivedAt = p;
+                mouseCaptureStoppedAt = unchecked((uint)Environment.TickCount);
+                mouseArrivalGuard = true;
+            }
             capturing = false;
+            CrossingReset();
             // Rule 5: whatever is still held was pressed remotely; its release stays swallowed here.
-            foreach (uint vk in heldVks) swallowVks.Add(vk);
+            uint stopAt = unchecked((uint)Environment.TickCount);
+            foreach (uint vk in heldVks) { swallowVks.Add(vk); swallowSeen[vk] = stopAt; }
             foreach (int b in heldButtons) swallowButtons.Add(b);
             heldVks.Clear(); heldButtons.Clear();
             hkPending = 0; hkRemote.Clear(); // a sent hotkey's release is in swallowVks (heldVks) now
             if (capMouse)
             {
-                Point p = side != null ? Screens.EdgePoint(side, offset) : saved;
                 parkPad.Uncover();
-                mouseCaptureStoppedAt = unchecked((uint)Environment.TickCount);
-                mouseArrivalGuard = true;
                 Native.SetCursorPos(p.X, p.Y);
                 HideCursor.Show();
                 if (Flash != null) Flash.Play(p, side ?? (Side != null && Screens.OnOuterEdge(p.X, p.Y, Side) ? Side : null), false); // arriving
             }
             Arrived(side);
         }
+#endif
+
+#if !MULTI
+        void DisarmForEmergency() { retArmed = false; localWatch = false; push = 0; }
 #endif
 
         public bool Capturing { get { return capturing; } }
@@ -469,7 +483,8 @@ namespace MacShare
             {
                 uint now = unchecked((uint)Environment.TickCount);
                 if (MouseArrivalGuard.IsStale(m.time, mouseCaptureStoppedAt, now)) return (IntPtr)1;
-                mouseArrivalGuard = false;
+                if (MouseArrivalGuard.FromPark(m.pt.x, m.pt.y, parked.X, parked.Y, arrivedAt.X, arrivedAt.Y, mouseCaptureStoppedAt, now)) return (IntPtr)1;
+                if (unchecked(now - mouseCaptureStoppedAt) > MouseArrivalGuard.ParkMs) mouseArrivalGuard = false;
             }
             int button = ButtonOf(msg, m.mouseData);
             bool down = msg == Native.WM_LBUTTONDOWN || msg == Native.WM_RBUTTONDOWN || msg == Native.WM_MBUTTONDOWN || msg == Native.WM_XBUTTONDOWN;
@@ -553,9 +568,21 @@ namespace MacShare
             // it was a Ctrl there too (Cmd on a Mac: AltGr+E was Cmd+Option+E, not €). With Right Alt as
             // the hotkey it doesn't break the double-tap, and it never counts for a Ctrl hotkey.
             bool fakeCtrl = k.vkCode == 0xA2 && k.scanCode == 0x21D;
+            if (!fakeCtrl) NoteModifier(k.vkCode, down); // hold-to-cross and the emergency shortcut (Crossing.cs)
+            if (CheckEmergency(k.vkCode, code, down)) return (IntPtr)1;
+            if (emergencyVks.Contains(k.vkCode)) { if (!down) emergencyVks.Remove(k.vkCode); return (IntPtr)1; } // the emergency key's repeats and release
             bool hotkey = !fakeCtrl && DetectHotkey(k.vkCode, down);
 
-            if (!down && swallowVks.Remove(k.vkCode)) return (IntPtr)1;
+            // Still held from over there (#248): its auto-repeat presses stay here too, or Windows would
+            // have the key down and never see it come up (its release is swallowed). A press after 1.5 s
+            // with nothing in between is a new one (the release got lost): that one goes through.
+            if (down && swallowVks.Contains(k.vkCode))
+            {
+                uint now = unchecked((uint)Environment.TickCount), last;
+                if (!swallowSeen.TryGetValue(k.vkCode, out last) || unchecked(now - last) < 1500) { swallowSeen[k.vkCode] = now; return (IntPtr)1; }
+                swallowVks.Remove(k.vkCode); swallowSeen.Remove(k.vkCode);
+            }
+            if (!down && swallowVks.Remove(k.vkCode)) { swallowSeen.Remove(k.vkCode); return (IntPtr)1; }
             // The Ctrl Windows injects for a touchpad pinch (Ctrl+wheel) stays here.
             bool ctrl = k.vkCode == 0xA2 || k.vkCode == 0xA3 || k.vkCode == 0x11;
             if (ctrl && !down && padCtrl.Remove(k.vkCode)) return (IntPtr)1;
@@ -658,6 +685,7 @@ namespace MacShare
             Native.GetCursorPos(out p);
             if (retArmed) { FeedReturn(p.x, p.y, dx, dy); return; }
             if (!DriveOther || Side == null || (AnyButtonDown() && !AppWindows.Grabbing)) { push = 0; return; } // Rule 6: no crossing mid-drag
+            if (!EdgeAllowed()) { push = 0; return; } // hold-to-cross: not without the key (Crossing.cs)
             double outward = Screens.Outward(Side, dx, dy);
             if (!MayCross(Side, outward)) { push = 0; return; }
             if (outward <= 0 || !Screens.OnOuterEdge(p.x, p.y, Side) || !InZone(EdgeZones, p.x, p.y, Side)) { push = 0; return; }
@@ -673,6 +701,7 @@ namespace MacShare
             Dictionary<string, object> d = Ev("edge");
             AppWindows.AddMoving(d, true); // a window grabbed with the move key goes over with the pointer (pcapps.js)
             d["offset"] = Math.Round(offset, 4);
+            d["crossingFlags"] = LocalCrossingBits();
             emit(d);
         }
 
@@ -680,6 +709,7 @@ namespace MacShare
         public void FeedReturn(int x, int y, double dx, double dy)
         {
             if (!retArmed || HoldReturn) return;
+            if (!ReturnAllowed()) { retPush = 0; return; } // hold-to-cross on the way back (Crossing.cs)
             double outward = Screens.Outward(retSide, dx, dy);
             if (!MayCross(retSide, outward)) { retPush = 0; return; }
             if (outward <= 0 || !Screens.OnOuterEdge(x, y, retSide) || !InZone(ReturnZones, x, y, retSide)) { retPush = 0; return; }

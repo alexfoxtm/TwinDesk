@@ -276,14 +276,55 @@ static void grab_all(int on) {
 
 // ---- injection ----
 
-static void abs_to(double x, double y) {
-  int bx, by, bw, bh;
-  screens_box(&bx, &by, &bw, &bh);
+static void abs_in(double x, double y, int bx, int by, int bw, int bh) {
   int ax = (int)lround((x - bx) * ABS_MAXV / (bw > 1 ? bw - 1 : 1));
   int ay = (int)lround((y - by) * ABS_MAXV / (bh > 1 ? bh - 1 : 1));
   uemit(uabs, EV_ABS, ABS_X, ax < 0 ? 0 : ax > ABS_MAXV ? ABS_MAXV : ax);
   uemit(uabs, EV_ABS, ABS_Y, ay < 0 ? 0 : ay > ABS_MAXV ? ABS_MAXV : ay);
   usyn(uabs);
+}
+
+// Where an absolute pointer's 0..65535 lands. Most compositors spread it over all the monitors (the
+// box around them). COSMIC (#244) puts it on the monitor the cursor is on now, so the box's far side
+// meant that monitor's edge and the next monitor was never reached. There the position is told
+// within the cursor's monitor, and going to another one is first a step across their border with
+// the relative device (a relative move lands on whichever monitor it reaches, as a mouse's does),
+// then the place on the new one. TWINDESK_POINTER=output|box sets it on any desktop.
+static int per_output = -1;
+static double lastX = -1, lastY = -1; // where the last move put the cursor
+
+static int abs_per_output(void) {
+  if (per_output < 0) {
+    const char *e = getenv("TWINDESK_POINTER");
+    const char *d = getenv("XDG_CURRENT_DESKTOP");
+    per_output = e && *e ? !strcmp(e, "output") : (d && (strstr(d, "COSMIC") || strstr(d, "cosmic")));
+    if (per_output) fprintf(stderr, "[wl] pointer: placed within the cursor's monitor (%s)\n", e && *e ? "TWINDESK_POINTER" : "COSMIC");
+  }
+  return per_output;
+}
+
+static void abs_to(double x, double y) {
+  int mx, my, mw, mh, ox, oy, ow, oh;
+  if (abs_per_output() && screens_monitor((int)x, (int)y, &mx, &my, &mw, &mh)) {
+    if (lastX >= 0 && screens_monitor((int)lastX, (int)lastY, &ox, &oy, &ow, &oh) && (ox != mx || oy != my || ow != mw || oh != mh)) {
+      // To this monitor's side that faces the target, then across it.
+      double ex = x < ox ? ox : x > ox + ow - 1 ? ox + ow - 1 : x;
+      double ey = y < oy ? oy : y > oy + oh - 1 ? oy + oh - 1 : y;
+      abs_in(ex, ey, ox, oy, ow, oh);
+      int sx = x < ox ? -8 : x > ox + ow - 1 ? 8 : 0;
+      int sy = y < oy ? -8 : y > oy + oh - 1 ? 8 : 0;
+      if (sx) uemit(urel, EV_REL, REL_X, sx);
+      if (sy) uemit(urel, EV_REL, REL_Y, sy);
+      usyn(urel);
+    }
+    abs_in(x, y, mx, my, mw, mh);
+  } else {
+    int bx, by, bw, bh;
+    screens_box(&bx, &by, &bw, &bh);
+    abs_in(x, y, bx, by, bw, bh);
+  }
+  lastX = x;
+  lastY = y;
 }
 
 void wl_move_to(int x, int y) {
@@ -294,6 +335,8 @@ void wl_move_to(int x, int y) {
 }
 
 static void feed_return(double dx, double dy);
+void wl_forward(const char *k) { forward(k); }
+int wl_mouse(void) { return capturing && capMouse; }
 
 // The pointer came here (back home, or placed by the driver) through `s`, or by the hotkey
 // (SIDE_NONE): starts the cooldown and the arrival guard, and clears every push.
@@ -375,10 +418,12 @@ void wl_release_all(void) {
 
 // A relative move from the input lane (lane.c): no JSON per move.
 void wl_move_rel(double dx, double dy) {
+  if (crossing_blocked()) return;
   inj_move(dx, dy);
 }
 
 void wl_inject(const JObj *ev) {
+  if (crossing_blocked()) return; // the emergency shortcut, until main ended the session
   const char *t = jstr(ev, "t", "");
   if (!strcmp(t, "k.mm")) inj_move(jnum(ev, "dx", 0), jnum(ev, "dy", 0));
   else if (!strcmp(t, "k.md")) inj_button((int)jnum(ev, "b", -1), 1);
@@ -426,6 +471,7 @@ void wl_capture_stop(int toSide, double offset, int hasSide) {
   // What is still held was pressed over there: let it go there (the other side's releaseAll does
   // too); the compositor never saw those presses, so their releases are harmless here.
   grab_all(0);
+  crossing_reset();
   if (capMouse && hasSide && toSide != SIDE_NONE) {
     int x, y;
     screens_edge_point(toSide, offset, &x, &y);
@@ -452,7 +498,7 @@ static void feed_return(double dx, double dy) {
   for (int i = 0; i < nRetSides; i++) {
     int s = retSides[i];
     double outward = screens_outward(s, dx, dy);
-    if (!may_cross(s, outward)) { retPushBy[s] = 0; continue; }
+    if (!may_cross(s, outward) || !crossing_return_ok()) { retPushBy[s] = 0; continue; }
     if (outward <= 0 || !screens_on_outer_edge((int)px, (int)py, s) || !zones_contain(retZ, nRetZ, (int)px, (int)py, s)) { retPushBy[s] = 0; continue; }
     if (now - retLastBy[s] > 300) retPushBy[s] = 0;
     retLastBy[s] = now;
@@ -496,6 +542,7 @@ void wl_config(const JObj *c) {
   deadmanMs = jnum(c, "deadmanMs", 1500);
   doubleTapMs = jnum(c, "doubleTapMs", 400);
   shortcut_config(c);
+  crossing_config(c);
 }
 
 void wl_touch(void) { lastCmd = now_ms(); }
@@ -550,8 +597,24 @@ static void flush_hotkey(void) {
 }
 
 // value: 1 down, 0 up, 2 autorepeat (sent as another k.kd, like the PC)
+// The emergency shortcut: capture stops here first (or what we injected is let go), then main is told.
+void wl_emergency(void) {
+  if (capturing) wl_capture_stop(SIDE_NONE, 0, 0);
+  else { pen_leave(1); touch_leave(1); wl_release_all(); }
+  retArmed = 0;
+  local_watch(0);
+  driveOther = 0;
+  memset(pushBy, 0, sizeof pushBy);
+  crossing_emergency();
+}
+
 static void on_key(int ev, int value) {
   if (ev < 0 || ev > 255) return;
+  {
+    int cr = crossing_key(ev, value, capturing, capturing && capMouse, forward);
+    if (cr == 1) { if (value != 2) localKeys[ev] = (unsigned char)value; return; }
+    if (cr == 2) { localKeys[ev] = 1; wl_emergency(); return; }
+  }
   if (value != 2) { localKeys[ev] = (unsigned char)value; shortcut_key(ev, value, !capturing, !(capturing && capKeys)); }
   int hot = value == 2 ? 0 : detect_hotkey(ev, value);
   if (capturing && capKeys) {
@@ -601,6 +664,18 @@ static void on_wheel(int horiz, int v) {
   jo_num(&k, "dy", horiz ? 0 : -v);
   jo_str(&k, "mode", "line");
   forward(jo_end(&k));
+}
+
+// Why a push against the screen's edge didn't cross (#237: Hyprland, niri), in the log: each reason
+// once, again only after 20 s.
+static void edge_why(const char *why) {
+  static char last[160];
+  static double at;
+  double now = now_ms();
+  if (!strncmp(last, why, sizeof last - 1) && now - at < 20000) return;
+  snprintf(last, sizeof last, "%s", why);
+  at = now;
+  fprintf(stderr, "[edge] not crossing: %s\n", why);
 }
 
 // libinput's pointer acceleration for a mouse (filter-flat.c, filter-linear.c) at the desktop's
@@ -656,14 +731,31 @@ static void on_motion(double rdx, double rdy, double tMs) {
   int ix = (int)lround(px + dx), iy = (int)lround(py + dy), cx, cy;
   screens_clamp(ix, iy, (int)px, (int)py, &cx, &cy);
   px = cx; py = cy;
+  int pinned = cx != ix || cy != iy; // pushed against the screens' outline: a crossing may be meant
   if (local_note(rdx, rdy, 0)) { retArmed = 0; return; }
   if (retArmed) { feed_return(rdx, rdy); return; }
-  if (!driveOther || !nEdgeSides || any(localButtons, 8)) { memset(pushBy, 0, sizeof pushBy); return; } // rule 6
+  if (!driveOther || !nEdgeSides || any(localButtons, 8)) { // rule 6
+    if (pinned) edge_why(!driveOther ? "crossing to the other device is off now (not connected, paused, Mouse off, or a phone window has focus)" : !nEdgeSides ? "no edge leads to the other device" : "a mouse button is held");
+    memset(pushBy, 0, sizeof pushBy);
+    return;
+  }
   for (int i = 0; i < nEdgeSides; i++) {
     int s = edgeSides[i];
     double outward = screens_outward(s, rdx, rdy);
-    if (!may_cross(s, outward)) { pushBy[s] = 0; continue; }
-    if (outward <= 0 || !screens_on_outer_edge((int)px, (int)py, s) || !zones_contain(edgeZ, nEdgeZ, (int)px, (int)py, s)) { pushBy[s] = 0; continue; }
+    if (!may_cross(s, outward) || !crossing_edge_ok()) {
+      if (pinned && outward > 0) edge_why(crossing_edge_ok() ? "just crossed back: waiting a moment" : "hold the crossing key to cross");
+      pushBy[s] = 0;
+      continue;
+    }
+    if (outward <= 0 || !screens_on_outer_edge((int)px, (int)py, s) || !zones_contain(edgeZ, nEdgeZ, (int)px, (int)py, s)) {
+      if (pinned && i == nEdgeSides - 1) {
+        char m[160];
+        snprintf(m, sizeof m, "the pointer (%d,%d, as followed here) is at a screen edge, the other device is on the %s side%s", (int)px, (int)py, side_name(s), outward > 0 ? ", outside its zone" : "");
+        edge_why(m);
+      }
+      pushBy[s] = 0;
+      continue;
+    }
     if (now - lastPushBy[s] > 300) pushBy[s] = 0;
     lastPushBy[s] = now;
     if (pushBy[s] == 0) pushSinceBy[s] = now;
@@ -675,6 +767,7 @@ static void on_motion(double rdx, double rdy, double tMs) {
     JOut o;
     jo_begin(&o);
     jo_str(&o, "event", "edge");
+    jo_num(&o, "crossingFlags", crossing_bits());
     jo_str(&o, "side", side_name(s));
     jo_num(&o, "offset", round(offset * 10000) / 10000);
     emit(jo_end(&o));

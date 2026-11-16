@@ -12,7 +12,7 @@ const P = require('../../shared/protocol.js');
 const { Pool } = require('../../shared/mesh.js');
 const { NotifGuard, isOwn } = require('../../shared/notif-guard.js');
 const { IconsOut, IconsIn } = require('../../shared/notificon.js');
-const { actionsOf, withMeshPhoneActions } = require('../../shared/notifacts.js');
+const { actionsOf, withMeshPhoneActions, hidden, present } = require('../../shared/notifacts.js');
 const { otpOf } = require('../../shared/otp.js');
 
 const T = P.T;
@@ -124,7 +124,7 @@ class Notifs extends EventEmitter {
   }
 
   _sendPolicy(id) {
-    this.bus.send(id, { t: T.NOTIF_POLICY, accept: !!this.cfg.receive });
+    this.bus.send(id, { t: T.NOTIF_POLICY, accept: !!this.cfg.receive, rich: require('../../shared/notifpop.js').popupOn(this.cfg) }); // rich: pictures and live progress, only for TwinDesk's pop-ups
   }
 
   applySettings() {
@@ -235,6 +235,7 @@ class Notifs extends EventEmitter {
     if (!this.cfg.receive) return;
     const r = this.pool.receive(from, m);
     if (!r.fresh || !this.Notification || !this.Notification.isSupported()) return;
+    if (hidden(this, m)) return; // an app set to Hide (Notifications): not kept either
     const id = str(m.id, 200);
     let updated = false;
     for (const old of this.live) {
@@ -260,6 +261,12 @@ class Notifs extends EventEmitter {
     const actions = id && direct ? actionsOf(m) : [];
     item.actions = actions;
     if (!id) item.reply = false;
+    // TwinDesk's window (Reply, buttons, picture, progress), the system's, or none (quiet).
+    const how = present(this, item, m, { from: origin, code, icon: m.icon || (this.historyIcons && this.historyIcons.get(item.app)) });
+    if (how !== 'native') {
+      if (how === 'popup') this.shown++;
+      return void this.changed();
+    }
     this.echoes.push({ title, body: body.slice(0, 80), until: Date.now() + 30000 });
     // A one-time code: a Copy button on the notification; then the phone's own buttons (Mark as read…).
     const n = new this.Notification({

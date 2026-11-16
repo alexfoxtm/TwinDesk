@@ -103,6 +103,11 @@ async function main() {
   const multiHelper = path.join(ROOT, 'windows-helper', 'bin', 'macshare-winhelper-multi.exe');
   if (fs.existsSync(multiHelper)) copy(multiHelper, path.join(STAGE, 'windows-helper', 'bin', 'macshare-winhelper-multi.exe'));
   else console.log('note: no windows-helper/bin/macshare-winhelper-multi.exe — Multi-device uses the one-to-one helper (one edge)');
+  for (const a of ARCHS) {
+    const from = path.join(ROOT, 'windows-helper', 'bin', 'twindesk-capture-' + a + '.exe');
+    if (fs.existsSync(from)) copy(from, path.join(STAGE, 'windows-helper', 'bin', path.basename(from)));
+    else console.log('note: no twindesk-capture for ' + a + ' — Share screen › Capture offers Original (Chromium) only');
+  }
   // The calls' sound on this PC (callaudio.js): its .exe, its signed package and that certificate.
   // Not in the Store's MSIX: it has no phone line capabilities (store-manifest.xml).
   for (const f of STORE || PORTABLE ? [] : ['macshare-calls.exe', 'twindesk-calls.msix', 'twindesk-calls.cer']) { // not portable: a package to install
@@ -131,6 +136,10 @@ async function main() {
   // A phone: its screen, apps and input go through adb and scrcpy-server (phone-bridge.js).
   if (!fs.existsSync(path.join(WIN, 'vendor', 'scrcpy-server'))) {
     copy(path.join(ROOT, 'mac', 'vendor', 'scrcpy-server'), path.join(STAGE, 'windows', 'vendor', 'scrcpy-server'));
+  }
+  // Mirroring › Skip adbd: the relay on the phone beside it (native/adb-relay).
+  if (!fs.existsSync(path.join(WIN, 'vendor', 'twindesk-relay.jar'))) {
+    copy(path.join(ROOT, 'mac', 'vendor', 'twindesk-relay.jar'), path.join(STAGE, 'windows', 'vendor', 'twindesk-relay.jar'));
   }
   await fetchAdb(path.join(STAGE, 'windows', 'vendor', 'adb'));
   // TwinDesk for Android with notification access, which this PC installs over wireless debugging.

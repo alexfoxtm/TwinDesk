@@ -3,6 +3,7 @@
 // disk or from the UI goes through normalize(), so main never stores anything out of range.
 const P = require('../shared/protocol.js');
 const CL = require('../shared/cursorlock.js');
+const Crossing = require('../shared/crossing.js');
 const { savedLanguage } = require('../shared/i18n.js');
 const Look = require('../shared/look.js');
 const { normalizeFolder } = require('../shared/received.js');
@@ -72,6 +73,7 @@ function normalize(s) {
       driveOther: bool(kvm.driveOther, true),
       beDriven: bool(kvm.beDriven, true),
       resistancePx: Math.round(num(kvm.resistancePx, P.RESISTANCE_PX, 0, 400)),
+      crossingModifier: Crossing.modifier(kvm.crossingModifier), // held to leave this computer at an edge ('' none, #230)
       pcSide: P.SIDES.includes(kvm.pcSide) ? kvm.pcSide : null, // where this PC is, seen from the other computer (kvm.layout)
       along: typeof kvm.along === 'number' && Number.isFinite(kvm.along) ? Math.round(kvm.along) : null, // the other computer along our side, points (shared/kvm-geom.js); null: centred
       speed: Math.round(num(kvm.speed, 1.0, 0.25, 3) * 100) / 100,
@@ -87,9 +89,9 @@ function normalize(s) {
       hotkeySwitch: bool(kvm.hotkeySwitch, false), // keyboard only (Cursor off): double-tap moves the keyboard over and back
     },
     // hotkey: double-tap = mouse and keyboard home. lockKeys: cursor lock on/off (shared/cursorlock.js)
-    keys: { swapCtrlCmd: bool(keys.swapCtrlCmd, true), hotkey: P.HOTKEYS.includes(keys.hotkey) ? keys.hotkey : P.HOTKEY_WIN, lockKeys: CL.validKeys(keys.lockKeys, CL.DEFAULT_KEYS.win) },
+    keys: { swapCtrlCmd: bool(keys.swapCtrlCmd, true), hotkey: P.HOTKEYS.includes(keys.hotkey) ? keys.hotkey : P.HOTKEY_WIN, lockKeys: CL.validKeys(keys.lockKeys, CL.DEFAULT_KEYS.win), emergencyKeys: Crossing.emergency(keys.emergencyKeys) }, // emergencyKeys: everything home, sharing off (#178)
     // hud: popup when switching computers. inputProtocol: udp = tdv2 input lane (default), tcp = tdv1
-    app: { hud: bool(appS.hud, true), inputProtocol: appS.inputProtocol === 'tcp' ? 'tcp' : 'udp', keepPinging: appS.keepPinging === true }, // keepPinging: General › Advanced (shared/quiet.js)
+    app: { hud: bool(appS.hud, true), inputProtocol: appS.inputProtocol === 'tcp' ? 'tcp' : 'udp', keepPinging: appS.keepPinging === true, localApi: appS.localApi === true }, // localApi: General › Local API (shared/localapi.js) // keepPinging: General › Advanced (shared/quiet.js)
     // New releases on GitHub (shared/updates.js); notified = the last version announced, skipped = version ignored
     updates: { auto: bool(up.auto, true), notified: typeof up.notified === 'string' ? up.notified.slice(0, 40) : '', skipped: typeof up.skipped === 'string' ? up.skipped.slice(0, 40) : '', install: up.install === true }, // install: install new versions by themselves (shared/selfupdate.js)
     clipboard: {
@@ -164,6 +166,8 @@ function normalize(s) {
     },
     files: {
       dropToMac: bool(files.dropToMac, false),
+      clipReceived: bool(files.clipReceived, false), // Put received files on the clipboard (filerecv.js)
+      outboxHours: [0, 1, 24, 168].includes(files.outboxHours) ? files.outboxHours : 24, // Keep files to send (shared/outbox.js), 0 = off
       shareOn: bool(files.shareOn, false), // set only by a successful share setup (smb.js)
       shareFolder: typeof files.shareFolder === 'string' ? files.shareFolder : '',
       mountMac: bool(files.mountMac, false),
@@ -181,6 +185,7 @@ function normalize(s) {
       receive: bool(nf.receive, false),
       hideText: bool(nf.hideText, false),
       muted: Array.isArray(nf.muted) ? nf.muted.filter((x) => typeof x === 'string').map((x) => x.slice(0, 300)).slice(0, 500) : [],
+      ...require('../shared/notifrules.js').saved(nf), // style, otpCopy, quiet, phoneApps: how a phone's show here
     },
     pcScreen: { // Display › PC → Mac; Off/Mirror/Extend itself is never saved
       monitor: typeof pcs.monitor === 'string' ? pcs.monitor : '', // Electron display id for Mirror ('' = main)
@@ -191,6 +196,9 @@ function normalize(s) {
       sound: bool(pcs.sound, false), // the screen's sound in the same session
       input: bool(pcs.input, true), // the Mac's mouse and keyboard drive this PC
       codec: pcs.codec === 'h265' ? 'h265' : 'h264', // Encoder (shared/screencodec.js)
+      // Capture (native-screen.js): 'chromium' the original, by default (the pointer at its 32 × 32 size);
+      // 'auto' our helper, Desktop Duplication on Windows 10 and WGC on 11; or one of those two.
+      capture: ['auto', 'chromium', 'dda', 'wgc'].includes(pcs.capture) ? pcs.capture : 'chromium',
       remote: bool(pcs.remote, true), // The viewer may start/stop and switch it (screen.ctl)
     },
     pairSync: pairSync(s.pairSync), // {deviceId: {feature: {out, in}}} (pairsync.js)
@@ -217,10 +225,14 @@ function normalize(s) {
       enterSends: bool(ph.enterSends, true),
       uhid: bool(ph.uhid, false), // Type as a hardware keyboard (shared/uhidkbd.js)
       arrowSwipe: bool(ph.arrowSwipe, false),
+      // Mirroring over wireless debugging: past adbd straight over the Wi-Fi (scrcpy.js), and the
+      // encoder's low-latency profile.
+      direct: bool(ph.direct, false),
+      lowLatency: bool(ph.lowLatency, false),
     },
     // Bluetooth for devices not on this network (blepipe.js, netlink.js): with phones (ble), with computers (blePc);
     // bleWifiOff: none at all while the session is on the same Wi-Fi (blepolicy.js wifiQuiet)
-    net: { ble: bool(nt.ble, true), blePc: bool(nt.blePc, false), bleWifiOff: bool(nt.bleWifiOff, true), hotspots: hotspots(nt.hotspots), tailscale: bool(nt.tailscale, true), bleInput: bool(nt.bleInput, false) }, // tailscale: shared/tailnet.js; bleInput: shared/bleinput.js
+    net: { ble: bool(nt.ble, true), blePc: bool(nt.blePc, false), bleWifiOff: bool(nt.bleWifiOff, true), hotspots: hotspots(nt.hotspots), tailscale: bool(nt.tailscale, true), bleInput: bool(nt.bleInput, false), relay: require('../shared/relay.js').clean(nt.relay) }, // relay: your own (shared/relay.js), none by default // tailscale: shared/tailnet.js; bleInput: shared/bleinput.js
     mount: { on: bool(mt.on, false) }, // the phone as a drive (phonedrive.js), only when Mount is clicked
     drive: { on: bool(dr.on, false), folder: typeof dr.folder === 'string' ? dr.folder.slice(0, 1024) : '' }, // File Sharing › TwinDesk Drive (shared/drive-host.js); '' = ~/TwinDesk Drive
     // Calls, Messages, Photos and Files from a phone (shared/phonehub.js), each off until switched on.
@@ -229,6 +241,7 @@ function normalize(s) {
     hub: {
       calls: bool(hub.calls, false), messages: bool(hub.messages, false), media: bool(hub.media, false), files: bool(hub.files, false),
       callAudio: bool(hub.callAudio, true), btDevices: btDevices(hub.btDevices),
+      callPause: bool(hub.callPause, false), // pause what plays here during a call (shared/callpause.js)
       // Shared folders (shared/foldershare.js), both ways, off until switched on.
       shareMount: bool(hub.shareMount, false), shareServe: bool(hub.shareServe, false), shareFolder: typeof hub.shareFolder === 'string' ? hub.shareFolder.slice(0, 1000) : '',
     },
@@ -243,6 +256,8 @@ function normalize(s) {
     windows: s.windows && typeof s.windows === 'object' ? s.windows : {},
     modules: require('../shared/modules.js').normalize(s.modules), // General › Modules
     deck: s.deck && typeof s.deck === 'object' && JSON.stringify(s.deck).length < 400000 ? s.deck : null, // the Deck's layout (shared/deck-model.js normalizes it when read)
+    // OBS Studio for the Deck's OBS tiles (shared/obs.js): its port and the password, sealed.
+    deckObs: s.deckObs && typeof s.deckObs === 'object' ? { port: Number.isInteger(s.deckObs.port) && s.deckObs.port > 0 && s.deckObs.port < 65536 ? s.deckObs.port : 4455, pass: typeof s.deckObs.pass === 'string' && s.deckObs.pass.length < 2000 ? s.deckObs.pass : '' } : null,
   };
 }
 

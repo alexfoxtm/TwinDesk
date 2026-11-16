@@ -102,6 +102,7 @@ class ViewerActivity : ComponentActivity() {
             login = true
             locked.open()
         }, closeLogin = { login = false; locked.close() }) { finish() } } }
+        MirrorRail(this).attach() // the side rail: Auto-rotate, Screenshot
     }
 
     override fun onStart() {

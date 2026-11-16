@@ -297,6 +297,14 @@
         if (a.k === 'bt' && a.id) { const d = ((dev.bt && dev.bt.devices) || []).find((x) => x.id === a.id); return d ? (d.connected ? t('Connected') : t('Not connected')) : ''; }
         if (a.k === 'bt') return dev.bt ? (dev.bt.radio ? t('On') : t('Off')) : '';
         if (a.k === 'sys' && a.what === 'darkmode') return dev.dark ? t('Dark') : t('Light');
+        if (a.k === 'obs' && dev.obs) {
+          const o = dev.obs;
+          if (!o.on) return t('OBS is off');
+          if (a.what === 'record') return o.record ? (o.paused ? t('Paused') : t('Recording')) : t('Not recording');
+          if (a.what === 'stream') return o.stream ? t('Live') : t('Not live');
+          if (a.what === 'vcam') return o.vcam ? t('On') : t('Off');
+          if (a.what === 'scene' && a.name) return o.scene === a.name ? t('Showing') : '';
+        }
         return '';
       }
 
@@ -437,6 +445,13 @@
         const a = tl.action;
         const act = (patch) => set((x) => { x.action = { ...x.action, ...patch }; });
         const out = [];
+        // One app, by its name (each app's volume): typed, or picked from those playing sound now.
+        const mixField = () => {
+          const n = input(a.name || '', () => {}, { placeholder: t('App name, such as Spotify'), spellcheck: false });
+          n.onchange = () => set((x) => { x.action = { ...x.action, name: n.value.trim() }; if (!x.label) x.label = n.value.trim(); });
+          const now = (dev && dev.mix) || [];
+          out.push(field(t('App'), n, now.length ? t('Playing sound now: {apps}', { apps: now.map((x) => x.name).join(', ') }) : t('Start the app’s sound once to see its name here.')));
+        };
         switch (a.k) {
           case 'keys': out.push(recorder(tl, act)); break;
           case 'text': {
@@ -481,8 +496,17 @@
                 dev && !ds.length ? t('No display here lets its brightness be changed: built-in screens do, and on Windows external monitors with DDC/CI on.') : ''));
             }
             if (a.k === 'bright' && a.what === 'set') out.push(field(t('Level'), rangeInput(a.level, 0, 100, (v) => act({ level: v }), (v) => `${v}%`)));
+            if (a.k === 'slider' && a.what === 'app') mixField();
             break;
           case 'app': out.push(appField(a, set)); break;
+          case 'mix': mixField(); break;
+          case 'spotify':
+            if (a.what === 'play') {
+              const u = input(a.uri || '', () => {}, { placeholder: 'https://open.spotify.com/playlist/…', spellcheck: false });
+              u.onchange = () => act({ uri: u.value });
+              out.push(field(t('Playlist, album or song'), u, a.uri ? t('Opens {uri} in Spotify', { uri: a.uri }) : t('In Spotify: Share › Copy link, then paste it here.')));
+            }
+            break;
           case 'url': {
             const u = input(a.url || '', () => {}, { placeholder: 'https://', spellcheck: false });
             u.onchange = () => act({ url: u.value });
@@ -499,6 +523,20 @@
             out.push(field(a.k === 'script' ? t('Script') : t('File or folder'), el('div', { class: 'deck-path-row' }, [shown, choose]), hint));
             break;
           }
+          case 'obs': {
+            const o = dev && dev.obs;
+            if (dev && !o) setTimeout(refresh, 0); // asked once with OBS's (its scenes and sources)
+            if (a.what === 'scene' || a.what === 'mute') {
+              const list = (o && (a.what === 'scene' ? o.scenes : o.inputs)) || [];
+              out.push(field(a.what === 'scene' ? t('Scene') : t('Source'), pick([
+                { value: '', label: !dev ? t('Loading…') : o && o.on ? (a.what === 'scene' ? t('Choose a scene') : t('Choose a source')) : t('Open OBS Studio to choose') },
+                ...list.map((n) => ({ value: n, label: n })),
+                ...(a.name && !list.includes(a.name) ? [{ value: a.name, label: a.name }] : []),
+              ], a.name || '', (name) => set((x) => { const was = C.entry(x.action); if (name && (!x.label || (was && x.label === t(C.text(was.name, platform))))) x.label = name; x.action = { ...x.action, name }; }))));
+            }
+            out.push(obsSetup(o));
+            break;
+          }
           case 'nav':
             if (a.what === 'page') out.push(field(t('Page'), pick(space().pages.map((x) => ({ value: x.id, label: x.name })), a.to, (to) => act({ to }))));
             if (a.what === 'space') out.push(field(t('Space'), pick(L.spaces.map((x) => ({ value: x.id, label: x.name })), a.to, (to) => act({ to }))));
@@ -507,6 +545,32 @@
         }
         return out;
       }
+      // OBS Studio's connection (shared/obs.js): whether it answers, its port and password. The
+      // password stays on this computer (sealed); the field never shows it back.
+      let obsCfg = null;
+      function obsSetup(o) {
+        const status = el('span', { class: 'deck-field-hint', text: !o ? t('Checking OBS Studio…') : o.on ? t('Connected to OBS Studio') : t(o.why || 'OBS isn’t running') });
+        const port = input(String((obsCfg && obsCfg.port) || 4455), () => {}, { inputmode: 'numeric', maxlength: 5, class: 'deck-obs-port' });
+        const pass = el('input', { type: 'password', value: '', attrs: { placeholder: obsCfg && obsCfg.hasPass ? t('Saved: type to change') : t('Password'), autocomplete: 'off' } });
+        const save = UI.button(t('Connect'), async () => {
+          if (!api.deckSetObs) return;
+          save.disabled = true;
+          const r = await api.deckSetObs({ port: Number(port.value), pass: pass.value });
+          pass.value = '';
+          obsCfg = api.deckObs ? await api.deckObs() : obsCfg;
+          dev = { ...(dev || {}), obs: r };
+          save.disabled = false;
+          draw();
+        }, 'small');
+        if (!obsCfg && api.deckObs) Promise.resolve(api.deckObs()).then((c) => { obsCfg = c; if (c) port.value = String(c.port); pass.placeholder = c && c.hasPass ? t('Saved: type to change') : t('Password'); }).catch(() => {});
+        return el('div', { class: 'deck-field' }, [
+          el('span', { class: 'deck-field-label', text: t('OBS Studio') }),
+          el('div', { class: 'deck-path-row' }, [port, pass, save]),
+          status,
+          el('span', { class: 'deck-field-hint', text: t('In OBS: Tools › WebSocket Server Settings › Enable WebSocket server. Show Connect Info has the port and password.') }),
+        ]);
+      }
+
       function rangeInput(value, min, max, onSet, fmt) {
         const s = UI.slider({ min, max, step: 1, format: fmt }, (v) => onSet(v));
         s.set(value);
@@ -556,8 +620,55 @@
         }));
         const add = UI.button(t('Add a step…'), () => picker(null, (a) => set((x) => { x.action.steps.push({ action: a, wait: 0 }); }), { forMacro: true }), 'small');
         add.disabled = steps.length >= 20;
-        return field(t('Steps'), el('div', {}, [steps.length ? list : el('p', { class: 'deck-field-hint', text: t('No steps yet.') }), add]),
-          t('Shortcut and text steps take the options of a tile of their own: set one up on a tile, then copy it with Duplicate and change its action to Multi-action.'));
+        // Record steps: what's pressed while this button has the focus (in this window only, nothing
+        // system-wide), each shortcut a step, typed letters one Type text step, the pauses kept.
+        let rec = null; // {steps, text, last} while recording
+        const recBtn = UI.button(t('Record steps'), () => (rec ? stop() : start()), 'small');
+        const left = () => 20 - steps.length - (rec ? rec.steps.length + (rec.text ? 1 : 0) : 0);
+        const gap = () => { const n = Date.now(), w = rec.last ? Math.min(10000, Math.round((n - rec.last) / 50) * 50) : 0; rec.last = n; return w; };
+        const flush = () => { if (rec.text) { rec.steps.push({ action: { k: 'text', text: rec.text.s, enter: false }, wait: rec.text.wait }); rec.text = null; } };
+        const show = () => { recBtn.textContent = rec ? t('Stop · {count} steps', { count: rec.steps.length + (rec.text ? 1 : 0) }) : t('Record steps'); };
+        function start() {
+          rec = { steps: [], text: null, last: 0 };
+          recBtn.classList.add('primary');
+          show();
+          recBtn.focus();
+        }
+        function stop() {
+          if (!rec) return;
+          flush();
+          const got = rec.steps;
+          rec = null;
+          recBtn.classList.remove('primary');
+          show();
+          if (got.length) set((x) => { x.action.steps.push(...got.slice(0, 20 - x.action.steps.length)); });
+        }
+        recBtn.onkeydown = (e) => {
+          if (!rec) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (MOD_OF[e.code] || e.repeat) return;
+          const w = gap();
+          const plain = !e.ctrlKey && !e.altKey && !e.metaKey;
+          if (plain && e.key.length === 1) { // a letter, digit or symbol: part of the text being typed
+            if (!rec.text) { if (left() <= 0) return stop(); rec.text = { s: '', wait: w }; }
+            rec.text.s += e.key;
+          } else if (plain && e.code === 'Enter' && rec.text) {
+            if (rec.text.s) rec.steps.push({ action: { k: 'text', text: rec.text.s, enter: true }, wait: rec.text.wait });
+            rec.text = null;
+          } else {
+            flush();
+            if (left() <= 0) return stop();
+            const mods = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Meta'].filter(Boolean);
+            rec.steps.push({ action: { k: 'keys', combo: M.combo([...mods, e.code].join('+')) }, wait: w });
+          }
+          show();
+          if (left() <= 0) stop();
+        };
+        recBtn.onblur = () => stop();
+        recBtn.disabled = steps.length >= 20;
+        return field(t('Steps'), el('div', {}, [steps.length ? list : el('p', { class: 'deck-field-hint', text: t('No steps yet.') }), el('div', { class: 'deck-path-row' }, [add, recBtn])]),
+          t('Record steps: press the shortcuts and type the text here, with the pauses you want between them; click Stop when done. Only keys pressed in this window are recorded.'));
       }
 
       function appField(a, set) {
@@ -737,7 +848,8 @@
       function refresh() {
         if (asking || !api.deckState) return;
         asking = true;
-        Promise.resolve(api.deckState()).then((s) => { dev = s || {}; }).catch(() => {}).finally(() => {
+        const tl = sel();
+        Promise.resolve(api.deckState(tl && tl.action.k === 'obs' ? true : tl && (tl.action.k === 'mix' || (tl.action.k === 'slider' && tl.action.what === 'app')) ? 'mix' : false)).then((s) => { dev = s || {}; }).catch(() => {}).finally(() => {
           asking = false;
           const typing = body.contains(document.activeElement) && document.activeElement.matches('input, textarea, select');
           if (L && !typing) draw();

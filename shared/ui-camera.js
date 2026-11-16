@@ -91,7 +91,26 @@
       windowBtn.title = tr('Open it in a window');
       const startBtn = UI.button(tr('Start'), () => cur && start(!running(cur)));
       const controls = UI.row(tr('{name}’s camera'), '', [startBtn, facingSeg, rotate, windowBtn]);
-      const picCard = UI.card('', [box, controls]);
+      // More for the picture: mirrored (here, its window and the virtual camera), and for a phone's
+      // camera its quality, light and zoom; Snapshot saves the picture as it shows here.
+      const mirror = UI.switch((v) => cam({ do: 'mirror', on: v }), { label: tr('Mirror') });
+      const mirrorRow = UI.row(tr('Mirror'), tr('Flipped left to right, as in a mirror: here, in its window and in the virtual camera'), [mirror]);
+      const quality = UI.segmented([{ value: '1280', label: '720p' }, { value: '1920', label: '1080p' }, { value: '3840', label: '4K' }], (v) => { qual = Number(v); api.phoneCamera(true, { quality: qual }); });
+      let qual = 1920;
+      const qualityRow = UI.row(tr('Quality'), tr('The phone picks its nearest size. Higher needs a good connection'), [quality.el]);
+      const light = UI.button(tr('Light'), () => api.phoneCamera(true, { do: 'torch' }));
+      const zoomOut = UI.button('−', () => api.phoneCamera(true, { do: 'zoomOut' }));
+      zoomOut.title = tr('Zoom out');
+      const zoomIn = UI.button('+', () => api.phoneCamera(true, { do: 'zoomIn' }));
+      zoomIn.title = tr('Zoom in');
+      const snap = UI.button(tr('Snapshot'), () => {
+        if (!img.src || img.hidden) return;
+        const a = el('a', { attrs: { href: img.src, download: `Camera ${new Date().toISOString().slice(0, 19).replace(/:/g, '.')}.jpg` } });
+        a.click();
+      });
+      snap.title = tr('Save the picture as it shows here');
+      const phoneRow = UI.row(tr('Light and zoom'), '', [light, zoomOut, zoomIn, snap]);
+      const picCard = UI.card('', [box, controls, mirrorRow, qualityRow, phoneRow]);
 
       // Virtual camera: the picture also goes to a camera other apps can pick.
       const virtual = UI.switch((v) => cam({ do: 'virtual', on: v }), { label: tr('Virtual camera') });
@@ -113,7 +132,12 @@
 
       const note = UI.note('info', '');
       note.setAttribute('data-literal', '');
-      body.append(picCard, vCard, ourCard, note);
+      // Take a photo with the phone (shared/phonephoto.js): its camera app opens, the photo comes
+      // here onto the clipboard. Where the app has it (one-to-one), with an Android phone.
+      const photoBtn = UI.button(tr('Take a photo'), () => api.takePhoto && api.takePhoto());
+      const photoRow = UI.row(tr('Take a photo with the phone'), tr('Its camera opens. The photo comes here, copied and ready to paste, and is kept with received files'), [photoBtn]);
+      const photoCard = UI.card('', [photoRow]);
+      body.append(photoCard, picCard, vCard, ourCard, note);
 
       let listed = false;
       return (s) => {
@@ -151,7 +175,16 @@
         startBtn.disabled = !c.on || (!on && !!why);
         startBtn.title = !on && why ? UI.fill(why) : '';
         facingSeg.el.hidden = !phone;
+        photoCard.hidden = !(phone && api.takePhoto && s.phone && s.phone.connected);
         rotate.disabled = !on;
+        mirror.set(!!v.mirror);
+        qualityRow.hidden = !phone;
+        quality.set(String((w && w.quality) || qual));
+        light.hidden = zoomOut.hidden = zoomIn.hidden = !phone;
+        light.disabled = zoomOut.disabled = zoomIn.disabled = snap.disabled = !on || !!text;
+        light.textContent = w && w.torch ? tr('Light ✓') : tr('Light');
+        phoneRow.hidden = !on;
+        phoneRow.label.textContent = phone ? tr('Light and zoom') : tr('Snapshot');
         windowBtn.disabled = !on;
         windowBtn.textContent = (phone ? w && w.shown : c.viewShown) ? tr('Window ✓') : tr('Window');
         controls.setHint(on ? tr('Turned {degrees}°. Click the picture or Window for a window of its own', { degrees: v.rotate || 0 }) : '');

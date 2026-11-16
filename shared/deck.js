@@ -10,7 +10,8 @@
 //   device → computer  deck.hello {}: it has a Deck → deck.layout {layout, can, caps, mac}
 //                      deck.run {id}: a tile → deck.done {id, ok, why?}
 //                      deck.set {id, value}: a slider tile being dragged (the last one wins)
-//                      deck.state {}: → deck.state {state}: levels, devices, switches, for its tiles
+//                      deck.state {obs?}: → deck.state {state}: levels, devices, switches, for its tiles
+//                      (OBS Studio's too, shared/obs.js, when a tile uses it or obs: true, its editor)
 //                      deck.save {layout}: edited on the device → deck.layout to every device
 //                      deck.apps {}: → deck.apps {apps: [{id, name, icon}]}
 //                      deck.wins {}: the window space → deck.wins {apps, displays, front}
@@ -24,6 +25,7 @@
 
 const P = require('./protocol.js');
 const M = require('./deck-model.js');
+const { Obs, seal, unseal, DEFAULT_PORT } = require('./obs.js');
 
 const T = P.T;
 const RUN_GAP_MS = 40; // one tile at a time: a burst of taps can't pile up key presses
@@ -49,7 +51,7 @@ class Deck {
     });
     on(T.DECK_RUN, (m) => this.surface && this.run(String(m.id || '')));
     on(T.DECK_SET, (m) => this.surface && this.set(String(m.id || ''), Number(m.value)));
-    on(T.DECK_STATE, () => this.surface && this.pushState());
+    on(T.DECK_STATE, (m) => this.surface && this.pushState(m.obs === true, m.mix === true));
     on(T.DECK_SAVE, (m) => this.surface && m.layout && this.setLayout(M.fromDevice(this.layout, m.layout)));
     on(T.DECK_APPS, () => this.surface && this._apps());
     on(T.DECK_WINS, () => this.surface && this._wins());
@@ -69,7 +71,7 @@ class Deck {
     const c = this.caps;
     return M.KINDS.filter((k) => ({
       volume: c.audio, mic: c.mic, output: c.outputs, input: c.outputs, bt: c.bt, bright: c.bright,
-      slider: c.audio || c.bright,
+      slider: c.audio || c.bright, mix: c.mixer, spotify: c.spotify,
     }[k] !== false));
   }
   static view() {
@@ -100,13 +102,19 @@ class Deck {
   }
 
   // Levels, devices and switches for the device's tiles (and its pickers).
-  async state() {
+  // OBS's only when a tile uses it or an editor asks (obs): nothing is tried otherwise.
+  async state(obs = false, mix = false) {
     const c = this.caps;
-    const [audio, bt, bright, st] = await Promise.all([
+    const wantObs = this.obs && (obs || M.uses(this.layout, 'obs'));
+    // Each app's volume: only while a tile shows one, or an editor picks an app (mix).
+    const wantMix = c.mixer && (mix || M.uses(this.layout, 'mix') || appSliders(this.layout));
+    const [audio, bt, bright, st, ob, apps] = await Promise.all([
       c.audio ? this.sys.audio().catch(() => null) : null,
       c.bt ? this.sys.bt().catch(() => null) : null,
       c.bright ? this.sys.bright().catch(() => null) : null,
       this.sys.state().catch(() => ({})),
+      wantObs ? this.obs.state() : null,
+      wantMix && this.sys.mix ? this.sys.mix().catch(() => null) : null,
     ]);
     return {
       ...(audio || {}),
@@ -114,10 +122,12 @@ class Deck {
       ...(bright ? { displays: bright.displays || [] } : {}),
       dark: !!(st && st.dark), ...(st && st.dnd !== undefined ? { dnd: !!st.dnd } : {}),
       perf: this.sys.perf ? this.sys.perf(st || {}) : undefined,
+      ...(ob ? { obs: ob } : {}),
+      ...(apps ? { mix: apps.slice(0, 40).map((x) => ({ name: x.name, level: x.level, muted: x.muted })) } : {}),
     };
   }
-  async pushState() {
-    const state = await this.state();
+  async pushState(obs = false, mix = false) {
+    const state = await this.state(obs, mix);
     if (this.surface) this.server.sendToClient({ t: T.DECK_STATE, state });
     return state;
   }
@@ -136,7 +146,8 @@ class Deck {
     } finally {
       setTimeout(() => { this.busy = false; }, RUN_GAP_MS);
     }
-    if (['volume', 'mic', 'output', 'input', 'bt', 'bright', 'sys'].includes(t.action.k)) this.pushState().catch(() => {});
+    if (['volume', 'mic', 'output', 'input', 'bt', 'bright', 'sys', 'mix'].includes(t.action.k)) this.pushState().catch(() => {});
+    else if (t.action.k === 'obs') setTimeout(() => this.pushState().catch(() => {}), 400); // OBS takes a moment to start or stop
   }
 
   // A slider tile: its level now, then at most every SET_GAP_MS while it's dragged.
@@ -159,6 +170,7 @@ class Deck {
   }
 
   level(a, v) {
+    if (a.what === 'app') return this.sys.mixSet({ name: a.name, level: v });
     if (a.what === 'volume') return this.sys.volume({ level: v });
     if (a.what === 'mic') return this.sys.volume({ input: true, level: v });
     return this.sys.setBright(a.display || '', v);
@@ -222,11 +234,22 @@ class Deck {
       }
       case 'slider': throw new Error('Drag it on the device');
       case 'app': if (!a.id) throw new Error('No app set for this tile'); return s.openApp(a.id);
+      case 'mix': {
+        if (!a.name) throw new Error('No app set for this tile');
+        if (a.what !== 'toggle') return s.mixSet({ name: a.name, mute: a.what === 'mute' });
+        const app = (await s.mix()).find((x) => x.name.toLowerCase() === a.name.toLowerCase());
+        if (!app) throw new Error(`${a.name} isn’t playing sound now`);
+        return s.mixSet({ name: a.name, mute: !app.muted });
+      }
+      case 'spotify': return s.spotify(a);
       case 'url': if (!a.url) throw new Error('No website set for this tile'); return s.url(a.url);
       case 'open': if (!a.path) throw new Error('No file or folder set for this tile'); return s.open(a.path);
       case 'script': if (!a.path) throw new Error('No script set for this tile'); return s.script(a.path);
       case 'sys': return this._sys(a.what);
       case 'win': return this._win(a.what);
+      case 'obs':
+        if (!this.obs) throw new Error('Not on this computer');
+        return this.obs.run(a.what, a.name);
       case 'clip':
         if (a.what === 'send') return this.server.sendToClient({ t: T.DECK_CLIP, text: String(this.readClipboard() || '').slice(0, 100000) });
         return this._press(M.codesOf(`Mod+Key${{ copy: 'C', cut: 'X', paste: 'V' }[a.what]}`, mac));
@@ -471,6 +494,8 @@ const SNAP = {
   tl: [0, 0, 6, 6], tr: [6, 0, 6, 6], bl: [0, 6, 6, 6], br: [6, 6, 6, 6],
   third1: [0, 0, 4, 12], third2: [4, 0, 4, 12], third3: [8, 0, 4, 12],
 };
+// Any slider tile for one app's volume (it needs the mixer's levels).
+const appSliders = (l) => (l.spaces || []).some((sp) => (sp.pages || []).some((p) => p.tiles.some((t) => t.action.k === 'slider' && t.action.what === 'app')));
 const appKey = (w) => w.bundle || w.aumid || w.exe || w.cls || w.app || String(w.pid); // Linux: the window's class
 // A Linux app's window classes (lower case): its StartupWMClass, else its desktop file's name.
 const linuxKeys = (a) => {
@@ -509,6 +534,8 @@ function startDeck(o) {
     save: (l) => { o.settings().deck = l; o.saveSettings(); },
     sys: o.sys || require('./deck-sys.js').sys(o.platform, { helper, press }),
     readClipboard: o.readClipboard, onChange: o.onChange,
+    // OBS Studio (shared/obs.js): settings.deckObs {port, pass: sealed}, from this computer's Deck page.
+    obs: o.obs === false ? null : new Obs({ config: () => { const c = o.settings().deckObs || {}; return { port: c.port, pass: unseal(c.pass) }; } }),
   };
   const any = () => deckOne || [...Deck.all][0] || (deckOne = new Deck({ ...base, server: new (require('events').EventEmitter)() }));
   let phone = null;
@@ -523,7 +550,18 @@ function startDeck(o) {
     save: (l) => any().setLayout(l),
     exec: (a) => any().exec(a),
     apps: () => base.sys.apps(),
-    state: () => any().state(),
+    state: (obs) => any().state(!!obs),
+    // OBS Studio's port and password ({port, pass}: pass '' keeps it, null clears it), and whether it answers.
+    obsConfig: () => { const c = o.settings().deckObs || {}; return { port: c.port || DEFAULT_PORT, hasPass: !!c.pass }; },
+    setObs: async (v) => {
+      const was = o.settings().deckObs || {};
+      const port = Number.isInteger(Number(v && v.port)) && Number(v.port) > 0 && Number(v.port) < 65536 ? Number(v.port) : DEFAULT_PORT;
+      const pass = v && v.pass === null ? '' : v && v.pass ? seal(String(v.pass).slice(0, 200)) : was.pass || '';
+      o.settings().deckObs = { port, pass };
+      o.saveSettings();
+      if (base.obs) { base.obs.close(); return base.obs.state(); }
+      return { on: false };
+    },
   };
   return api.attach(o.server);
 }
