@@ -144,6 +144,7 @@ data class MacDisplay(val id: String, val name: String, val w: Int, val h: Int) 
 class Screen(core: Core) : Feature(core) {
     @Volatile var state: JSONObject? = null; private set // the Mac's screen.state
     @Volatile var inputOn = true; private set // the Mac's "Receive input" (stream.input)
+    @Volatile var spaceNote = ""; private set // a desktop refusal, or why remote control stays paused
     @Volatile var viewing = false; private set
     @Volatile var size: Pair<Int, Int>? = null; private set // the picture playing now
     private var host: WebHost? = null
@@ -160,6 +161,8 @@ class Screen(core: Core) : Feature(core) {
     val sharing get() = state?.optBoolean("on") == true
     val mode get() = state?.optString("mode") ?: ""
     val remote get() = state?.optBoolean("remote", true) != false
+    // This Mac accepts previous/next desktop (screen.space). Older computers, Windows and Linux omit it.
+    val spaces get() = state?.optBoolean("spaces") == true
     // The real display being mirrored, empty while extending or when the computer didn't say.
     val displayId get() = state?.optString("displayId").orEmpty()
 
@@ -348,12 +351,40 @@ class Screen(core: Core) : Feature(core) {
         control(share = true, mode = mode)
     }
 
+    // Previous or next macOS desktop on the display this viewer is being shown.
+    // displayId only when screen.state named one (one-to-one). Multi-device omits the list, so the
+    // Mac uses that device's own picture. A Mac that does not know screen.space ignores it.
+    fun space(dir: String) {
+        if (dir != "prev" && dir != "next") return
+        spaceNote = ""
+        val m = msg("screen.space", "dir" to dir)
+        val id = displayId
+        if (id.isNotEmpty()) m.put("displayId", id)
+        core.send(m)
+        core.changed()
+    }
+
+    private fun spaceWhy(why: String, edge: String): String = when {
+        why == "accessibility" -> tr("Mission Control’s accessibility status can’t be read, so remote control stays paused until it can. Touches are not sent.")
+        why == "overview" -> tr("Remote control stays paused while Mission Control is open, so touches are not sent into it.")
+        why == "input" -> tr("The Mac isn’t taking input right now")
+        why == "unauthorized" || why == "stale" -> tr("The Mac didn’t accept that desktop change")
+        why == "display" -> tr("That screen is no longer the one being shown")
+        why == "spans" -> tr("macOS keeps these displays on the same desktops, so this screen can’t change desktop by itself")
+        why == "composed" -> tr("macOS is still showing windows from another desktop, so this screen can’t change desktop yet")
+        why == "edge" && edge == "first" -> tr("Already on the first desktop")
+        why == "edge" && edge == "last" -> tr("Already on the last desktop")
+        why == "unavailable" || why == "target" -> tr("This Mac can’t change the desktop on the screen being shown")
+        else -> tr("Couldn’t change the desktop")
+    }
+
     override fun onClosed() {
         Notify.cancelScreen(core.ctx)
         state = null
         resetVideo()
         lastInfo = null
         startedByUs = false
+        spaceNote = ""
         host?.post(msg("stream.stop"))
     }
 
@@ -367,10 +398,21 @@ class Screen(core: Core) : Feature(core) {
                 // Off -> on, not asked for here: the person pressed Share Screen on the computer.
                 if (was != null && !was.optBoolean("on") && on && !viewing && !startedByUs) autoOpen()
                 if (!on) Notify.cancelScreen(core.ctx)
+                val hold = m.optString("spaceHold")
+                if (hold == "accessibility" || hold == "overview") spaceNote = spaceWhy(hold, "")
+                else if (!on || !m.optBoolean("spaces")) spaceNote = ""
                 if (wantStart) startIfNeeded()
                 core.changed()
             }
-            "stream.input" -> { inputOn = m.optBoolean("on", true); core.changed() }
+            "stream.input" -> {
+                inputOn = m.optBoolean("on", true)
+                if (!inputOn) spaceNote = ""
+                core.changed()
+            }
+            "screen.space.result" -> {
+                spaceNote = if (m.optBoolean("ok")) "" else spaceWhy(m.optString("why"), m.optString("edge"))
+                core.changed()
+            }
             "screen.textFocus" -> if (viewing && inputOn && !core.lockView.presented && core.host?.os == "mac") keyboard(true)
             "stream.info" -> { lastInfo = m; host?.post(m) }
             "rtc.offer" -> {

@@ -306,7 +306,20 @@ function sendScreenState() {
   if (!c || !svc) return void (screenStateKey = '');
   // No display list. Mesh has one capture and one input target, and each device can be off or on
   // its own screen. A phone pick would clear that choice and move every viewer that follows it.
-  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, modes: ['extend', 'mirror'] };
+  // spaces is true only for the display this device is being shown, and only when that
+  // display has its own other desktop and on-screen windows belong to the current ones.
+  // A window still visible from another desktop keeps it false. This read does not open
+  // Mission Control or call a space setter (mac-helper Spaces.swift).
+  if (svc.spaceLook) svc.spaceLook.refresh();
+  const st = svc.stream && svc.stream.byId && c.deviceId != null ? svc.stream.byId.get(c.deviceId) : null;
+  const look = svc.spaceLook ? svc.spaceLook.current() : null;
+  const spaces = require('../../shared/mac-spaces.js').offerSpaces(
+    look,
+    st && st.viewedDisplay ? st.viewedDisplay() : null,
+  );
+  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, modes: ['extend', 'mirror'], spaces };
+  const spaceHold = require('../../shared/mac-spaces.js').spaceHold(look);
+  if (spaceHold) msg.spaceHold = spaceHold;
   const key = JSON.stringify([c.deviceId, msg]);
   if (key === screenStateKey) return;
   screenStateKey = key;

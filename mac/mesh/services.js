@@ -11,6 +11,9 @@ const { Displays } = require('./displays');
 const { Stream } = require('./stream');
 const { StreamSet } = require('./streams');
 const { Input } = require('../input');
+const { SpaceSwitch, SpaceLook } = require('../space-switch');
+const P = require('../../shared/protocol.js');
+const Spaces = require('../../shared/mac-spaces.js');
 const { Clip } = require('./clipboard');
 const { Kvm } = require('./kvm');
 const { Terminal } = require('../terminal');
@@ -45,6 +48,21 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
     enabled: () => s().streamInput !== false && (!kvm || kvm.mode === 'home'),
     swapKeys: () => server.keySwap(s()), // never between two Macs
   });
+  // Each viewer's own picture, including one that is not the shared pointer's display.
+  // The bus hears every device; a phone that is not the selected computer can still switch
+  // the desktop on the display it is being shown.
+  const spaces = new SpaceSwitch({
+    listen: (fn) => meshHub.bus.on(P.T.SCREEN_SPACE, (msg, id) => fn(msg, { id })),
+    helper,
+    enabled: () => s().streamInput !== false && (!kvm || kvm.mode === 'home'),
+    authorize: (ctx) => Spaces.meshGate(() => meshHub.sessions.get(ctx && ctx.id)),
+    targetFor: (ctx) => {
+      const st = ctx && stream.byId.get(ctx.id);
+      return st ? st.viewedDisplay() : null;
+    },
+    reply: (ctx, msg) => meshHub.bus.send(ctx.id, msg),
+  });
+  const spaceLook = new SpaceLook(helper, pushState);
   const clipboard = new Clip({ bus: meshHub.bus, mesh, getSettings: s, helper, session: (id) => meshHub.sessions.get(id) });
   const drop = new Drop({ server, helper, displays, getSettings: s });
   const fileSend = new FileSend(server, s, { outboxFile: require('path').join(require('electron').app.getPath('userData'), 'outbox.json') });
@@ -109,7 +127,7 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
   helper.start();
 
   return {
-    helper, displays, stream, input, clipboard, kvm, terminal, drop, smb, apps, sshClient, audio, audioPeer, pcView, pcApps, hub, fileSend, notifs, history, fileClip, wake, appSend, updateAwake,
+    helper, displays, stream, input, spaces, spaceLook, clipboard, kvm, terminal, drop, smb, apps, sshClient, audio, audioPeer, pcView, pcApps, hub, fileSend, notifs, history, fileClip, wake, appSend, updateAwake,
     shutdown() {
       pcView.shutdown();
       pcApps.shutdown();

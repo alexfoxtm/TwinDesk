@@ -322,7 +322,19 @@ function appsHeld() {
 function sendScreenState() {
   const c = peer && peer.current;
   if (!c || !svc) return void (screenStateKey = '');
-  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, modes: ['extend', 'mirror'], ...Pick.stateFields(svc.displays.list(), svc.displays.target(), settings.sharing.remote !== false && !appsHeld()) };
+  // spaces is true only when the display in this picture has its own other desktop and
+  // the helper's read says the windows on screen belong to the desktops that are current.
+  // A window still visible from another desktop keeps it false. The read does not open
+  // Mission Control or call a space setter (mac-helper Spaces.swift).
+  if (svc.spaceLook) svc.spaceLook.refresh();
+  const look = svc.spaceLook ? svc.spaceLook.current() : null;
+  const spaces = require('../shared/mac-spaces.js').offerSpaces(
+    look,
+    svc.stream && svc.stream.viewedDisplay ? svc.stream.viewedDisplay() : null,
+  );
+  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, modes: ['extend', 'mirror'], spaces, ...Pick.stateFields(svc.displays.list(), svc.displays.target(), settings.sharing.remote !== false && !appsHeld()) };
+  const spaceHold = require('../shared/mac-spaces.js').spaceHold(look);
+  if (spaceHold) msg.spaceHold = spaceHold;
   const key = JSON.stringify([c.deviceId, msg]);
   if (key === screenStateKey) return;
   screenStateKey = key;
@@ -344,6 +356,7 @@ function mirrorDisplay(m) {
     settings.virtual.enabled = false; // as Mirror does, without forcing the main display
     settings.sharing.displayId = pick.displayId;
     store.saveSettings(settings);
+    if (svc.stream && typeof svc.stream.noteViewIdentity === 'function') svc.stream.noteViewIdentity();
   }
   // One restart. selectDisplay restarts at once, and applyVirtual restarts again when the virtual
   // display goes away. The setting is written first: capture and input both read displays.target().

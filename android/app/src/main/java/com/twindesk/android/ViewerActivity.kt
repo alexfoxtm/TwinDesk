@@ -1,7 +1,7 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // The Mac's screen, full screen: Mirror (the Mac's own screen) or Extend (a second screen for the
 // Mac, sized to this one). The picture and the touches are viewer.html's; this activity adds a
-// small bar (tap the handle at the top): Mirror / Extend, Start / Stop, keyboard, close.
+// small bar (tap the handle at the top): Mirror / Extend, which display, previous/next desktop, keyboard, close.
 package com.twindesk.android
 
 import android.os.Bundle
@@ -172,7 +172,12 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     val fast = login && !core.lockView.locked && (s.videoPlaying || fastLatched || core.lockView.layoutStale)
     val showLogin = login && !fast
     LaunchedEffect(login, fast) { if (login) lockPage.present(!fast) }
-    LaunchedEffect(bar, showLogin) { if (bar && !showLogin) { delay(4000); bar = false } }
+    LaunchedEffect(bar, showLogin, s.spaceNote) {
+        if (bar && !showLogin && s.spaceNote.isEmpty()) { delay(4000); bar = false }
+    }
+    LaunchedEffect(s.spaceNote, showLogin) {
+        if (!showLogin && s.spaceNote.isNotEmpty()) bar = true
+    }
     var offered by remember(core.host?.id) { mutableStateOf(false) }
     LaunchedEffect(core.lockView.locked, core.lockView.available, login) {
         if (!core.lockView.locked) offered = false
@@ -246,7 +251,34 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                         MacDisplayPick(s.displays, if (s.sharing && s.mode != "extend") s.displayId else "", onDark = true) { s.pickDisplay(it); bar = true }
                     }
                 }
+                if (!showLogin && s.spaces && s.sharing && s.inputOn && core.host?.os == "mac") {
+                    MacDesktopRow(
+                        onPrev = { s.space("prev"); bar = true },
+                        onNext = { s.space("next"); bar = true },
+                    )
+                }
+                if (!showLogin && s.spaceNote.isNotEmpty()) Text(
+                    s.spaceNote,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124)).padding(horizontal = 12.dp, vertical = 8.dp),
+                )
             }
         }
+    }
+}
+
+// Previous and next macOS desktop. Its own composable so the scroll state is not created
+// on a condition inside Viewer. Shown only while this Mac is sharing and taking input.
+@androidx.compose.runtime.Composable
+private fun MacDesktopRow(onPrev: () -> Unit, onNext: () -> Unit) {
+    Row(
+        Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124))
+            .horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TextButton(onClick = onPrev) { Text(tr("Previous desktop"), color = Color.White) }
+        TextButton(onClick = onNext) { Text(tr("Next desktop"), color = Color.White) }
     }
 }
