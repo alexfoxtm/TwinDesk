@@ -21,6 +21,17 @@ struct DisplayShotFitTest {
     check(ShotFit.fit(width: 1, height: 100_000) == nil, "a fitted side of zero is refused")
     check(ShotFit.maxEdge == 480 && ShotFit.maxBytes == 24 * 1024, "the cap matches the phone and the Node policy")
 
+    let first = ShotEpoch.begin()
+    check(ShotEpoch.owns(first), "begin owns its token")
+    check(!ShotEpoch.owns(0), "zero is not a generation")
+    let second = ShotEpoch.begin()
+    check(second != first && ShotEpoch.owns(second), "a second begin owns only itself")
+    check(!ShotEpoch.owns(first), "a later begin invalidates the earlier token")
+    ShotEpoch.cancel()
+    check(!ShotEpoch.owns(second), "cancel makes the in-flight token stale")
+    let third = ShotEpoch.begin()
+    check(ShotEpoch.owns(third) && !ShotEpoch.owns(second), "the token after cancel is a new generation")
+
     if failures != 0 {
       FileHandle.standardError.write(Data("display-shot-fit: \(failures) failed\n".utf8))
       exit(1)

@@ -147,6 +147,11 @@ class Screen(core: Core) : Feature(core) {
     @Volatile var inputOn = true; private set // the Mac's "Receive input" (stream.input)
     @Volatile var spaceNote = ""; private set // a desktop refusal, a switch in progress, or why remote control stays paused
     @Volatile var desktopPreviews = DesktopPreview.EMPTY
+    @Volatile var previewEpoch = 0L
+        private set
+    @Volatile private var previewSession = 0L
+    @Volatile private var previewWanted = false
+    private var previewSealed = false
     private var pending: DesktopSelect.Pending? = null
     private var timeoutDisplay = ""
     private var stickyNote = false
@@ -268,6 +273,7 @@ class Screen(core: Core) : Feature(core) {
 
     fun detach(h: WebHost) {
         if (host !== h) return
+        previewSheet(false)
         host = null
         resetVideo()
         viewing = false
@@ -316,20 +322,55 @@ class Screen(core: Core) : Feature(core) {
         decodedCapture = null
     }
 
+    // The Displays & desktops sheet is open on this phone. The Mac captures only while
+    // this stays true. Closing the sheet or leaving the foreground asks it to stop and
+    // keeps the last-seen pictures. Stop, lock, revoke, and a new link clear them.
+    fun previewSheet(open: Boolean) {
+        val allowed = open && viewing && sharing && inputOn && remote && core.link.connected && !core.lockView.locked
+        if (allowed == previewWanted) return
+        previewWanted = allowed
+        if (allowed) previewSealed = false
+        if (core.link.connected) core.send(msg("screen.preview.want", "on" to allowed))
+        core.changed()
+    }
+
+    private fun endPreviewSession() {
+        val cancel = previewWanted
+        val dirty = !previewSealed || desktopPreviews.shots.isNotEmpty() || desktopPreviews.unavailable.isNotEmpty() || desktopPreviews.session != previewSession
+        previewWanted = false
+        if (!previewSealed) {
+            previewSealed = true
+            previewSession++
+        }
+        if (dirty) desktopPreviews = DesktopPreview.empty(previewSession)
+        if (cancel && core.link.connected) core.send(msg("screen.preview.want", "on" to false))
+        if (cancel || dirty) {
+            previewEpoch++
+            core.changed()
+        }
+    }
+
     override fun onWelcome(host: Host) {
         sessionEpoch++
-        desktopPreviews = DesktopPreview.EMPTY
+        endPreviewSession()
+        // Disconnect already cleared this session, so the clear above changes nothing and
+        // does not ask again. The sheet can still be open on this new link. A later
+        // composition subscribes once more. A closed sheet sends nothing.
+        previewEpoch++
+        core.changed()
+        val session = previewSession
         pendingTimer.post {
             decodedCapture = null
             refreshFollowups = 0
             cancelDesktopWait()
-            desktopPreviews = DesktopPreview.EMPTY
+            if (previewSession == session) desktopPreviews = DesktopPreview.empty(session)
         }
     }
 
     fun lockChanged(locked: Boolean) {
-        if (locked && desktopPreviews !== DesktopPreview.EMPTY) {
-            desktopPreviews = DesktopPreview.EMPTY
+        if (locked) endPreviewSession()
+        else {
+            previewEpoch++
             core.changed()
         }
         videoGeneration++
@@ -650,7 +691,7 @@ class Screen(core: Core) : Feature(core) {
         cancelDesktopWait()
         stickyNote = false
         spaceNote = ""
-        desktopPreviews = DesktopPreview.EMPTY
+        endPreviewSession()
         host?.post(msg("stream.stop"))
     }
 
@@ -661,7 +702,8 @@ class Screen(core: Core) : Feature(core) {
                 state = m
                 host?.post(m)
                 val on = m.optBoolean("on")
-                desktopPreviews = if (!on) DesktopPreview.EMPTY else DesktopPreview.retain(desktopPreviews, desktopCatalog)
+                if (!on || !m.optBoolean("remote", true)) endPreviewSession()
+                else desktopPreviews = DesktopPreview.retain(desktopPreviews, desktopCatalog, previewSession)
                 // Off -> on, not asked for here: the person pressed Share Screen on the computer.
                 if (was != null && !was.optBoolean("on") && on && !viewing && !startedByUs) autoOpen()
                 if (!on) Notify.cancelScreen(core.ctx)
@@ -679,11 +721,13 @@ class Screen(core: Core) : Feature(core) {
                 core.changed()
             }
             "stream.input" -> {
+                val wasOn = inputOn
                 inputOn = m.optBoolean("on", true)
                 if (!inputOn) {
+                    endPreviewSession()
                     cancelDesktopWait()
                     if (!stickyNote) spaceNote = ""
-                }
+                } else if (!wasOn) previewEpoch++
                 core.changed()
             }
             "screen.space.result" -> {
@@ -699,8 +743,11 @@ class Screen(core: Core) : Feature(core) {
                 core.changed()
             }
             "screen.preview" -> {
-                desktopPreviews = DesktopPreview.reduce(desktopPreviews, previewMessage(m), desktopCatalog)
-                core.changed()
+                val incoming = previewMessage(m)
+                if (incoming.clear || incoming.unavailable == "os" || incoming.unavailable == "permission" || previewWanted) {
+                    desktopPreviews = DesktopPreview.reduce(desktopPreviews, incoming, desktopCatalog, previewSession)
+                    core.changed()
+                }
             }
             "screen.desktops" -> {
                 val epoch = m.optInt("epoch", -1)

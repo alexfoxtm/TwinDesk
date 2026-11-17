@@ -14,6 +14,36 @@
 import AppKit
 import ScreenCaptureKit
 
+/// One generation for every displayShot that has left the command thread.
+/// begin() is called before that hop. cancel(), or a later begin(), makes the
+/// earlier token fail owns(). The generation is only read and written under the
+/// lock, so the capture task and the command thread cannot tear it.
+enum ShotEpoch {
+  private static var generation: UInt64 = 0
+  private static let lock = NSLock()
+
+  static func begin() -> UInt64 {
+    lock.lock()
+    defer { lock.unlock() }
+    generation &+= 1
+    if generation == 0 { generation = 1 }
+    return generation
+  }
+
+  static func cancel() {
+    lock.lock()
+    defer { lock.unlock() }
+    generation &+= 1
+    if generation == 0 { generation = 1 }
+  }
+
+  static func owns(_ token: UInt64) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return token != 0 && token == generation
+  }
+}
+
 enum ShotFit {
   static let maxEdge = 480
   static let maxBytes = 24 * 1024
@@ -33,14 +63,24 @@ enum ShotFit {
 }
 
 enum DisplayShot {
-  static func take(displayId: UInt32) async -> [String: Any] {
+  /// `token` is the ShotEpoch.begin() value taken before this hop. A cancel or a
+  /// replacement shot during the screenshot returns stale and no JPEG.
+  static func take(displayId: UInt32, token: UInt64) async -> [String: Any] {
+    let body = await takeBody(displayId: displayId, token: token)
+    if !ShotEpoch.owns(token) { return ["unavailable": "stale"] }
+    return body
+  }
+
+  private static func takeBody(displayId: UInt32, token: UInt64) async -> [String: Any] {
+    if !ShotEpoch.owns(token) { return ["unavailable": "stale"] }
     if displayId == 0 { return ["unavailable": "display"] }
     guard #available(macOS 14.0, *) else { return ["unavailable": "os"] }
-    return await takeOneDisplay(displayId)
+    return await takeOneDisplay(displayId, token: token)
   }
 
   @available(macOS 14.0, *)
-  private static func takeOneDisplay(_ displayId: UInt32) async -> [String: Any] {
+  private static func takeOneDisplay(_ displayId: UInt32, token: UInt64) async -> [String: Any] {
+    if !ShotEpoch.owns(token) { return ["unavailable": "stale"] }
     if !CGPreflightScreenCaptureAccess() { return ["unavailable": "permission"] }
     do {
       let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -58,6 +98,7 @@ enum DisplayShot {
       cfg.showsCursor = false
       let filter = SCContentFilter(display: display, excludingWindows: [])
       let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+      if !ShotEpoch.owns(token) { return ["unavailable": "stale"] }
       guard let jpeg = jpegData(image, maxBytes: ShotFit.maxBytes),
             jpeg.width >= 1, jpeg.height >= 1,
             jpeg.width <= ShotFit.maxEdge, jpeg.height <= ShotFit.maxEdge,

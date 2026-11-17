@@ -40,13 +40,20 @@ function screenUnlocked(locked) {
   return locked === false;
 }
 
-// True only when a read says remote input is not paused. A missing read, a held read,
-// or Mission Control's pause is not hidden.
+// True only for a fresh accessibility read that says Mission Control is hidden.
+// TwinDesk's own inputHeld flag is not that read: a Mission Control the person opened
+// leaves input running. "visible" and "unknown", and a missing or any other value, fail closed.
 function missionHidden(look) {
-  if (!look || typeof look !== 'object') return false;
-  if (look.inputHeld !== false) return false;
-  if (look.holdWhy === 'overview' || look.holdWhy === 'accessibility') return false;
-  return true;
+  return !!(look && typeof look === 'object' && look.overview === 'hidden');
+}
+
+// The want message has to be the outbound socket itself, and that socket has to be the
+// authenticated one session.send writes. A host socket that is still up while the guest
+// link is the outbound path is not this viewer. A replaced ws fails later, against the
+// ws captured here.
+function authorizeWant(bound, inbound) {
+  if (!liveConn(bound) || !inbound || inbound !== bound || bound.ws == null) return null;
+  return { conn: bound, ws: bound.ws };
 }
 
 function catalogPermits(catalog, displayId) {
@@ -155,6 +162,6 @@ function acceptJpeg(buf, width, height) {
 
 module.exports = {
   MAX_EDGE, MAX_BYTES, MAX_SHOTS, MAX_BAGS, MAX_STORE_BYTES, MIN_GAP_MS, REFRESH_MS, TIMEOUT_MS,
-  key, liveConn, outbound, screenUnlocked, missionHidden, catalogPermits, currentTargets,
+  key, liveConn, outbound, authorizeWant, screenUnlocked, missionHidden, catalogPermits, currentTargets,
   currentSpaceId, displayNumber, fenceReady, choose, dueIn, decodeJpeg, acceptJpeg,
 };

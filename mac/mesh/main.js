@@ -321,7 +321,30 @@ function previewSample() {
   const catalog = Spaces.desktopCatalog(look, viewed, offer.named, { offerDisplays: false });
   const capture = viewed && Number.isSafeInteger(viewed.session) ? viewed.session : 0;
   const viewGen = viewed && Number.isSafeInteger(viewed.generation) ? viewed.generation : -1;
-  return { conn, sharing: settings.sharing.on === true, catalog, capture, viewGen };
+  const input = settings.sharing.remote !== false && settings.streamInput !== false;
+  return { conn, sharing: settings.sharing.on === true, input, catalog, capture, viewGen };
+}
+
+// The ask is the message that just arrived on this session. The outbound socket is the
+// guest link while that link is up, otherwise the host socket. The route's view object
+// is not that socket.
+function onPreviewWant(m) {
+  const Preview = require('../../shared/display-preview.js');
+  if (!previewShots || !peer || !peer.current || !hub) return;
+  const session = hub.sessions.get(peer.current.deviceId);
+  const inbound = session ? session.inbound() : null;
+  const sample = previewSample();
+  const auth = Preview.authorizeWant(sample && sample.conn, inbound);
+  if (!auth || !inbound || auth.ws !== inbound.ws) return;
+  if (!m || m.on !== true) {
+    previewShots.cancel('close');
+    return;
+  }
+  if (!sample.sharing || !sample.input) {
+    previewShots.cancel('session');
+    return;
+  }
+  previewShots.watch(auth.conn);
 }
 
 function sendScreenState() {
@@ -645,9 +668,13 @@ app.whenReady().then(() => {
   peer.on('client', (ctx) => {
     console.log(`[peer] session with ${ctx.name} (${ctx.os}, ${ctx.role === 'host' ? 'we are its guest' : 'it is our guest'})`);
     peer.send(ctx, { t: P.T.STREAM_INPUT, on: settings.streamInput !== false });
+    if (previewShots) previewShots.cancel('session');
     pushState();
   });
-  peer.on('closed', pushState);
+  peer.on('closed', () => {
+    if (previewShots) previewShots.cancel('session');
+    pushState();
+  });
   peer.on('rtt', pushState);
   // Overview's controls of the selected device, and this Mac's for it (shared/devctl.js).
   {
@@ -698,8 +725,13 @@ app.whenReady().then(() => {
     send: (conn, msg) => {
       const Preview = require('../../shared/display-preview.js');
       const session = peer && peer.current && hub ? hub.sessions.get(peer.current.deviceId) : null;
-      if (session && Preview.outbound(session) === conn) session.send(msg);
+      const bound = session ? Preview.outbound(session) : null;
+      if (!session || bound !== conn || !conn || !conn.ws || bound.ws !== conn.ws) return;
+      session.send(msg);
     },
+  });
+  require('electron').powerMonitor.on('lock-screen', () => {
+    if (previewShots) previewShots.cancel('session');
   });
   // Audio › Microphone (shared/mic.js): loaded the first time one of its switches is on.
   svc.loadMic = () => {
@@ -990,6 +1022,7 @@ app.whenReady().then(() => {
   svc.kvm.blockEdge = () => blockEdge() || svc.phone.focused; // moving inside the phone window never crosses
   svc.apps.setSharing = (on, by) => actions.setSharing(on, by);
   peer.on(`t:${P.T.SCREEN_CTL}`, (m) => onScreenCtl(m));
+  peer.on(`t:${P.T.SCREEN_PREVIEW_WANT}`, (m) => onPreviewWant(m));
   // Two-way switches shared with the other computer, per pair (pairsync.js).
   const SYNC_ACTIONS = {
     clipboard: (dir, on) => actions.setClipboard({ [dir === 'out' ? 'send' : 'receive']: on }),

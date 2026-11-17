@@ -34,7 +34,7 @@ function catalog(displays) {
 }
 
 function look(rows, extra) {
-  return { inputHeld: false, displays: rows, ...extra };
+  return { inputHeld: false, overview: 'hidden', displays: rows, ...extra };
 }
 
 function row(id, current, spaces) {
@@ -60,6 +60,9 @@ function harness(opts) {
         if (opts.helper) return opts.helper(cmd, args, box);
         return Promise.resolve(box.reply);
       },
+      send(cmd, args) {
+        if (opts.recordSend) opts.recordSend.push({ cmd, args });
+      },
     },
     readLocked: opts.readLocked || (async () => box.locked),
     freshLook: opts.freshLook || (async () => box.look),
@@ -70,6 +73,9 @@ function harness(opts) {
     clearTimer(timer) { timer.cleared = true; },
     now: () => box.clock,
   });
+  if (opts.watch !== false && box.sample && box.sample.conn && Preview.liveConn(box.sample.conn)) {
+    shots.watched = { conn: box.sample.conn, ws: box.sample.conn.ws };
+  }
   return { shots, sent, calls, timers, box, release() { if (releaseWait) releaseWait(); } };
 }
 
@@ -108,9 +114,24 @@ async function testPolicy() {
   assert.strictEqual(Preview.screenUnlocked(false), true);
   assert.strictEqual(Preview.missionHidden(null), false);
   assert.strictEqual(Preview.missionHidden({ inputHeld: true }), false);
+  assert.strictEqual(Preview.missionHidden({ inputHeld: false }), false);
   assert.strictEqual(Preview.missionHidden({ inputHeld: false, holdWhy: 'overview' }), false);
   assert.strictEqual(Preview.missionHidden({ inputHeld: false, holdWhy: 'accessibility' }), false);
-  assert.strictEqual(Preview.missionHidden({ inputHeld: false }), true);
+  assert.strictEqual(Preview.missionHidden({ overview: 'visible' }), false);
+  assert.strictEqual(Preview.missionHidden({ overview: 'unknown' }), false);
+  assert.strictEqual(Preview.missionHidden({ overview: 'hidden' }), true);
+  assert.strictEqual(Preview.missionHidden({ inputHeld: true, overview: 'hidden' }), true);
+  const bound = conn();
+  const auth = Preview.authorizeWant(bound, bound);
+  assert.strictEqual(auth && auth.conn, bound);
+  assert.strictEqual(auth && auth.ws, bound.ws);
+  assert.strictEqual(Preview.authorizeWant(bound, conn()), null);
+  const dead = conn();
+  dead.ws.readyState = 3;
+  assert.strictEqual(Preview.authorizeWant(dead, dead), null);
+  const replaced = conn();
+  replaced.ws = null;
+  assert.strictEqual(Preview.authorizeWant(replaced, replaced), null);
   assert.strictEqual(Preview.currentSpaceId(look([row('1', '10', ['10', '11']), row('1', '10')]), '1'), '');
   assert.strictEqual(Preview.currentSpaceId(look([row('1', '11', ['10', '11'])]), '1'), '11');
 
@@ -191,13 +212,16 @@ async function testRefusals() {
   assert.strictEqual(missing.calls.length, 0);
   const held = harness({ ...base, look: look([row('1', '10', ['10'])], { inputHeld: true }) });
   await held.shots.kick();
-  assert.strictEqual(held.calls.length, 0);
-  const overview = harness({ ...base, look: look([row('1', '10', ['10'])], { holdWhy: 'overview' }) });
-  await overview.shots.kick();
-  assert.strictEqual(overview.calls.length, 0);
-  const unread = harness({ ...base, look: look([row('1', '10', ['10'])], { holdWhy: 'accessibility' }) });
+  assert.strictEqual(held.calls.filter((call) => call.cmd === 'displayShot').length, 1);
+  const visible = harness({ ...base, look: look([row('1', '10', ['10'])], { holdWhy: 'overview', overview: 'visible' }) });
+  await visible.shots.kick();
+  assert.strictEqual(visible.calls.length, 0);
+  const unread = harness({ ...base, look: look([row('1', '10', ['10'])], { holdWhy: 'accessibility', overview: 'unknown' }) });
   await unread.shots.kick();
   assert.strictEqual(unread.calls.length, 0);
+  const blank = harness({ ...base, look: { inputHeld: false, displays: [row('1', '10', ['10'])] } });
+  await blank.shots.kick();
+  assert.strictEqual(blank.calls.length, 0);
 }
 
 async function testDiscardAfterCapture() {
@@ -343,6 +367,118 @@ async function testGapAndClearAndOs() {
   assert.strictEqual(jpegSent(permission.sent).length, 1);
 }
 
+async function testNoWatchDoesNotCapture() {
+  const h = harness({
+    watch: false,
+    look: look([row('1', '10', ['10'])]),
+    sample: sampleOf(conn(), catalog([display('1', '10', ['10'])])),
+    reply: shotBody('1'),
+  });
+  await h.shots.kick();
+  assert.strictEqual(h.calls.length, 0);
+  assert.strictEqual(jpegSent(h.sent).length, 0);
+}
+
+async function testCloseDropsInFlightWithoutClearing() {
+  const sends = [];
+  let finishHelper = null;
+  const h = harness({
+    look: look([row('1', '10', ['10'])]),
+    sample: sampleOf(conn(), catalog([display('1', '10', ['10'])])),
+    recordSend: sends,
+    helper: () => new Promise((resolve) => { finishHelper = resolve; }),
+    wait: () => new Promise(() => {}),
+  });
+  const pending = h.shots.kick();
+  await until(() => finishHelper);
+  h.shots.cancel('close');
+  finishHelper(shotBody('1'));
+  await pending;
+  assert.strictEqual(jpegSent(h.sent).length, 0);
+  assert.ok(!h.sent.some((row) => row.msg.clear === true));
+  assert.ok(sends.some((row) => row.cmd === 'displayShotCancel'));
+}
+
+async function testSessionEndClearsAndALaterWatchCaptures() {
+  const sends = [];
+  const target = conn();
+  const h = harness({
+    look: look([row('1', '10', ['10'])]),
+    sample: sampleOf(target, catalog([display('1', '10', ['10'])])),
+    reply: shotBody('1'),
+    recordSend: sends,
+  });
+  await h.shots.kick();
+  assert.strictEqual(jpegSent(h.sent).length, 1);
+  h.shots.cancel('session');
+  assert.ok(h.sent.some((row) => row.msg.clear === true));
+  assert.ok(sends.some((row) => row.cmd === 'displayShotCancel'));
+  h.sent.length = 0;
+  h.box.clock += Preview.MIN_GAP_MS;
+  await h.shots.watch(target);
+  assert.strictEqual(jpegSent(h.sent).length, 1);
+  assert.strictEqual(h.sent[0].conn, target);
+}
+
+async function testViewGenChangeDoesNotClear() {
+  const state = sampleOf(conn(), catalog([display('1', '10', ['10'])]));
+  const h = harness({
+    look: look([row('1', '10', ['10'])]),
+    sample: state,
+    reply: shotBody('1'),
+  });
+  await h.shots.kick();
+  state.viewGen = 4;
+  h.box.clock += Preview.MIN_GAP_MS;
+  await h.shots.kick();
+  assert.ok(!h.sent.some((row) => row.msg.clear === true));
+  assert.strictEqual(jpegSent(h.sent).length, 1);
+}
+
+async function testOverviewShownAfterCaptureIsDropped() {
+  let reads = 0;
+  const h = harness({
+    sample: sampleOf(conn(), catalog([display('1', '10', ['10'])])),
+    reply: shotBody('1'),
+    freshLook: async () => {
+      reads += 1;
+      return look([row('1', '10', ['10'])], reads === 1 ? {} : { overview: 'visible' });
+    },
+  });
+  await h.shots.kick();
+  assert.strictEqual(h.calls.length, 1);
+  assert.strictEqual(jpegSent(h.sent).length, 0);
+  assert.ok(!h.sent.some((row) => row.msg.clear === true));
+}
+
+async function testStaleReplyKeepsTheLastSeen() {
+  const h = harness({
+    look: look([row('1', '10', ['10'])]),
+    sample: sampleOf(conn(), catalog([display('1', '10', ['10'])])),
+    reply: shotBody('1'),
+  });
+  await h.shots.kick();
+  h.box.clock += Preview.REFRESH_MS;
+  h.box.reply = { ok: true, unavailable: 'stale' };
+  await h.shots.kick();
+  assert.ok(!h.sent.some((row) => row.msg.clear === true));
+  assert.strictEqual(jpegSent(h.sent).length, 1);
+}
+
+async function testLockClearsAStoredShot() {
+  const h = harness({
+    look: look([row('1', '10', ['10'])]),
+    sample: sampleOf(conn(), catalog([display('1', '10', ['10'])])),
+    reply: shotBody('1'),
+  });
+  await h.shots.kick();
+  h.box.locked = true;
+  h.box.clock += Preview.MIN_GAP_MS;
+  await h.shots.kick();
+  assert.ok(h.sent.some((row) => row.msg.clear === true));
+  assert.strictEqual(jpegSent(h.sent).length, 1);
+}
+
 async function testANewSocketDoesNotReceiveTheOldPicture() {
   const first = conn();
   const state = sampleOf(first, catalog([display('1', '10', ['10'])]));
@@ -377,6 +513,14 @@ function testSources() {
   assert.ok(swift.includes('showsCursor = false'));
   assert.ok(swift.includes('#available(macOS 14.0, *)'));
   assert.ok(main.includes('case "displayShot"'));
+  assert.ok(main.includes('case "displayShotCancel"'));
+  assert.ok(main.includes('ShotEpoch.begin()'));
+  assert.ok(main.includes('looked["overview"]'));
+  assert.ok(swift.includes('enum ShotEpoch'));
+  assert.ok(swift.includes('["unavailable": "stale"]'));
+  assert.strictEqual((swift.match(/captureImage/g) || []).length, 1);
+  assert.ok(read('mac-helper/Sources/macshare-helper/SpacesAX.swift').includes('enum OverviewReport'));
+  assert.ok(read('mac-helper/Sources/macshare-helper/SpacesAX.swift').includes('case .show(.hidden)'));
   assert.ok(!shots.includes('desktopCapturer'));
   assert.ok(!shots.includes('spacesSwitch'));
   assert.ok(!shots.includes('getSources'));
@@ -388,8 +532,14 @@ function testSources() {
   assert.ok(phone.includes('const val MAX_EDGE = 480'));
   assert.ok(phone.includes('const val MAX_BYTES = 24 * 1024'));
   assert.ok(phone.includes('const val MAX_SHOTS = 12'));
+  assert.ok(phone.includes('val stale: Boolean'));
   assert.ok(!phone.includes('BitmapFactory'));
   assert.ok(read('shared/protocol.js').includes("SCREEN_PREVIEW: 'screen.preview'"));
+  assert.ok(read('shared/protocol.js').includes("SCREEN_PREVIEW_WANT: 'screen.preview.want'"));
+  assert.ok(one.includes('SCREEN_PREVIEW_WANT'));
+  assert.ok(mesh.includes('SCREEN_PREVIEW_WANT'));
+  assert.ok(one.includes("powerMonitor.on('lock-screen'"));
+  assert.ok(mesh.includes("powerMonitor.on('lock-screen'"));
 }
 
 async function main() {
@@ -400,6 +550,13 @@ async function main() {
   await testDiscardAfterCapture();
   await testTimeoutDropsTheLateJpeg();
   await testGapAndClearAndOs();
+  await testNoWatchDoesNotCapture();
+  await testCloseDropsInFlightWithoutClearing();
+  await testSessionEndClearsAndALaterWatchCaptures();
+  await testViewGenChangeDoesNotClear();
+  await testOverviewShownAfterCaptureIsDropped();
+  await testStaleReplyKeepsTheLastSeen();
+  await testLockClearsAStoredShot();
   await testANewSocketDoesNotReceiveTheOldPicture();
   testSources();
   console.log('display-preview: one permitted display, session memory, and no second capture API.');

@@ -21,11 +21,14 @@ object DesktopPreview {
         val height: Int,
         val jpeg: ByteArray,
         val seq: Long,
+        val stale: Boolean = false,
     )
 
-    data class Board(val shots: List<Shot>, val unavailable: String)
+    data class Board(val shots: List<Shot>, val unavailable: String, val session: Long = 0)
 
-    val EMPTY = Board(emptyList(), "")
+    fun empty(session: Long) = Board(emptyList(), "", session)
+
+    val EMPTY = empty(0)
 
     data class Incoming(
         val clear: Boolean,
@@ -41,34 +44,40 @@ object DesktopPreview {
 
     private var nextSeq = 1L
 
-    fun reduce(board: Board, msg: Incoming, catalog: DesktopSelect.Catalog?): Board {
-        if (msg.clear) return Board(emptyList(), board.unavailable)
-        if (msg.unavailable == "os" || msg.unavailable == "permission") return Board(emptyList(), msg.unavailable)
+    fun reduce(board: Board, msg: Incoming, catalog: DesktopSelect.Catalog?, session: Long = board.session): Board {
+        if (board.session != session) return empty(session)
+        if (msg.clear) return Board(emptyList(), board.unavailable, session)
+        if (msg.unavailable == "os" || msg.unavailable == "permission") return Board(emptyList(), msg.unavailable, session)
         if (msg.unavailable.isNotEmpty()) return board
-        return accept(board, msg, catalog)
+        return accept(board, msg, catalog, session)
     }
 
-    // A new catalog keeps a picture only while that display, space, capture, and view
-    // generation are still the ones it was taken for. No catalog, or no capture session, drops all of it.
-    fun retain(board: Board, catalog: DesktopSelect.Catalog?): Board {
-        val cat = catalog ?: return EMPTY
-        val cap = cat.capture ?: return EMPTY
-        val gen = cat.viewGen ?: return board.copy(shots = emptyList())
-        val shots = board.shots.filter { shot ->
-            shot.capture == cap && shot.viewGen == gen && listed(cat, shot.displayId, shot.spaceId)
+    // A picture stays while its display and space are still listed, for this same session.
+    // A different capture or view generation, or a missing one, marks it stale instead of
+    // dropping it. A missing catalog drops the pictures. A different session drops them too.
+    fun retain(board: Board, catalog: DesktopSelect.Catalog?, session: Long = board.session): Board {
+        if (board.session != session) return empty(session)
+        val cat = catalog ?: return empty(session)
+        val cap = cat.capture
+        val gen = cat.viewGen
+        val shots = board.shots.mapNotNull { shot ->
+            if (!listed(cat, shot.displayId, shot.spaceId)) return@mapNotNull null
+            val fresh = cap != null && gen != null && shot.capture == cap && shot.viewGen == gen
+            shot.copy(stale = !fresh)
         }
-        return board.copy(shots = shots)
+        return board.copy(shots = shots, session = session)
     }
 
-    // Current only for the desktop on screen now, and only while Mission Control is not holding input.
-    // Any stored picture of another desktop, or of this one while that hold is up, is last seen.
+    // Current only for a fresh picture of the desktop on screen now, and only while
+    // Mission Control is not holding input. A stale picture, another desktop, or this
+    // one while that hold is up, is last seen.
     fun tile(board: Board, displayId: String, desk: DesktopSelect.Desk, held: Boolean): Status {
-        if (board.shots.none { it.displayId == displayId && it.spaceId == desk.id }) return Status.NONE
-        if (desk.current && !held) return Status.CURRENT
+        val shot = board.shots.find { it.displayId == displayId && it.spaceId == desk.id } ?: return Status.NONE
+        if (!shot.stale && desk.current && !held) return Status.CURRENT
         return Status.LAST
     }
 
-    private fun accept(board: Board, msg: Incoming, catalog: DesktopSelect.Catalog?): Board {
+    private fun accept(board: Board, msg: Incoming, catalog: DesktopSelect.Catalog?, session: Long): Board {
         val cat = catalog ?: return board
         val cap = cat.capture ?: return board
         val gen = cat.viewGen ?: return board
@@ -76,13 +85,13 @@ object DesktopPreview {
         val jpeg = msg.jpeg
         if (!jpegOk(jpeg, msg.width, msg.height)) return board
         if (!listed(cat, msg.displayId, msg.spaceId)) return board
-        val shot = Shot(msg.displayId, msg.spaceId, cap, gen, msg.width, msg.height, jpeg!!, nextSeq++)
+        val shot = Shot(msg.displayId, msg.spaceId, cap, gen, msg.width, msg.height, jpeg!!, nextSeq++, stale = false)
         var shots = board.shots.filterNot { it.displayId == shot.displayId && it.spaceId == shot.spaceId } + shot
         while (shots.size > MAX_SHOTS || shots.sumOf { it.jpeg.size } > MAX_STORE_BYTES) {
             val oldest = shots.minByOrNull { it.seq } ?: break
             shots = shots.filterNot { it.seq == oldest.seq }
         }
-        return Board(shots, "")
+        return Board(shots, "", session)
     }
 
     private fun listed(catalog: DesktopSelect.Catalog, displayId: String, spaceId: String): Boolean {

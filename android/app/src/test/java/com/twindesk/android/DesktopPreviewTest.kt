@@ -60,12 +60,45 @@ class DesktopPreviewTest {
         val board = DesktopPreview.reduce(DesktopPreview.EMPTY, shot("1", "2"), catalog())
         assertTrue(DesktopPreview.retain(board, null).shots.isEmpty())
         assertEquals("", DesktopPreview.retain(board, null).unavailable)
-        assertTrue(DesktopPreview.retain(board, catalog().copy(capture = null)).shots.isEmpty())
-        assertTrue(DesktopPreview.retain(board, catalog().copy(capture = 8)).shots.isEmpty())
-        assertTrue(DesktopPreview.retain(board, catalog().copy(viewGen = 9)).shots.isEmpty())
+        assertEquals(1, DesktopPreview.retain(board, catalog().copy(capture = null)).shots.size)
+        assertTrue(DesktopPreview.retain(board, catalog().copy(capture = null)).shots[0].stale)
+        assertTrue(DesktopPreview.retain(board, catalog().copy(capture = 8)).shots[0].stale)
+        assertTrue(DesktopPreview.retain(board, catalog().copy(viewGen = 9)).shots[0].stale)
         val gone = catalog().copy(displays = listOf(catalog().displays[0].copy(desktops = listOf(desk("1", 0, true)))))
         assertTrue(DesktopPreview.retain(board, gone).shots.isEmpty())
-        assertEquals(1, DesktopPreview.retain(board, catalog()).shots.size)
+        val same = DesktopPreview.retain(board, catalog())
+        assertEquals(1, same.shots.size)
+        assertFalse(same.shots[0].stale)
+    }
+
+    @Test
+    fun switchingDisplaysKeepsTheLastSeenShotStale() {
+        val first = catalog()
+        val board = DesktopPreview.reduce(DesktopPreview.EMPTY, shot("1", "1"), first)
+        val second = first.copy(capture = 8, viewGen = 9)
+        val kept = DesktopPreview.retain(board, second)
+        assertEquals(1, kept.shots.size)
+        assertEquals("1", kept.shots[0].spaceId)
+        assertTrue(kept.shots[0].stale)
+        assertEquals(DesktopPreview.Status.LAST, DesktopPreview.tile(kept, "1", desk("1", 0, true), false))
+        val staleGen = DesktopPreview.reduce(kept, shot("1", "2", capture = 7, viewGen = 3), second)
+        assertEquals(1, staleGen.shots.size)
+        val fresh = DesktopPreview.reduce(kept, shot("1", "2", capture = 8, viewGen = 9), second)
+        assertEquals(2, fresh.shots.size)
+        assertFalse(fresh.shots.first { it.spaceId == "2" }.stale)
+        assertEquals(DesktopPreview.Status.CURRENT, DesktopPreview.tile(fresh, "1", desk("2", 1, true), false))
+    }
+
+    @Test
+    fun anotherSessionDropsTheShots() {
+        val board = DesktopPreview.reduce(DesktopPreview.EMPTY, shot("1", "1"), catalog())
+        val reduced = DesktopPreview.reduce(board, shot("1", "2"), catalog(), session = 4)
+        assertTrue(reduced.shots.isEmpty())
+        assertEquals(4, reduced.session)
+        val retained = DesktopPreview.retain(board, catalog(), session = 4)
+        assertTrue(retained.shots.isEmpty())
+        assertEquals(4, retained.session)
+        assertEquals("", retained.unavailable)
     }
 
     @Test

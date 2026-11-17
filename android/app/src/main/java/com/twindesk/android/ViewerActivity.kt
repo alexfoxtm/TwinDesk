@@ -63,7 +63,7 @@ import kotlinx.coroutines.delay
 
 class ViewerActivity : ComponentActivity() {
     private var host: WebHost? = null
-    private var started = false
+    private var started by mutableStateOf(false)
     private var attached = false
     private var viewport: Pair<Int, Int>? = null
     private var lockPage: LockPage? = null
@@ -105,7 +105,7 @@ class ViewerActivity : ComponentActivity() {
                 val orientation = ViewerOrientation.apply(requestedOrientation, core.host?.os, auto)
                 if (requestedOrientation != orientation) requestedOrientation = orientation
             }
-            Viewer(core, h, locked, login, openLogin = {
+            Viewer(core, h, locked, login, started, openLogin = {
             login = true
             locked.open()
         }, closeLogin = { login = false; locked.close() }) { finish() } } }
@@ -141,6 +141,7 @@ class ViewerActivity : ComponentActivity() {
         login = false
         lockPage?.close()
         host?.view?.removeCallbacks(resize)
+        Core.get(this).screen.previewSheet(false)
         host?.let { Core.get(this).screen.detach(it) }
         attached = false
         viewport = null
@@ -156,7 +157,7 @@ class ViewerActivity : ComponentActivity() {
 }
 
 @androidx.compose.runtime.Composable
-private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean, openLogin: () -> Unit, closeLogin: () -> Unit, close: () -> Unit) {
+private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean, started: Boolean, openLogin: () -> Unit, closeLogin: () -> Unit, close: () -> Unit) {
     val v by core.version.collectAsState()
     @Suppress("UNUSED_EXPRESSION") v
     var bar by remember { mutableStateOf(true) }
@@ -195,6 +196,9 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     val sheetReady = !showLogin && desks != null && desks.displays.isNotEmpty() && core.host?.os == "mac" && s.sharing && s.inputOn
     LaunchedEffect(overview) { if (overview) s.refreshDesktops() }
     LaunchedEffect(sheetReady) { if (!sheetReady) overview = false }
+    LaunchedEffect(overview, sheetReady, started, s.previewEpoch) {
+        s.previewSheet(overview && sheetReady && started)
+    }
     var offered by remember(core.host?.id) { mutableStateOf(false) }
     LaunchedEffect(core.lockView.locked, core.lockView.available, login) {
         if (!core.lockView.locked) offered = false
