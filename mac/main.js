@@ -734,7 +734,7 @@ app.whenReady().then(() => {
   svc = startServices({ server: peer, getSettings: () => settings, pushState, onHelperReady: refreshPermissions });
   previewShots = new (require('./display-shots.js').DisplayShots)({
     helper: svc.helper,
-    readLocked: () => require('./lockview').readLocked(),
+    readLocked: () => require('./console-lock').readLocked(),
     freshLook: () => svc.helper.request('spacesLook', {}, 2000),
     sample: previewSample,
     send: (conn, msg) => {

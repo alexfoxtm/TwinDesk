@@ -721,7 +721,7 @@ app.whenReady().then(() => {
     hub, mesh, layoutSync, selfName: () => id.macName });
   previewShots = new (require('../display-shots.js').DisplayShots)({
     helper: svc.helper,
-    readLocked: () => require('../lockview').readLocked(),
+    readLocked: () => require('../console-lock').readLocked(),
     freshLook: () => svc.helper.request('spacesLook', {}, 2000),
     sample: previewSample,
     send: (conn, msg) => {
