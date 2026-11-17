@@ -43,6 +43,12 @@ TwinDesk keeps these on the device they belong to:
 - received files, in the folder you choose
 - logs of what the app did, to attach to a bug report if you want; they never leave your computer unless you send them yourself
 
+If you turn on **Back up new camera photos** on your paired Android phone and Mac, TwinDesk copies
+new camera photos to the folder you choose on the Mac. The copy includes original metadata, such as
+location when the photo has it. Android asks for photo-location access when you turn backup on.
+TwinDesk keeps a local record of saved copies to avoid duplicates. Turning backup off stops new
+copies; existing copies stay in your folder.
+
 If you turn on **Keep history**, your clipboard history and phone notifications are kept encrypted, for as long as you choose. You can clear them at any time. Uninstalling TwinDesk, or deleting its folder, removes them.
 
 ### Phone permissions (Android)

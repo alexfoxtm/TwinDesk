@@ -2464,5 +2464,6 @@
   "Allow photo locations on the phone. Backup copies that location with the photo.": "请在手机上允许访问照片位置。备份会连同位置一起复制。",
   "Connect over Wi-Fi or a cable.": "请通过 Wi-Fi 或数据线连接。",
   "Turn backup on on {name} and choose a folder.": "请在 {name} 上打开备份并选择一个文件夹。",
+  "Couldn’t save the backup. Check the folder and free space.": "无法保存备份。请检查文件夹和可用空间。",
   "Choose a folder on this Mac.": "请在这台 Mac 上选择一个文件夹。",
 });

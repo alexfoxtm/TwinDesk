@@ -2463,5 +2463,6 @@
   "Allow photo locations on the phone. Backup copies that location with the photo.": "Permita os locais das fotos no telefone. O backup copia esse local com a foto.",
   "Connect over Wi-Fi or a cable.": "Conecte por Wi-Fi ou cabo.",
   "Turn backup on on {name} and choose a folder.": "Ative o backup em {name} e escolha uma pasta.",
+  "Couldn’t save the backup. Check the folder and free space.": "Não foi possível salvar o backup. Verifique a pasta e o espaço livre.",
   "Choose a folder on this Mac.": "Escolha uma pasta neste Mac.",
 });

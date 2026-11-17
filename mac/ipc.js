@@ -721,20 +721,17 @@ function setupIpc(ctx) {
     // Photos: back up new camera photos into a folder on this Mac (mac/photobackup.js).
     async photoBackup(arg) {
       const pb = ctx.photoBackup;
-      if (!pb || !arg || typeof arg !== 'object') return;
-      if (arg.do === 'folder') {
-        const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], buttonLabel: t('Choose…') });
-        if (r.canceled || !r.filePaths[0]) return;
-        pb.setFolder(r.filePaths[0]);
-        return;
-      }
-      if (arg.do !== 'on') return;
-      if (arg.on !== true) { pb.setOn(false); return; }
+      if (!pb || !arg || (arg.do !== 'folder' && arg.do !== 'on')) return;
+      const target = pb.target(arg.generation);
+      if (!target) return;
+      const on = arg.do === 'on' ? arg.on === true : undefined;
       const view = pb.view();
-      if (view && view.folder) { pb.setOn(true); return; }
-      const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], buttonLabel: t('Choose…') });
-      if (r.canceled || !r.filePaths[0]) return;
-      pb.enable(r.filePaths[0]);
+      if (on === false || (on === true && view.folder)) { pb.update(target, { on }); return; }
+      if (!view.available) return;
+      try {
+        const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], buttonLabel: t('Choose…') });
+        if (!r.canceled && r.filePaths[0]) pb.update(target, { on, folder: r.filePaths[0] });
+      } finally { ctx.pushState(); }
     },
     // TwinDesk iPhone (shared/iossign.js): one action, and Choose an IPA….
     iosSign(o) {

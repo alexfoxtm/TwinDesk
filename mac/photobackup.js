@@ -1,6 +1,5 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
-// Mac side of camera photo backup. The transfer itself is shared/photobackup.js. This file binds
-// that engine to the one authenticated session socket (not Save, not the outbox, not fx).
+// Bind photo backup and folder choices to the authenticated connection that owns them.
 'use strict';
 
 const fs = require('fs');
@@ -14,158 +13,155 @@ const TYPES = [
   P.T.BACKUP_END, P.T.BACKUP_REFUSE, P.T.BACKUP_STOP,
 ];
 
-function attach({ store, settings, peer, pushState, save }) {
+function attach({ store, settings, peer, pushState, save, enabled = () => true }) {
   const ledger = new PB.Ledger(store.filePath('photo-backup.json'));
-  let boundId = '';
+  let bound = null;
+  let closed = false;
+  let generation = 0;
   const engine = new PB.Mac(ledger, {
     send(msg) {
-      const ctx = peer.current;
-      if (!ctx || ctx.deviceId !== boundId) return false;
-      const live = sessionSocket(ctx, peer.outbound(ctx));
-      if (!live || live.conn !== engine.conn) return false;
+      const { ctx, ws } = bound || {};
+      if (!ctx || socket(ctx) !== ws || engine.conn !== ws) return false;
+      // The current primary IP socket is also the outbound socket. Do not queue backup traffic.
       peer.send(ctx, msg);
       return true;
     },
+    changed: pushState,
   });
 
-  function peers() {
-    if (!settings.photoBackup || typeof settings.photoBackup !== 'object') settings.photoBackup = { peers: {} };
-    if (!settings.photoBackup.peers || typeof settings.photoBackup.peers !== 'object') settings.photoBackup.peers = {};
-    return settings.photoBackup.peers;
+  function peers() { return settings.photoBackup.peers; }
+
+  function row(ctx) {
+    const p = Object.hasOwn(peers(), ctx.deviceId) ? peers()[ctx.deviceId] : null;
+    return p && p.pair === ctx.photoBackupPair ? { ...p } : {
+      pair: ctx.photoBackupPair, on: false, since: 0, rev: 0, folder: '',
+    };
   }
 
-  function row(id) {
-    const p = peers()[id];
-    return p ? { on: p.on === true, since: p.since || 0, rev: p.rev || 0, folder: p.folder || '' } : { on: false, since: 0, rev: 0, folder: '' };
+  function control(ctx = peer.current, requireEnabled = true) {
+    return !closed && (!requireEnabled || enabled()) && ctx && ctx === peer.current && ctx.os === P.OS.ANDROID &&
+      /^[0-9A-Za-z._-]{1,64}$/.test(ctx.deviceId) && typeof ctx.photoBackupPair === 'string' &&
+      /^[0-9a-f]{64}$/.test(ctx.photoBackupPair) &&
+      connectionOf(ctx, ctx.ws) ? ctx : null;
   }
 
-  function applyLocal(id) {
-    const p = row(id);
-    engine.setLocal({ on: p.on, since: p.since, mrev: p.rev, folder: p.folder });
+  // Only the primary IP socket can carry backup, even when cursor sharing uses a fallback.
+  function socket(ctx) {
+    if (!control(ctx) || ctx.photoBackup !== true || ctx.transport !== 'ip') return null;
+    const ws = peer.outbound(ctx);
+    return ws && ws === ctx.ws && ws.transport !== 'ble' ? ws : null;
   }
 
-  // The socket a backup byte would use. Bluetooth, a replaced socket, or a guest link that is
-  // not this view: nothing is bound, so nothing is written.
-  function sessionSocket(ctx, ws) {
-    if (!ctx || ctx !== peer.current || ctx.os !== P.OS.ANDROID || ctx.photoBackup !== true) return null;
-    if ((ctx.transport || 'ip') !== 'ip') return null;
-    const live = connectionOf(ctx, ws);
-    if (!live || live.conn.transport === 'ble') return null;
-    return live;
+  function local(ctx) {
+    const p = row(ctx);
+    return { on: p.on, since: p.since, mrev: p.rev, folder: p.folder };
   }
 
-  function bindCurrent(ctx) {
-    const live = sessionSocket(ctx, ctx && peer.outbound(ctx));
-    if (!live) {
-      if (boundId) engine.unbind();
-      boundId = '';
+  function refresh() {
+    const ctx = peer.current;
+    const ws = socket(ctx);
+    if (bound && bound.ctx === ctx && bound.ws === ws) {
+      engine.setLocal(local(ctx)); // module/settings changes affect an existing connection
       return;
     }
-    boundId = ctx.deviceId;
-    engine.bind(live.conn, ctx.deviceId, { transport: 'ip', peerPb: true });
-    applyLocal(ctx.deviceId);
+    if (bound) engine.unbind();
+    bound = ws ? { ctx, ws } : null;
+    if (bound) engine.bind(ws, ctx.deviceId, {
+      transport: 'ip', peerPb: true, origin: `${ctx.deviceId}:${ctx.photoBackupPair}`, local: local(ctx),
+    });
   }
 
-  peer.on('client', (ctx) => bindCurrent(ctx));
-  peer.on('closed', () => {
-    if (!boundId) return;
-    engine.unbind();
-    boundId = '';
+  peer.on('client', () => { generation++; refresh(); pushState(); });
+  peer.on('closed', (ctx) => {
+    if (bound && bound.ctx === ctx) { generation++; refresh(); pushState(); }
   });
-  peer.on('transport', () => {
-    engine.invalidate();
-    bindCurrent(peer.current);
-    pushState();
+  peer.on('transport', (ctx) => {
+    if (peer.current === ctx) { generation++; refresh(); pushState(); }
   });
 
   for (const type of TYPES) {
     peer.on(`t:${type}`, (msg, ctx, ws) => {
-      if (!ctx || ctx.os !== P.OS.ANDROID) return;
-      const arrived = sessionSocket(ctx, ws != null ? ws : peer.outbound(ctx));
-      if (!arrived || arrived.conn !== engine.conn) {
-        engine.invalidate();
-        if (peer.current === ctx) bindCurrent(ctx);
-        const now = sessionSocket(ctx, peer.outbound(ctx));
-        if (!arrived || !now || now.conn !== arrived.conn || engine.conn !== arrived.conn) return;
-      }
-      engine.receive(msg, arrived.conn);
-      if (msg.t !== P.T.BACKUP_CHUNK) pushState();
+      if (!bound || ctx !== bound.ctx || ws !== bound.ws || socket(ctx) !== ws) return;
+      engine.receive(msg, ws);
+      if (type !== P.T.BACKUP_CHUNK) pushState();
     });
   }
 
-  if (peer.current) bindCurrent(peer.current);
+  if (peer.current) refresh();
 
-  function persist(id) {
-    save();
-    if (boundId === id) applyLocal(id);
+  function current(target) {
+    return target && target.generation === generation && target.ctx === control(undefined, false) &&
+      target.ws === target.ctx.ws ? target.ctx : null;
+  }
+
+  function persist(ctx, next) {
+    Object.defineProperty(peers(), ctx.deviceId, { value: next, configurable: true, writable: true, enumerable: true });
+    generation++;
+    const apply = () => { if (bound && bound.ctx === ctx) engine.setLocal(local(ctx)); };
+    if (!next.on) apply(); // in-memory revoke is immediate even if saving fails
+    try { save(); } catch {
+      next.on = false;
+      apply();
+      pushState();
+      return false;
+    }
+    if (next.on) apply();
     pushState();
+    return true;
   }
 
   return {
-    setOn(on) {
-      const ctx = peer.current;
-      if (!ctx || ctx.os !== P.OS.ANDROID || !/^[0-9A-Za-z._-]{1,64}$/.test(ctx.deviceId)) return false;
-      const id = ctx.deviceId;
-      const cur = row(id);
-      const next = on === true;
-      if (cur.on === next) return true;
-      if (next && !cur.folder) return false;
-      cur.on = next;
-      cur.rev += 1;
-      if (next) cur.since = Date.now();
-      peers()[id] = cur;
-      persist(id);
-      return true;
+    target(version) {
+      const ctx = control(undefined, false);
+      return ctx && version === generation ? { ctx, ws: ctx.ws, generation } : null;
     },
-    setFolder(folder) {
-      const ctx = peer.current;
-      if (!ctx || ctx.os !== P.OS.ANDROID || !/^[0-9A-Za-z._-]{1,64}$/.test(ctx.deviceId)) return false;
-      let real;
-      try {
-        real = fs.realpathSync(folder);
-        if (!path.isAbsolute(real) || !fs.statSync(real).isDirectory()) return false;
-      } catch { return false; }
-      const id = ctx.deviceId;
-      const cur = row(id);
-      if (cur.folder === real) return true;
-      cur.folder = real;
-      cur.rev += 1;
-      peers()[id] = cur;
-      persist(id);
-      return true;
+    update(target, { on, folder } = {}) {
+      const ctx = current(target);
+      if (!ctx || ((on === true || folder) && !socket(ctx))) return false;
+      const p = row(ctx);
+      if (folder) {
+        try {
+          const real = fs.realpathSync(folder);
+          if (!path.isAbsolute(real) || !fs.statSync(real).isDirectory()) return false;
+          p.folder = real;
+        } catch { return false; }
+      }
+      if (typeof on === 'boolean') {
+        if (on && !p.folder) return false;
+        if (p.on !== on && on) p.since = Date.now();
+        p.on = on;
+      }
+      p.rev += 1;
+      return persist(ctx, p);
     },
-    // The folder dialog came back: remember it, then turn backup on.
-    enable(folder) {
-      if (!this.setFolder(folder)) return false;
-      return this.setOn(true);
+    refresh() { generation++; refresh(); pushState(); },
+    close() {
+      if (bound) engine.unbind();
+      bound = null;
+      closed = true;
+      generation++;
     },
     forget(id) {
       const key = String(id || '');
-      if (!Object.prototype.hasOwnProperty.call(peers(), key)) {
-        if (boundId === key) { engine.unbind(); boundId = ''; pushState(); }
-        return;
-      }
-      delete peers()[key];
-      save();
-      if (boundId === key) { engine.unbind(); boundId = ''; }
+      generation++;
+      if (bound && bound.ctx.deviceId === key) { engine.unbind(); bound = null; }
+      if (Object.hasOwn(peers(), key)) { delete peers()[key]; save(); }
       pushState();
     },
     view() {
-      const ctx = peer.current;
-      if (!ctx || ctx.os !== P.OS.ANDROID) return null;
-      const p = row(ctx.deviceId);
-      const here = boundId === ctx.deviceId && engine.deviceId === ctx.deviceId;
-      const why = here ? engine.why()
-        : (ctx.transport === 'ble' ? 'transport' : ctx.photoBackup === true ? 'wait' : 'peer');
+      const ctx = control(undefined, false);
+      if (!ctx) return null;
+      const p = row(ctx);
+      if (!enabled()) return null;
+      const here = !!bound && bound.ctx === ctx && bound.ws === socket(ctx);
       return {
-        on: p.on,
-        folder: p.folder,
-        why,
-        peer: here ? engine.peerPb === true : ctx.photoBackup === true,
+        on: p.on, folder: p.folder, generation, available: here,
+        why: here ? (engine.why() || engine.problem)
+          : (ctx.transport === 'ble' ? 'transport' : ctx.photoBackup === true ? 'wait' : 'peer'),
+        peer: ctx.photoBackup === true,
         name: ctx.name || '',
       };
     },
   };
 }
-
 module.exports = { attach };

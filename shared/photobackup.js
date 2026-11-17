@@ -7,8 +7,6 @@
 // batch, the item and its generation, so a replaced socket cannot finish an old request.
 // That is slower than fx2 ranges: one image, base64, 32 KiB of photo bytes at a time.
 // A relay that still looks like a normal IP session is not marked separately; Bluetooth is.
-// A generation change for an id the phone's cursor has already passed waits until a later
-// scan sees that id again. New camera photos get higher ids, so they are not in that gap.
 'use strict';
 
 const crypto = require('crypto');
@@ -19,6 +17,10 @@ const CHUNK = 32 * 1024;
 const MAX_BYTES = 80 * 1024 * 1024;
 const SEP = '\u001f';
 const OPEN = 1;
+const WAIT_MS = 30_000;
+const BODY_MS = 5 * 60_000;
+const RETRY_MS = 60_000;
+const PART = /^\.pb-[0-9a-f]{16}\.part$/;
 
 function fieldOk(s) {
   return typeof s === 'string' && s.length > 0 && s.length <= 128 && !/[\u0000-\u001f]/.test(s);
@@ -42,7 +44,8 @@ function validItem(item) {
 
 function normGen(g) {
   if (typeof g === 'number' && Number.isInteger(g) && g >= 0 && g <= Number.MAX_SAFE_INTEGER) return String(g);
-  if (typeof g === 'string' && /^(0|[1-9][0-9]{0,15})$/.test(g)) return g;
+  if (typeof g === 'string' && /^(0|[1-9][0-9]{0,18})$/.test(g) &&
+      (g.length < 19 || g <= '9223372036854775807')) return g;
   return null;
 }
 
@@ -62,13 +65,18 @@ function safeName(name) {
   let s = String(name == null ? '' : name).replace(/\\/g, '/');
   const slash = s.lastIndexOf('/');
   if (slash >= 0) s = s.slice(slash + 1);
-  s = s.replace(/[\u0000-\u001f<>:"|?*]/g, '').replace(/^\.+/, '').trim();
+  s = s.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069<>:"|?*]/g, '').trim().replace(/^\.+/, '');
   if (!s || s === '.' || s === '..') return '';
   if (s.length > 120) {
     const ext = path.extname(s).slice(0, 12);
     s = s.slice(0, 120 - ext.length) + ext;
   }
   if (!s || s === '.' || s === '..') return '';
+  // Leave room for a collision suffix and multibyte characters on the filesystem.
+  while (Buffer.byteLength(s) > 220) {
+    const ext = path.extname(s).slice(0, 12);
+    s = s.slice(0, s.length - ext.length - 1) + ext;
+  }
   return s;
 }
 
@@ -92,8 +100,9 @@ function hid() {
 
 function hashFile(file) {
   const h = crypto.createHash('sha256');
-  const fd = fs.openSync(file, 'r');
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error('not a file');
     const buf = Buffer.alloc(64 * 1024);
     let n;
     while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, n));
@@ -103,27 +112,39 @@ function hashFile(file) {
   return h.digest('hex');
 }
 
-function insideRoot(root, dest) {
-  let base;
-  try { base = fs.realpathSync(root); } catch { return false; }
-  const abs = path.resolve(dest);
-  let cur = path.dirname(abs);
-  while (true) {
-    try {
-      const real = fs.realpathSync(cur);
-      const rel = path.relative(base, path.resolve(real, path.relative(cur, abs)));
-      return !!rel && !rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel);
-    } catch (e) {
-      if (e.code !== 'ENOENT') return false;
-      const parent = path.dirname(cur);
-      if (parent === cur) return false;
-      cur = parent;
+function fsyncDir(dir) {
+  const fd = fs.openSync(dir, 'r');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+// Check each existing component before creating the next. An archive path may not cross a symlink.
+function archiveDir(root, ym, create = false) {
+  if (typeof root !== 'string' || !path.isAbsolute(root) || fs.realpathSync(root) !== root || !fs.lstatSync(root).isDirectory()) throw new Error('archive root');
+  if (!/^\d{4}$/.test(ym.y) || !/^(0[1-9]|1[0-2])$/.test(ym.m)) throw new Error('archive date');
+  let parent = root;
+  for (const name of [ym.y, ym.m]) {
+    const dir = path.join(parent, name);
+    if (create) {
+      try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
     }
+    if (!fs.lstatSync(dir).isDirectory()) throw new Error('archive path');
+    if (create) fsyncDir(parent);
+    parent = dir;
   }
+  return parent;
+}
+
+function rowPath(row, file, part = false) {
+  if (typeof file !== 'string' || !file || (part && !PART.test(path.basename(file)))) return false;
+  try {
+    const parent = path.dirname(file);
+    const dir = archiveDir(row.root, { y: path.basename(path.dirname(parent)), m: path.basename(parent) });
+    return parent === dir;
+  } catch { return false; }
 }
 
 function b64(s) {
-  if (typeof s !== 'string' || s.length === 0 || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(s)) return null;
+  if (typeof s !== 'string' || s.length === 0 || s.length > Math.ceil(CHUNK / 3) * 4 || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(s)) return null;
   const buf = Buffer.from(s, 'base64');
   if (!buf.length) return null;
   return buf;
@@ -133,27 +154,33 @@ class Ledger {
   constructor(file) {
     this.file = file;
     this.data = { v: 1, peers: {} };
+    this.broken = false;
     this._load();
-    this.recover();
+    if (!this.broken) {
+      try { this.recover(); } catch { this.broken = true; }
+    }
   }
 
   _load() {
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      if (raw && raw.peers && typeof raw.peers === 'object') this.data = { v: 1, peers: raw.peers };
+      if (raw?.v !== 1 || !raw.peers || typeof raw.peers !== 'object' || Array.isArray(raw.peers)) throw new Error('ledger');
+      this.data = { v: 1, peers: raw.peers };
     } catch (e) {
-      if (e.code !== 'ENOENT') this.data = { v: 1, peers: {} };
+      if (e.code !== 'ENOENT') this.broken = true;
     }
   }
 
   _peer(origin) {
-    if (!this.data.peers[origin]) this.data.peers[origin] = { items: {} };
+    if (!Object.hasOwn(this.data.peers, origin)) Object.defineProperty(this.data.peers, origin, {
+      value: { items: {} }, configurable: true, writable: true, enumerable: true,
+    });
     if (!this.data.peers[origin].items) this.data.peers[origin].items = {};
     return this.data.peers[origin];
   }
 
   get(origin, item, gen) {
-    const g = this._peer(origin).items[item];
+    const g = Object.hasOwn(this.data.peers, origin) && this.data.peers[origin]?.items?.[item];
     return g ? g[String(gen)] || null : null;
   }
 
@@ -172,68 +199,48 @@ class Ledger {
   }
 
   save() {
+    if (this.broken) throw new Error('backup history is unreadable');
     const dir = path.dirname(this.file);
     fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    const fd = fs.openSync(tmp, 'w');
+    const tmp = `${this.file}.${hid()}.tmp`;
     try {
-      fs.writeSync(fd, JSON.stringify(this.data));
-      fs.fsyncSync(fd);
+      const fd = fs.openSync(tmp, 'wx', 0o600);
+      try { fs.writeFileSync(fd, JSON.stringify(this.data)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      fs.renameSync(tmp, this.file);
+      fsyncDir(dir);
     } finally {
-      fs.closeSync(fd);
+      this._unlink(tmp);
     }
-    fs.renameSync(tmp, this.file);
   }
 
-  // A crash after the digest was stored and before "done": publish the part, or trust the
-  // file already linked. A part with no digest is incomplete and is removed.
+  // Journal the path before the first byte. Recovery drops incomplete parts and recognizes an
+  // already-published file; it never publishes a pending part without renewed consent.
   recover() {
     let changed = false;
     for (const [origin, peer] of Object.entries(this.data.peers)) {
-      const items = peer && peer.items;
-      if (!items) continue;
-      for (const item of Object.keys(items)) {
-        for (const gen of Object.keys(items[item])) {
-          const row = items[item][gen];
-          if (!row || row.state === 'done') {
-            if (row && row.state === 'done' && row.part) { row.part = ''; changed = true; }
-            continue;
-          }
-          if (row.state !== 'pending' || typeof row.sha !== 'string' || !/^[0-9a-f]{64}$/.test(row.sha)) {
-            this._unlink(row && row.part);
-            delete items[item][gen];
-            changed = true;
-            continue;
-          }
-          if (row.dest && this._same(row.dest, row.size, row.sha)) {
-            this._unlink(row.part);
-            row.state = 'done';
-            row.part = '';
-            changed = true;
-            continue;
-          }
-          if (row.part && this._same(row.part, row.size, row.sha) && row.dest) {
-            try {
-              const dest = this._linkNew(row.part, row.dest, row.size, row.sha);
-              this._unlink(row.part);
-              row.dest = dest;
-              row.state = 'done';
-              row.part = '';
-              changed = true;
-              continue;
-            } catch {
-              // Leave the part. The next open tries the link again.
-              continue;
-            }
-          }
-          this._unlink(row.part);
-          delete items[item][gen];
+      if (!peer?.items) continue;
+      for (const [item, revisions] of Object.entries(peer.items)) {
+        for (const [gen, row] of Object.entries(revisions)) {
+          if (row?.state === 'done' && !row.part) continue;
+          if (row?.part && !this.clearPart(row)) continue; // missing mount or unsafe path: keep its receipt
+          if (row?.state === 'pending' && /^[0-9a-f]{64}$/.test(row.sha) &&
+              rowPath(row, row.dest) && this._same(row.dest, row.size, row.sha)) {
+            fsyncDir(path.dirname(row.dest));
+            const st = fs.lstatSync(row.dest);
+            this.set(origin, item, gen, { ...row, state: 'done', part: '', ino: st.ino, dev: st.dev, mtime: st.mtimeMs });
+          } else this.drop(origin, item, gen);
           changed = true;
         }
-        if (items[item] && !Object.keys(items[item]).length) delete items[item];
       }
     }
     if (changed) this.save();
+  }
+
+  clearPart(row) {
+    if (!row.part) return true;
+    if (!rowPath(row, row.part, true)) return false;
+    this._unlink(row.part);
+    return true;
   }
 
   _unlink(file) {
@@ -242,110 +249,85 @@ class Ledger {
   }
 
   _same(file, size, sha) {
-    let st;
-    try { st = fs.statSync(file); } catch { return false; }
-    if (!st.isFile() || st.size !== size) return false;
-    return hashFile(file) === sha;
-  }
-
-  _linkNew(part, dest, size, sha) {
-    const place = (target) => {
-      try {
-        fs.linkSync(part, target);
-        return target;
-      } catch (e) {
-        if (e.code !== 'EEXIST') throw e;
-        if (this._same(target, size, sha)) return target;
-        return null;
-      }
-    };
-    const first = place(dest);
-    if (first) return first;
-    const ext = path.extname(dest);
-    const base = dest.slice(0, dest.length - ext.length);
-    for (let n = 2; n < 500; n++) {
-      const alt = `${base}-${n}${ext}`;
-      if (fs.existsSync(alt)) {
-        if (this._same(alt, size, sha)) return alt;
-        continue;
-      }
-      const linked = place(alt);
-      if (linked) return linked;
-    }
-    throw Object.assign(new Error('name'), { code: 'EEXIST' });
-  }
-
-  // Digest is on disk before the name is published. link never replaces a file.
-  commitPart({ origin, item, gen, root, part, sha, size, name, ym, afterLink }) {
-    const dir = path.join(root, ym.y, ym.m);
-    fs.mkdirSync(dir, { recursive: true });
-    let dest = path.join(dir, name);
-    if (!insideRoot(root, dest)) throw Object.assign(new Error('path'), { code: 'EBADPATH' });
-    if (fs.existsSync(dest)) {
-      if (this._same(dest, size, sha)) {
-        this._unlink(part);
-        this.set(origin, item, gen, { state: 'done', size, sha, dest, part: '' });
-        this.save();
-        return dest;
-      }
-      const ext = path.extname(name);
-      const base = name.slice(0, name.length - ext.length);
-      let picked = '';
-      for (let n = 2; n < 500; n++) {
-        const cand = `${base}-${n}${ext}`;
-        const full = path.join(dir, cand);
-        if (!fs.existsSync(full)) { picked = full; break; }
-        if (this._same(full, size, sha)) {
-          this._unlink(part);
-          this.set(origin, item, gen, { state: 'done', size, sha, dest: full, part: '' });
-          this.save();
-          return full;
-        }
-      }
-      if (!picked) throw Object.assign(new Error('name'), { code: 'EEXIST' });
-      dest = picked;
-    }
-    this.set(origin, item, gen, { state: 'pending', size, sha, dest, part });
-    this.save();
-    const published = this._linkNew(part, dest, size, sha);
-    if (published !== dest) {
-      this.set(origin, item, gen, { state: 'pending', size, sha, dest: published, part });
-      this.save();
-    }
-    if (typeof afterLink === 'function') afterLink();
-    if (!this._same(published, size, sha)) throw Object.assign(new Error('short'), { code: 'EBADSHA' });
-    this._unlink(part);
-    let dfd;
     try {
-      dfd = fs.openSync(dir, 'r');
-      fs.fsyncSync(dfd);
-    } catch { /* a directory that cannot be synced still has the linked file */ } finally {
-      if (dfd != null) fs.closeSync(dfd);
-    }
-    this.set(origin, item, gen, { state: 'done', size, sha, dest: published, part: '' });
+      const st = fs.lstatSync(file);
+      return st.isFile() && st.size === size && hashFile(file) === sha;
+    } catch { return false; }
+  }
+
+  hasArchived(row, root, size) {
+    if (row?.state !== 'done' || row.root !== root || row.size !== size || !rowPath(row, row.dest)) return false;
+    const st = fs.lstatSync(row.dest, { throwIfNoEntry: false });
+    return !!st && st.isFile() && st.size === size && st.ino === row.ino && st.dev === row.dev && st.mtimeMs === row.mtime;
+  }
+
+  beginPart({ origin, item, gen, root, ym, size }) {
+    const old = this.get(origin, item, gen);
+    if (old && !this.clearPart(old)) throw new Error('previous backup folder is unavailable');
+    const dir = archiveDir(root, ym, true);
+    const part = path.join(dir, `.pb-${hid()}.part`);
+    this.set(origin, item, gen, { state: 'receiving', size, root, part });
     this.save();
-    return published;
+    return { part, fd: fs.openSync(part, 'wx', 0o600) };
+  }
+
+  // The pending ledger names the exact file before link(), including on a name collision.
+  commitPart({ origin, item, gen, root, part, sha, size, name, ym, afterLink }) {
+    const dir = archiveDir(root, ym);
+    if (!rowPath({ root }, part, true) || path.dirname(part) !== dir) throw new Error('archive part');
+    const ext = path.extname(name);
+    const base = name.slice(0, name.length - ext.length);
+    const source = fs.lstatSync(part);
+    if (!source.isFile() || source.size !== size) throw new Error('archive size');
+    for (let n = 1; n < 500; n++) {
+      const dest = path.join(dir, n === 1 ? name : `${base}-${n}${ext}`);
+      const present = fs.lstatSync(dest, { throwIfNoEntry: false });
+      if (present && !this._same(dest, size, sha)) continue;
+      const pending = { state: 'pending', root, size, sha, dest, part };
+      this.set(origin, item, gen, pending);
+      this.save();
+      if (!present) {
+        try { fs.linkSync(part, dest); } catch (e) {
+          if (e.code === 'EEXIST') continue;
+          throw e;
+        }
+        if (typeof afterLink === 'function') afterLink();
+      }
+      const st = fs.lstatSync(dest);
+      if (!st.isFile() || st.size !== size ||
+          (!present && (st.dev !== source.dev || st.ino !== source.ino))) throw new Error('archive changed');
+      fsyncDir(dir);
+      this._unlink(part);
+      this.set(origin, item, gen, { ...pending, state: 'done', part: '', ino: st.ino, dev: st.dev, mtime: st.mtimeMs });
+      try { this.save(); } catch (e) { this.set(origin, item, gen, pending); throw e; }
+      return dest;
+    }
+    throw new Error('archive filename is in use');
   }
 }
 
 class Mac {
-  constructor(ledger, { send, now = () => Date.now(), hooks = {} } = {}) {
+  constructor(ledger, { send, now = () => Date.now(), changed = () => {}, hooks = {} } = {}) {
     this.ledger = ledger;
     this.send = send || (() => false);
     this.now = now;
+    this.changed = changed;
     this.hooks = hooks;
     this.conn = null;
     this.deviceId = '';
+    this.origin = '';
     this.transport = '';
     this.peerPb = false;
     this.local = { on: false, since: 0, mrev: 0, folder: '' };
     this.remote = { on: false, since: 0, rev: 0, perm: '', loc: false, api: 0, heard: false };
     this.flight = null;
-    this.dead = new Set();
     this.inv = null;
     this.cursor = 0;
     this.syncReq = '';
     this.failed = new Set();
+    this.timer = null;
+    this.retry = null;
+    this.problem = '';
   }
 
   snap() {
@@ -362,26 +344,29 @@ class Mac {
     };
   }
 
-  why() { return gate(this.snap()); }
+  why() { return gate(this.snap()) || (this.ledger.broken ? 'disk' : ''); }
 
   live(conn) {
     return !!conn && conn === this.conn && conn.readyState === OPEN && conn.released !== true && conn.authed !== false;
   }
 
-  bind(conn, deviceId, { transport = '', peerPb = false } = {}) {
+  bind(conn, deviceId, { transport = '', peerPb = false, origin = deviceId, local = null } = {}) {
     this.invalidate();
     this.conn = conn;
     this.deviceId = deviceId || '';
+    this.origin = origin || '';
     this.transport = transport || '';
     this.peerPb = peerPb === true;
     this.remote = { on: false, since: 0, rev: 0, perm: '', loc: false, api: 0, heard: false };
-    this._emitState();
+    this.local = { on: false, since: 0, mrev: 0, folder: '' };
+    if (local) this.setLocal(local);
   }
 
   unbind() {
     this.invalidate();
     this.conn = null;
     this.deviceId = '';
+    this.origin = '';
     this.peerPb = false;
     this.transport = '';
   }
@@ -390,6 +375,10 @@ class Mac {
   invalidate() {
     const flight = this.flight;
     this.flight = null;
+    this._clearTimer();
+    clearTimeout(this.retry);
+    this.retry = null;
+    this.problem = '';
     this.inv = null;
     this.cursor = 0;
     this.syncReq = '';
@@ -415,22 +404,45 @@ class Mac {
   }
 
   receive(msg, conn) {
-    if (!msg || typeof msg !== 'object') return;
-    if (!this.live(conn)) {
-      if (this.flight) this.invalidate();
-      return;
-    }
-    if (typeof msg.req === 'string' && this.dead.has(msg.req) && msg.t !== 'backup.state' && msg.t !== 'backup.inv') {
-      this._emit({ t: 'backup.refuse', req: msg.req, why: 'stop' });
-      return;
-    }
+    if (!msg || typeof msg !== 'object' || !this.live(conn)) return;
     if (msg.t === 'backup.state') this.onState(msg, conn);
     else if (msg.t === 'backup.inv') this.onInv(msg, conn);
     else if (msg.t === 'backup.accept') this.onAccept(msg, conn);
     else if (msg.t === 'backup.chunk') this.onChunk(msg, conn);
     else if (msg.t === 'backup.end') this.onEnd(msg, conn);
     else if (msg.t === 'backup.refuse') this.onRefuse(msg, conn);
-    else if (msg.t === 'backup.stop') this.invalidate();
+    else if (msg.t === 'backup.stop' && this.flight && msg.req === this.flight.req) this.invalidate();
+  }
+
+  _clearTimer() {
+    clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  _deadline(ms, expire) {
+    this._clearTimer();
+    this.timer = setTimeout(expire, ms);
+    this.timer.unref?.();
+  }
+
+  _retrySoon(reason) {
+    this.problem = reason;
+    if (!this.retry && !this.why() && this.live(this.conn)) {
+      this.retry = setTimeout(() => {
+        this.retry = null;
+        this.maybeSync();
+        this.changed();
+      }, RETRY_MS);
+      this.retry.unref?.();
+    }
+    this.changed();
+  }
+
+  _watchFlight(f) {
+    f.idleUntil = Math.min(f.until, this.now() + WAIT_MS);
+    this._deadline(Math.max(1, f.idleUntil - this.now()), () => {
+      if (this.flight === f) this.failItem('timeout');
+    });
   }
 
   onState(msg, conn) {
@@ -444,6 +456,7 @@ class Mac {
     if (!Number.isInteger(msg.api)) return;
     const prev = this.remote;
     const next = { on: msg.on, since, rev, perm: msg.perm, loc: msg.loc, api: msg.api, heard: true };
+    if (prev.heard && (rev < prev.rev || (rev === prev.rev && (prev.on !== next.on || prev.since !== since)))) return;
     const changed = prev.heard && (prev.rev !== rev || prev.on !== next.on || prev.since !== since || prev.perm !== next.perm || prev.loc !== next.loc || prev.api !== next.api);
     this.remote = next;
     if (changed) this.invalidate();
@@ -455,6 +468,7 @@ class Mac {
     if (!token(msg.req) || !token(msg.scan) || msg.sync !== this.syncReq) return;
     if (msg.rev !== this.remote.rev || msg.mrev !== this.local.mrev) return;
     if (!Array.isArray(msg.items) || msg.items.length > 40) return;
+    this._clearTimer();
     this.inv = {
       req: msg.req,
       scan: msg.scan,
@@ -469,109 +483,96 @@ class Mac {
 
   onAccept(msg, conn) {
     const f = this.flight;
-    if (!this.live(conn) || !f || f.phase !== 'take' || !this._echo(msg, f) || msg.size !== f.size) {
-      if (f && msg && msg.req === f.req) this.failItem('echo');
-      return;
-    }
-    if (this.why()) { this.failItem(this.why() || 'stop'); return; }
+    if (!this.live(conn) || !f || msg.req !== f.req || f.phase !== 'take') return;
+    if (!this._echo(msg, f) || msg.size !== f.size) { this.failItem('echo'); return; }
+    if (this.why() || f.idleUntil <= this.now()) { this.failItem('stop'); return; }
     try {
-      const dir = path.join(this.local.folder, f.ym.y, f.ym.m);
-      fs.mkdirSync(dir, { recursive: true });
-      const part = path.join(dir, `.pb-${hid()}.part`);
-      if (!insideRoot(this.local.folder, part)) throw Object.assign(new Error('path'), { code: 'EBADPATH' });
-      f.part = part;
-      f.fd = fs.openSync(part, 'wx', 0o600);
+      const opened = this.ledger.beginPart({ origin: f.origin, item: f.item, gen: f.gen, root: f.folder, ym: f.ym, size: f.size });
+      f.part = opened.part;
+      f.fd = opened.fd;
+      f.hash = crypto.createHash('sha256');
       f.phase = 'body';
-      f.seq = 0;
-      f.got = 0;
-    } catch {
-      this.failItem('disk');
-    }
+      this._watchFlight(f);
+    } catch { this.failItem('disk'); }
   }
 
   onChunk(msg, conn) {
     const f = this.flight;
-    if (!f || f.phase !== 'body') {
-      if (msg && typeof msg.req === 'string' && this.dead.has(msg.req)) this._emit({ t: 'backup.refuse', req: msg.req, why: 'stop' });
-      return;
-    }
-    if (!this.live(conn) || !this._echo(msg, f) || msg.seq !== f.seq) { this.failItem('echo'); return; }
-    if (this.why()) { this.failItem('stop'); return; }
+    if (!f || f.phase !== 'body' || msg.req !== f.req) return;
+    if (!this.live(conn) || this.why() || f.idleUntil <= this.now()) { this.failItem('stop'); return; }
+    if (!this._echo(msg, f) || msg.seq !== f.seq) { this.failItem('echo'); return; }
     const buf = b64(msg.data);
     if (!buf || buf.length > CHUNK || f.got + buf.length > f.size) { this.failItem('checksum'); return; }
     try {
-      fs.writeSync(f.fd, buf);
+      fs.writeFileSync(f.fd, buf);
+      f.hash.update(buf);
       f.got += buf.length;
       f.seq += 1;
-    } catch {
-      this.failItem('disk');
-    }
+      this._watchFlight(f);
+    } catch { this.failItem('disk'); }
   }
 
   onEnd(msg, conn) {
     const f = this.flight;
-    if (!this.live(conn) || !f || f.phase !== 'body' || !this._echo(msg, f)) {
-      if (f && msg && msg.req === f.req) this.failItem('echo');
-      return;
-    }
-    if (typeof msg.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(msg.sha256) || msg.size !== f.size || f.got !== f.size) {
-      this.failItem('checksum');
-      return;
-    }
-    const part = f.part;
+    if (!f || f.phase !== 'body' || msg.req !== f.req) return;
+    if (!this.live(conn) || this.why() || f.idleUntil <= this.now()) { this.failItem('stop'); return; }
+    if (!this._echo(msg, f)) { this.failItem('echo'); return; }
+    const sha = f.hash.digest('hex');
+    if (sha !== msg.sha256 || msg.size !== f.size || f.got !== f.size) { this.failItem('checksum'); return; }
     try {
       fs.fsyncSync(f.fd);
       fs.closeSync(f.fd);
       f.fd = null;
-      const sha = hashFile(part);
-      const st = fs.statSync(part);
-      if (sha !== msg.sha256 || st.size !== f.size) { this.failItem('checksum'); return; }
-      const dest = this.ledger.commitPart({
-        origin: this.deviceId, item: f.item, gen: f.gen, root: this.local.folder,
-        part, sha, size: f.size, name: f.name, ym: f.ym,
+      this.ledger.commitPart({
+        origin: f.origin, item: f.item, gen: f.gen, root: f.folder,
+        part: f.part, sha, size: f.size, name: f.name, ym: f.ym,
         afterLink: this.hooks.afterLink,
       });
-      const done = {
-        t: 'backup.done', req: f.req, inv: f.inv, scan: f.scan, batch: f.batch,
-        item: f.item, gen: Number(f.gen), rev: f.rev, mrev: f.mrev, size: f.size, sha256: sha, dest,
-      };
-      this.flight = null;
-      this._emit(done);
-      this.pump();
-    } catch (e) {
-      const row = this.ledger.get(this.deviceId, f.item, f.gen);
-      if (!row || row.state === 'done' || !row.sha) this._discard(f);
-      this.dead.add(f.req);
-      if (this.dead.size > 64) this.dead.delete(this.dead.values().next().value);
-      this.flight = null;
-      this.inv = null;
-      this.syncReq = '';
-      if (row && row.state === 'done') return;
-      throw e;
+    } catch {
+      // Leave any final file in place. A retry verifies it rather than writing a duplicate.
+      this.failItem('disk');
+      return;
     }
+    this._clearTimer();
+    this.flight = null;
+    this.problem = '';
+    this._emit({
+      t: 'backup.done', req: f.req, inv: f.inv, scan: f.scan, batch: f.batch,
+      item: f.item, gen: f.gen, rev: f.rev, mrev: f.mrev, size: f.size, sha256: sha,
+    });
+    this.pump();
   }
 
   onRefuse(msg, conn) {
     if (!this.live(conn) || !msg) return;
     const f = this.flight;
-    if (f && msg.req === f.req) {
+    if (f && msg.req === f.req && (this._echo(msg, f) ||
+        (!msg.item && msg.rev === f.rev && msg.mrev === f.mrev))) {
       const why = typeof msg.why === 'string' ? msg.why : 'stop';
-      this.failItem(why === 'permission' || why === 'checksum' || why === 'disk' ? why : 'stop');
+      this.failItem(['permission', 'checksum', 'disk', 'gone', 'version', 'timeout'].includes(why) ? why : 'stop');
       return;
     }
-    // The phone declined the scan itself (permission, consent, Bluetooth). Do not ask again
-    // until the next state, or a revoked permission would spin.
-    if (msg.req && msg.req === this.syncReq) this.syncReq = '';
+    if (!this.flight && !this.inv && msg.req === this.syncReq) {
+      this._clearTimer();
+      this.syncReq = '';
+      this._retrySoon(msg.why === 'permission' ? 'media' : 'wait');
+    }
   }
 
   maybeSync() {
-    if (this.flight || this.inv || this.syncReq) return;
-    if (this.why()) return;
-    if (!this.live(this.conn)) return;
+    if (this.flight || this.inv || this.syncReq || this.retry || this.why() || !this.live(this.conn)) return;
     const req = hid();
     this.syncReq = req;
-    this.failed = new Set();
-    this._emit({ t: 'backup.sync', req, rev: this.remote.rev, mrev: this.local.mrev });
+    this.failed.clear();
+    if (!this._emit({ t: 'backup.sync', req, rev: this.remote.rev, mrev: this.local.mrev })) {
+      this.syncReq = '';
+      return;
+    }
+    this._deadline(WAIT_MS, () => {
+      if (this.syncReq !== req || this.inv) return;
+      this.syncReq = '';
+      this._retrySoon('wait');
+    });
   }
 
   pump() {
@@ -588,9 +589,11 @@ class Mac {
         });
         continue;
       }
-      const row = this.ledger.get(this.deviceId, checked.item, checked.gen);
-      if (row && row.state === 'done' && row.dest && fs.existsSync(row.dest)) {
-        this._emit(this._have(checked));
+      const row = this.ledger.get(this.origin, checked.item, checked.gen);
+      let have = false;
+      try { have = this.ledger.hasArchived(row, this.local.folder, checked.size); } catch { /* retry the file */ }
+      if (have) {
+        this._emit(this._have(checked, row.sha));
         continue;
       }
       const req = hid();
@@ -599,26 +602,30 @@ class Mac {
         phase: 'take', req, batch, inv: this.inv.req, scan: this.inv.scan,
         item: checked.item, gen: checked.gen, size: checked.size, name: checked.name, ym: checked.ym,
         rev: this.remote.rev, mrev: this.local.mrev, seq: 0, got: 0, part: '', fd: null,
+        origin: this.origin, folder: this.local.folder, until: this.now() + BODY_MS,
       };
-      this._emit({
+      this._watchFlight(this.flight);
+      if (!this._emit({
         t: 'backup.take', req, inv: this.inv.req, scan: this.inv.scan, batch,
-        item: checked.item, gen: Number(checked.gen), size: checked.size,
+        item: checked.item, gen: checked.gen, size: checked.size,
         rev: this.remote.rev, mrev: this.local.mrev,
-      });
+      })) this.failItem('stop');
       return;
     }
     const again = this.inv.more || this.inv.remain;
     const failed = this.failed.size > 0;
     this.inv = null;
     this.syncReq = '';
-    if (again && !failed) this.maybeSync();
+    if (failed) this._retrySoon(this.problem || 'wait');
+    else if (again) this.maybeSync();
+    else this.problem = '';
   }
 
-  _have(checked) {
+  _have(checked, sha) {
     const req = hid();
     return {
       t: 'backup.have', req, inv: this.inv.req, scan: this.inv.scan, batch: hid(),
-      item: checked.item, gen: Number(checked.gen), rev: this.remote.rev, mrev: this.local.mrev,
+      item: checked.item, gen: checked.gen, size: checked.size, sha256: sha, rev: this.remote.rev, mrev: this.local.mrev,
     };
   }
 
@@ -648,42 +655,35 @@ class Mac {
   failItem(why) {
     const f = this.flight;
     if (!f) return;
-    this._kill(f);
     this.flight = null;
-    if (why === 'checksum' || why === 'disk' || why === 'permission') this.failed.add(`${f.item}${SEP}${f.gen}`);
+    this._clearTimer();
+    const clean = this._kill(f);
+    const reason = clean ? why : 'disk';
+    this.problem = reason === 'disk' ? 'disk' : 'wait';
+    if (reason !== 'gone' && reason !== 'version') this.failed.add(`${f.item}${SEP}${f.gen}`);
     this._emit({
       t: 'backup.refuse', req: f.req, inv: f.inv, scan: f.scan, batch: f.batch,
-      item: f.item, gen: Number(f.gen), why, rev: f.rev, mrev: f.mrev,
+      item: f.item, gen: f.gen, why: reason, rev: f.rev, mrev: f.mrev,
     });
     this.pump();
+    this.changed();
   }
 
   _kill(f) {
-    this.dead.add(f.req);
-    if (this.dead.size > 64) this.dead.delete(this.dead.values().next().value);
-    this._discard(f);
-    const row = this.ledger.get(this.deviceId, f.item, f.gen);
-    if (row && row.state === 'pending' && !row.sha) this.ledger.drop(this.deviceId, f.item, f.gen);
-    if (row && row.state !== 'done') {
-      // An explicit stop is not a crash. The part is not published later.
-      if (row.part) {
-        try { fs.unlinkSync(row.part); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-      }
-      if (row.state === 'pending') {
-        this.ledger.drop(this.deviceId, f.item, f.gen);
-        this.ledger.save();
-      }
-    }
-  }
-
-  _discard(f) {
     if (f.fd != null) {
       try { fs.closeSync(f.fd); } catch { /* already closed */ }
       f.fd = null;
     }
-    if (f.part) {
-      try { fs.unlinkSync(f.part); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-      f.part = '';
+    const row = this.ledger.get(f.origin, f.item, f.gen);
+    if (!row || row.state === 'done') return true;
+    try {
+      if (!this.ledger.clearPart(row)) return false;
+      this.ledger.drop(f.origin, f.item, f.gen);
+      this.ledger.save();
+      return true;
+    } catch {
+      this.ledger.set(f.origin, f.item, f.gen, row);
+      return false;
     }
   }
 
@@ -693,10 +693,10 @@ class Mac {
 
   _emit(msg) {
     if (!this.live(this.conn)) return false;
-    return this.send(msg) !== false;
+    try { return this.send(msg) !== false; } catch { return false; }
   }
 }
 
 module.exports = {
-  CHUNK, MAX_BYTES, SEP, gate, itemKey, validItem, safeName, yearMonth, hashFile, insideRoot, Ledger, Mac,
+  CHUNK, MAX_BYTES, SEP, gate, itemKey, validItem, safeName, yearMonth, hashFile, Ledger, Mac,
 };

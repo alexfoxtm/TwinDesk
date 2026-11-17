@@ -2464,5 +2464,6 @@
   "Allow photo locations on the phone. Backup copies that location with the photo.": "Allow photo locations on the phone. Backup copies that location with the photo.",
   "Connect over Wi-Fi or a cable.": "Connect over Wi-Fi or a cable.",
   "Turn backup on on {name} and choose a folder.": "Turn backup on on {name} and choose a folder.",
+  "Couldn’t save the backup. Check the folder and free space.": "Couldn’t save the backup. Check the folder and free space.",
   "Choose a folder on this Mac.": "Choose a folder on this Mac.",
 });

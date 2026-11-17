@@ -8,6 +8,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const PB = require('../photobackup.js');
+const { EventEmitter } = require('node:events');
+const { attach } = require('../../mac/photobackup.js');
+const P = require('../protocol.js');
 
 const scratch = process.env.HOME && fs.existsSync(path.join(process.env.HOME, 'orca', 'tmp'))
   ? path.join(process.env.HOME, 'orca', 'tmp')
@@ -82,7 +85,7 @@ function filesUnder(dir) {
 }
 
 function main() {
-  const root = path.join(scratch, `twindesk-pb-main-${process.pid}`);
+  const root = fs.mkdtempSync(path.join(scratch, 'twindesk-pb-main-'));
   const box = open(root);
   const folder = path.join(root, 'archive');
   fs.mkdirSync(folder);
@@ -100,13 +103,13 @@ function main() {
   const take = takeOf(box.sent);
   assert.ok(take, 'the photo after both opt-ins is asked for');
   assert.strictEqual(take.item, item);
-  assert.strictEqual(take.gen, 3);
+  assert.strictEqual(take.gen, '3');
   assert.strictEqual(take.rev, 1);
   assert.strictEqual(take.mrev, 1);
   assert.ok(take.req && take.batch && take.inv === 'inv1' && take.scan === 'scan1');
   acceptBody(box, take, photo);
   const done = box.sent.find((m) => m.t === 'backup.done');
-  assert.ok(done && done.req === take.req && done.sha256 === sha(photo));
+  assert.ok(done && done.req === take.req && done.sha256 === sha(photo) && !Object.hasOwn(done, 'dest'));
   const dest = path.join(folder, ym.y, ym.m, 'IMG_1.jpg');
   assert.ok(fs.readFileSync(dest).equals(photo));
   const row = box.ledger.get('phone-1', item, 3);
@@ -134,11 +137,18 @@ function main() {
   feed(again, [{ item: item2, gen: 1, size: second.length, name: 'IMG_2.jpg', taken, added: 6000 }]);
   const take2 = takeOf(again.sent);
   assert.ok(take2);
-  again.mac.hooks.afterLink = () => { throw new Error('crash'); };
-  assert.throws(() => acceptBody(again, take2, second), /crash/);
+  // Simulate a process exit after link: take a copy of the persisted pending ledger before
+  // the injected I/O failure runs normal runtime cleanup.
+  const recoveryLedger = path.join(root, 'recover.json');
+  again.mac.hooks.afterLink = () => {
+    fs.copyFileSync(path.join(root, 'photo-backup.json'), recoveryLedger);
+    throw new Error('crash');
+  };
+  acceptBody(again, take2, second);
+  assert.ok(again.sent.some((m) => m.t === 'backup.refuse' && m.req === take2.req && m.why === 'disk'));
   const dest2 = path.join(folder, ym.y, ym.m, 'IMG_2.jpg');
   assert.ok(fs.readFileSync(dest2).equals(second));
-  const recovered = new PB.Mac(new PB.Ledger(path.join(root, 'photo-backup.json')), {
+  const recovered = new PB.Mac(new PB.Ledger(recoveryLedger), {
     send(msg) { again.sent.push(JSON.parse(JSON.stringify(msg))); },
   });
   assert.strictEqual(recovered.ledger.get('phone-1', item2, 1).state, 'done');
@@ -152,7 +162,7 @@ function main() {
 }
 
 function failure() {
-  const root = path.join(scratch, `twindesk-pb-fail-${process.pid}`);
+  const root = fs.mkdtempSync(path.join(scratch, 'twindesk-pb-fail-'));
   const box = open(root);
   const folder = path.join(root, 'archive');
   fs.mkdirSync(folder);
@@ -192,6 +202,10 @@ function failure() {
   box.mac.onChunk({ t: 'backup.chunk', ...echo, seq: 0, data: photo.toString('base64') }, box.s);
   assert.ok(box.mac.flight && box.mac.flight.part);
   const part = box.mac.flight.part;
+  assert.strictEqual(box.ledger.get('phone-1', item, 4).state, 'receiving');
+  const afterCrash = new PB.Ledger(path.join(root, 'photo-backup.json'));
+  assert.strictEqual(afterCrash.get('phone-1', item, 4), null);
+  assert.ok(!fs.existsSync(part), 'startup erases uncommitted photo bytes');
   box.s.readyState = 3;
   box.mac.onChunk({ t: 'backup.chunk', ...echo, seq: 1, data: Buffer.from('x').toString('base64') }, box.s);
   assert.strictEqual(box.mac.flight, null);
@@ -200,7 +214,7 @@ function failure() {
   box.s.readyState = 1;
   box.sent.length = 0;
   box.mac.onChunk({ t: 'backup.chunk', ...echo, seq: 1, data: Buffer.from('y').toString('base64') }, box.s);
-  assert.ok(box.sent.some((m) => m.t === 'backup.refuse' && m.req === take.req));
+  assert.ok(!box.sent.some((m) => m.t === 'backup.done' && m.req === take.req));
   assert.strictEqual(filesUnder(folder).length, 0);
 
   arm(box, { folder, mrev: 2 });
@@ -210,6 +224,50 @@ function failure() {
   acceptBody(box, fresh, photo);
   assert.ok(box.sent.some((m) => m.t === 'backup.done' && m.req === fresh.req));
   assert.strictEqual(filesUnder(folder).length, 1);
+
+  // The real adapter cannot follow a picker, a fallback packet, or a delayed close to phone B.
+  const peer = new EventEmitter();
+  const a = { deviceId: 'a', transport: 'ip', os: P.OS.ANDROID, photoBackup: true, photoBackupPair: 'a'.repeat(64), authed: true, ws: sock() };
+  const b = { ...a, deviceId: 'b', ws: sock(), photoBackupPair: 'b'.repeat(64) };
+  const state = { photoBackup: { peers: {} } };
+  const sent = [];
+  peer.outbound = (ctx) => ctx.ws;
+  peer.send = (ctx, msg) => sent.push({ ctx, msg });
+  const pb = attach({ store: { filePath: (name) => path.join(root, 'adapter-' + name) },
+    settings: state, peer, save() {}, pushState() {} });
+  peer.current = a;
+  peer.emit('client', a);
+  const picker = pb.target(pb.view().generation);
+  peer.current = b;
+  peer.emit('client', b);
+  assert.ok(!sent.some(({ ctx, msg }) => ctx === b && msg.on), 'phone B never inherits an on state');
+  assert.strictEqual(pb.update(picker, { folder, on: true }), false);
+  assert.strictEqual(pb.view().on, false);
+  peer.emit('closed', a);
+  assert.strictEqual(pb.view().available, true);
+  pb.update(pb.target(pb.view().generation), { folder, on: true });
+  const phoneState = { t: P.T.BACKUP_STATE, on: true, since: 1010, rev: 1, perm: 'ok', loc: true, api: 30 };
+  const sends = sent.length;
+  peer.emit(`t:${P.T.BACKUP_STATE}`, phoneState, b, null);
+  assert.strictEqual(sent.length, sends, 'missing ingress does not fall back to the current socket');
+  peer.emit(`t:${P.T.BACKUP_STATE}`, phoneState, b, b.ws);
+  assert.ok(sent.slice(sends).some(({ msg }) => msg.t === P.T.BACKUP_SYNC));
+  const pendingPicker = pb.target(pb.view().generation);
+  pb.update(pendingPicker, { on: false });
+  assert.strictEqual(pb.update(pendingPicker, { on: true, folder }), false, 'turning off expires all open pickers');
+
+  // A pre-existing year symlink never causes writes (including a mkdir) outside the archive.
+  const outside = path.join(root, 'outside');
+  const safeRoot = path.join(root, 'symlink-test');
+  fs.mkdirSync(outside);
+  fs.mkdirSync(safeRoot);
+  fs.symlinkSync(outside, path.join(safeRoot, PB.yearMonth(taken, taken).y));
+  arm(box, { folder: safeRoot, mrev: 3 });
+  feed(box, [row]);
+  acceptBody(box, takeOf(box.sent), photo);
+  assert.deepStrictEqual(fs.readdirSync(outside), []);
+  assert.ok(box.sent.some((m) => m.t === 'backup.refuse' && m.why === 'disk'));
+  box.mac.invalidate();
   fs.rmSync(root, { recursive: true, force: true });
 }
 

@@ -42,7 +42,20 @@ old behaviour.
 | `takeover: true` | hello | Take the session from the device that holds it | refused while busy |
 | `pb: 1` | Android hello, Mac welcome | This build can back up new camera photos from a paired Android phone into a folder on that Mac | no photo backup |
 
-`pb` is sent only by the Android phone and the Mac. Windows, Linux, iOS and TwinDesk Web do not send it. A missing field means that side can't, and nothing is copied. The phone still sends `pb: 1` below Android 11 so the Mac can say it needs Android 11. The messages are `backup.state`, `backup.sync`, `backup.inv`, `backup.take`, `backup.accept`, `backup.have`, `backup.chunk`, `backup.end`, `backup.done`, `backup.refuse` and `backup.stop`. The bytes are `backup.chunk` on the session socket, one photo at a time (32 KiB of the file per message), not `file.offer` and not fx. A partial photo permission, a missing photo-location permission, Bluetooth, or backup left off on either side sends nothing even when `pb` is present. An older phone with no `pb` is covered by `shared/test/photobackup.js`.
+`pb: 1` is negotiated between Android and the direct Mac app. A missing flag leaves backup off.
+The Android phone must be running Android 11 or later. Both sides must turn backup on for that
+pair. Android also requires access to all photos and photo locations, because the copy retains
+the original metadata. Bluetooth, a replaced socket, or withdrawn permission stops work.
+Backup does not use the regular Send allowance or outbox.
+
+The Mac requests an inventory with `backup.sync`, then asks for a single matching item with
+`backup.take`. `backup.accept`, `backup.chunk`, and `backup.end` echo the request, item revision,
+and batch. Chunks carry at most 32 KiB of file bytes. The Mac returns `backup.done` after it
+verifies the size and SHA-256, saves the file without replacing another file, and records the
+receipt. `backup.have` reports a revision already archived. A transfer failure returns
+`backup.refuse`; cancellation uses `backup.stop`. Neither receipt reveals the Mac folder.
+An incomplete file is discarded on restart; a verified file that was already saved is kept.
+See `shared/test/photobackup.js` for the local storage and connection tests.
 
 ## Features in dev.state
 

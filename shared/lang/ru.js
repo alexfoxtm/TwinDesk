@@ -2463,5 +2463,6 @@
   "Allow photo locations on the phone. Backup copies that location with the photo.": "Разрешите доступ к местам съёмки на телефоне. Копия сохраняет это место вместе с фото.",
   "Connect over Wi-Fi or a cable.": "Подключитесь по Wi-Fi или кабелю.",
   "Turn backup on on {name} and choose a folder.": "Включите сохранение на {name} и выберите папку.",
+  "Couldn’t save the backup. Check the folder and free space.": "Не удалось сохранить резервную копию. Проверьте папку и свободное место.",
   "Choose a folder on this Mac.": "Выберите папку на этом Mac.",
 });

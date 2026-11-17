@@ -115,8 +115,9 @@ UI.tab({
     alertCard.hidden = true;
     // New camera photos into a folder on this Mac. Only the direct Mac window has state.photoBackup,
     // so mesh, Windows and Linux keep this card hidden. Save and the count notification are unchanged.
-    const backupSw = UI.switch((v) => UI.api.photoBackup({ do: 'on', on: v }), { label: tr('Back up new camera photos') });
-    const backupChoose = UI.button(tr('Choose…'), () => UI.api.photoBackup({ do: 'folder' }), 'small');
+    const backup = (arg) => UI.api.photoBackup({ ...arg, generation: UI.state.photoBackup?.generation });
+    const backupSw = UI.switch((v) => backup({ do: 'on', on: v }), { label: tr('Back up new camera photos') });
+    const backupChoose = UI.button(tr('Choose…'), () => backup({ do: 'folder' }), 'small');
     const backupRow = UI.row(tr('Back up new camera photos'), '', [backupSw], { literalHint: true });
     const folderRow = UI.row(tr('Folder'), '', [backupChoose], { literalHint: true });
     const backupCard = UI.card('', [backupRow, folderRow]);
@@ -367,6 +368,8 @@ UI.tab({
       if (b.why === 'transport') return tr('Connect over Wi-Fi or a cable.');
       if (b.why === 'consent') return tr('Turn backup on on {name} and choose a folder.', { name });
       if (b.why === 'folder') return tr('Choose a folder on this Mac.');
+      if (b.why === 'disk') return tr('Couldn’t save the backup. Check the folder and free space.');
+      if (b.why === 'wait') return tr('Waiting for the phone…');
       return tr('New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.', { name });
     }
 
@@ -379,6 +382,8 @@ UI.tab({
       backupCard.hidden = !b;
       if (b) {
         backupSw.set(!!b.on);
+        backupSw.disable(!b.available && !b.on);
+        backupChoose.disabled = !b.available;
         backupRow.setHint(backupHint(b));
         folderRow.setHint(b.folder || tr('Choose a folder on this Mac.'));
       }

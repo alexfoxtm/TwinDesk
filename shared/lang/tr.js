@@ -2463,5 +2463,6 @@
   "Allow photo locations on the phone. Backup copies that location with the photo.": "Telefonda fotoğraf konumlarına izin verin. Yedek, konumu fotoğrafla birlikte kopyalar.",
   "Connect over Wi-Fi or a cable.": "Wi-Fi veya kabloyla bağlanın.",
   "Turn backup on on {name} and choose a folder.": "{name} üzerinde yedeklemeyi açın ve bir klasör seçin.",
+  "Couldn’t save the backup. Check the folder and free space.": "Yedek kaydedilemedi. Klasörü ve boş alanı kontrol edin.",
   "Choose a folder on this Mac.": "Bu Mac’te bir klasör seçin.",
 });

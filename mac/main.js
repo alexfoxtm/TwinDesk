@@ -714,8 +714,10 @@ app.whenReady().then(() => {
   pairing.on('change', pushState);
   pairing.on('request', showWindow);
   peer = new Peer(server, link);
-  photoBackup = require('./photobackup').attach({
-    store, settings, peer, pushState, save: () => store.saveSettings(settings),
+  const backupEnabled = () => !modulesAtStart.includes('media') && Mods.isOn(settings.modules, 'media');
+  pairing.photoBackupOn = backupEnabled;
+  if (!modulesAtStart.includes('media')) photoBackup = require('./photobackup').attach({
+    store, settings, peer, pushState, save: () => store.saveSettings(settings), enabled: backupEnabled,
   });
   peer.setPlain(settings.files.plain === true); // Files › Encrypt file transfers
   // The files engine (shared/fx2.js) stays up while another TwinDesk computer is on the network: a
@@ -1192,6 +1194,7 @@ app.whenReady().then(() => {
   let silenceModuleOn = Mods.isOn(settings.modules, 'notifications');
   svc.onModulesChanged = () => {
     localsend.apply();
+    if (photoBackup) photoBackup.refresh();
     const on = Mods.isOn(settings.modules, 'notifications');
     if (on === silenceModuleOn) return;
     silenceModuleOn = on;
@@ -1656,6 +1659,7 @@ app.on('will-quit', () => {
 });
 let silenceQuitting = false;
 app.on('before-quit', (event) => {
+  if (photoBackup) photoBackup.close();
   if (!silenceQuitting && svc && svc.silence) {
     event.preventDefault();
     silenceQuitting = true;

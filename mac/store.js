@@ -134,14 +134,15 @@ const DEFAULT_SETTINGS = {
 
 // A saved backup peer: a real id, an absolute folder, and a boolean switch. Anything else is dropped.
 function cleanPhotoPeers(raw) {
-  const peers = {};
+  const peers = Object.create(null);
   if (!raw || typeof raw !== 'object') return peers;
   for (const [id, p] of Object.entries(raw)) {
     if (!/^[0-9A-Za-z._-]{1,64}$/.test(id) || !p || typeof p !== 'object') continue;
     const folder = typeof p.folder === 'string' && path.isAbsolute(p.folder) ? p.folder : '';
     const since = Number.isFinite(p.since) && p.since >= 0 ? p.since : 0;
     const rev = Number.isInteger(p.rev) && p.rev >= 0 && p.rev <= Number.MAX_SAFE_INTEGER ? p.rev : 0;
-    peers[id] = { on: p.on === true && folder.length > 0, since, rev, folder };
+    if (typeof p.pair !== 'string' || !/^[0-9a-f]{64}$/.test(p.pair)) continue;
+    peers[id] = { pair: p.pair, on: p.on === true && folder.length > 0, since, rev, folder };
   }
   return peers;
 }

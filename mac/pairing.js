@@ -261,10 +261,12 @@ class Pairing extends EventEmitter {
     ctx.fx2Wanted = msg.fx2 === 1; // fast files v2 (shared/fx2.js)
     ctx.fxPlainWanted = msg.fxPlain === 1; // unencrypted file transfers allowed (shared/fastfile.js plainOffer)
     ctx.ilWanted = msg.il && typeof msg.il === 'object' ? msg.il : null; // the input lane (shared/inputlane.js)
+    // A re-pair with the same install id gets a new token, and must opt in again.
+    ctx.photoBackupPair = P.sha256Hex('photo backup:' + e.tokenHash);
     ctx.photoBackup = msg.pb === 1; // camera photo backup (shared/photobackup.js); missing: an older phone
     this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN }, {
       t: P.T.WELCOME, v: P.PROTOCOL_VERSION, macId: this.id.macId, macName: this.id.macName, os: P.OS.MAC,
-      pb: 1, // this Mac can back up a paired Android's new camera photos
+      ...(ctx.photoBackup && e.os === P.OS.ANDROID && this.photoBackupOn?.() === true ? { pb: 1 } : {}),
       rc: 1, // this single-session Mac accepts a paired Android's non-takeover return
       tail: require('../shared/tailnet.js').mine(), // its Tailscale addresses, for reconnecting away from this network (#161)
       relay: require('../shared/relay.js').welcome() || null, // your own relay (shared/relay.js), for reconnecting away from this network; null: none
