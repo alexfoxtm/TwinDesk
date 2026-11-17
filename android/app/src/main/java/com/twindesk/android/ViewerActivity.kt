@@ -300,6 +300,8 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                     sharing = s.sharing,
                     remote = s.remote,
                     reduceMotion = reduceMotion,
+                    previews = s.desktopPreviews,
+                    spaceHold = s.state?.optString("spaceHold").orEmpty(),
                     onDone = { overview = false },
                     onDesktop = { displayId, spaceId -> s.selectDesktop(displayId, spaceId) },
                     onDisplay = { id -> if (id != desks.viewing && id != s.pendingDisplayId) s.selectDisplay(id) },

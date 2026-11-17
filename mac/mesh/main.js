@@ -300,10 +300,37 @@ function publishState() {
 // Tell the viewer what we share, so it can show Start / Extend / Mirror itself
 // (screen.state); only when something changed or the peer is new.
 let screenStateKey = '';
+let previewShots = null;
+
+// This viewer's picture only. The socket is the one session.send writes, which is the guest
+// link while that link is up and the host socket otherwise. A released host is not used.
+// Mesh still offers only the display this viewer is being shown.
+function previewSample() {
+  const Preview = require('../../shared/display-preview.js');
+  if (!svc || !peer || !peer.current || !hub) return null;
+  const session = hub.sessions.get(peer.current.deviceId);
+  const conn = Preview.outbound(session);
+  if (!Preview.liveConn(conn)) return null;
+  const Spaces = require('../../shared/mac-spaces.js');
+  const deviceId = peer.current.deviceId;
+  const st = svc.stream && svc.stream.byId && deviceId != null ? svc.stream.byId.get(deviceId) : null;
+  const look = svc.spaceLook ? svc.spaceLook.current() : null;
+  const viewed = st && st.viewedDisplay ? st.viewedDisplay() : null;
+  const held = !!(svc.displays.holds && svc.displays.holds.has('apps-open'));
+  const offer = Spaces.catalogOffer(svc.displays.list(), { remote: settings.sharing.remote !== false, held, mesh: true });
+  const catalog = Spaces.desktopCatalog(look, viewed, offer.named, { offerDisplays: false });
+  const capture = viewed && Number.isSafeInteger(viewed.session) ? viewed.session : 0;
+  const viewGen = viewed && Number.isSafeInteger(viewed.generation) ? viewed.generation : -1;
+  return { conn, sharing: settings.sharing.on === true, catalog, capture, viewGen };
+}
 
 function sendScreenState() {
   const c = peer && peer.current;
-  if (!c || !svc) return void (screenStateKey = '');
+  if (!c || !svc) {
+    screenStateKey = '';
+    if (previewShots) previewShots.kick();
+    return;
+  }
   // No display list. Mesh has one capture and one input target, and each device can be off or on
   // its own screen. A phone pick would clear that choice and move every viewer that follows it.
   // spaces is true only for the display this device is being shown, and only when that
@@ -330,9 +357,13 @@ function sendScreenState() {
   const spaceHold = Spaces.spaceHold(look);
   if (spaceHold) msg.spaceHold = spaceHold;
   const key = JSON.stringify([c.deviceId, msg]);
-  if (key === screenStateKey) return;
+  if (key === screenStateKey) {
+    if (previewShots) previewShots.kick();
+    return;
+  }
   screenStateKey = key;
   peer.sendToClient(msg);
+  if (previewShots) previewShots.kick();
 }
 
 function displayPick(m) {
@@ -659,6 +690,17 @@ app.whenReady().then(() => {
 
   svc = startServices({ server: peer, getSettings: () => settings, pushState, onHelperReady: refreshPermissions,
     hub, mesh, layoutSync, selfName: () => id.macName });
+  previewShots = new (require('../display-shots.js').DisplayShots)({
+    helper: svc.helper,
+    readLocked: () => require('../lockview').readLocked(),
+    freshLook: () => svc.helper.request('spacesLook', {}, 2000),
+    sample: previewSample,
+    send: (conn, msg) => {
+      const Preview = require('../../shared/display-preview.js');
+      const session = peer && peer.current && hub ? hub.sessions.get(peer.current.deviceId) : null;
+      if (session && Preview.outbound(session) === conn) session.send(msg);
+    },
+  });
   // Audio › Microphone (shared/mic.js): loaded the first time one of its switches is on.
   svc.loadMic = () => {
     if (svc.mic || !(settings.audio.micSend || settings.audio.micReceive)) return svc.mic || null;

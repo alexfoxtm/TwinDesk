@@ -24,14 +24,22 @@ assert.ok(viewer.includes('s.space("next")'));
 assert.ok(viewer.includes('heightIn(min = 48.dp)'));
 
 assert.ok(sheet.includes('tr("Done")'));
-assert.ok(sheet.includes('tr("Illustration only. This is not a live view of the desktop.")'));
+assert.ok(sheet.includes('tr("Not previewed yet")'));
+assert.ok(sheet.includes('tr("Last seen this session")'));
+assert.ok(sheet.includes('tr("Current preview")'));
+assert.ok(sheet.includes('tr("Desktop previews need macOS 14.")'));
+assert.ok(sheet.includes('tr("Desktop previews need Screen Recording.")'));
+assert.ok(!sheet.includes('Illustration only'));
+assert.ok(!sheet.includes('They are not windows from the Mac'));
+assert.ok(!sheet.includes('desktopCapturer'));
+assert.ok(!sheet.includes('getSources'));
+assert.ok(!sheet.includes('Brush.linearGradient'));
+assert.ok(sheet.includes('if (bitmap == null) DesktopPreview.Status.NONE'));
 assert.ok(sheet.includes('minHeight = 48.dp'));
 assert.ok(sheet.includes('maxWidth < 400.dp'));
 assert.ok(sheet.includes('maxWidth < 600.dp'));
 assert.ok(sheet.includes('widthIn(max = 720.dp)'));
 assert.ok(sheet.includes('BackHandler(onBack = onDone)'));
-assert.ok(!/screenshot|Bitmap|ImageBitmap/i.test(sheet));
-assert.ok(sheet.includes('They are not windows from the Mac'));
 
 assert.ok(gestures.includes("g.ids.length === 3 ? 'pan'"));
 assert.ok(gestures.includes('three fingers pan the view'));
@@ -55,11 +63,14 @@ assert.ok(web.includes('if (!inputOn)'));
 const welcome = web.slice(web.indexOf('override fun onWelcome'), web.indexOf('fun lockChanged'));
 assert.ok(welcome.includes('sessionEpoch++'));
 assert.ok(welcome.includes('cancelDesktopWait()'));
+assert.ok(welcome.includes('desktopPreviews = DesktopPreview.EMPTY'));
 const closed = web.slice(web.indexOf('override fun onClosed'), web.indexOf('override fun onMessage'));
 assert.ok(closed.includes('cancelDesktopWait()'));
+assert.ok(closed.includes('desktopPreviews = DesktopPreview.EMPTY'));
 const inputOff = web.slice(web.indexOf('"stream.input"'), web.indexOf('"screen.space.result"'));
 assert.ok(inputOff.includes('if (!inputOn)'));
 assert.ok(inputOff.includes('cancelDesktopWait()'));
+assert.ok(!inputOff.includes('desktopPreviews'));
 const resultAt = web.indexOf('"screen.space.result"');
 const result = web.slice(resultAt, web.indexOf('"screen.desktops"', resultAt));
 assert.ok(result.includes('refreshDesktops()'));
@@ -92,6 +103,14 @@ assert.ok(chosen.includes('DesktopSelect.switchDisplay'));
 assert.ok(!chosen.includes('screen.space'));
 assert.ok(!chosen.includes('spaceId'));
 assert.ok(viewer.includes('tr("Stop")'));
+assert.ok(viewer.includes('previews = s.desktopPreviews'));
+assert.ok(web.includes('"screen.preview"'));
+assert.ok(web.includes('DesktopPreview.reduce'));
+assert.ok(web.includes('DesktopPreview.retain'));
+const locked = web.slice(web.indexOf('fun lockChanged'), web.indexOf('fun videoState(h:'));
+assert.ok(locked.includes('desktopPreviews = DesktopPreview.EMPTY'));
+const state = web.slice(web.indexOf('"screen.state"'), web.indexOf('"stream.input"'));
+assert.ok(state.includes('if (!on) DesktopPreview.EMPTY'));
 
 for (const file of ['mac/services.js', 'mac/mesh/services.js']) {
   const src = read(file);
@@ -105,4 +124,4 @@ for (const file of ['windows/main.js', 'windows/mesh/main.js', 'linux/main.js', 
   assert.ok(!read(file).includes('desktopCatalog'), file);
 }
 
-console.log('desktop-overview: controls, illustration, and no Windows or Linux catalog.');
+console.log('desktop-overview: controls, honest preview labels, and no Windows or Linux catalog.');

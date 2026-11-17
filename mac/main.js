@@ -313,15 +313,38 @@ function pushState() {
 // Tell the viewer what we share, so it can show Start / Extend / Mirror itself
 // (screen.state); only when something changed or the peer is new.
 let screenStateKey = '';
+let previewShots = null;
 
 // This Mac's apps are open on the virtual display, which is what is shared until they close.
 function appsHeld() {
   return !!(svc && svc.displays && svc.displays.holds && svc.displays.holds.has('apps-open'));
 }
 
+// The picture already being shown. Null unless that socket is still the authenticated one.
+// The catalog is the same list screen.state just offered, so a preview cannot name a display
+// the viewer was not given. This does not switch a desktop.
+function previewSample() {
+  const Preview = require('../shared/display-preview.js');
+  const conn = peer && peer.current;
+  if (!svc || !Preview.liveConn(conn)) return null;
+  const Spaces = require('../shared/mac-spaces.js');
+  const look = svc.spaceLook ? svc.spaceLook.current() : null;
+  const viewed = svc.stream && svc.stream.viewedDisplay ? svc.stream.viewedDisplay() : null;
+  const held = appsHeld();
+  const offer = Spaces.catalogOffer(svc.displays.list(), { remote: settings.sharing.remote !== false, held });
+  const catalog = Spaces.desktopCatalog(look, viewed, offer.named, { offerDisplays: offer.offerDisplays });
+  const capture = viewed && Number.isSafeInteger(viewed.session) ? viewed.session : 0;
+  const viewGen = viewed && Number.isSafeInteger(viewed.generation) ? viewed.generation : -1;
+  return { conn, sharing: settings.sharing.on === true, catalog, capture, viewGen };
+}
+
 function sendScreenState() {
   const c = peer && peer.current;
-  if (!c || !svc) return void (screenStateKey = '');
+  if (!c || !svc) {
+    screenStateKey = '';
+    if (previewShots) previewShots.kick();
+    return;
+  }
   // spaces is true only when the display in this picture has its own other desktop and
   // the helper's read says the windows on screen belong to the desktops that are current.
   // A window still visible from another desktop keeps it false. The read does not open
@@ -341,9 +364,13 @@ function sendScreenState() {
   const spaceHold = Spaces.spaceHold(look);
   if (spaceHold) msg.spaceHold = spaceHold;
   const key = JSON.stringify([c.deviceId, msg]);
-  if (key === screenStateKey) return;
+  if (key === screenStateKey) {
+    if (previewShots) previewShots.kick();
+    return;
+  }
   screenStateKey = key;
   peer.sendToClient(msg);
+  if (previewShots) previewShots.kick();
 }
 
 // The viewer asked to mirror one real display. True: that request was handled (a refusal too).
@@ -679,6 +706,13 @@ app.whenReady().then(() => {
   peer.on('rtt', pushState);
 
   svc = startServices({ server: peer, getSettings: () => settings, pushState, onHelperReady: refreshPermissions });
+  previewShots = new (require('./display-shots.js').DisplayShots)({
+    helper: svc.helper,
+    readLocked: () => require('./lockview').readLocked(),
+    freshLook: () => svc.helper.request('spacesLook', {}, 2000),
+    sample: previewSample,
+    send: (conn, msg) => { if (peer.current === conn) peer.send(conn, msg); },
+  });
   svc.kvm.laneReady.then(laneGo);
   // Camera › Take a photo with the phone (shared/phonephoto.js): its photo onto the clipboard.
   {

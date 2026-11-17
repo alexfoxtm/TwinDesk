@@ -10,6 +10,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
@@ -145,6 +146,7 @@ class Screen(core: Core) : Feature(core) {
     @Volatile var state: JSONObject? = null; private set // the Mac's screen.state
     @Volatile var inputOn = true; private set // the Mac's "Receive input" (stream.input)
     @Volatile var spaceNote = ""; private set // a desktop refusal, a switch in progress, or why remote control stays paused
+    @Volatile var desktopPreviews = DesktopPreview.EMPTY
     private var pending: DesktopSelect.Pending? = null
     private var timeoutDisplay = ""
     private var stickyNote = false
@@ -316,14 +318,20 @@ class Screen(core: Core) : Feature(core) {
 
     override fun onWelcome(host: Host) {
         sessionEpoch++
+        desktopPreviews = DesktopPreview.EMPTY
         pendingTimer.post {
             decodedCapture = null
             refreshFollowups = 0
             cancelDesktopWait()
+            desktopPreviews = DesktopPreview.EMPTY
         }
     }
 
     fun lockChanged(locked: Boolean) {
+        if (locked && desktopPreviews !== DesktopPreview.EMPTY) {
+            desktopPreviews = DesktopPreview.EMPTY
+            core.changed()
+        }
         videoGeneration++
         videoPlaying = false
         val session = videoSession
@@ -642,6 +650,7 @@ class Screen(core: Core) : Feature(core) {
         cancelDesktopWait()
         stickyNote = false
         spaceNote = ""
+        desktopPreviews = DesktopPreview.EMPTY
         host?.post(msg("stream.stop"))
     }
 
@@ -652,6 +661,7 @@ class Screen(core: Core) : Feature(core) {
                 state = m
                 host?.post(m)
                 val on = m.optBoolean("on")
+                desktopPreviews = if (!on) DesktopPreview.EMPTY else DesktopPreview.retain(desktopPreviews, desktopCatalog)
                 // Off -> on, not asked for here: the person pressed Share Screen on the computer.
                 if (was != null && !was.optBoolean("on") && on && !viewing && !startedByUs) autoOpen()
                 if (!on) Notify.cancelScreen(core.ctx)
@@ -688,6 +698,10 @@ class Screen(core: Core) : Feature(core) {
                 refreshDesktops()
                 core.changed()
             }
+            "screen.preview" -> {
+                desktopPreviews = DesktopPreview.reduce(desktopPreviews, previewMessage(m), desktopCatalog)
+                core.changed()
+            }
             "screen.desktops" -> {
                 val epoch = m.optInt("epoch", -1)
                 if (epoch != refreshEpoch) return true
@@ -712,6 +726,20 @@ class Screen(core: Core) : Feature(core) {
             else -> return false
         }
         return true
+    }
+
+    private fun previewMessage(m: JSONObject): DesktopPreview.Incoming {
+        val clear = m.optBoolean("clear")
+        val unavailable = m.optString("unavailable")
+        if (clear || unavailable == "os" || unavailable == "permission") {
+            return DesktopPreview.Incoming(clear, unavailable, "", "", -1, -1, 0, 0, null)
+        }
+        val raw = m.optString("jpeg")
+        val jpeg = if (raw.length > DesktopPreview.MAX_BYTES * 2) null
+            else runCatching { Base64.decode(raw, Base64.DEFAULT) }.getOrNull()
+        val capture = if (m.has("capture")) m.optLong("capture") else -1L
+        val viewGen = if (m.has("viewGen")) m.optLong("viewGen") else -1L
+        return DesktopPreview.Incoming(false, unavailable, m.optString("displayId"), m.optString("spaceId"), capture, viewGen, m.optInt("width"), m.optInt("height"), jpeg)
     }
 }
 

@@ -1,12 +1,15 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
-// Displays & desktops sheet for the Mac viewer. Tiles are a fixed illustration.
-// They are not a capture of the desktop and do not show windows or apps.
+// Displays & desktops sheet for the Mac viewer. A tile shows the still preview the Mac
+// sent for that desktop during this session, or says it has not been previewed. It is
+// not a live picture and it does not invent windows.
 package com.twindesk.android
 
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,7 +22,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -40,9 +42,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -71,6 +74,8 @@ fun DesktopOverview(
     sharing: Boolean,
     remote: Boolean,
     reduceMotion: Boolean,
+    previews: DesktopPreview.Board,
+    spaceHold: String,
     onDone: () -> Unit,
     onDesktop: (String, String) -> Unit,
     onDisplay: (String) -> Unit,
@@ -122,6 +127,12 @@ fun DesktopOverview(
                             modifier = Modifier.semantics { heading() },
                         )
                         Text(tr("Choose where you want to work"), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                        val previewNote = when (previews.unavailable) {
+                            "os" -> tr("Desktop previews need macOS 14.")
+                            "permission" -> tr("Desktop previews need Screen Recording.")
+                            else -> ""
+                        }
+                        if (previewNote.isNotEmpty()) Text(previewNote, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                     }
                     val done = tr("Done")
                     Text(
@@ -146,7 +157,7 @@ fun DesktopOverview(
                             Text(tr("Desktops on {name}", "name" to label), color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(if (display.count == 1) tr("1 desktop") else tr("{count} desktops", "count" to display.count), color = Muted, fontSize = 11.sp)
                         }
-                        DesktopGrid(display, catalog.viewing, deskCols, tileHeight, reduceMotion, onDesktop)
+                        DesktopGrid(display, catalog.viewing, deskCols, tileHeight, reduceMotion, previews, spaceHold, onDesktop)
                         if (display.truncated) Text(tr("More desktops are on this Mac than this list shows"), color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
                         if (index == catalog.displays.lastIndex) Spacer(Modifier.height(4.dp))
                     }
@@ -235,13 +246,15 @@ private fun DesktopGrid(
     cols: Int,
     tileHeight: androidx.compose.ui.unit.Dp,
     reduceMotion: Boolean,
+    previews: DesktopPreview.Board,
+    spaceHold: String,
     onDesktop: (String, String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
         for (row in display.desktops.chunked(cols)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 for (desk in row) {
-                    DesktopTile(display, desk, viewingId, tileHeight, reduceMotion, Modifier.weight(1f), onDesktop)
+                    DesktopTile(display, desk, viewingId, tileHeight, reduceMotion, previews, spaceHold, Modifier.weight(1f), onDesktop)
                 }
                 repeat(cols - row.size) { Spacer(Modifier.weight(1f)) }
             }
@@ -256,19 +269,34 @@ private fun DesktopTile(
     viewingId: String,
     tileHeight: androidx.compose.ui.unit.Dp,
     reduceMotion: Boolean,
+    previews: DesktopPreview.Board,
+    spaceHold: String,
     modifier: Modifier,
     onDesktop: (String, String) -> Unit,
 ) {
     val marked = desk.current
     val viewingThis = marked && display.id == viewingId
+    val held = spaceHold == "overview" || spaceHold == "accessibility"
+    val shot = previews.shots.find { it.displayId == display.id && it.spaceId == desk.id }
+    val bitmap = remember(shot?.seq) {
+        val bytes = shot?.jpeg
+        if (bytes == null) null
+        else runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
+    }
+    val status = DesktopPreview.tile(previews, display.id, desk, held)
+    val shown = if (bitmap == null) DesktopPreview.Status.NONE else status
+    val statusText = when (shown) {
+        DesktopPreview.Status.CURRENT -> tr("Current preview")
+        DesktopPreview.Status.LAST -> tr("Last seen this session")
+        DesktopPreview.Status.NONE -> tr("Not previewed yet")
+    }
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed && !reduceMotion) 0.97f else 1f, tween(if (reduceMotion) 0 else 160, easing = FastOutSlowInEasing), label = "press")
     val description = buildString {
         append(tr("Desktop {n}", "n" to desk.index + 1))
         if (viewingThis) append(", ").append(tr("Viewing"))
-        append(". ")
-        append(tr("Illustration only. This is not a live view of the desktop."))
+        append(", ").append(statusText)
     }
     Column(
         modifier
@@ -283,7 +311,16 @@ private fun DesktopTile(
                 contentDescription = description
             },
     ) {
-        Illustration(desk.index, marked, tileHeight)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(tileHeight)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF232833))
+                .border(if (marked) 2.dp else 1.dp, if (marked) Color(0xFFB2D1FF) else Color.White.copy(alpha = 0.15f), RoundedCornerShape(10.dp)),
+        ) {
+            if (bitmap != null) Image(bitmap.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        }
         Row(Modifier.padding(top = 7.dp), verticalAlignment = Alignment.CenterVertically) {
             if (marked) Box(Modifier.padding(end = 4.dp).size(5.dp).clip(RoundedCornerShape(3.dp)).background(Color(0xFF9BC7FF)))
             Text(
@@ -295,28 +332,7 @@ private fun DesktopTile(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-    }
-}
-
-@Composable
-private fun Illustration(index: Int, current: Boolean, height: androidx.compose.ui.unit.Dp) {
-    val colors = when (index % 4) {
-        0 -> listOf(Color(0xFF344B69), Color(0xFF172231), Color(0xFF2A3443))
-        1 -> listOf(Color(0xFF45566B), Color(0xFF243347), Color(0xFF151E30))
-        2 -> listOf(Color(0xFF35465C), Color(0xFF1D283A), Color(0xFF172739))
-        else -> listOf(Color(0xFF4A5663), Color(0xFF293549), Color(0xFF1A273A))
-    }
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(height)
-            .clip(RoundedCornerShape(10.dp))
-            .background(Brush.linearGradient(colors))
-            .border(if (current) 2.dp else 1.dp, if (current) Color(0xFFB2D1FF) else Color.White.copy(alpha = 0.15f), RoundedCornerShape(10.dp)),
-    ) {
-        // The same two blocks on every tile. They are not windows from the Mac.
-        Box(Modifier.padding(start = 10.dp, top = 8.dp).fillMaxWidth(0.46f).fillMaxHeight(0.42f).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = 0.08f)).border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(3.dp)))
-        Box(Modifier.padding(start = 28.dp, top = 18.dp).fillMaxWidth(0.42f).fillMaxHeight(0.4f).clip(RoundedCornerShape(3.dp)).background(Color(0x3CC1D4EA)).border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(3.dp)))
+        Text(statusText, color = Ink, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
     }
 }
 

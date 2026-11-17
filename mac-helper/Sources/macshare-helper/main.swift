@@ -275,6 +275,16 @@ func handle(_ line: String) {
       case .failure(let err): replyError(id, err.message)
       }
     }
+  case "displayShot":
+    // One display. macOS 14 ScreenCaptureKit, or an honest refusal. It does not switch desktops,
+    // prompt for Screen Recording, or capture any display other than displayId.
+    let shotId = (msg["displayId"] as? NSNumber)?.uint32Value ?? 0
+    guard shotId != 0 else { return replyError(id, "display") }
+    Task {
+      let shot = await DisplayShot.take(displayId: shotId)
+      if let why = shot["unavailable"] as? String { reply(id, ["unavailable": why]) }
+      else { reply(id, shot) }
+    }
   case "spacesLook": // read which desktops each display owns; does not move one.
     // A hidden read may resume remote input. An unknown read does not. This
     // command never opens Mission Control or presses a thumbnail.
