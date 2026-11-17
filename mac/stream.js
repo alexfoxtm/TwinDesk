@@ -288,7 +288,9 @@ class Stream extends EventEmitter {
       want: this.displays.target(),
     });
     if (!view) return null;
-    return { ...view, generation };
+    // session is the capture that active names. It is assigned before a frame is decoded.
+    const session = this.active && this.active.session;
+    return { ...view, generation, session };
   }
 
   _displaysChanged() {

@@ -1,7 +1,10 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // The Mac's screen, full screen: Mirror (the Mac's own screen) or Extend (a second screen for the
 // Mac, sized to this one). The picture and the touches are viewer.html's; this activity adds a
-// small bar (tap the handle at the top): Mirror / Extend, which display, previous/next desktop, keyboard, close.
+// small bar (tap the handle at the top): Mirror / Extend, which display, Displays & desktops, previous/next desktop, keyboard, close.
+// When this Mac sends a desktop catalog, that sheet is the mirror, display, and desktop control.
+// Stop, the keyboard, and Close stay on the bar. An older Mac, or a picture that is not sharing
+// or not taking input, keeps Mirror, Extend, the display list, and previous/next.
 package com.twindesk.android
 
 import android.os.Bundle
@@ -24,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -46,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -155,6 +160,12 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     val v by core.version.collectAsState()
     @Suppress("UNUSED_EXPRESSION") v
     var bar by remember { mutableStateOf(true) }
+    var overview by remember(core.host?.id) { mutableStateOf(false) }
+    val reduceMotion = android.provider.Settings.Global.getFloat(
+        LocalContext.current.contentResolver,
+        android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+        1f,
+    ) == 0f
     val keyboard = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val s = core.screen
     var fastLatched by remember(core.host?.id) { mutableStateOf(false) }
@@ -178,6 +189,12 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     LaunchedEffect(s.spaceNote, showLogin) {
         if (!showLogin && s.spaceNote.isNotEmpty()) bar = true
     }
+    val desks = s.desktopCatalog
+    // A catalog from this Mac, while it is sharing and taking input, is the new sheet.
+    // The bar then drops the controls that sheet already has.
+    val sheetReady = !showLogin && desks != null && desks.displays.isNotEmpty() && core.host?.os == "mac" && s.sharing && s.inputOn
+    LaunchedEffect(overview) { if (overview) s.refreshDesktops() }
+    LaunchedEffect(sheetReady) { if (!sheetReady) overview = false }
     var offered by remember(core.host?.id) { mutableStateOf(false) }
     LaunchedEffect(core.lockView.locked, core.lockView.available, login) {
         if (!core.lockView.locked) offered = false
@@ -229,13 +246,21 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                             .background(if (core.link.wired) Color(0xFF30D158).copy(alpha = 0.35f) else Color(0x33FFFFFF)).padding(horizontal = 6.dp, vertical = 2.dp),
                     )
                     if (s.remote && !showLogin) {
-                        for (mode in listOf("mirror", "extend")) {
-                            val on = s.sharing && (s.mode == mode || (mode == "mirror" && s.mode == "custom" && s.displayId.isNotEmpty()))
-                            val label = if (mode == "mirror") tr("Mirror") else tr("Extend")
-                            if (on) FilledTonalButton(onClick = { bar = true }) { Text(label) }
-                            else TextButton(onClick = { s.pick(mode); bar = true }) { Text(label, color = Color.White) }
+                        if (!sheetReady) {
+                            for (mode in listOf("mirror", "extend")) {
+                                val on = s.sharing && (s.mode == mode || (mode == "mirror" && s.mode == "custom" && s.displayId.isNotEmpty()))
+                                val label = if (mode == "mirror") tr("Mirror") else tr("Extend")
+                                if (on) FilledTonalButton(onClick = { bar = true }) { Text(label) }
+                                else TextButton(onClick = { s.pick(mode); bar = true }) { Text(label, color = Color.White) }
+                            }
                         }
                         if (s.sharing) TextButton(onClick = { closeLogin(); s.control(share = false) }) { Text(tr("Stop"), color = Color.White) }
+                    }
+                    if (sheetReady) {
+                        TextButton(
+                            onClick = { overview = true; bar = true },
+                            modifier = Modifier.heightIn(min = 48.dp),
+                        ) { Text(tr("Displays & desktops"), color = Color.White) }
                     }
                     if (core.lockView.locked && core.lockView.available && !login) TextButton(onClick = { openLogin(); bar = true }) { Text(tr("Open Mac login screen"), color = Color.White) }
                     if (showLogin) TextButton(onClick = { closeLogin(); s.control(share = false); bar = true }) { Text(tr("Stop"), color = Color.White) }
@@ -243,7 +268,7 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                     TextButton(onClick = { if (showLogin) lockPage.keyboard(!keyboard) else s.keyboard(!keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
                     TextButton(onClick = { closeLogin(); s.end(); close() }) { Text(tr("Close"), color = Color.White) }
                 }
-                if (!showLogin && s.remote && s.displays.size > 1) {
+                if (!showLogin && !sheetReady && s.remote && s.displays.size > 1) {
                     Row(
                         Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124)).padding(horizontal = 8.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.Center,
@@ -251,17 +276,34 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                         MacDisplayPick(s.displays, if (s.sharing && s.mode != "extend") s.displayId else "", onDark = true) { s.pickDisplay(it); bar = true }
                     }
                 }
-                if (!showLogin && s.spaces && s.sharing && s.inputOn && core.host?.os == "mac") {
+                if (!showLogin && !sheetReady && s.spaces && s.sharing && s.inputOn && core.host?.os == "mac") {
                     MacDesktopRow(
                         onPrev = { s.space("prev"); bar = true },
                         onNext = { s.space("next"); bar = true },
                     )
                 }
-                if (!showLogin && s.spaceNote.isNotEmpty()) Text(
+                if (!showLogin && s.spaceNote.isNotEmpty() && !overview) Text(
                     s.spaceNote,
                     color = Color.White,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124)).padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+        }
+        if (overview && sheetReady) {
+            Box(Modifier.fillMaxSize().zIndex(2f)) {
+                DesktopOverview(
+                    catalog = desks,
+                    pendingDisplayId = s.pendingDisplayId,
+                    note = s.spaceNote,
+                    mode = s.mode,
+                    sharing = s.sharing,
+                    remote = s.remote,
+                    reduceMotion = reduceMotion,
+                    onDone = { overview = false },
+                    onDesktop = { displayId, spaceId -> s.selectDesktop(displayId, spaceId) },
+                    onDisplay = { id -> if (id != desks.viewing && id != s.pendingDisplayId) s.selectDisplay(id) },
+                    onMode = { s.pick(it) },
                 )
             }
         }

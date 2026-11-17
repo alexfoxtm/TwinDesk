@@ -18,6 +18,10 @@
 // only when offerSpaces says this picture's display has its own other desktop and the
 // helper's composition read is clean. A window still visible from another desktop is a
 // refusal here, before spacesSwitch, so Mission Control is not opened.
+//
+// An absolute choice names one desktop from the catalog (space id, index, count, revision).
+// It uses the same session, view generation, accessibility, composition, and arm/commit/abort
+// gates. It does not change which display is captured. The current desktop is not a press.
 'use strict';
 
 const P = require('../shared/protocol.js');
@@ -36,12 +40,14 @@ function mapWhy(error) {
 }
 
 class SpaceSwitch {
-  constructor({ listen, helper, enabled, authorize, targetFor, reply }) {
+  constructor({ listen, helper, enabled, authorize, targetFor, reply, names, offerDisplays }) {
     this.helper = helper;
     this.enabled = enabled;
     this.authorize = authorize;
     this.targetFor = targetFor;
     this.reply = reply;
+    this.names = names || (() => []);
+    this.offerDisplays = offerDisplays || (() => false);
     this.tail = Promise.resolve();
     this.seq = 0;
     listen((msg, ctx) => {
@@ -63,11 +69,13 @@ class SpaceSwitch {
   }
 
   async _one(msg, ctx, still, captured) {
-    const dir = S.dirOf(msg);
+    const absolute = S.absoluteRequest(msg);
+    const dir = absolute ? 0 : S.dirOf(msg);
     if (!still) return this._reply(ctx, { ok: false, why: 'unauthorized', dir });
     if (!this.enabled()) return this._reply(ctx, { ok: false, why: 'input', dir });
     if (!still()) return this._reply(ctx, { ok: false, why: 'stale', dir });
-    if (!dir) return this._reply(ctx, { ok: false, why: 'dir', dir });
+    if (absolute && absolute.error) return this._reply(ctx, { ok: false, why: absolute.error, dir });
+    if (!absolute && !dir) return this._reply(ctx, { ok: false, why: 'dir', dir });
     if (!captured) return this._reply(ctx, { ok: false, why: 'target', dir });
     const resolved = S.resolveTarget({ id: captured.displayId }, msg);
     if (!resolved.ok) return this._reply(ctx, { ok: false, why: resolved.why, dir });
@@ -89,7 +97,33 @@ class SpaceSwitch {
     if (look.inputHeld === true) {
       return this._reply(ctx, { ok: false, why: look.holdWhy === 'overview' ? 'overview' : 'accessibility', dir });
     }
-    const plan = S.planSwitch(look, { displayId: resolved.displayId, dir });
+    let plan;
+    if (absolute) {
+      let named = [];
+      let offer = false;
+      try {
+        named = this.names();
+        offer = this.offerDisplays() === true;
+      } catch (_) {
+        return this._reply(ctx, { ok: false, why: 'unavailable', dir });
+      }
+      const viewed = { id: captured.displayId };
+      if (Object.prototype.hasOwnProperty.call(captured, 'generation')) viewed.generation = captured.generation;
+      if (Object.prototype.hasOwnProperty.call(captured, 'session')) viewed.session = captured.session;
+      plan = S.planSelect(look, {
+        displayId: resolved.displayId,
+        spaceId: absolute.spaceId,
+        index: absolute.index,
+        count: absolute.count,
+        rev: absolute.rev,
+        viewed,
+        named: Array.isArray(named) ? named : [],
+        offerDisplays: offer,
+      });
+    } else {
+      plan = S.planSwitch(look, { displayId: resolved.displayId, dir });
+    }
+    if (plan.already) return this._reply(ctx, { ok: true, already: true, dir });
     if (!plan.ok) return this._reply(ctx, { ok: false, why: plan.why, edge: plan.edge, dir });
     if (!still() || !this.enabled()) return this._reply(ctx, { ok: false, why: still() ? 'input' : 'stale', dir });
     const token = String(++this.seq);
@@ -152,6 +186,7 @@ class SpaceSwitch {
     const msg = { t: P.T.SCREEN_SPACE_RESULT, ok: body.ok === true };
     if (!msg.ok && body.why) msg.why = body.why;
     if (body.edge === 'first' || body.edge === 'last') msg.edge = body.edge;
+    if (body.already === true) msg.already = true;
     if (body.dir === -1) msg.dir = 'prev';
     else if (body.dir === 1) msg.dir = 'next';
     try { this.reply(ctx, msg); } catch (_) { /* the session is already gone */ }
@@ -159,9 +194,11 @@ class SpaceSwitch {
   }
 }
 
-// The last spacesLook. refresh asks again at most once a second, and only while a
-// screen.state is being sent. It never asks for a switch. onChange runs only when the
-// fields that decide the buttons changed, so a steady desktop does not push state again.
+// The last spacesLook. A background refresh asks again at most once a second, and only
+// while a screen.state is being sent. force is the viewer's explicit ask: it bypasses
+// that pause. Either way the read is published only when the session check and the
+// viewed generation still match the ones captured as the read started. A miss does not
+// replace the catalog. It never asks for a switch.
 class SpaceLook {
   constructor(helper, onChange) {
     this.helper = helper;
@@ -171,32 +208,97 @@ class SpaceLook {
     this.at = 0;
     this.busy = false;
     this.again = false;
+    this.againForce = false;
+    this.againOpts = null;
+    this.ticket = 0;
   }
 
   current() {
     return this.look;
   }
 
-  refresh() {
+  refresh(opts) {
+    const force = !!(opts && opts.force);
     if (!this.helper) return;
-    if (this.busy) { this.again = true; return; }
-    if (this.at && Date.now() - this.at < 1000) return;
+    if (this.busy) {
+      this.again = true;
+      if (force) this.againForce = true;
+      this.againOpts = opts || this.againOpts;
+      return;
+    }
+    if (!force && this.at && Date.now() - this.at < 1000) return;
     this.busy = true;
+    const ticket = ++this.ticket;
+    const still = opts && opts.still;
+    const view = opts && opts.view;
+    const fence = typeof view === 'function';
+    let started = null;
+    if (fence) {
+      try { started = view(); } catch (_) { started = undefined; }
+    }
     const finish = (look) => {
-      this.look = look;
-      this.at = Date.now();
+      if (ticket !== this.ticket) return;
+      let now = null;
+      let stale = typeof still === 'function' && !still();
+      if (!stale && fence) {
+        try { now = view(); } catch (_) { now = undefined; }
+        if (!S.fenceView(started, now)) stale = true;
+      }
       this.busy = false;
-      const finger = spaceFinger(look);
-      const diff = finger !== this.finger;
-      this.finger = finger;
+      this.at = Date.now();
       const again = this.again;
+      const againForce = this.againForce;
+      const againOpts = this.againOpts;
       this.again = false;
-      try { if (diff) this.onChange(); } catch (_) { /* the window may already be gone */ }
-      if (again) this.refresh();
+      this.againForce = false;
+      this.againOpts = null;
+      if (stale) {
+        try { if (opts && opts.onStale) opts.onStale(); } catch (_) { /* the session is already gone */ }
+      } else {
+        this.look = look;
+        const finger = spaceFinger(look);
+        const diff = finger !== this.finger;
+        this.finger = finger;
+        try { if (diff || force) this.onChange(); } catch (_) { /* the window may already be gone */ }
+        try { if (opts && opts.onFresh) opts.onFresh(); } catch (_) { /* the session is already gone */ }
+      }
+      if (again) this.refresh(againForce ? Object.assign({}, againOpts, { force: true }) : againOpts);
     };
     this.helper.request('spacesLook', {}).then((look) => {
       finish(look && typeof look === 'object' ? look : null);
     }).catch(() => finish(null));
+  }
+}
+
+// The viewer's ask for a fresh catalog. The session gate is the same one as a desktop
+// change. The reply echoes epoch so the phone can drop a late answer. A read that loses
+// the session or the view generation is not published.
+class DesktopRefresh {
+  constructor({ listen, authorize, viewFor, spaceLook, reply }) {
+    this.spaceLook = spaceLook;
+    this.reply = reply;
+    listen((msg, ctx) => {
+      const still = authorize(ctx);
+      if (!still) return;
+      const epoch = msg && Number.isSafeInteger(msg.epoch) && msg.epoch >= 0 && msg.epoch <= 0xffffffff ? msg.epoch : 0;
+      const view = () => {
+        try { return viewFor(ctx); } catch (_) { return undefined; }
+      };
+      this.spaceLook.refresh({
+        force: true,
+        still,
+        view,
+        onFresh: () => this._reply(ctx, still, true, epoch),
+        onStale: () => this._reply(ctx, still, false, epoch),
+      });
+    });
+  }
+
+  _reply(ctx, still, ok, epoch) {
+    if (still && !still()) return;
+    const msg = { t: P.T.SCREEN_DESKTOPS, ok: ok === true, epoch };
+    if (!ok) msg.why = 'stale';
+    try { this.reply(ctx, msg); } catch (_) { /* the session is already gone */ }
   }
 }
 
@@ -217,4 +319,4 @@ function spaceFinger(look) {
   });
 }
 
-module.exports = { SpaceSwitch, SpaceLook };
+module.exports = { SpaceSwitch, SpaceLook, DesktopRefresh };

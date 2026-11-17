@@ -11,7 +11,7 @@ const { Displays } = require('./displays');
 const { Stream } = require('./stream');
 const { StreamSet } = require('./streams');
 const { Input } = require('../input');
-const { SpaceSwitch, SpaceLook } = require('../space-switch');
+const { SpaceSwitch, SpaceLook, DesktopRefresh } = require('../space-switch');
 const P = require('../../shared/protocol.js');
 const Spaces = require('../../shared/mac-spaces.js');
 const { Clip } = require('./clipboard');
@@ -61,8 +61,20 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
       return st ? st.viewedDisplay() : null;
     },
     reply: (ctx, msg) => meshHub.bus.send(ctx.id, msg),
+    names: () => Spaces.catalogOffer(displays.list(), { remote: s().sharing.remote !== false, held: displays.holds.has('apps-open'), mesh: true }).named,
+    offerDisplays: () => false,
   });
   const spaceLook = new SpaceLook(helper, pushState);
+  const desktopRefresh = new DesktopRefresh({
+    listen: (fn) => meshHub.bus.on(P.T.SCREEN_DESKTOPS, (msg, id) => fn(msg, { id })),
+    authorize: (ctx) => Spaces.meshGate(() => meshHub.sessions.get(ctx && ctx.id)),
+    viewFor: (ctx) => {
+      const st = ctx && stream.byId.get(ctx.id);
+      return st ? st.viewedDisplay() : null;
+    },
+    spaceLook,
+    reply: (ctx, msg) => meshHub.bus.send(ctx.id, msg),
+  });
   const clipboard = new Clip({ bus: meshHub.bus, mesh, getSettings: s, helper, session: (id) => meshHub.sessions.get(id) });
   const drop = new Drop({ server, helper, displays, getSettings: s });
   const fileSend = new FileSend(server, s, { outboxFile: require('path').join(require('electron').app.getPath('userData'), 'outbox.json') });
@@ -127,7 +139,7 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
   helper.start();
 
   return {
-    helper, displays, stream, input, spaces, spaceLook, clipboard, kvm, terminal, drop, smb, apps, sshClient, audio, audioPeer, pcView, pcApps, hub, fileSend, notifs, history, fileClip, wake, appSend, updateAwake,
+    helper, displays, stream, input, spaces, spaceLook, desktopRefresh, clipboard, kvm, terminal, drop, smb, apps, sshClient, audio, audioPeer, pcView, pcApps, hub, fileSend, notifs, history, fileClip, wake, appSend, updateAwake,
     shutdown() {
       pcView.shutdown();
       pcApps.shutdown();

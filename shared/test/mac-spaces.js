@@ -7,7 +7,7 @@
 const assert = require('assert');
 const P = require('../protocol.js');
 const S = require('../mac-spaces.js');
-const { SpaceSwitch } = require('../../mac/space-switch.js');
+const { SpaceSwitch, SpaceLook, DesktopRefresh } = require('../../mac/space-switch.js');
 
 const SEPARATE = {
   spans: false,
@@ -36,7 +36,12 @@ async function until(fn) {
 // spacesCommit presses on a later turn unless spacesAbort has already set cancelled.
 // deferPress leaves that later turn in the test's hands. killOnCommit drops the
 // session at the moment commit arrives, before that turn.
-function harness(look, { holdLook = false, already = false, deferPress = false, killOnCommit = false } = {}) {
+const NAMES = [
+  { id: '1', name: 'Built-in Display', primary: true },
+  { id: '2', name: 'Studio Display', primary: false },
+];
+
+function harness(look, { holdLook = false, already = false, deferPress = false, killOnCommit = false, names = null, offerDisplays = null } = {}) {
   const calls = [];
   const blocked = [];
   const replies = [];
@@ -120,6 +125,8 @@ function harness(look, { holdLook = false, already = false, deferPress = false, 
     authorize: () => (authed ? () => alive : null),
     targetFor: () => target,
     reply: (_ctx, msg) => replies.push(msg),
+    names: names || (() => []),
+    offerDisplays: offerDisplays || (() => false),
   });
   return {
     calls, blocked, replies, presses, actions, deliver,
@@ -616,8 +623,344 @@ async function main() {
     assert.ok(!unknownHold.calls.some((c) => c.cmd === 'spacesSwitch'));
   }
 
+  // Absolute choice: one desktop from a bounded catalog. Previous/next above is unchanged.
+  {
+    assert.strictEqual(S.absoluteRequest({ dir: 'next' }), null);
+    assert.strictEqual(S.absoluteRequest({ dir: 'next', displayId: '1' }), null);
+    assert.deepStrictEqual(
+      S.absoluteRequest({ displayId: '1', spaceId: '11', index: 1, count: 3, rev: 5 }),
+      { spaceId: '11', index: 1, count: 3, rev: 5, displayId: '1' },
+    );
+    assert.deepStrictEqual(
+      S.absoluteRequest({ dir: 'next', displayId: '1', spaceId: '11', index: 1, count: 3, rev: 5 }),
+      { error: 'space' },
+    );
+    assert.deepStrictEqual(S.absoluteRequest({ spaceId: '11', index: 1, count: 3, rev: 5 }), { error: 'display' });
+    assert.deepStrictEqual(
+      S.absoluteRequest({ displayId: 'nope', spaceId: '11', index: 1, count: 3, rev: 5 }),
+      { error: 'display' },
+    );
+    assert.deepStrictEqual(
+      S.absoluteRequest({ displayId: '1', spaceId: '0', index: 1, count: 3, rev: 5 }),
+      { error: 'space' },
+    );
+
+    const viewed = { id: 1, generation: 4 };
+    const cat = S.desktopCatalog(SEPARATE, viewed, NAMES, { offerDisplays: true });
+    assert.ok(cat);
+    assert.strictEqual(cat.viewing, '1');
+    assert.strictEqual(cat.viewGen, 4);
+    assert.deepStrictEqual(cat.displays.map((d) => d.id), ['1', '2']);
+    assert.ok(!JSON.stringify(cat).includes('uuid'));
+    assert.ok(!JSON.stringify(cat).includes('AAA'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(cat, 'windows'));
+    const renamed = S.desktopCatalog(SEPARATE, viewed, NAMES.map((n) => ({ ...n, name: 'Other' })), { offerDisplays: true });
+    assert.strictEqual(renamed.rev, cat.rev);
+    assert.notStrictEqual(renamed.displays[0].name, cat.displays[0].name);
+    const movedGen = S.desktopCatalog(SEPARATE, { id: 1, generation: 5 }, NAMES, { offerDisplays: true });
+    assert.notStrictEqual(movedGen.rev, cat.rev);
+
+    const choose = {
+      displayId: '1', spaceId: '11', index: 1, count: 3, rev: cat.rev, viewed, named: NAMES, offerDisplays: true,
+    };
+    assert.deepStrictEqual(S.planSelect(SEPARATE, choose), { ok: true, spaceId: '11', displayId: '1', index: 1, count: 3 });
+    assert.deepStrictEqual(S.planSelect(SEPARATE, { ...choose, index: 0 }), { ok: false, why: 'stale' });
+    assert.deepStrictEqual(S.planSelect(SEPARATE, { ...choose, count: 2 }), { ok: false, why: 'stale' });
+    assert.deepStrictEqual(S.planSelect(SEPARATE, { ...choose, rev: (cat.rev + 1) >>> 0 }), { ok: false, why: 'stale' });
+    assert.deepStrictEqual(S.planSelect(SEPARATE, { ...choose, viewed: { id: 1, generation: 5 } }), { ok: false, why: 'stale' });
+
+    const here = { ...choose, spaceId: '10', index: 0 };
+    assert.deepStrictEqual(S.planSelect({ ...SEPARATE, composed: false }, here), {
+      ok: true, already: true, spaceId: '10', displayId: '1', index: 0, count: 3,
+    });
+    assert.deepStrictEqual(S.planSelect({ ...SEPARATE, spans: true }, here), {
+      ok: true, already: true, spaceId: '10', displayId: '1', index: 0, count: 3,
+    });
+    assert.deepStrictEqual(S.planSelect({ ...SEPARATE, composed: false }, choose), { ok: false, why: 'composed' });
+    assert.deepStrictEqual(S.planSelect({ ...SEPARATE, spans: true }, choose), { ok: false, why: 'spans' });
+
+    const meshView = { id: 1, generation: 4 };
+    const meshCat = S.desktopCatalog(SEPARATE, meshView, NAMES, { offerDisplays: false });
+    assert.deepStrictEqual(meshCat.displays.map((d) => d.id), ['1']);
+    assert.strictEqual(S.planSelect(SEPARATE, {
+      displayId: '2', spaceId: '21', index: 1, count: 2, rev: meshCat.rev,
+      viewed: meshView, named: NAMES, offerDisplays: false,
+    }).why, 'display');
+    const forged = S.desktopCatalog(SEPARATE, { id: 2, generation: 4 }, NAMES, { offerDisplays: true });
+    assert.strictEqual(S.planSelect(SEPARATE, {
+      displayId: '2', spaceId: '21', index: 1, count: 2, rev: forged.rev,
+      viewed: { id: 2, generation: 4 }, named: NAMES, offerDisplays: false,
+    }).why, 'stale');
+
+    const many = [];
+    for (let i = 1; i <= 70; i++) many.push(String(i));
+    const longLook = {
+      spans: false,
+      composed: true,
+      displays: [{ uuid: 'AAA', cgId: 1, current: '1', spaces: many }],
+    };
+    const longCat = S.desktopCatalog(longLook, { id: 1 }, [{ id: '1', name: 'A\u0000\u202eBuilt-in', primary: true }], { offerDisplays: true });
+    assert.strictEqual(longCat.displays[0].spaces.length, 64);
+    assert.strictEqual(longCat.displays[0].count, 70);
+    assert.strictEqual(longCat.displays[0].truncated, true);
+    assert.strictEqual(longCat.displays[0].name, 'A Built-in');
+    assert.ok(!JSON.stringify(longCat).includes('uuid'));
+
+    const nine = [];
+    const nineNames = [];
+    for (let i = 1; i <= 9; i++) {
+      nine.push({ uuid: 'U' + i, cgId: i, current: String(i * 10), spaces: [String(i * 10), String(i * 10 + 1)] });
+      nineNames.push({ id: String(i), name: 'Display ' + i, primary: i === 1 });
+    }
+    const nineCat = S.desktopCatalog({ composed: true, spans: false, displays: nine }, { id: 1 }, nineNames, { offerDisplays: true });
+    assert.strictEqual(nineCat.displays.length, 8);
+    assert.ok(!nineCat.displays.some((d) => d.id === '9'));
+
+    const full = [];
+    const fullNames = [];
+    for (let i = 1; i <= 8; i++) {
+      full.push({ uuid: 'U' + i, cgId: i, current: String(100 + i), spaces: [String(100 + i), String(200 + i)] });
+      fullNames.push({ id: String(i), name: 'Display ' + i, primary: i === 1 });
+    }
+    full.push({ uuid: 'VVV', cgId: 99, current: '30', spaces: ['30', '31'] });
+    const extendCat = S.desktopCatalog({ composed: true, spans: false, displays: full }, { id: 99, generation: 2 }, fullNames, { offerDisplays: true });
+    assert.strictEqual(extendCat.displays.length, 8);
+    assert.strictEqual(extendCat.displays[7].id, '99');
+    assert.strictEqual(extendCat.viewing, '99');
+    assert.ok(!extendCat.displays.some((d) => d.id === '8'));
+
+    const screens = [
+      { id: 1, name: 'Built-in', primary: true },
+      { id: 2, label: 'Studio', primary: false },
+      { id: 3, name: 'Virtual', virtual: true },
+    ];
+    assert.strictEqual(S.catalogOffer(screens, { remote: true }).offerDisplays, true);
+    assert.strictEqual(S.catalogOffer(screens, { remote: true }).named.some((d) => d.id === '3'), false);
+    assert.strictEqual(S.catalogOffer(screens, { mesh: true, remote: true }).offerDisplays, false);
+    assert.strictEqual(S.catalogOffer(screens, { remote: true, held: true }).offerDisplays, false);
+    assert.strictEqual(S.catalogOffer(screens, { remote: false }).offerDisplays, false);
+    assert.strictEqual(S.catalogOffer([], { remote: true }).offerDisplays, false);
+  }
+
+  // The helper is asked for that exact desktop. A stale revision, a dead session, or another
+  // display never reaches spacesSwitch. Already current does not open Mission Control.
+  {
+    const viewed = { id: 1, generation: 7, session: 42 };
+    const cat = S.desktopCatalog(SEPARATE, viewed, NAMES, { offerDisplays: true });
+    assert.strictEqual(cat.capture, 42);
+    const msg = { displayId: '1', spaceId: '11', index: 1, count: 3, rev: cat.rev };
+    const open = { names: () => NAMES, offerDisplays: () => true };
+    const h = harness(SEPARATE, open);
+    h.target = viewed;
+    h.deliver(msg, { id: 'phone' });
+    await until(() => h.blocked.length === 1);
+    assert.deepStrictEqual(h.calls[1].args, { displayId: 1, spaceId: '11', index: 1, count: 3, token: '1' });
+    h.blocked[0].resolve();
+    await until(() => h.replies.length === 1);
+    assert.deepStrictEqual(h.replies[0], { t: P.T.SCREEN_SPACE_RESULT, ok: true });
+    assert.strictEqual(h.replies[0].dir, undefined);
+    assert.strictEqual(h.presses.length, 1);
+
+    const stale = harness(SEPARATE, open);
+    stale.target = viewed;
+    stale.deliver({ ...msg, rev: (cat.rev + 1) >>> 0 }, {});
+    await until(() => stale.replies.length === 1);
+    assert.strictEqual(stale.replies[0].why, 'stale');
+    assert.ok(!stale.calls.some((c) => c.cmd === 'spacesSwitch'));
+
+    const died = harness(SEPARATE, open);
+    died.target = viewed;
+    died.deliver(msg, {});
+    await until(() => died.blocked.length === 1);
+    died.alive = false;
+    await until(() => died.calls.some((c) => c.cmd === 'spacesAbort'));
+    await until(() => died.replies.length === 1);
+    assert.strictEqual(died.replies[0].why, 'stale');
+    assert.ok(!died.calls.some((c) => c.cmd === 'spacesCommit'));
+    assert.strictEqual(died.presses.length, 0);
+
+    const other = harness(SEPARATE, open);
+    other.target = viewed;
+    other.deliver({ displayId: '2', spaceId: '21', index: 1, count: 2, rev: cat.rev }, {});
+    await until(() => other.replies.length === 1);
+    assert.strictEqual(other.replies[0].why, 'display');
+    assert.strictEqual(other.calls.length, 0);
+    assert.ok(!other.calls.some((c) => c.args && c.args.displayId === 2));
+
+    const mixed = harness(SEPARATE, open);
+    mixed.deliver({ ...msg, dir: 'next' }, {});
+    await until(() => mixed.replies.length === 1);
+    assert.strictEqual(mixed.replies[0].why, 'space');
+    assert.strictEqual(mixed.calls.length, 0);
+
+    const here = S.desktopCatalog({ ...SEPARATE, composed: false, spans: true }, { id: 1 }, NAMES, { offerDisplays: true });
+    const staying = harness({ ...SEPARATE, composed: false, spans: true }, open);
+    staying.deliver({ displayId: '1', spaceId: '10', index: 0, count: 3, rev: here.rev }, {});
+    await until(() => staying.replies.length === 1);
+    assert.deepStrictEqual(staying.replies[0], { t: P.T.SCREEN_SPACE_RESULT, ok: true, already: true });
+    assert.ok(!staying.calls.some((c) => c.cmd === 'spacesSwitch'));
+
+    const meshRev = S.desktopCatalog(SEPARATE, { id: 1 }, NAMES, { offerDisplays: false });
+    const mesh = harness(SEPARATE, { names: () => NAMES, offerDisplays: () => false });
+    mesh.deliver({ displayId: '1', spaceId: '11', index: 1, count: 3, rev: meshRev.rev }, {});
+    await until(() => mesh.blocked.length === 1);
+    assert.strictEqual(mesh.calls[1].args.displayId, 1);
+    assert.strictEqual(mesh.calls[1].args.spaceId, '11');
+    mesh.blocked[0].resolve();
+    await until(() => mesh.replies.length === 1);
+    assert.strictEqual(mesh.replies[0].ok, true);
+
+    const forged = S.desktopCatalog(SEPARATE, { id: 2 }, NAMES, { offerDisplays: true });
+    const closed = harness(SEPARATE, { names: () => NAMES, offerDisplays: () => false });
+    closed.target = { id: 2 };
+    closed.deliver({ displayId: '2', spaceId: '21', index: 1, count: 2, rev: forged.rev }, {});
+    await until(() => closed.replies.length === 1);
+    assert.strictEqual(closed.replies[0].why, 'stale');
+    assert.ok(!closed.calls.some((c) => c.cmd === 'spacesSwitch'));
+
+    const aside = harness(SEPARATE, { names: () => NAMES, offerDisplays: () => false });
+    aside.deliver({ displayId: '2', spaceId: '21', index: 1, count: 2, rev: forged.rev }, {});
+    await until(() => aside.replies.length === 1);
+    assert.strictEqual(aside.replies[0].why, 'display');
+    assert.ok(!aside.calls.some((c) => c.args && c.args.displayId === 2));
+  }
+
   assert.strictEqual(P.T.SCREEN_SPACE, 'screen.space');
   assert.strictEqual(P.T.SCREEN_SPACE_RESULT, 'screen.space.result');
+  assert.strictEqual(P.T.SCREEN_DESKTOPS, 'screen.desktops');
+
+  // A catalog read is published only for the view it started on. The helper is still a fake.
+  assert.strictEqual(S.fenceView(null, null), true);
+  assert.strictEqual(S.fenceView({ displayId: '1', generation: 2 }, { displayId: '1', generation: 2 }), true);
+  assert.strictEqual(S.fenceView({ displayId: '1', generation: 2 }, { displayId: '1', generation: 3 }), false);
+  assert.strictEqual(S.fenceView(null, { displayId: '1', generation: 2 }), false);
+  assert.strictEqual(S.fenceView({ displayId: '1', generation: 2 }, null), false);
+  assert.strictEqual(S.fenceView(undefined, null), false);
+  assert.strictEqual(S.fenceView({ displayId: '1', generation: 2 }, undefined), false);
+
+  const withSession = S.desktopCatalog(SEPARATE, { id: 1, generation: 4, session: 6 }, NAMES, { offerDisplays: true });
+  assert.strictEqual(withSession.capture, 6);
+  const otherSession = S.desktopCatalog(SEPARATE, { id: 1, generation: 4, session: 7 }, NAMES, { offerDisplays: true });
+  assert.notStrictEqual(otherSession.rev, withSession.rev);
+  const noSession = S.desktopCatalog(SEPARATE, { id: 1, generation: 4, session: 0 }, NAMES, { offerDisplays: true });
+  assert.ok(!Object.prototype.hasOwnProperty.call(noSession, 'capture'));
+
+  function heldHelper() {
+    const calls = [];
+    const pending = [];
+    return {
+      calls,
+      request(cmd, args) {
+        calls.push({ cmd, args });
+        return new Promise((resolve) => pending.push(resolve));
+      },
+      release(look) {
+        const done = pending.shift();
+        assert.ok(done);
+        done(look);
+      },
+    };
+  }
+
+  {
+    const helper = heldHelper();
+    let changes = 0;
+    const look = new SpaceLook(helper, () => { changes += 1; });
+    let generation = 1;
+    let stale = 0;
+    let fresh = 0;
+    look.refresh({
+      force: true,
+      view: () => ({ displayId: '1', generation }),
+      onStale: () => { stale += 1; },
+      onFresh: () => { fresh += 1; },
+    });
+    assert.strictEqual(helper.calls.length, 1);
+    look.refresh({ view: () => ({ displayId: '1', generation }) });
+    assert.strictEqual(helper.calls.length, 1);
+    generation = 2;
+    helper.release(SEPARATE);
+    await until(() => stale === 1);
+    assert.strictEqual(look.current(), null);
+    assert.strictEqual(fresh, 0);
+    assert.strictEqual(changes, 0);
+    assert.strictEqual(helper.calls.length, 1);
+  }
+
+  {
+    const helper = heldHelper();
+    const look = new SpaceLook(helper, () => {});
+    const view = () => ({ displayId: '1', generation: 4 });
+    look.refresh({ force: true, view });
+    helper.release(SEPARATE);
+    await until(() => look.current() === SEPARATE);
+    const asked = helper.calls.length;
+    look.refresh({ view });
+    assert.strictEqual(helper.calls.length, asked);
+    look.refresh({ force: true, view });
+    assert.strictEqual(helper.calls.length, asked + 1);
+    helper.release(SEPARATE);
+    await until(() => helper.calls.length === asked + 1 && look.current() === SEPARATE);
+  }
+
+  {
+    const helper = heldHelper();
+    let alive = false;
+    let generation = 4;
+    const replies = [];
+    let changes = 0;
+    const spaceLook = new SpaceLook(helper, () => { changes += 1; });
+    let handler = null;
+    new DesktopRefresh({
+      listen: (fn) => { handler = fn; },
+      authorize: () => (alive ? () => alive : null),
+      viewFor: () => ({ displayId: '1', generation, session: 6 }),
+      spaceLook,
+      reply: (_ctx, msg) => replies.push(msg),
+    });
+    handler({ epoch: 3 }, { id: 'phone' });
+    await tick();
+    assert.strictEqual(helper.calls.length, 0);
+    assert.strictEqual(replies.length, 0);
+
+    alive = true;
+    handler({ epoch: 9 }, { id: 'phone' });
+    await until(() => helper.calls.length === 1);
+    assert.strictEqual(helper.calls[0].cmd, 'spacesLook');
+    helper.release(SEPARATE);
+    await until(() => replies.length === 1);
+    assert.deepStrictEqual(replies[0], { t: P.T.SCREEN_DESKTOPS, ok: true, epoch: 9 });
+    assert.strictEqual(spaceLook.current(), SEPARATE);
+    assert.strictEqual(changes, 1);
+
+    handler({ epoch: 2 }, { id: 'phone' });
+    await until(() => helper.calls.length === 2);
+    generation = 5;
+    helper.release({ ...SEPARATE });
+    await until(() => replies.length === 2);
+    assert.deepStrictEqual(replies[1], { t: P.T.SCREEN_DESKTOPS, ok: false, why: 'stale', epoch: 2 });
+    assert.strictEqual(spaceLook.current(), SEPARATE);
+
+    handler({ epoch: 4 }, { id: 'phone' });
+    await until(() => helper.calls.length === 3);
+    alive = false;
+    helper.release(SEPARATE);
+    await tick();
+    await tick();
+    assert.strictEqual(replies.length, 2);
+    assert.strictEqual(spaceLook.current(), SEPARATE);
+
+    handler({ epoch: 1.5 }, { id: 'phone' });
+    assert.strictEqual(helper.calls.length, 3);
+    alive = true;
+    generation = 5;
+    handler({ epoch: 1.5 }, { id: 'phone' });
+    await until(() => helper.calls.length === 4);
+    helper.release(SEPARATE);
+    await until(() => replies.length === 3);
+    assert.deepStrictEqual(replies[2], { t: P.T.SCREEN_DESKTOPS, ok: true, epoch: 0 });
+  }
+
   console.log('mac-spaces: fake helper only; arm, abort-before-press, and refusals. Not a live desktop switch.');
 }
 

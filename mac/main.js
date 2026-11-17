@@ -326,14 +326,19 @@ function sendScreenState() {
   // the helper's read says the windows on screen belong to the desktops that are current.
   // A window still visible from another desktop keeps it false. The read does not open
   // Mission Control or call a space setter (mac-helper Spaces.swift).
-  if (svc.spaceLook) svc.spaceLook.refresh();
+  if (svc.spaceLook) svc.spaceLook.refresh({
+    view: () => (svc.stream && svc.stream.viewedDisplay ? svc.stream.viewedDisplay() : null),
+  });
   const look = svc.spaceLook ? svc.spaceLook.current() : null;
-  const spaces = require('../shared/mac-spaces.js').offerSpaces(
-    look,
-    svc.stream && svc.stream.viewedDisplay ? svc.stream.viewedDisplay() : null,
-  );
-  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, modes: ['extend', 'mirror'], spaces, ...Pick.stateFields(svc.displays.list(), svc.displays.target(), settings.sharing.remote !== false && !appsHeld()) };
-  const spaceHold = require('../shared/mac-spaces.js').spaceHold(look);
+  const Spaces = require('../shared/mac-spaces.js');
+  const viewed = svc.stream && svc.stream.viewedDisplay ? svc.stream.viewedDisplay() : null;
+  const spaces = Spaces.offerSpaces(look, viewed);
+  const held = appsHeld();
+  const offer = Spaces.catalogOffer(svc.displays.list(), { remote: settings.sharing.remote !== false, held });
+  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, modes: ['extend', 'mirror'], spaces, ...Pick.stateFields(svc.displays.list(), svc.displays.target(), settings.sharing.remote !== false && !held) };
+  const desktops = Spaces.desktopCatalog(look, viewed, offer.named, { offerDisplays: offer.offerDisplays });
+  if (desktops) msg.desktops = desktops;
+  const spaceHold = Spaces.spaceHold(look);
   if (spaceHold) msg.spaceHold = spaceHold;
   const key = JSON.stringify([c.deviceId, msg]);
   if (key === screenStateKey) return;

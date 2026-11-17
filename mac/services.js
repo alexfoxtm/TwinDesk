@@ -9,7 +9,7 @@ const { Helper } = require('./helper');
 const { Displays } = require('./displays');
 const { Stream } = require('./stream');
 const { Input } = require('./input');
-const { SpaceSwitch, SpaceLook } = require('./space-switch');
+const { SpaceSwitch, SpaceLook, DesktopRefresh } = require('./space-switch');
 const P = require('../shared/protocol.js');
 const Spaces = require('../shared/mac-spaces.js');
 const { Clipboard } = require('./clipboard');
@@ -52,8 +52,17 @@ function startServices({ server, getSettings, pushState, onHelperReady }) {
     authorize: (ctx) => Spaces.streamInputGate(ctx, () => server.current),
     targetFor: () => stream.viewedDisplay(),
     reply: (ctx, msg) => server.send(ctx, msg),
+    names: () => Spaces.catalogOffer(displays.list(), { remote: s().sharing.remote !== false, held: displays.holds.has('apps-open') }).named,
+    offerDisplays: () => Spaces.catalogOffer(displays.list(), { remote: s().sharing.remote !== false, held: displays.holds.has('apps-open') }).offerDisplays,
   });
   const spaceLook = new SpaceLook(helper, pushState);
+  const desktopRefresh = new DesktopRefresh({
+    listen: (fn) => server.on(`t:${P.T.SCREEN_DESKTOPS}`, fn),
+    authorize: (ctx) => Spaces.streamInputGate(ctx, () => server.current),
+    viewFor: () => stream.viewedDisplay(),
+    spaceLook,
+    reply: (ctx, msg) => server.send(ctx, msg),
+  });
   const clipboard = new Clipboard(server, helper, s);
   const drop = new Drop({ server, helper, displays, getSettings: s });
   const fileSend = new FileSend(server, s, { outboxFile: require('path').join(require('electron').app.getPath('userData'), 'outbox.json') });
@@ -117,7 +126,7 @@ function startServices({ server, getSettings, pushState, onHelperReady }) {
   helper.start();
 
   return {
-    helper, displays, stream, input, spaces, spaceLook, clipboard, kvm, terminal, drop, smb, apps, sshClient, audio, pcView, pcApps, hub, fileSend, notifs, history, fileClip, wake, appSend, updateAwake,
+    helper, displays, stream, input, spaces, spaceLook, desktopRefresh, clipboard, kvm, terminal, drop, smb, apps, sshClient, audio, pcView, pcApps, hub, fileSend, notifs, history, fileClip, wake, appSend, updateAwake,
     shutdown() {
       pcView.shutdown();
       pcApps.shutdown();

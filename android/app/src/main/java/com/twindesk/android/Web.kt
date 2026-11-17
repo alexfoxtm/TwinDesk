@@ -144,7 +144,16 @@ data class MacDisplay(val id: String, val name: String, val w: Int, val h: Int) 
 class Screen(core: Core) : Feature(core) {
     @Volatile var state: JSONObject? = null; private set // the Mac's screen.state
     @Volatile var inputOn = true; private set // the Mac's "Receive input" (stream.input)
-    @Volatile var spaceNote = ""; private set // a desktop refusal, or why remote control stays paused
+    @Volatile var spaceNote = ""; private set // a desktop refusal, a switch in progress, or why remote control stays paused
+    private var pending: DesktopSelect.Pending? = null
+    private var timeoutDisplay = ""
+    private var stickyNote = false
+    @Volatile private var sessionEpoch = 0L
+    private var refreshEpoch = 0
+    private var refreshFollowups = 0
+    private var decodedCapture: Long? = null
+    private val pendingTimer = Handler(Looper.getMainLooper())
+    private val pendingTick = Runnable { onPendingClock() }
     @Volatile var viewing = false; private set
     @Volatile var size: Pair<Int, Int>? = null; private set // the picture playing now
     private var host: WebHost? = null
@@ -165,6 +174,9 @@ class Screen(core: Core) : Feature(core) {
     val spaces get() = state?.optBoolean("spaces") == true
     // The real display being mirrored, empty while extending or when the computer didn't say.
     val displayId get() = state?.optString("displayId").orEmpty()
+    // Mac desktop catalog (screen.state desktops). Null on older computers, Windows, and Linux.
+    val desktopCatalog: DesktopSelect.Catalog? get() = readCatalog(state)
+    val pendingDisplayId: String get() = pending?.displayId.orEmpty()
 
     // Real displays the computer can mirror. Missing on an older computer: no picker, Mirror/Extend only.
     val displays: List<MacDisplay>
@@ -267,6 +279,9 @@ class Screen(core: Core) : Feature(core) {
         }
         startedByUs = false
         autoOpened = false
+        cancelDesktopWait()
+        stickyNote = false
+        spaceNote = ""
         core.changed()
     }
 
@@ -296,6 +311,16 @@ class Screen(core: Core) : Feature(core) {
         videoMarker = null
         videoPlaying = false
         videoUnavailable = false
+        decodedCapture = null
+    }
+
+    override fun onWelcome(host: Host) {
+        sessionEpoch++
+        pendingTimer.post {
+            decodedCapture = null
+            refreshFollowups = 0
+            cancelDesktopWait()
+        }
     }
 
     fun lockChanged(locked: Boolean) {
@@ -308,7 +333,13 @@ class Screen(core: Core) : Feature(core) {
     fun videoState(h: WebHost, generation: Int, session: Int, playing: Boolean) {
         if (host !== h || !viewing || videoGeneration != generation || videoSession != session ||
             videoMarker == null || core.link.sessionMarker() !== videoMarker || !core.link.connected) return
+        if (playing) decodedCapture = session.toLong() else if (decodedCapture == session.toLong()) decodedCapture = null
         if (videoPlaying != playing) { videoPlaying = playing; core.changed() }
+        if (!playing || pending == null) return
+        if (dropWait(sharing)) { core.changed(); return }
+        val step = DesktopSelect.onState(pending, desktopCatalog, displayId, System.currentTimeMillis(), frameFor())
+        takeDesktop(step, state?.optString("spaceHold").orEmpty())
+        core.changed()
     }
 
     fun playing(w: Int, h: Int) {
@@ -324,15 +355,23 @@ class Screen(core: Core) : Feature(core) {
         if (mode != null) m.put("mode", mode)
         if (close) m.put("close", true)
         if (displayId != null) m.put("displayId", displayId)
-        if (share == false) startedByUs = false
+        if (share == false) {
+            startedByUs = false
+            cancelDesktopWait()
+        }
         core.send(m)
     }
 
     // Mirror one of the computer's real displays. Ownership matches Mirror: the viewer sets
     // startedByUs when it opens and sharing is off; choosing a display does not take the session over.
+    // The host's display row uses this and does not keep a switching wait. The overview card uses selectDisplay.
     fun pickDisplay(id: String) {
+        cancelDesktopWait()
+        stickyNote = false
+        spaceNote = ""
         if (id.isEmpty() || displays.none { it.id == id }) return
         control(share = true, displayId = id)
+        core.changed()
     }
 
     fun keyboard(on: Boolean) {
@@ -348,7 +387,11 @@ class Screen(core: Core) : Feature(core) {
 
     // Mirror / Extend tapped in the viewer.
     fun pick(mode: String) {
+        cancelDesktopWait()
+        stickyNote = false
+        spaceNote = ""
         control(share = true, mode = mode)
+        core.changed()
     }
 
     // Previous or next macOS desktop on the display this viewer is being shown.
@@ -356,12 +399,216 @@ class Screen(core: Core) : Feature(core) {
     // Mac uses that device's own picture. A Mac that does not know screen.space ignores it.
     fun space(dir: String) {
         if (dir != "prev" && dir != "next") return
+        cancelDesktopWait()
+        stickyNote = false
         spaceNote = ""
         val m = msg("screen.space", "dir" to dir)
         val id = displayId
         if (id.isNotEmpty()) m.put("displayId", id)
         core.send(m)
         core.changed()
+    }
+
+    // One display from the overview. The card stays on Switching until a later picture is
+    // that display. A refusal, Stop, or a closed viewer drops the wait. This does not ask
+    // for a desktop, so a late picture cannot move the workspace.
+    fun selectDisplay(id: String) {
+        timeoutDisplay = ""
+        stickyNote = false
+        val step = DesktopSelect.switchDisplay(
+            desktopCatalog,
+            id,
+            displays.any { it.id == id },
+            System.currentTimeMillis(),
+            sessionEpoch,
+        )
+        takeDesktop(step, "")
+        core.changed()
+    }
+
+    // One desktop from the catalog. A different display is mirrored first. The desktop message
+    // is sent only after a later state says this viewer is capturing that display.
+    fun selectDesktop(displayId: String, spaceId: String) {
+        timeoutDisplay = ""
+        stickyNote = false
+        val step = DesktopSelect.tap(
+            desktopCatalog,
+            displayId,
+            spaceId,
+            displays.any { it.id == displayId },
+            System.currentTimeMillis(),
+            sessionEpoch,
+        )
+        takeDesktop(step, "")
+        core.changed()
+    }
+
+    private fun cancelDesktopWait() {
+        pending = null
+        timeoutDisplay = ""
+        pendingTimer.removeCallbacks(pendingTick)
+    }
+
+    private fun armPending() {
+        pendingTimer.removeCallbacks(pendingTick)
+        if (pending != null) pendingTimer.postDelayed(pendingTick, DesktopSelect.WAIT_MS)
+    }
+
+    private fun frameFor(cat: DesktopSelect.Catalog? = desktopCatalog): DesktopSelect.Frame? {
+        val decoded = decodedCapture ?: return null
+        val ready = cat ?: return null
+        val cap = ready.capture ?: return null
+        val gen = ready.viewGen ?: return null
+        if (decoded != cap) return null
+        return DesktopSelect.Frame(cap, gen)
+    }
+
+    // True when the wait was dropped. Stop, revoked input, a closed viewer, a new
+    // session, and a picture that landed on a different display all drop it here.
+    private fun dropWait(sharingOn: Boolean): Boolean {
+        val wait = pending ?: return false
+        val why = DesktopSelect.cancelReason(wait, sharingOn, inputOn, viewing, sessionEpoch, desktopCatalog, displayId) ?: return false
+        cancelDesktopWait()
+        if (why == "stale") {
+            stickyNote = true
+            spaceNote = transitionNote("list", "")
+        } else if (!stickyNote) spaceNote = ""
+        return true
+    }
+
+    fun refreshDesktops(followUp: Boolean = false) {
+        if (!viewing || !core.link.connected || core.host?.os != "mac") return
+        if (!followUp) refreshFollowups = 0
+        refreshEpoch = (refreshEpoch + 1) and 0x7fffffff
+        if (refreshEpoch == 0) refreshEpoch = 1
+        core.send(msg("screen.desktops", "epoch" to refreshEpoch))
+    }
+
+    private fun onPendingClock() {
+        if (dropWait(sharing)) { core.changed(); return }
+        val step = DesktopSelect.onState(pending, desktopCatalog, displayId, System.currentTimeMillis(), frameFor())
+        takeDesktop(step, "")
+        core.changed()
+    }
+
+    private fun takeDesktop(result: DesktopSelect.Result, hold: String) {
+        val previous = pending
+        val held = hold == "accessibility" || hold == "overview"
+        if (result.action is DesktopSelect.Action.Note && result.action.code == "timeout") {
+            timeoutDisplay = previous?.displayId.orEmpty()
+        }
+        // A ready desktop message must not go out while input is paused. The wait stays,
+        // including a timeout that already gave up, so a later picture can say what happened.
+        if (held && result.action is DesktopSelect.Action.Space) {
+            pending = previous
+            armPending()
+            stickyNote = false
+            spaceNote = spaceWhy(hold, "")
+            return
+        }
+        if (held) {
+            pending = result.pending
+            armPending()
+            stickyNote = false
+            spaceNote = spaceWhy(hold, "")
+            return
+        }
+        pending = result.pending
+        armPending()
+        when (val action = result.action) {
+            is DesktopSelect.Action.Space -> {
+                timeoutDisplay = ""
+                stickyNote = false
+                spaceNote = transitionNote("switching", action.name)
+                core.send(msg(
+                    "screen.space",
+                    "displayId" to action.displayId,
+                    "spaceId" to action.spaceId,
+                    "index" to action.index,
+                    "count" to action.count,
+                    "rev" to action.rev,
+                ))
+            }
+            is DesktopSelect.Action.DisplayThenWait -> {
+                timeoutDisplay = ""
+                stickyNote = false
+                spaceNote = transitionNote("switching", action.name)
+                if (displays.any { it.id == action.displayId }) control(share = true, displayId = action.displayId)
+                else {
+                    pending = null
+                    pendingTimer.removeCallbacks(pendingTick)
+                    stickyNote = true
+                    spaceNote = transitionNote("display", action.name)
+                }
+            }
+            is DesktopSelect.Action.Note -> {
+                stickyNote = true
+                spaceNote = transitionNote(action.code, action.name)
+            }
+            DesktopSelect.Action.None -> {
+                val waiting = pending
+                if (waiting != null) {
+                    stickyNote = false
+                    spaceNote = transitionNote("switching", waiting.name)
+                } else if (timeoutDisplay.isNotEmpty()) {
+                    val late = DesktopSelect.afterTimeout(timeoutDisplay, desktopCatalog, displayId)
+                    if (late is DesktopSelect.Action.Note) {
+                        timeoutDisplay = ""
+                        stickyNote = true
+                        spaceNote = transitionNote(late.code, late.name)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun transitionNote(code: String, name: String): String {
+        val shown = name.ifBlank { tr("This screen") }
+        return when (code) {
+            "already" -> tr("Already on this desktop")
+            "switching" -> tr("Switching to {name}", "name" to shown)
+            "showing" -> tr("Showing {name}", "name" to shown)
+            "gone" -> tr("Showing {name}. That desktop isn’t on this screen anymore.", "name" to shown)
+            "wait" -> tr("The picture hasn’t caught up with this screen yet")
+            "timeout" -> tr("The screen didn’t change")
+            "late" -> tr("Showing {name}. The desktop was not changed.", "name" to shown)
+            "display" -> tr("That screen is no longer the one being shown")
+            "list" -> tr("The list of desktops changed. Look again.")
+            else -> tr("Couldn’t change the desktop")
+        }
+    }
+
+    private fun readCatalog(source: JSONObject?): DesktopSelect.Catalog? {
+        val o = source?.optJSONObject("desktops") ?: return null
+        if (!o.has("rev")) return null
+        val rev = o.optLong("rev", -1)
+        val viewing = o.optString("viewing")
+        val viewGen = if (o.has("viewGen") && !o.isNull("viewGen")) o.optLong("viewGen", -1) else null
+        val capture = if (o.has("capture") && !o.isNull("capture")) o.optLong("capture", -1) else null
+        val arr = o.optJSONArray("displays") ?: return null
+        val rows = ArrayList<DesktopSelect.WireDisplay>(minOf(arr.length(), DesktopSelect.MAX_DISPLAYS))
+        val n = minOf(arr.length(), DesktopSelect.MAX_DISPLAYS)
+        for (i in 0 until n) {
+            val d = arr.optJSONObject(i) ?: continue
+            val spacesArr = d.optJSONArray("spaces") ?: continue
+            val spaces = ArrayList<String>(minOf(spacesArr.length(), DesktopSelect.MAX_LISTED))
+            val m = minOf(spacesArr.length(), DesktopSelect.MAX_LISTED)
+            for (j in 0 until m) {
+                if (spacesArr.isNull(j)) continue
+                val id = spacesArr.optString(j)
+                if (id.isNotEmpty()) spaces.add(id)
+            }
+            rows.add(DesktopSelect.WireDisplay(
+                d.optString("id"),
+                d.optString("name"),
+                d.optBoolean("primary"),
+                d.optInt("current", -1),
+                d.optInt("count", -1),
+                d.optBoolean("truncated"),
+                spaces,
+            ))
+        }
+        return DesktopSelect.accept(rev, viewing, viewGen, rows, capture)
     }
 
     private fun spaceWhy(why: String, edge: String): String = when {
@@ -384,6 +631,8 @@ class Screen(core: Core) : Feature(core) {
         resetVideo()
         lastInfo = null
         startedByUs = false
+        cancelDesktopWait()
+        stickyNote = false
         spaceNote = ""
         host?.post(msg("stream.stop"))
     }
@@ -399,19 +648,46 @@ class Screen(core: Core) : Feature(core) {
                 if (was != null && !was.optBoolean("on") && on && !viewing && !startedByUs) autoOpen()
                 if (!on) Notify.cancelScreen(core.ctx)
                 val hold = m.optString("spaceHold")
-                if (hold == "accessibility" || hold == "overview") spaceNote = spaceWhy(hold, "")
-                else if (!on || !m.optBoolean("spaces")) spaceNote = ""
+                val dropped = dropWait(on)
+                if (!on) cancelDesktopWait()
+                if (!dropped && (pending != null || timeoutDisplay.isNotEmpty())) {
+                    val step = DesktopSelect.onState(pending, desktopCatalog, displayId, System.currentTimeMillis(), frameFor())
+                    takeDesktop(step, hold)
+                } else if (hold == "accessibility" || hold == "overview") {
+                    spaceNote = spaceWhy(hold, "")
+                    stickyNote = false
+                } else if (!stickyNote && (!on || !m.optBoolean("spaces"))) spaceNote = ""
                 if (wantStart) startIfNeeded()
                 core.changed()
             }
             "stream.input" -> {
                 inputOn = m.optBoolean("on", true)
-                if (!inputOn) spaceNote = ""
+                if (!inputOn) {
+                    cancelDesktopWait()
+                    if (!stickyNote) spaceNote = ""
+                }
                 core.changed()
             }
             "screen.space.result" -> {
-                spaceNote = if (m.optBoolean("ok")) "" else spaceWhy(m.optString("why"), m.optString("edge"))
+                if (!m.optBoolean("ok") && m.optString("why") == "stale") cancelDesktopWait()
+                if (m.optBoolean("ok")) {
+                    stickyNote = m.optBoolean("already")
+                    spaceNote = if (m.optBoolean("already")) tr("Already on this desktop") else ""
+                } else {
+                    stickyNote = true
+                    spaceNote = spaceWhy(m.optString("why"), m.optString("edge"))
+                }
+                refreshDesktops()
                 core.changed()
+            }
+            "screen.desktops" -> {
+                val epoch = m.optInt("epoch", -1)
+                if (epoch != refreshEpoch) return true
+                if (m.optBoolean("ok")) refreshFollowups = 0
+                else if (m.optString("why") == "stale" && refreshFollowups < 1) {
+                    refreshFollowups++
+                    refreshDesktops(followUp = true)
+                }
             }
             "screen.textFocus" -> if (viewing && inputOn && !core.lockView.presented && core.host?.os == "mac") keyboard(true)
             "stream.info" -> { lastInfo = m; host?.post(m) }
