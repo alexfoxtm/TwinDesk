@@ -11,6 +11,9 @@
 // foreground, stop, lock, revoked input, disconnect, or a replacement socket cancels
 // the ask and drops an in-flight reply. Stop, lock, revoked input, disconnect, and
 // replacement also drop the stored bytes. The cache is not written to disk.
+// Every reply carries the sheet-open epoch from screen.preview.want. A new open on
+// the same socket is a new epoch: the in-flight shot is dropped and stored pictures
+// stay. A reply is not sent without that epoch.
 'use strict';
 
 const P = require('../shared/protocol.js');
@@ -36,6 +39,7 @@ class DisplayShots {
     this.bags = new Map();
     this.ticket = 0;
     this.epoch = 0;
+    this.ask = null;
     this.watched = null;
     this.running = false;
     this.again = false;
@@ -44,17 +48,25 @@ class DisplayShots {
     this.lastAt = 0;
   }
 
-  // The sheet is open on this socket. A different socket is a replacement: the old
-  // session's pictures are not forwarded, and the in-flight shot is dropped.
-  watch(conn) {
+  // The sheet is open on this socket for this epoch. A different socket is a
+  // replacement: the old session's pictures are not forwarded, and the in-flight
+  // shot is dropped. The same socket with a new epoch is the next sheet-open:
+  // drop the in-flight shot, keep the stored pictures, and answer with the new epoch.
+  // An epoch that is not a positive safe integer does not start a capture.
+  watch(conn, epoch) {
+    const ask = Preview.askEpoch(epoch);
+    if (ask == null) return this.pending;
     if (!Preview.liveConn(conn)) return this.cancel('session');
     const ws = conn.ws;
-    if (this.watched && this.watched.conn === conn && this.watched.ws === ws) {
+    const watched = this.watched;
+    if (watched && watched.conn === conn && watched.ws === ws && watched.epoch === ask) {
       this.kick();
       return this.pending;
     }
-    if (this.watched) this.cancel('session');
-    this.watched = { conn, ws };
+    if (watched && (watched.conn !== conn || watched.ws !== ws)) this.cancel('session');
+    else if (watched) this.cancel('close');
+    this.ask = ask;
+    this.watched = { conn, ws, epoch: ask };
     this.kick();
     return this.pending;
   }
@@ -67,11 +79,17 @@ class DisplayShots {
     const watch = this.watched;
     const session = why === 'session';
     if (!watch && !session) return this.pending;
-    if (!watch && session && !this._stored()) return this.pending;
+    if (!watch && session && !this._stored()) {
+      this.ask = null;
+      return this.pending;
+    }
+    const ask = this.ask;
     this._fence();
     this.watched = null;
+    // A closed sheet keeps the epoch. A later session clear still names that open.
     if (!session) return this.pending;
-    for (const [conn, bag] of this.bags) this._clear({ conn, ws: conn ? conn.ws : null }, bag);
+    for (const [conn, bag] of this.bags) this._clear({ conn, ws: conn ? conn.ws : null }, bag, ask);
+    this.ask = null;
     return this.pending;
   }
 
@@ -160,9 +178,11 @@ class DisplayShots {
   // A kick that finds the session already ended does not cancel the helper again.
   _endSession(sample, bag) {
     if (!this.watched && (!bag || (!bag.sent && bag.shots.size === 0))) return;
+    const ask = this.ask;
     this._fence();
     this.watched = null;
-    this._clear(sample, bag);
+    this._clear(sample, bag, ask);
+    this.ask = null;
   }
 
   _stored() {
@@ -172,22 +192,23 @@ class DisplayShots {
     return false;
   }
 
-  _clear(sample, bag) {
+  _clear(sample, bag, ask) {
     if (!bag || (!bag.sent && bag.shots.size === 0)) return;
     bag.shots.clear();
     bag.bytes = 0;
     bag.sent = false;
-    if (sample && Preview.liveConn(sample.conn) && sample.conn.ws === sample.ws) {
-      try { this.send(sample.conn, { t: P.T.SCREEN_PREVIEW, clear: true }); } catch (_) { /* the socket is already gone */ }
-    }
+    const epoch = Preview.askEpoch(ask);
+    if (epoch == null || !sample || !Preview.liveConn(sample.conn) || sample.conn.ws !== sample.ws) return;
+    try { this.send(sample.conn, { t: P.T.SCREEN_PREVIEW, epoch, clear: true }); } catch (_) { /* the socket is already gone */ }
   }
 
   _notice(sample, bag, code) {
     if (code !== 'os' && code !== 'permission') return;
     bag.notice = code;
     bag.noticeAt = this.now();
-    if (!this._watching(sample)) return;
-    try { this.send(sample.conn, { t: P.T.SCREEN_PREVIEW, unavailable: code }); } catch (_) { /* the socket is already gone */ }
+    const epoch = Preview.askEpoch(this.ask);
+    if (epoch == null || !this._watching(sample)) return;
+    try { this.send(sample.conn, { t: P.T.SCREEN_PREVIEW, epoch, unavailable: code }); } catch (_) { /* the socket is already gone */ }
   }
 
   _retain(bag, catalog) {
@@ -354,7 +375,7 @@ class DisplayShots {
       // A stale or missed shot is not a reason to forget a last-seen picture.
       // macOS 13 stays refused. A missing Screen Recording permission is checked again later.
       if (body.unavailable === 'os' || body.unavailable === 'permission') {
-        this._clear(after, bag);
+        this._clear(after, bag, this.ask);
         this._notice(after, bag, body.unavailable);
         if (bag.notice === 'permission') this._arm(Preview.REFRESH_MS);
       }
@@ -391,9 +412,12 @@ class DisplayShots {
       viewGen: sample.viewGen,
     }, jpeg, body.width, body.height);
     if (ticket !== this.ticket || epoch !== this.epoch || !this._same(sample, this._sample())) return;
+    const ask = Preview.askEpoch(this.ask);
+    if (ask == null) return;
     try {
       this.send(again.conn, {
         t: P.T.SCREEN_PREVIEW,
+        epoch: ask,
         displayId: want.displayId,
         spaceId: want.spaceId,
         capture: sample.capture,

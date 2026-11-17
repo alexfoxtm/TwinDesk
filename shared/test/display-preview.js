@@ -73,8 +73,10 @@ function harness(opts) {
     clearTimer(timer) { timer.cleared = true; },
     now: () => box.clock,
   });
+  const ask = opts.epoch == null ? 1 : opts.epoch;
   if (opts.watch !== false && box.sample && box.sample.conn && Preview.liveConn(box.sample.conn)) {
-    shots.watched = { conn: box.sample.conn, ws: box.sample.conn.ws };
+    shots.ask = ask;
+    shots.watched = { conn: box.sample.conn, ws: box.sample.conn.ws, epoch: ask };
   }
   return { shots, sent, calls, timers, box, release() { if (releaseWait) releaseWait(); } };
 }
@@ -132,6 +134,12 @@ async function testPolicy() {
   const replaced = conn();
   replaced.ws = null;
   assert.strictEqual(Preview.authorizeWant(replaced, replaced), null);
+  assert.strictEqual(Preview.askEpoch(1), 1);
+  assert.strictEqual(Preview.askEpoch(Preview.ASK_MAX), Preview.ASK_MAX);
+  assert.strictEqual(Preview.askEpoch(0), null);
+  assert.strictEqual(Preview.askEpoch(1.5), null);
+  assert.strictEqual(Preview.askEpoch(Preview.ASK_MAX + 1), null);
+  assert.strictEqual(Preview.askEpoch('1'), null);
   assert.strictEqual(Preview.currentSpaceId(look([row('1', '10', ['10', '11']), row('1', '10')]), '1'), '');
   assert.strictEqual(Preview.currentSpaceId(look([row('1', '11', ['10', '11'])]), '1'), '11');
 
@@ -178,6 +186,7 @@ async function testOnePermittedDisplay() {
   assert.strictEqual(h.sent[0].msg.displayId, '1');
   assert.strictEqual(h.sent[0].msg.spaceId, '10');
   assert.strictEqual(h.sent[0].msg.capture, 7);
+  assert.strictEqual(h.sent[0].msg.epoch, 1);
   assert.strictEqual(h.sent[0].conn, target);
   assert.ok(!h.sent.some((row) => row.msg.spaceId === '11' || row.msg.displayId === '9'));
 }
@@ -334,7 +343,7 @@ async function testGapAndClearAndOs() {
   state.sharing = false;
   h.box.clock += Preview.MIN_GAP_MS;
   await h.shots.kick();
-  assert.ok(h.sent.some((row) => row.msg.clear === true));
+  assert.ok(h.sent.some((row) => row.msg.clear === true && row.msg.epoch === 1));
   assert.strictEqual(h.calls.length, 2);
 
   const os = harness({
@@ -344,6 +353,7 @@ async function testGapAndClearAndOs() {
   });
   await os.shots.kick();
   assert.deepStrictEqual(os.sent.map((row) => row.msg.unavailable), ['os']);
+  assert.ok(os.sent.every((row) => row.msg.epoch === 1));
   assert.ok(!os.calls.some((call) => call.cmd !== 'displayShot'));
   os.box.clock += Preview.REFRESH_MS * 2;
   await os.shots.kick();
@@ -356,7 +366,7 @@ async function testGapAndClearAndOs() {
     reply: { ok: true, unavailable: 'permission' },
   });
   await permission.shots.kick();
-  assert.strictEqual(permission.sent.filter((row) => row.msg.unavailable === 'permission').length, 1);
+  assert.strictEqual(permission.sent.filter((row) => row.msg.unavailable === 'permission' && row.msg.epoch === 1).length, 1);
   permission.box.clock += 100;
   await permission.shots.kick();
   assert.strictEqual(permission.calls.length, 1);
@@ -411,12 +421,13 @@ async function testSessionEndClearsAndALaterWatchCaptures() {
   await h.shots.kick();
   assert.strictEqual(jpegSent(h.sent).length, 1);
   h.shots.cancel('session');
-  assert.ok(h.sent.some((row) => row.msg.clear === true));
+  assert.ok(h.sent.some((row) => row.msg.clear === true && row.msg.epoch === 1));
   assert.ok(sends.some((row) => row.cmd === 'displayShotCancel'));
   h.sent.length = 0;
   h.box.clock += Preview.MIN_GAP_MS;
-  await h.shots.watch(target);
+  await h.shots.watch(target, 2);
   assert.strictEqual(jpegSent(h.sent).length, 1);
+  assert.strictEqual(h.sent[0].msg.epoch, 2);
   assert.strictEqual(h.sent[0].conn, target);
 }
 
@@ -475,8 +486,41 @@ async function testLockClearsAStoredShot() {
   h.box.locked = true;
   h.box.clock += Preview.MIN_GAP_MS;
   await h.shots.kick();
-  assert.ok(h.sent.some((row) => row.msg.clear === true));
+  assert.ok(h.sent.some((row) => row.msg.clear === true && row.msg.epoch === 1));
   assert.strictEqual(jpegSent(h.sent).length, 1);
+}
+
+async function testSheetOpenEpochOnEveryReply() {
+  const target = conn();
+  const h = harness({
+    epoch: 41,
+    look: look([row('1', '10', ['10'])]),
+    sample: sampleOf(target, catalog([display('1', '10', ['10'])])),
+    reply: shotBody('1'),
+  });
+  await h.shots.kick();
+  assert.strictEqual(jpegSent(h.sent)[0].msg.epoch, 41);
+  h.shots.cancel('close');
+  assert.ok(!h.sent.some((row) => row.msg.clear === true));
+  h.box.clock += Preview.REFRESH_MS;
+  await h.shots.watch(target, 42);
+  const pictures = jpegSent(h.sent);
+  assert.strictEqual(pictures.length, 2);
+  assert.strictEqual(pictures[0].msg.epoch, 41);
+  assert.strictEqual(pictures[1].msg.epoch, 42);
+  h.shots.cancel('session');
+  assert.ok(h.sent.some((row) => row.msg.clear === true && row.msg.epoch === 42));
+
+  const refused = harness({
+    watch: false,
+    look: look([row('1', '10', ['10'])]),
+    sample: sampleOf(conn(), catalog([display('1', '10', ['10'])])),
+    reply: shotBody('1'),
+  });
+  await refused.shots.watch(refused.box.sample.conn, 0);
+  await refused.shots.watch(refused.box.sample.conn);
+  assert.strictEqual(refused.calls.length, 0);
+  assert.strictEqual(refused.sent.length, 0);
 }
 
 async function testANewSocketDoesNotReceiveTheOldPicture() {
@@ -547,6 +591,28 @@ function testSources() {
   assert.ok(read('shared/protocol.js').includes("SCREEN_PREVIEW_WANT: 'screen.preview.want'"));
   assert.ok(one.includes('SCREEN_PREVIEW_WANT'));
   assert.ok(mesh.includes('SCREEN_PREVIEW_WANT'));
+  assert.ok(one.includes('Preview.askEpoch(m.epoch)'));
+  assert.ok(mesh.includes('Preview.askEpoch(m.epoch)'));
+  assert.ok(one.includes('previewShots.watch(auth.conn, ask)'));
+  assert.ok(mesh.includes('previewShots.watch(auth.conn, ask)'));
+  assert.ok(shots.includes('epoch: ask'));
+  const web = read('android/app/src/main/java/com/twindesk/android/Web.kt');
+  const sheet = web.slice(web.indexOf('fun previewSheet'), web.indexOf('private fun endPreviewSession'));
+  assert.ok(sheet.includes('ask.open()'));
+  assert.ok(sheet.includes('ask.close()'));
+  assert.ok(sheet.includes('"epoch" to epoch'));
+  assert.ok(!sheet.includes('ask.end()'));
+  const ended = web.slice(web.indexOf('private fun endPreviewSession'), web.indexOf('override fun onWelcome'));
+  assert.ok(ended.includes('ask.end()'));
+  assert.ok(ended.includes('"epoch" to epoch'));
+  assert.ok(web.includes('ask.accepts('));
+  const protocol = read('shared/protocol.js');
+  const wantLine = protocol.slice(protocol.indexOf('SCREEN_PREVIEW_WANT:'), protocol.indexOf('SCREEN_PREVIEW:'));
+  const previewLine = protocol.slice(protocol.indexOf('SCREEN_PREVIEW:'), protocol.indexOf('PAIR_SYNC:'));
+  assert.ok(wantLine.includes('{on, epoch}'));
+  assert.ok(previewLine.includes('{epoch, displayId, spaceId, capture, viewGen, width, height, jpeg}'));
+  assert.ok(previewLine.includes('{clear:true}'));
+  assert.ok(previewLine.includes("{unavailable:'os'|'permission'}"));
   assert.ok(one.includes("powerMonitor.on('lock-screen'"));
   assert.ok(mesh.includes("powerMonitor.on('lock-screen'"));
 }
@@ -566,6 +632,7 @@ async function main() {
   await testOverviewShownAfterCaptureIsDropped();
   await testStaleReplyKeepsTheLastSeen();
   await testLockClearsAStoredShot();
+  await testSheetOpenEpochOnEveryReply();
   await testANewSocketDoesNotReceiveTheOldPicture();
   testSources();
   console.log('display-preview: one permitted display, session memory, and no second capture API.');

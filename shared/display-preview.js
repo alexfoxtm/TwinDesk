@@ -18,6 +18,9 @@ const MAX_STORE_BYTES = MAX_SHOTS * MAX_BYTES;
 const MIN_GAP_MS = 2000;
 const REFRESH_MS = 8000;
 const TIMEOUT_MS = 2000;
+// The sheet-open named by screen.preview.want and echoed on every screen.preview.
+// 2^48-1 is an integer in both JS and the phone's JSON numbers.
+const ASK_MAX = 0xffffffffffff;
 
 function key(displayId, spaceId) {
   return String(displayId) + '\n' + String(spaceId);
@@ -51,6 +54,11 @@ function missionHidden(look) {
 // authenticated one session.send writes. A host socket that is still up while the guest
 // link is the outbound path is not this viewer. A replaced ws fails later, against the
 // ws captured here.
+function askEpoch(value) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > ASK_MAX) return null;
+  return value;
+}
+
 function authorizeWant(bound, inbound) {
   if (!liveConn(bound) || !inbound || inbound !== bound || bound.ws == null) return null;
   return { conn: bound, ws: bound.ws };
@@ -161,7 +169,7 @@ function acceptJpeg(buf, width, height) {
 }
 
 module.exports = {
-  MAX_EDGE, MAX_BYTES, MAX_SHOTS, MAX_BAGS, MAX_STORE_BYTES, MIN_GAP_MS, REFRESH_MS, TIMEOUT_MS,
-  key, liveConn, outbound, authorizeWant, screenUnlocked, missionHidden, catalogPermits, currentTargets,
+  MAX_EDGE, MAX_BYTES, MAX_SHOTS, MAX_BAGS, MAX_STORE_BYTES, MIN_GAP_MS, REFRESH_MS, TIMEOUT_MS, ASK_MAX,
+  key, liveConn, outbound, askEpoch, authorizeWant, screenUnlocked, missionHidden, catalogPermits, currentTargets,
   currentSpaceId, displayNumber, fenceReady, choose, dueIn, decodeJpeg, acceptJpeg,
 };

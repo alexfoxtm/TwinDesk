@@ -9,6 +9,49 @@ object DesktopPreview {
     const val MAX_BYTES = 24 * 1024
     const val MAX_SHOTS = 12
     const val MAX_STORE_BYTES = MAX_SHOTS * MAX_BYTES
+    // Same bound as the Mac's askEpoch: a positive integer JSON can round-trip.
+    const val ASK_MAX = 0xffffffffffffL
+
+    // One Displays & desktops open. epoch is what screen.preview.want sends and what
+    // every screen.preview must echo. close keeps that epoch so a later clear or
+    // unavailable can still drop what this open stored. end forgets it: a stop, a
+    // lock, revoked input, or a new link. The next open is a different epoch, so a
+    // reply from the previous one no longer applies.
+    class SheetAsk {
+        private var serial = 0L
+        @Volatile var epoch: Long = 0L
+            private set
+        @Volatile var wanted: Boolean = false
+            private set
+
+        fun open(): Long {
+            val next = serial + 1L
+            serial = if (next <= 0L || next > ASK_MAX) 1L else next
+            epoch = serial
+            wanted = true
+            return epoch
+        }
+
+        fun close() {
+            wanted = false
+        }
+
+        fun end() {
+            wanted = false
+            epoch = 0L
+        }
+
+        fun accepts(replyEpoch: Long, clear: Boolean, unavailable: String): Boolean =
+            acceptReply(epoch, wanted, replyEpoch, clear, unavailable)
+    }
+
+    // JPEG only for the open that is still asking. clear and unavailable still apply
+    // after that sheet closes. A different epoch, or no open left after end, does not.
+    fun acceptReply(ask: Long, wanted: Boolean, replyEpoch: Long, clear: Boolean, unavailable: String): Boolean {
+        if (ask <= 0L || ask > ASK_MAX || replyEpoch != ask) return false
+        if (clear || unavailable == "os" || unavailable == "permission") return true
+        return wanted
+    }
 
     enum class Status { CURRENT, LAST, NONE }
 

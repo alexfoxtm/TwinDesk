@@ -150,7 +150,7 @@ class Screen(core: Core) : Feature(core) {
     @Volatile var previewEpoch = 0L
         private set
     @Volatile private var previewSession = 0L
-    @Volatile private var previewWanted = false
+    private val ask = DesktopPreview.SheetAsk()
     private var previewSealed = false
     private var pending: DesktopSelect.Pending? = null
     private var timeoutDisplay = ""
@@ -323,27 +323,37 @@ class Screen(core: Core) : Feature(core) {
     }
 
     // The Displays & desktops sheet is open on this phone. The Mac captures only while
-    // this stays true. Closing the sheet or leaving the foreground asks it to stop and
-    // keeps the last-seen pictures. Stop, lock, revoke, and a new link clear them.
+    // this stays true. Each open has its own epoch, sent on screen.preview.want and
+    // required on every screen.preview. Closing the sheet or leaving the foreground
+    // asks it to stop and keeps the last-seen pictures. A reply from an older open is
+    // ignored after the sheet opens again. Stop, lock, revoke, and a new link forget
+    // that epoch and clear the pictures.
     fun previewSheet(open: Boolean) {
         val allowed = open && viewing && sharing && inputOn && remote && core.link.connected && !core.lockView.locked
-        if (allowed == previewWanted) return
-        previewWanted = allowed
-        if (allowed) previewSealed = false
-        if (core.link.connected) core.send(msg("screen.preview.want", "on" to allowed))
+        if (allowed == ask.wanted) return
+        if (allowed) {
+            previewSealed = false
+            val epoch = ask.open()
+            if (core.link.connected) core.send(msg("screen.preview.want", "on" to true, "epoch" to epoch))
+        } else {
+            val epoch = ask.epoch
+            ask.close()
+            if (epoch > 0L && core.link.connected) core.send(msg("screen.preview.want", "on" to false, "epoch" to epoch))
+        }
         core.changed()
     }
 
     private fun endPreviewSession() {
-        val cancel = previewWanted
+        val cancel = ask.wanted
+        val epoch = ask.epoch
         val dirty = !previewSealed || desktopPreviews.shots.isNotEmpty() || desktopPreviews.unavailable.isNotEmpty() || desktopPreviews.session != previewSession
-        previewWanted = false
+        ask.end()
         if (!previewSealed) {
             previewSealed = true
             previewSession++
         }
         if (dirty) desktopPreviews = DesktopPreview.empty(previewSession)
-        if (cancel && core.link.connected) core.send(msg("screen.preview.want", "on" to false))
+        if (cancel && epoch > 0L && core.link.connected) core.send(msg("screen.preview.want", "on" to false, "epoch" to epoch))
         if (cancel || dirty) {
             previewEpoch++
             core.changed()
@@ -743,11 +753,12 @@ class Screen(core: Core) : Feature(core) {
                 core.changed()
             }
             "screen.preview" -> {
-                val incoming = previewMessage(m)
-                if (incoming.clear || incoming.unavailable == "os" || incoming.unavailable == "permission" || previewWanted) {
-                    desktopPreviews = DesktopPreview.reduce(desktopPreviews, incoming, desktopCatalog, previewSession)
-                    core.changed()
-                }
+                val clear = m.optBoolean("clear")
+                val unavailable = m.optString("unavailable")
+                val replyEpoch = if (m.has("epoch")) m.optLong("epoch") else 0L
+                if (!ask.accepts(replyEpoch, clear, unavailable)) return true
+                desktopPreviews = DesktopPreview.reduce(desktopPreviews, previewMessage(m), desktopCatalog, previewSession)
+                core.changed()
             }
             "screen.desktops" -> {
                 val epoch = m.optInt("epoch", -1)

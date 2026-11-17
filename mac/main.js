@@ -355,7 +355,9 @@ function onPreviewWant(m, inbound) {
     previewShots.cancel('session');
     return;
   }
-  previewShots.watch(auth.conn);
+  const ask = Preview.askEpoch(m.epoch);
+  if (ask == null) return;
+  previewShots.watch(auth.conn, ask);
 }
 
 function sendScreenState() {

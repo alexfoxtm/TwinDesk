@@ -130,6 +130,64 @@ class DesktopPreviewTest {
     }
 
     @Test
+    fun oldReplyAfterCloseAndReopenIsRefused() {
+        val cat = catalog()
+        val ask = DesktopPreview.SheetAsk()
+        var board = DesktopPreview.reduce(DesktopPreview.EMPTY, shot("1", "1"), cat)
+        val oldJpeg = shot("1", "2")
+        // Capture and view generation still match, so the epoch is the only fence.
+        assertEquals(2, DesktopPreview.reduce(board, oldJpeg, cat).shots.size)
+
+        val opened = ask.open()
+        fun apply(replyEpoch: Long, msg: DesktopPreview.Incoming) {
+            if (!ask.accepts(replyEpoch, msg.clear, msg.unavailable)) return
+            board = DesktopPreview.reduce(board, msg, cat)
+        }
+
+        apply(opened, shot("1", "1"))
+        assertEquals(1, board.shots.size)
+
+        ask.close()
+        apply(opened, oldJpeg)
+        assertEquals(1, board.shots.size)
+        val clear = DesktopPreview.Incoming(true, "", "", "", -1, -1, 0, 0, null)
+        apply(opened, clear)
+        assertTrue(board.shots.isEmpty())
+
+        board = DesktopPreview.reduce(DesktopPreview.EMPTY, shot("1", "1"), cat)
+        val reopened = ask.open()
+        assertTrue(reopened != opened)
+        apply(opened, oldJpeg)
+        apply(opened, clear)
+        apply(opened, DesktopPreview.Incoming(false, "os", "", "", -1, -1, 0, 0, null))
+        apply(opened, DesktopPreview.Incoming(false, "permission", "", "", -1, -1, 0, 0, null))
+        assertEquals(1, board.shots.size)
+        assertEquals("1", board.shots[0].spaceId)
+        assertEquals(7L, board.shots[0].capture)
+        assertEquals(3L, board.shots[0].viewGen)
+        assertEquals("", board.unavailable)
+
+        apply(reopened, oldJpeg)
+        assertEquals(2, board.shots.size)
+
+        ask.end()
+        apply(reopened, oldJpeg)
+        apply(reopened, clear)
+        apply(reopened, DesktopPreview.Incoming(false, "permission", "", "", -1, -1, 0, 0, null))
+        assertEquals(2, board.shots.size)
+        assertEquals("", board.unavailable)
+
+        val next = ask.open()
+        apply(reopened, oldJpeg)
+        apply(reopened, clear)
+        assertEquals(2, board.shots.size)
+        apply(next, shot("1", "3"))
+        assertTrue(board.shots.any { it.spaceId == "3" })
+        assertEquals(7L, board.shots.first { it.spaceId == "3" }.capture)
+        assertEquals(3L, board.shots.first { it.spaceId == "3" }.viewGen)
+    }
+
+    @Test
     fun oldestShotLeavesWhenTheSessionIsFull() {
         var board = DesktopPreview.EMPTY
         val cat = catalog()
