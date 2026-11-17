@@ -97,6 +97,9 @@ enum DisplayShot {
       cfg.scalesToFit = true
       cfg.showsCursor = false
       let filter = SCContentFilter(display: display, excludingWindows: [])
+      // Enumeration can outlive the ask. A cancel or a newer shot during that await
+      // must not start the screenshot.
+      if !ShotEpoch.owns(token) { return ["unavailable": "stale"] }
       let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
       if !ShotEpoch.owns(token) { return ["unavailable": "stale"] }
       guard let jpeg = jpegData(image, maxBytes: ShotFit.maxBytes),

@@ -519,6 +519,15 @@ function testSources() {
   assert.ok(swift.includes('enum ShotEpoch'));
   assert.ok(swift.includes('["unavailable": "stale"]'));
   assert.strictEqual((swift.match(/captureImage/g) || []).length, 1);
+  const listed = swift.indexOf('SCShareableContent.excludingDesktopWindows');
+  const captureAt = swift.indexOf('SCScreenshotManager.captureImage');
+  const captureLine = swift.lastIndexOf('\n', captureAt);
+  const prevBreak = swift.lastIndexOf('\n', captureLine - 1);
+  const lineBeforeCapture = swift.slice(prevBreak + 1, captureLine);
+  const ownsAfterList = swift.indexOf('ShotEpoch.owns(token)', listed);
+  assert.ok(listed !== -1 && listed < captureAt, 'shareable content is read before the screenshot');
+  assert.ok(ownsAfterList !== -1 && ownsAfterList < captureAt, 'a cancel during enumeration is visible before captureImage');
+  assert.ok(lineBeforeCapture.includes('if !ShotEpoch.owns(token)'), 'owns is checked immediately before captureImage');
   assert.ok(read('mac-helper/Sources/macshare-helper/SpacesAX.swift').includes('enum OverviewReport'));
   assert.ok(read('mac-helper/Sources/macshare-helper/SpacesAX.swift').includes('case .show(.hidden)'));
   assert.ok(!shots.includes('desktopCapturer'));

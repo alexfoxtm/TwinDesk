@@ -68,7 +68,35 @@ class DesktopPreviewTest {
         assertTrue(DesktopPreview.retain(board, gone).shots.isEmpty())
         val same = DesktopPreview.retain(board, catalog())
         assertEquals(1, same.shots.size)
-        assertFalse(same.shots[0].stale)
+        // Space 2 is not the current desktop. The picture stays, and it is last-seen.
+        assertTrue(same.shots[0].stale)
+        val current = DesktopPreview.reduce(DesktopPreview.EMPTY, shot("1", "1"), catalog())
+        val still = DesktopPreview.retain(current, catalog())
+        assertFalse(still.shots[0].stale)
+    }
+
+    @Test
+    fun spaceThatStopsBeingCurrentStaysLastSeenUntilRefreshed() {
+        val showing = catalog()
+        val board = DesktopPreview.reduce(DesktopPreview.EMPTY, shot("1", "1"), showing)
+        assertEquals(DesktopPreview.Status.CURRENT, DesktopPreview.tile(board, "1", desk("1", 0, true), false))
+
+        val left = withCurrent(showing, "2")
+        val kept = DesktopPreview.retain(board, left)
+        assertEquals(1, kept.shots.size)
+        assertEquals(7L, kept.shots[0].capture)
+        assertEquals(3L, kept.shots[0].viewGen)
+        assertTrue(kept.shots[0].stale)
+        assertEquals(DesktopPreview.Status.LAST, DesktopPreview.tile(kept, "1", desk("1", 0, false), false))
+
+        val back = DesktopPreview.retain(kept, showing)
+        assertEquals(1, back.shots.size)
+        assertTrue(back.shots[0].stale)
+        assertEquals(DesktopPreview.Status.LAST, DesktopPreview.tile(back, "1", desk("1", 0, true), false))
+
+        val refreshed = DesktopPreview.reduce(back, shot("1", "1"), showing)
+        assertFalse(refreshed.shots.single { it.spaceId == "1" }.stale)
+        assertEquals(DesktopPreview.Status.CURRENT, DesktopPreview.tile(refreshed, "1", desk("1", 0, true), false))
     }
 
     @Test
@@ -129,5 +157,12 @@ class DesktopPreviewTest {
         val spaces = (1..16).map { n -> desk(n.toString(), n - 1, n == 1) }
         val display = DesktopSelect.Display("1", "Built-in", true, 0, spaces.size, false, spaces)
         return DesktopSelect.Catalog(1, "1", 3, 7, listOf(display))
+    }
+
+    private fun withCurrent(cat: DesktopSelect.Catalog, spaceId: String): DesktopSelect.Catalog {
+        val display = cat.displays[0]
+        val desktops = display.desktops.map { it.copy(current = it.id == spaceId) }
+        val index = desktops.indexOfFirst { it.current }.coerceAtLeast(0)
+        return cat.copy(displays = listOf(display.copy(currentIndex = index, desktops = desktops)))
     }
 }

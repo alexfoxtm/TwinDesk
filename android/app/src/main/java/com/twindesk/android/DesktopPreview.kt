@@ -54,7 +54,10 @@ object DesktopPreview {
 
     // A picture stays while its display and space are still listed, for this same session.
     // A different capture or view generation, or a missing one, marks it stale instead of
-    // dropping it. A missing catalog drops the pictures. A different session drops them too.
+    // dropping it. A space that is no longer current is last-seen even when this display's
+    // capture and view generation did not move. Naming that space current again does not
+    // clear the mark; only a new picture does. A missing catalog drops the pictures.
+    // A different session drops them too.
     fun retain(board: Board, catalog: DesktopSelect.Catalog?, session: Long = board.session): Board {
         if (board.session != session) return empty(session)
         val cat = catalog ?: return empty(session)
@@ -62,7 +65,9 @@ object DesktopPreview {
         val gen = cat.viewGen
         val shots = board.shots.mapNotNull { shot ->
             if (!listed(cat, shot.displayId, shot.spaceId)) return@mapNotNull null
-            val fresh = cap != null && gen != null && shot.capture == cap && shot.viewGen == gen
+            val generation = cap != null && gen != null && shot.capture == cap && shot.viewGen == gen
+            val current = spaceCurrent(cat, shot.displayId, shot.spaceId)
+            val fresh = generation && current && !shot.stale
             shot.copy(stale = !fresh)
         }
         return board.copy(shots = shots, session = session)
@@ -97,6 +102,11 @@ object DesktopPreview {
     private fun listed(catalog: DesktopSelect.Catalog, displayId: String, spaceId: String): Boolean {
         val display = catalog.displays.find { it.id == displayId } ?: return false
         return display.desktops.any { it.id == spaceId }
+    }
+
+    private fun spaceCurrent(catalog: DesktopSelect.Catalog, displayId: String, spaceId: String): Boolean {
+        val display = catalog.displays.find { it.id == displayId } ?: return false
+        return display.desktops.any { it.id == spaceId && it.current }
     }
 
     private fun jpegOk(bytes: ByteArray?, width: Int, height: Int): Boolean {
