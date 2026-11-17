@@ -88,8 +88,12 @@ Windows and Linux can wire it as `mac/localsend.js` does: `startLocalSend({...})
 `ask`, `choose`, `say` and `reveal`, its `actions` on their IPC, `state.localsend = ls.view()`, and
 `shared/ui-localsend.js` on their Files page.
 
-Tests, offline on 127.0.0.1. The receiver that takes no connection without a client certificate is
-a stand-in written in the tests: none of this has been run against the LocalSend app itself here.
+The two loopback suites use stand-in peers, including a receiver requiring a client certificate.
+Separately, both the Node and Kotlin cores exchanged files with the
+[official LocalSend CLI 1.18.2](https://github.com/localsend/localsend/releases/tag/v1.18.2)
+in an isolated Linux container. The CLI held TCP 53317, each TwinDesk core used a fallback port,
+and received bytes matched in both directions. The CLI discovered TwinDesk through explicit
+loopback registration. This does not exercise multicast or either app's UI.
 
 ```
 node shared/test/localsend.js           # two Node nodes, a client and a receiver written from the protocol text
