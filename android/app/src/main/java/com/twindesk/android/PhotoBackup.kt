@@ -3,10 +3,8 @@
 // time, only after this phone and that Mac have each turned it on, and only the original file
 // (location included). No ACCESS_MEDIA_LOCATION, or only selected photos: nothing is sent.
 // Bytes are backup.chunk on the same IP socket that accepted the take, not a Save and not fx.
-// Each storage volume keeps its own id cursor and MediaStore version. One _ID on the synthetic
-// external volume drops a photo after that volume's database is rebuilt, or a photo whose id is
-// lower than another volume's. A generation the cursor has already passed waits until that
-// volume's version changes. The generation on the wire is the canonical decimal of the long.
+// Page by modification generation and row id on each versioned volume. Publishing a pending
+// photo changes its generation even when its row id is older than photos already saved.
 package com.twindesk.android
 
 import android.Manifest
@@ -27,6 +25,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
@@ -59,6 +58,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     private var armMac = ""
     private var armSocket: Any? = null
     private var armRev = -1
+    private var armFp = ""
 
     private class Row(
         val id: Long, val vol: String, val ver: String, val item: String, val gen: String,
@@ -83,7 +83,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             socket, id,
             if (id.isEmpty()) 0 else revOf(id),
             core.link.peerBackup,
-            core.moduleOn("photos"),
+            moduleOn(),
         )
     }
 
@@ -98,14 +98,24 @@ class PhotoBackup(core: Core) : Feature(core) {
         return o
     }
 
+    private fun moduleOn() = core.moduleOn("photos") && "photos" !in Modules.off(core.store)
+
+    fun modulesChanged() {
+        synchronized(lock) {
+            if (!moduleOn()) revokeLocked(true)
+            syncWatchLocked()
+        }
+        sendState(null, announceOff = !moduleOn())
+    }
+
     fun on(): Boolean {
         val id = macId()
-        return id.isNotEmpty() && core.store.flag(onKey(id), false)
+        return id.isNotEmpty() && allowed(id)
     }
 
     /** The switch may turn on: this Mac negotiated pb, on an IP socket, with the Photos module and full photo access. */
     fun canAsk(): Boolean {
-        if (!core.moduleOn("photos") || Build.VERSION.SDK_INT < 30) return false
+        if (!moduleOn() || Build.VERSION.SDK_INT < 30) return false
         if (!core.link.peerBackup || core.link.ble || !core.link.connected) return false
         val h = core.host ?: return false
         if (h.os != "mac" || !token(h.id)) return false
@@ -114,8 +124,6 @@ class PhotoBackup(core: Core) : Feature(core) {
     }
 
     fun canToggle(): Boolean = canAsk()
-
-    fun needsLocationPrompt(): Boolean = canAsk() && !locGranted()
 
     fun hint(name: String): String {
         if (Build.VERSION.SDK_INT < 30) return tr("Needs Android 11 or later.")
@@ -151,6 +159,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             armMac = id
             armSocket = socket
             armRev = revOf(id)
+            armFp = core.host?.fp ?: ""
             return true
         }
         setOn(true, id, socket)
@@ -161,14 +170,16 @@ class PhotoBackup(core: Core) : Feature(core) {
         val id = armMac
         val socket = armSocket
         val rev = armRev
+        val fp = armFp
         armMac = ""
         armSocket = null
         armRev = -1
+        armFp = ""
         if (!granted || id.isEmpty() || socket == null) {
             core.changed()
             return
         }
-        if (macId() != id || revOf(id) != rev || core.link.sessionMarker() !== socket || !canAsk()) {
+        if (macId() != id || core.host?.fp != fp || revOf(id) != rev || core.link.sessionMarker() !== socket || !canAsk()) {
             core.changed()
             return
         }
@@ -184,7 +195,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     // The first look only records what is granted, so opening the app does not drop a copy.
     fun permsChanged() {
         val tell = synchronized(lock) {
-            if (!core.moduleOn("photos")) {
+            if (!moduleOn()) {
                 unwatchLocked()
                 return
             }
@@ -217,7 +228,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     // The session socket was replaced (Wi-Fi, cable, Bluetooth). The old request is dead.
     fun linkChanged() {
         val tell = synchronized(lock) {
-            if (!core.moduleOn("photos")) {
+            if (!moduleOn()) {
                 unwatchLocked()
                 return
             }
@@ -246,7 +257,7 @@ class PhotoBackup(core: Core) : Feature(core) {
 
     override fun onWelcome(host: Host) {
         synchronized(lock) {
-            if (host.os != "mac" || !core.moduleOn("photos")) {
+            if (host.os != "mac" || !moduleOn()) {
                 revokeLocked(false)
                 marker = null
                 boundMac = ""
@@ -255,6 +266,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                 return
             }
             val socket = core.link.sessionMarker()
+            permSnap = core.hub.perm("media") + ":" + locGranted()
             revokeLocked(false)
             marker = socket
             boundMac = if (token(host.id)) host.id else ""
@@ -290,7 +302,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     internal fun onIngress(owner: PbOwner, m: JSONObject) {
         val t = m.optString("t")
         if (!t.startsWith("backup.")) return
-        if (!owner.module || !core.moduleOn("photos") || !owner.peer || !core.link.peerBackup) return
+        if (!owner.module || !moduleOn() || !owner.peer || !core.link.peerBackup) return
         if (owner.socket !== core.link.sessionMarker() || core.link.ble) return
         when (t) {
             Proto.T.BACKUP_STOP -> onStop(owner, m)
@@ -412,14 +424,15 @@ class PhotoBackup(core: Core) : Feature(core) {
         jobs.execute {
             runCatching { sendOne(work) }.onFailure {
                 Log.w("TwinDesk", "photo backup: ${it.javaClass.simpleName}")
-                synchronized(lock) { if (flight === work) flight = null }
+                failPump(work, "read", settle = false)
             }
         }
     }
 
     private fun onHave(owner: PbOwner, m: JSONObject) {
         synchronized(lock) {
-            if (!live(owner)) return
+            if (!live(owner) || blocked().isNotEmpty() || !sameRevision(m, owner)) return
+            if (!SHA.matches(m.optString("sha256")) || !token(m.optString("req")) || !token(m.optString("batch"))) return
             settle(m, true, fromFlight = false)
         }
     }
@@ -427,7 +440,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     private fun onDone(owner: PbOwner, m: JSONObject) {
         synchronized(lock) {
             val f = flight ?: return
-            if (!live(f.owner) || f.owner.socket !== owner.socket) return
+            if (!f.ended || !pumpingLocked(f) || f.owner.socket !== owner.socket || !sameRevision(m, owner)) return
             if (m.optString("req") != f.req || m.optString("inv") != f.inv || m.optString("scan") != f.scan || m.optString("batch") != f.batch) return
             if (m.optString("item") != f.row.item || PbGen.canonical(m.opt("gen")) != f.row.gen) return
             val size = longField(m.opt("size")) ?: return
@@ -441,9 +454,9 @@ class PhotoBackup(core: Core) : Feature(core) {
 
     private fun onMacRefuse(owner: PbOwner, m: JSONObject) {
         synchronized(lock) {
-            if (!sameSocket(owner)) return
+            if (!live(owner) || !sameRevision(m, owner)) return
             val why = m.optString("why")
-            val terminal = why == "date" || why == "gone" || why == "version" || why == "bad"
+            val terminal = why == "date" || why == "bad"
             val req = m.optString("req")
             if (flight?.req == req && token(req)) {
                 if (!terminal) hole = true
@@ -451,12 +464,12 @@ class PhotoBackup(core: Core) : Feature(core) {
                 revokeLocked(false)
                 return
             }
-            settle(m, terminal, fromFlight = false)
-            if (!terminal) hole = true
+            if (terminal) settle(m, true, fromFlight = false)
         }
     }
 
     private fun sendOne(f: Flight) {
+        if (!still(f)) return
         val fresh = requery(f.row)
         synchronized(lock) {
             if (!pumpingLocked(f)) return
@@ -482,6 +495,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                 }
             }
         }
+        if (!still(f)) return
         val uri = ContentUris.withAppendedId(MediaStore.Images.Media.getContentUri(f.row.vol), f.row.id)
         val stream = try {
             if (Build.VERSION.SDK_INT < 30) {
@@ -536,19 +550,19 @@ class PhotoBackup(core: Core) : Feature(core) {
                 failPump(f, "checksum", settle = false)
                 return
             }
+            if (!still(f)) return
+            if (requery(f.row) != "ok") {
+                failPump(f, "version", settle = true)
+                return
+            }
             val sha = md.digest().hex()
             synchronized(lock) {
                 if (!pumpingLocked(f)) return
                 f.sha = sha
-            }
-            if (!sendEcho(f, Proto.T.BACKUP_END, "sha256" to sha, "size" to f.row.size)) {
-                failPump(f, "stop", settle = false)
-                return
-            }
-            synchronized(lock) {
-                if (flight !== f) return
                 f.ended = true
-                armAckLocked(f)
+                if (core.link.sendFor(f.owner.socket, echo(Proto.T.BACKUP_END, f.take, f.row.gen, "sha256" to sha, "size" to f.row.size))) {
+                    armAckLocked(f)
+                } else failPump(f, "stop", settle = false)
             }
         }
     }
@@ -574,7 +588,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     private fun failPump(f: Flight, why: String, settle: Boolean) {
         synchronized(lock) {
             if (flight !== f) return
-            if (why == "permission") hole = true
+            if (!settle) hole = true
             if (settle) settleRowLocked(f.row, true)
             if (why == "stop") {
                 val socket = f.owner.socket
@@ -621,7 +635,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             if (epoch != ep || !live(owner)) null
             else {
                 loadCursorLocked()
-                maxOf(sinceOf(owner.macId), remoteSince) / 1000L to vols.snapshot()
+                PbGen.firstFullSecond(maxOf(sinceOf(owner.macId), remoteSince)) to vols.snapshot()
             }
         } ?: return
         val sinceSec = snap.first
@@ -630,6 +644,9 @@ class PhotoBackup(core: Core) : Feature(core) {
             readVolumes(marks, sinceSec)
         } catch (_: SecurityException) {
             synchronized(lock) { if (epoch == ep && live(owner)) refuse(owner, syncReq, "permission") }
+            return
+        } catch (_: Exception) {
+            synchronized(lock) { if (epoch == ep && live(owner)) refuse(owner, syncReq, "read") }
             return
         }
         synchronized(lock) {
@@ -646,44 +663,35 @@ class PhotoBackup(core: Core) : Feature(core) {
         }
     }
 
-    private fun readVolumes(marks: List<Triple<String, String, Long>>, sinceSec: Long): Window {
+    private fun readVolumes(marks: List<PbVolumes.Mark>, sinceSec: Long): Window {
         val rows = mutableListOf<Row>()
         var remain = false
-        val volumes = MediaStore.getExternalVolumeNames(core.ctx).toList().sorted()
+        val volumes = MediaStore.getExternalVolumeNames(core.ctx).sorted()
         for (vol in volumes) {
             val room = WALK - rows.size
-            if (room <= 0) {
-                remain = true
-                break
-            }
-            val ver = runCatching { MediaStore.getVersion(core.ctx, vol) }.getOrNull() ?: continue
-            if (!fieldOk(vol) || !fieldOk(ver)) continue
-            val stored = marks.firstOrNull { it.first == vol }
-            val from = if (stored != null && stored.second == ver) stored.third else 0L
-            val batch = try {
-                readVolume(vol, ver, from, sinceSec, room)
-            } catch (e: SecurityException) {
-                throw e
-            } catch (_: RuntimeException) {
-                continue
-            }
+            if (room <= 0) { remain = true; break }
+            val version = MediaStore.getVersion(core.ctx, vol)
+            if (!fieldOk(vol) || !fieldOk(version)) continue
+            val ceiling = MediaStore.getGeneration(core.ctx, vol)
+            val from = marks.firstOrNull { it.volume == vol && it.version == version }?.position ?: PbPosition()
+            val batch = readVolume(vol, version, from, ceiling, sinceSec, room)
+            if (MediaStore.getVersion(core.ctx, vol) != version) throw IOException("photo index changed")
             rows.addAll(batch)
-            if (batch.size >= room) {
-                remain = true
-                break
-            }
+            if (batch.size >= room) { remain = true; break }
         }
         return Window(rows, remain)
     }
 
-    private fun readVolume(vol: String, ver: String, from: Long, sinceSec: Long, limit: Int): List<Row> {
-        val sel = "${FileColumns.MEDIA_TYPE}=${FileColumns.MEDIA_TYPE_IMAGE} AND ${MediaColumns.IS_PENDING}=0 AND ${MediaColumns.IS_TRASHED}=0 AND ${MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaColumns.DATE_ADDED}>=? AND ${BaseColumns._ID}>?"
-        val args = arrayOf(CAMERA, sinceSec.toString(), from.toString())
+    private fun readVolume(vol: String, ver: String, from: PbPosition, ceiling: Long, sinceSec: Long, limit: Int): List<Row> {
+        val gen = MediaColumns.GENERATION_MODIFIED
+        val id = BaseColumns._ID
+        val sel = "${FileColumns.MEDIA_TYPE}=${FileColumns.MEDIA_TYPE_IMAGE} AND ${MediaColumns.IS_PENDING}=0 AND ${MediaColumns.IS_TRASHED}=0 AND ${MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaColumns.DATE_ADDED}>=? AND $gen<=? AND ($gen>? OR ($gen=? AND $id>?))"
+        val args = arrayOf(CAMERA, sinceSec.toString(), ceiling.toString(), from.generation.toString(), from.generation.toString(), from.id.toString())
         val cols = arrayOf(BaseColumns._ID, MediaColumns.DISPLAY_NAME, MediaColumns.SIZE, MediaColumns.DATE_TAKEN, MediaColumns.DATE_ADDED, MediaColumns.VOLUME_NAME, MediaColumns.GENERATION_MODIFIED)
         val bundle = Bundle().apply {
             putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, sel)
             putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
-            putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${BaseColumns._ID} ASC")
+            putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "$gen ASC, $id ASC")
             putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
         }
         val rows = mutableListOf<Row>()
@@ -753,12 +761,16 @@ class PhotoBackup(core: Core) : Feature(core) {
         ))
     }
 
+    private fun sameRevision(m: JSONObject, owner: PbOwner) =
+        longField(m.opt("rev")) == owner.rev.toLong() && longField(m.opt("mrev")) == remoteMrev.toLong()
+
     private fun settle(m: JSONObject, terminal: Boolean, fromFlight: Boolean): Boolean {
         val item = m.optString("item")
         val gen = PbGen.canonical(m.opt("gen")) ?: return false
         val s = scan ?: return false
         if (m.optString("scan") != s.token || (s.inv.isNotEmpty() && m.optString("inv") != s.inv)) return false
         val row = offered.firstOrNull { !it.done && it.item == item && it.gen == gen } ?: return false
+        if (m.optString("t") == Proto.T.BACKUP_HAVE && longField(m.opt("size")) != row.size.toLong()) return false
         if (fromFlight && (flight?.row !== row && (flight?.row?.item != row.item || flight?.row?.gen != row.gen))) return false
         if (!terminal) {
             hole = true
@@ -785,7 +797,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         var moved = false
         while (s.pos < s.rows.size && (s.rows[s.pos].done || s.rows[s.pos].skip != null)) {
             val row = s.rows[s.pos]
-            vols.advance(row.vol, row.ver, row.id)
+            row.gen.toLongOrNull()?.let { vols.advance(row.vol, row.ver, PbPosition(it, row.id)) }
             s.pos++
             moved = true
         }
@@ -829,22 +841,22 @@ class PhotoBackup(core: Core) : Feature(core) {
         core.link.sendFor(owner.socket, msg(Proto.T.BACKUP_REFUSE, "req" to req, "why" to why, "rev" to revOf(owner.macId), "mrev" to remoteMrev))
     }
 
-    private fun sendState(owner: PbOwner?) {
+    private fun sendState(owner: PbOwner?, announceOff: Boolean = false) {
         val sent = synchronized(lock) {
             val mark = owner?.socket ?: marker ?: return@synchronized null
             val id = macId()
             val current = if (owner != null) live(owner) else core.link.lockSessionCurrent(mark)
-            if (id.isEmpty() || !admit() || !current) null else mark to id
+            if (id.isEmpty() || !core.link.peerBackup || (!moduleOn() && !announceOff) || !current) null else mark to id
         } ?: return
         val (mark, id) = sent
         core.link.sendFor(mark, msg(Proto.T.BACKUP_STATE,
-            "on" to core.store.flag(onKey(id), false), "since" to sinceOf(id), "rev" to revOf(id),
-            "perm" to core.hub.perm("media"), "loc" to locGranted(), "api" to Build.VERSION.SDK_INT,
+            "on" to allowed(id), "since" to sinceOf(id), "rev" to revOf(id),
+            "perm" to (if (moduleOn()) core.hub.perm("media") else "none"), "loc" to locGranted(), "api" to Build.VERSION.SDK_INT,
         ))
     }
 
     private fun admit(): Boolean {
-        if (!core.moduleOn("photos") || !core.link.peerBackup) return false
+        if (!moduleOn() || !core.link.peerBackup) return false
         val h = core.host ?: return false
         return h.os == "mac" && core.link.lockSessionCurrent(core.link.sessionMarker())
     }
@@ -857,7 +869,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         if (perm != "ok") return if (perm == "partial") "partial" else "media"
         if (!locGranted()) return "location"
         val id = macId()
-        if (id.isEmpty() || !core.store.flag(onKey(id), false) || !remoteOn || sinceOf(id) <= 0L || remoteSince <= 0L) return "consent"
+        if (id.isEmpty() || !allowed(id) || !remoteOn || sinceOf(id) <= 0L || remoteSince <= 0L) return "consent"
         return ""
     }
 
@@ -882,7 +894,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     }
 
     private fun live(owner: PbOwner): Boolean {
-        if (!owner.module || !core.moduleOn("photos") || !owner.peer || !core.link.peerBackup) return false
+        if (!owner.module || !moduleOn() || !owner.peer || !core.link.peerBackup) return false
         if (owner.macId.isEmpty() || macId() != owner.macId || revOf(owner.macId) != owner.rev) return false
         if (core.link.sessionMarker() !== owner.socket) return false
         return core.link.lockSessionCurrent(owner.socket)
@@ -900,7 +912,10 @@ class PhotoBackup(core: Core) : Feature(core) {
             revokeLocked(true)
             core.store.setFlag(onKey(id), on)
             core.store.setPrefsString(revKey(id), (revOf(id) + 1).toString())
-            if (on) core.store.setPrefsString(sinceKey(id), System.currentTimeMillis().toString())
+            if (on) {
+                core.store.setPrefsString(sinceKey(id), System.currentTimeMillis().toString())
+                core.store.setPrefsString(pairKey(id), pairing(id))
+            }
             resetCursorLocked()
             syncWatchLocked()
             true
@@ -910,10 +925,10 @@ class PhotoBackup(core: Core) : Feature(core) {
     }
 
     private fun watchable(): Boolean {
-        if (Build.VERSION.SDK_INT < 30 || !core.moduleOn("photos") || !core.link.peerBackup) return false
+        if (Build.VERSION.SDK_INT < 30 || !moduleOn() || !core.link.peerBackup) return false
         if (!core.link.lockSessionCurrent(marker)) return false
         val id = macId()
-        if (id.isEmpty() || !core.store.flag(onKey(id), false) || sinceOf(id) <= 0L) return false
+        if (id.isEmpty() || !allowed(id) || sinceOf(id) <= 0L) return false
         if (!heard || !remoteOn || remoteSince <= 0L) return false
         if (core.hub.perm("media") != "ok" || !locGranted()) return false
         return true
@@ -944,7 +959,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     }
 
     private val nudge = Runnable {
-        if (watchable() && flight == null) sendState(null)
+        if (watchable()) sendState(null)
     }
 
     private val ack = Runnable {
@@ -984,7 +999,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         val id = macId()
         vols.clear()
         val o = runCatching { JSONObject(files.readText()) }.getOrNull() ?: return
-        if (o.optString("mac") != id || o.optInt("rev") != revOf(id) || o.optInt("mrev") != remoteMrev) return
+        if (o.optString("mac") != id || o.optString("pair") != pairing(id) || o.optInt("rev") != revOf(id) || o.optInt("mrev") != remoteMrev) return
         // A file that only has one global cursor is from the synthetic external scan. It is not a position on any volume.
         val tree = o.optJSONObject("vols") ?: return
         val keys = tree.keys()
@@ -993,7 +1008,8 @@ class PhotoBackup(core: Core) : Feature(core) {
             val row = tree.optJSONObject(vol) ?: continue
             val ver = row.optString("ver")
             val cid = row.optLong("id", -1L)
-            if (fieldOk(vol) && fieldOk(ver) && cid >= 0L) vols.restore(vol, ver, cid)
+            val gen = row.optString("gen").toLongOrNull() ?: continue // old id-only files are rescanned
+            if (fieldOk(vol) && fieldOk(ver) && cid > 0L && gen >= 0L) vols.advance(vol, ver, PbPosition(gen, cid))
         }
     }
 
@@ -1001,8 +1017,8 @@ class PhotoBackup(core: Core) : Feature(core) {
         val id = macId()
         if (id.isEmpty()) return
         val tree = JSONObject()
-        for ((vol, ver, cid) in vols.snapshot()) tree.put(vol, JSONObject().put("ver", ver).put("id", cid))
-        val text = JSONObject().put("mac", id).put("rev", revOf(id)).put("mrev", remoteMrev).put("vols", tree).toString()
+        for ((vol, ver, pos) in vols.snapshot()) tree.put(vol, JSONObject().put("ver", ver).put("id", pos.id).put("gen", pos.generation.toString()))
+        val text = JSONObject().put("mac", id).put("pair", pairing(id)).put("rev", revOf(id)).put("mrev", remoteMrev).put("vols", tree).toString()
         val tmp = File(files.parentFile, files.name + ".tmp")
         runCatching {
             tmp.writeText(text)
@@ -1023,6 +1039,14 @@ class PhotoBackup(core: Core) : Feature(core) {
     private fun locGranted() = core.ctx.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED
     private fun sinceOf(id: String) = core.store.prefsString(sinceKey(id), "0").toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     private fun revOf(id: String) = core.store.prefsString(revKey(id), "0").toIntOrNull()?.coerceAtLeast(0) ?: 0
+    private fun allowed(id: String) = pairing(id).isNotEmpty() &&
+        core.store.flag(onKey(id), false) && core.store.prefsString(pairKey(id), "") == pairing(id)
+    private fun pairing(id: String): String {
+        val h = core.host ?: return ""
+        // Token distinguishes re-pairing with the same certificate. Never write the token itself.
+        return if (h.id == id) Proto.sha256(("photo backup:" + h.fp + ":" + h.token).toByteArray(Charsets.UTF_8)).hex() else ""
+    }
+    private fun pairKey(id: String) = "pb.pair.$id"
     private fun onKey(id: String) = "pb.on.$id"
     private fun sinceKey(id: String) = "pb.since.$id"
     private fun revKey(id: String) = "pb.rev.$id"
@@ -1089,6 +1113,9 @@ internal class PbOwner(val socket: Any, val macId: String, val rev: Int, val pee
 internal object PbGen {
     const val MAX_SAFE = 9007199254740991L
 
+    // DATE_ADDED has no subsecond precision; never include an ambiguous pre-consent item.
+    fun firstFullSecond(since: Long): Long = since / 1000L + if (since % 1000L == 0L) 0L else 1L
+
     fun canonical(v: Any?): String? = when (v) {
         is String -> v.toLongOrNull()?.takeIf { it >= 0 && it.toString() == v && v.length <= 19 }?.toString()
         is Long -> if (v >= 0) v.toString() else null
@@ -1111,33 +1138,26 @@ internal object PbGen {
     }
 }
 
-/**
- * One settled id per volume. A different MediaStore version starts again at 0, so a rebuilt
- * volume cannot hide new camera photos behind the previous database's ids.
- */
+internal data class PbPosition(val generation: Long = -1, val id: Long = 0) : Comparable<PbPosition> {
+    override fun compareTo(other: PbPosition) =
+        generation.compareTo(other.generation).takeIf { it != 0 } ?: id.compareTo(other.id)
+}
+
+/** A rebuilt volume has a new version; its old generation cursor cannot omit new photos. */
 internal class PbVolumes {
-    private class Mark(var version: String, var id: Long)
+    data class Mark(val volume: String, val version: String, val position: PbPosition)
     private val marks = HashMap<String, Mark>()
 
-    fun from(vol: String, version: String): Long {
-        val mark = marks[vol] ?: return 0L
-        if (mark.version != version) return 0L
-        return mark.id
-    }
+    fun from(vol: String, version: String): PbPosition =
+        marks[vol]?.takeIf { it.version == version }?.position ?: PbPosition()
 
-    fun advance(vol: String, version: String, id: Long): Boolean {
-        if (vol.isEmpty() || version.isEmpty() || id <= 0L) return false
-        if (id <= from(vol, version)) return false
-        marks[vol] = Mark(version, id)
+    fun advance(vol: String, version: String, pos: PbPosition): Boolean {
+        if (vol.isEmpty() || version.isEmpty() || pos.id <= 0 || pos.generation < 0 || pos <= from(vol, version)) return false
+        marks[vol] = Mark(vol, version, pos)
         return true
-    }
-
-    fun restore(vol: String, version: String, id: Long) {
-        if (vol.isEmpty() || version.isEmpty() || id < 0L) return
-        marks[vol] = Mark(version, id)
     }
 
     fun clear() = marks.clear()
 
-    fun snapshot(): List<Triple<String, String, Long>> = marks.map { Triple(it.key, it.value.version, it.value.id) }.sortedBy { it.first }
+    fun snapshot() = marks.values.sortedBy { it.volume }
 }

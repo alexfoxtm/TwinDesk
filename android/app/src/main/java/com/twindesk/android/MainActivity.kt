@@ -1821,6 +1821,7 @@ private fun ModulesCard(core: Core) {
                 Modules.set(core.store, id, it)
                 off = Modules.off(core.store)
                 if (id == "files") core.localSend.start()
+                if (id == "photos") core.photos.modulesChanged()
             }
         }
     }

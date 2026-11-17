@@ -44,7 +44,8 @@ old behaviour.
 
 `pb: 1` is negotiated between Android and the direct Mac app. A missing flag leaves backup off.
 The Android phone must be running Android 11 or later. Both sides must turn backup on for that
-pair. Android also requires access to all photos and photo locations, because the copy retains
+pair. Backup starts at the first full second after the later opt-in, since Android reports the
+time a photo was added in whole seconds. Android also requires access to all photos and photo locations, because the copy retains
 the original metadata. Bluetooth, a replaced socket, or withdrawn permission stops work.
 Backup does not use the regular Send allowance or outbox.
 

@@ -302,6 +302,7 @@ class Link(
     // Camera backup only (PhotoBackup.kt). Unset on the phone-to-phone link, which keeps today's path.
     // The computer link drops backup frames that did not arrive on the primary IP socket.
     @Volatile var backupIngress: ((WebSocket, JSONObject) -> Unit)? = null
+    var offerPhotoBackup: () -> Boolean = { false }
 
     // ---- socket ----
 
@@ -514,7 +515,8 @@ class Link(
         }
         // rc and resume together: an older host treats hello+resume
         // as a socket move and refuses it. A plain phone hello would take whatever session it holds.
-        raw(msg(Proto.T.HELLO, "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "os" to Proto.OS, "token" to h.token, "fx" to 1, "fxPlain" to 1, "pb" to 1).apply {
+        raw(msg(Proto.T.HELLO, "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "os" to Proto.OS, "token" to h.token, "fx" to 1, "fxPlain" to 1).apply {
+            if (offerPhotoBackup() && h.os == "mac") put("pb", 1)
             if (!wired) put("fx2", 1)
             if (reclaimHello) { put("rc", 1); put("resume", "0") }
         })
@@ -655,7 +657,7 @@ class Link(
         lastUse = System.currentTimeMillis()
         pinger = exec.scheduleWithFixedDelay({ beat() }, Proto.PING_MS, Proto.PING_MS, TimeUnit.MILLISECONDS)
         setState("connected", "")
-        peerBackup = m.has("pb") && m.optInt("pb") == 1
+        peerBackup = m.opt("pb") == 1
         events.onWelcome(h)
     }
 

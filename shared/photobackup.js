@@ -324,10 +324,10 @@ class Mac {
     this.inv = null;
     this.cursor = 0;
     this.syncReq = '';
-    this.failed = new Set();
     this.timer = null;
     this.retry = null;
     this.problem = '';
+    this.rescan = false;
   }
 
   snap() {
@@ -382,7 +382,7 @@ class Mac {
     this.inv = null;
     this.cursor = 0;
     this.syncReq = '';
-    this.failed = new Set();
+    this.rescan = false;
     if (!flight) return;
     this._kill(flight);
     this._emit({ t: 'backup.stop', req: flight.req });
@@ -411,7 +411,10 @@ class Mac {
     else if (msg.t === 'backup.chunk') this.onChunk(msg, conn);
     else if (msg.t === 'backup.end') this.onEnd(msg, conn);
     else if (msg.t === 'backup.refuse') this.onRefuse(msg, conn);
-    else if (msg.t === 'backup.stop' && this.flight && msg.req === this.flight.req) this.invalidate();
+    else if (msg.t === 'backup.stop' && this.flight && msg.req === this.flight.req) {
+      this.invalidate();
+      this._retrySoon('wait');
+    }
   }
 
   _clearTimer() {
@@ -460,7 +463,8 @@ class Mac {
     const changed = prev.heard && (prev.rev !== rev || prev.on !== next.on || prev.since !== since || prev.perm !== next.perm || prev.loc !== next.loc || prev.api !== next.api);
     this.remote = next;
     if (changed) this.invalidate();
-    if (!this.flight) this.maybeSync();
+    if (!this.why() && (this.flight || this.inv || this.syncReq)) this.rescan = true;
+    else this.maybeSync();
   }
 
   onInv(msg, conn) {
@@ -477,7 +481,6 @@ class Mac {
       items: msg.items,
     };
     this.cursor = 0;
-    this.failed = new Set();
     this.pump();
   }
 
@@ -549,7 +552,7 @@ class Mac {
     if (f && msg.req === f.req && (this._echo(msg, f) ||
         (!msg.item && msg.rev === f.rev && msg.mrev === f.mrev))) {
       const why = typeof msg.why === 'string' ? msg.why : 'stop';
-      this.failItem(['permission', 'checksum', 'disk', 'gone', 'version', 'timeout'].includes(why) ? why : 'stop');
+      this.failItem(['permission', 'checksum', 'disk', 'gone', 'version', 'timeout', 'read'].includes(why) ? why : 'stop');
       return;
     }
     if (!this.flight && !this.inv && msg.req === this.syncReq) {
@@ -563,7 +566,7 @@ class Mac {
     if (this.flight || this.inv || this.syncReq || this.retry || this.why() || !this.live(this.conn)) return;
     const req = hid();
     this.syncReq = req;
-    this.failed.clear();
+    this.rescan = false;
     if (!this._emit({ t: 'backup.sync', req, rev: this.remote.rev, mrev: this.local.mrev })) {
       this.syncReq = '';
       return;
@@ -612,12 +615,10 @@ class Mac {
       })) this.failItem('stop');
       return;
     }
-    const again = this.inv.more || this.inv.remain;
-    const failed = this.failed.size > 0;
+    const again = this.inv.more || this.inv.remain || this.rescan;
     this.inv = null;
     this.syncReq = '';
-    if (failed) this._retrySoon(this.problem || 'wait');
-    else if (again) this.maybeSync();
+    if (again) this.maybeSync();
     else this.problem = '';
   }
 
@@ -659,14 +660,14 @@ class Mac {
     this._clearTimer();
     const clean = this._kill(f);
     const reason = clean ? why : 'disk';
-    this.problem = reason === 'disk' ? 'disk' : 'wait';
-    if (reason !== 'gone' && reason !== 'version') this.failed.add(`${f.item}${SEP}${f.gen}`);
+    this.inv = null; // the phone drops this page when a flight is refused
+    this.syncReq = '';
+    this.rescan = false;
     this._emit({
       t: 'backup.refuse', req: f.req, inv: f.inv, scan: f.scan, batch: f.batch,
       item: f.item, gen: f.gen, why: reason, rev: f.rev, mrev: f.mrev,
     });
-    this.pump();
-    this.changed();
+    this._retrySoon(reason === 'disk' ? 'disk' : 'wait');
   }
 
   _kill(f) {

@@ -88,6 +88,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val photos = PhotoBackup(this) // new camera photos to a paired Mac; nothing is copied until both sides turn it on
     init {
         // The socket is captured here, on the link thread, before this post. onMessage only has the JSON.
+        link.offerPhotoBackup = { moduleOn("photos") && "photos" !in Modules.off(store) }
         link.backupIngress = { socket, m ->
             val owner = photos.capture(socket)
             val copy = photos.copyIn(m)

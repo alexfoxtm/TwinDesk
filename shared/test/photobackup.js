@@ -107,7 +107,11 @@ function main() {
   assert.strictEqual(take.rev, 1);
   assert.strictEqual(take.mrev, 1);
   assert.ok(take.req && take.batch && take.inv === 'inv1' && take.scan === 'scan1');
+  // An observer event during the last upload requires a fresh scan once that page drains.
+  box.mac.onState({ t: 'backup.state', on: true, since: 1000, rev: 1, perm: 'ok', loc: true, api: 30 }, box.s);
   acceptBody(box, take, photo);
+  assert.ok(syncReq(box.sent));
+  assert.ok(box.sent.findIndex((m) => m.t === 'backup.done') < box.sent.findIndex((m) => m.t === 'backup.sync'));
   const done = box.sent.find((m) => m.t === 'backup.done');
   assert.ok(done && done.req === take.req && done.sha256 === sha(photo) && !Object.hasOwn(done, 'dest'));
   const dest = path.join(folder, ym.y, ym.m, 'IMG_1.jpg');
@@ -268,6 +272,17 @@ function failure() {
   assert.deepStrictEqual(fs.readdirSync(outside), []);
   assert.ok(box.sent.some((m) => m.t === 'backup.refuse' && m.why === 'disk'));
   box.mac.invalidate();
+
+  arm(box, { folder, mrev: 4 });
+  feed(box, [{ ...row, item: PB.itemKey('external_primary', 'vol-9', 42) }]);
+  const stopped = takeOf(box.sent);
+  box.mac.receive({ t: 'backup.stop', req: 'retired' }, box.s);
+  assert.strictEqual(box.mac.flight.req, stopped.req, 'an old stop does not cancel the current take');
+  box.mac.receive({ t: 'backup.stop', req: stopped.req }, box.s);
+  assert.strictEqual(box.mac.flight, null);
+  assert.ok(box.mac.retry, 'a matching sender stop schedules recovery on the same socket');
+  box.mac.invalidate();
+  assert.strictEqual(box.mac.retry, null, 'local invalidation cancels the scheduled retry');
   fs.rmSync(root, { recursive: true, force: true });
 }
 

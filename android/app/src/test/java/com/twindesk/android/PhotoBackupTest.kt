@@ -11,21 +11,22 @@ class PhotoBackupTest {
     @Test
     fun perVolumeCursorAndExactGeneration() {
         val vols = PbVolumes()
-        assertTrue(vols.advance("external_primary", "v1", 100))
-        // A lower id on another volume is not behind the primary volume's cursor.
-        assertEquals(0L, vols.from("sdcard", "v9"))
-        assertTrue(vols.advance("sdcard", "v9", 5))
-        assertEquals(100L, vols.from("external_primary", "v1"))
-        assertEquals(5L, vols.from("sdcard", "v9"))
-        assertFalse(vols.advance("sdcard", "v9", 5))
-        // The volume database was rebuilt. Old ids must not hide the new camera photos.
-        assertEquals(0L, vols.from("external_primary", "v2"))
-        assertTrue(vols.advance("external_primary", "v2", 1))
-        assertEquals(1L, vols.from("external_primary", "v2"))
-        // Idle and disconnected: nothing moves the cursor except a settled row.
-        assertEquals(1L, vols.from("external_primary", "v2"))
-        assertEquals(5L, vols.from("sdcard", "v9"))
+        assertTrue(vols.advance("external_primary", "v1", PbPosition(20, 101)))
+        // The older row publishes after the newer row was archived.
+        assertTrue(vols.advance("external_primary", "v1", PbPosition(21, 100)))
+        // Tie break so a batch of rows with the same generation survives pagination.
+        assertTrue(vols.advance("external_primary", "v1", PbPosition(21, 102)))
+        assertFalse(vols.advance("external_primary", "v1", PbPosition(21, 102)))
+        assertEquals(PbPosition(), vols.from("sdcard", "v9"))
+        assertTrue(vols.advance("sdcard", "v9", PbPosition(1, 5)))
+        assertEquals(PbPosition(21, 102), vols.from("external_primary", "v1"))
+        assertEquals(PbPosition(1, 5), vols.from("sdcard", "v9"))
+        assertEquals(PbPosition(), vols.from("external_primary", "v2"))
+        assertTrue(vols.advance("external_primary", "v2", PbPosition(1, 1)))
+        assertEquals(PbPosition(1, 1), vols.from("external_primary", "v2"))
 
+        assertEquals(3L, PbGen.firstFullSecond(3_000L))
+        assertEquals(4L, PbGen.firstFullSecond(3_001L))
         assertEquals("9223372036854775807", PbGen.canonical(9223372036854775807L))
         assertEquals("5", PbGen.canonical(5))
         assertEquals("5", PbGen.canonical("5"))
