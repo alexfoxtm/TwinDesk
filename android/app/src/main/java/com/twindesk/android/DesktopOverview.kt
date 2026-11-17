@@ -40,6 +40,7 @@ import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -173,26 +174,18 @@ internal fun decodePreviewBitmap(jpeg: ByteArray, targetPx: Int): Bitmap? {
     return bitmap
 }
 
-private object PreviewDecodes {
-    @Volatile var openSession: Long = Long.MIN_VALUE
-
+private class PreviewDecodes {
     private val cache = object : LruCache<PreviewCacheKey, Bitmap>(6 * 1024 * 1024) {
         override fun sizeOf(key: PreviewCacheKey, value: Bitmap): Int = value.byteCount.coerceAtLeast(1)
     }
 
-    fun peek(key: PreviewCacheKey): Bitmap? = if (key.session == openSession || openSession == Long.MIN_VALUE) cache.get(key) else null
+    fun peek(key: PreviewCacheKey): Bitmap? = cache.get(key)
 
     fun put(key: PreviewCacheKey, bitmap: Bitmap) {
-        if (openSession != Long.MIN_VALUE && key.session != openSession) return
         cache.put(key, bitmap)
     }
 
-    fun evictOtherSessions(session: Long) {
-        openSession = session
-        for (key in cache.snapshot().keys) {
-            if (key.session != session) cache.remove(key)
-        }
-    }
+    fun clear() = cache.evictAll()
 }
 
 @Composable
@@ -215,7 +208,8 @@ fun DesktopOverview(
     val scrim = remember { MutableInteractionSource() }
     var arrived by remember { mutableStateOf(reduceMotion) }
     LaunchedEffect(Unit) { arrived = true }
-    LaunchedEffect(previews.session) { PreviewDecodes.evictOtherSessions(previews.session) }
+    val decodes = remember(previews.session) { PreviewDecodes() }
+    DisposableEffect(decodes) { onDispose { decodes.clear() } }
     val alpha by animateFloatAsState(if (arrived) 1f else 0f, tween(if (reduceMotion) 0 else 220, easing = FastOutSlowInEasing), label = "sheet")
     val offset by animateFloatAsState(if (arrived || reduceMotion) 0f else 28f, tween(if (reduceMotion) 0 else 220, easing = FastOutSlowInEasing), label = "sheetMove")
     Box(Modifier.fillMaxSize()) {
@@ -255,6 +249,7 @@ fun DesktopOverview(
                     contentWidth = contentWidth,
                     fontScale = fontScale,
                     previews = previews,
+                    decodes = decodes,
                     spaceHold = spaceHold,
                     onDesktop = onDesktop,
                     onDisplay = onDisplay,
@@ -321,6 +316,7 @@ private fun OverviewList(
     contentWidth: Float,
     fontScale: Float,
     previews: DesktopPreview.Board,
+    decodes: PreviewDecodes,
     spaceHold: String,
     onDesktop: (String, String) -> Unit,
     onDisplay: (String) -> Unit,
@@ -336,7 +332,7 @@ private fun OverviewList(
         }
         for (display in catalog.displays) {
             item(key = "head-${display.id}", contentType = "head") {
-                SectionLabel(display)
+                SectionLabel(display, contentWidth < 420f || fontScale >= 1.3f)
             }
             val rows = display.desktops.chunked(cols)
             items(
@@ -352,6 +348,7 @@ private fun OverviewList(
                     tileHeight = tileH,
                     targetPx = targetPx,
                     previews = previews,
+                    decodes = decodes,
                     spaceHold = spaceHold,
                     onDesktop = onDesktop,
                 )
@@ -371,15 +368,24 @@ private fun OverviewList(
 }
 
 @Composable
-private fun SectionLabel(display: DesktopSelect.Display) {
+private fun SectionLabel(display: DesktopSelect.Display, stacked: Boolean) {
     val label = display.name.ifBlank { tr("This screen") }
+    val title = tr("Desktops on {name}", "name" to label)
+    val count = if (display.count == 1) tr("1 desktop") else tr("{count} desktops", "count" to display.count)
+    if (stacked) {
+        Column(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(count, color = Muted, fontSize = 12.sp)
+        }
+        return
+    }
     Row(
         Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom,
     ) {
         Text(
-            tr("Desktops on {name}", "name" to label),
+            title,
             color = Ink,
             fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,
@@ -388,7 +394,7 @@ private fun SectionLabel(display: DesktopSelect.Display) {
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            if (display.count == 1) tr("1 desktop") else tr("{count} desktops", "count" to display.count),
+            count,
             color = Muted,
             fontSize = 12.sp,
             maxLines = 1,
@@ -499,6 +505,7 @@ private fun DesktopRow(
     tileHeight: Float,
     targetPx: Int,
     previews: DesktopPreview.Board,
+    decodes: PreviewDecodes,
     spaceHold: String,
     onDesktop: (String, String) -> Unit,
 ) {
@@ -513,6 +520,7 @@ private fun DesktopRow(
                     tileHeight = tileHeight,
                     targetPx = targetPx,
                     previews = previews,
+                    decodes = decodes,
                     spaceHold = spaceHold,
                     onDesktop = onDesktop,
                 )
@@ -530,6 +538,7 @@ private fun DesktopTile(
     tileHeight: Float,
     targetPx: Int,
     previews: DesktopPreview.Board,
+    decodes: PreviewDecodes,
     spaceHold: String,
     onDesktop: (String, String) -> Unit,
 ) {
@@ -537,7 +546,7 @@ private fun DesktopTile(
     val viewingThis = marked && display.id == viewingId
     val held = spaceHold == "overview" || spaceHold == "accessibility"
     val shot = previews.shots.find { it.displayId == display.id && it.spaceId == desk.id }
-    val bitmap = rememberPreviewBitmap(previews.session, shot, targetPx)
+    val bitmap = rememberPreviewBitmap(decodes, previews.session, shot, targetPx)
     val status = DesktopPreview.tile(previews, display.id, desk, held)
     val shown = if (bitmap == null) DesktopPreview.Status.NONE else status
     val fullStatus = when (shown) {
@@ -609,11 +618,11 @@ private fun DesktopTile(
 }
 
 @Composable
-private fun rememberPreviewBitmap(session: Long, shot: DesktopPreview.Shot?, targetPx: Int): androidx.compose.ui.graphics.ImageBitmap? {
+private fun rememberPreviewBitmap(decodes: PreviewDecodes, session: Long, shot: DesktopPreview.Shot?, targetPx: Int): androidx.compose.ui.graphics.ImageBitmap? {
     val bucket = previewTargetBucket(targetPx)
     val cacheKey = shot?.let { PreviewCacheKey(session, it.displayId, it.spaceId, it.seq, bucket) }
-    var image by remember(cacheKey) { mutableStateOf(cacheKey?.let { PreviewDecodes.peek(it)?.asImageBitmap() }) }
-    LaunchedEffect(cacheKey) {
+    var image by remember(decodes, cacheKey) { mutableStateOf(cacheKey?.let { decodes.peek(it)?.asImageBitmap() }) }
+    LaunchedEffect(decodes, cacheKey) {
         val key = cacheKey
         if (key == null) {
             image = null
@@ -625,7 +634,7 @@ private fun rememberPreviewBitmap(session: Long, shot: DesktopPreview.Shot?, tar
             image = null
             return@LaunchedEffect
         }
-        PreviewDecodes.peek(key)?.let {
+        decodes.peek(key)?.let {
             image = it.asImageBitmap()
             return@LaunchedEffect
         }
@@ -633,7 +642,7 @@ private fun rememberPreviewBitmap(session: Long, shot: DesktopPreview.Shot?, tar
         val jpeg = current.jpeg
         val decoded = withContext(Dispatchers.Default) { decodePreviewBitmap(jpeg, bucket * 32) }
         if (decoded != null && isActive) {
-            PreviewDecodes.put(key, decoded)
+            decodes.put(key, decoded)
             image = decoded.asImageBitmap()
         }
     }
@@ -658,15 +667,16 @@ private fun ModeSwitch(mode: String, sharing: Boolean, widthDp: Float, onMode: (
                     .weight(1f)
                     .fillMaxHeight()
                     .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
-                    .padding(3.dp)
-                    .clip(RoundedCornerShape(21.dp))
-                    .background(if (on) Segment else Color.Transparent)
+                    .clip(RoundedCornerShape(24.dp))
                     .clickable(
                         interactionSource = source,
                         indication = ripple(color = Color.White.copy(alpha = 0.20f)),
                         enabled = !on,
                         role = Role.Button,
                     ) { onMode(item) }
+                    .padding(3.dp)
+                    .clip(RoundedCornerShape(21.dp))
+                    .background(if (on) Segment else Color.Transparent)
                     .clearAndSetSemantics {
                         role = Role.Button
                         selected = on
