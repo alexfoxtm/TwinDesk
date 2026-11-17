@@ -2,8 +2,11 @@
 // New camera photos to a paired Mac (shared/photobackup.js). One finished DCIM/Camera image at a
 // time, only after this phone and that Mac have each turned it on, and only the original file
 // (location included). No ACCESS_MEDIA_LOCATION, or only selected photos: nothing is sent.
-// Bytes are backup.chunk on this session socket, not a Save and not fx. A generation change for
-// an id the cursor has already passed waits until the cursor is reset.
+// Bytes are backup.chunk on the same IP socket that accepted the take, not a Save and not fx.
+// Each storage volume keeps its own id cursor and MediaStore version. One _ID on the synthetic
+// external volume drops a photo after that volume's database is rebuilt, or a photo whose id is
+// lower than another volume's. A generation the cursor has already passed waits until that
+// volume's version changes. The generation on the wire is the canonical decimal of the long.
 package com.twindesk.android
 
 import android.Manifest
@@ -33,44 +36,86 @@ class PhotoBackup(core: Core) : Feature(core) {
     private val jobs = Executors.newSingleThreadExecutor { r -> Thread(r, "td-pb").apply { isDaemon = true } }
     private val main = Handler(Looper.getMainLooper())
     private val files = File(core.ctx.filesDir, "pb-settled.json")
+    private val lock = Any()
 
     @Volatile private var epoch = 0
-    @Volatile private var scanStamp = 0
     @Volatile private var marker: Any? = null
-    @Volatile private var flightReq = ""
+    @Volatile private var boundMac = ""
     @Volatile private var remoteOn = false
     @Volatile private var remoteSince = 0L
     @Volatile private var remoteMrev = 0
     @Volatile private var heard = false
     private var permSnap: String? = null
+    private var scanJob = false
 
     private val dead = ArrayDeque<String>()
-    private var seenStamp = 0
     private var scan: Scan? = null
     private var offered: MutableList<Row> = mutableListOf()
     private var hole = false
-    private var cursor = 0L
+    private var flight: Flight? = null
+    private var ackReq = ""
+    private val vols = PbVolumes()
     private var observer: ContentObserver? = null
+    private var armMac = ""
+    private var armSocket: Any? = null
+    private var armRev = -1
 
     private class Row(
-        val id: Long, val vol: String, val ver: String, val item: String, val gen: Long,
+        val id: Long, val vol: String, val ver: String, val item: String, val gen: String,
         val size: Int, val name: String, val taken: Long, val added: Long,
         var skip: String?, var done: Boolean,
     )
 
-    private class Scan(val token: String, val rows: MutableList<Row>, val remain: Boolean, var pos: Int)
+    private class Scan(val token: String, val rows: MutableList<Row>, val remain: Boolean, var pos: Int, var inv: String)
+    private class Page(val rows: List<Row>, val more: Boolean, val remain: Boolean)
+    private class Flight(
+        val owner: PbOwner, val epoch: Int, val take: JSONObject, val row: Row,
+        val req: String, val inv: String, val scan: String, val batch: String,
+        var sha: String = "", var ended: Boolean = false,
+    )
+    private class Window(val rows: MutableList<Row>, val remain: Boolean)
+
+    /** Socket, Mac and consent revision at the moment Link accepted the frame. */
+    internal fun capture(socket: Any): PbOwner {
+        val h = core.link.host
+        val id = if (core.link.connected && h != null && h.os == "mac" && token(h.id)) h.id else ""
+        return PbOwner(
+            socket, id,
+            if (id.isEmpty()) 0 else revOf(id),
+            core.link.peerBackup,
+            core.moduleOn("photos"),
+        )
+    }
+
+    internal fun copyIn(m: JSONObject): JSONObject {
+        val o = JSONObject()
+        val keys = m.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val v = m.opt(k)
+            if (v != null) o.put(k, v)
+        }
+        return o
+    }
 
     fun on(): Boolean {
         val id = macId()
         return id.isNotEmpty() && core.store.flag(onKey(id), false)
     }
 
-    fun canToggle(): Boolean {
-        val h = core.host
-        return core.link.connected && h != null && h.os == "mac" && Build.VERSION.SDK_INT >= 30 && core.hub.perm("media") == "ok"
+    /** The switch may turn on: this Mac negotiated pb, on an IP socket, with the Photos module and full photo access. */
+    fun canAsk(): Boolean {
+        if (!core.moduleOn("photos") || Build.VERSION.SDK_INT < 30) return false
+        if (!core.link.peerBackup || core.link.ble || !core.link.connected) return false
+        val h = core.host ?: return false
+        if (h.os != "mac" || !token(h.id)) return false
+        if (core.hub.perm("media") != "ok") return false
+        return true
     }
 
-    fun needsLocationPrompt(): Boolean = canToggle() && !locGranted()
+    fun canToggle(): Boolean = canAsk()
+
+    fun needsLocationPrompt(): Boolean = canAsk() && !locGranted()
 
     fun hint(name: String): String {
         if (Build.VERSION.SDK_INT < 30) return tr("Needs Android 11 or later.")
@@ -93,192 +138,454 @@ class PhotoBackup(core: Core) : Feature(core) {
         }
     }
 
+    /**
+     * User tapped the switch on. Returns true when the caller must request photo location.
+     * The Mac and socket are fixed here; the permission result cannot opt in a different Mac.
+     */
+    fun enableFromUi(): Boolean {
+        if (!canAsk()) return false
+        val id = macId()
+        val socket = core.link.sessionMarker() ?: return false
+        if (!core.link.lockSessionCurrent(socket)) return false
+        if (!locGranted()) {
+            armMac = id
+            armSocket = socket
+            armRev = revOf(id)
+            return true
+        }
+        setOn(true, id, socket)
+        return false
+    }
+
     fun onLocationResult(granted: Boolean) {
-        if (granted && canToggle() && locGranted()) setOn(true) else core.changed()
+        val id = armMac
+        val socket = armSocket
+        val rev = armRev
+        armMac = ""
+        armSocket = null
+        armRev = -1
+        if (!granted || id.isEmpty() || socket == null) {
+            core.changed()
+            return
+        }
+        if (macId() != id || revOf(id) != rev || core.link.sessionMarker() !== socket || !canAsk()) {
+            core.changed()
+            return
+        }
+        setOn(true, id, socket)
     }
 
     fun setOn(on: Boolean) {
         val id = macId()
-        if (id.isEmpty() || !canToggle() && on) return
-        if (on() == on) return
-        core.store.setFlag(onKey(id), on)
-        core.store.setPrefsString(revKey(id), (revOf(id) + 1).toString())
-        if (on) core.store.setPrefsString(sinceKey(id), System.currentTimeMillis().toString())
-        resetCursor()
-        invalidate(true)
-        sendState()
-        core.changed()
+        setOn(on, id, if (on) core.link.sessionMarker() else marker)
     }
 
     // Permission changed in Settings. Consent stays: clearing it would move the cutoff forward.
     // The first look only records what is granted, so opening the app does not drop a copy.
     fun permsChanged() {
-        if (!core.moduleOn("photos")) return
-        val snap = core.hub.perm("media") + ":" + locGranted()
-        if (permSnap == snap) return
-        val first = permSnap == null
-        permSnap = snap
-        if (first) return
-        invalidate(true)
-        if (core.link.connected && core.host?.os == "mac") sendState()
+        val tell = synchronized(lock) {
+            if (!core.moduleOn("photos")) {
+                unwatchLocked()
+                return
+            }
+            val snap = core.hub.perm("media") + ":" + locGranted()
+            if (permSnap == snap) return
+            val first = permSnap == null
+            permSnap = snap
+            if (first) return
+            revokeLocked(true)
+            syncWatchLocked()
+            true
+        }
+        if (tell && admit()) sendState(null)
         core.changed()
     }
 
     fun forget(id: String) {
-        if (!token(id)) return
-        core.store.setFlag(onKey(id), false)
-        core.store.setPrefsString(revKey(id), (revOf(id) + 1).toString())
-        if (macId() == id || cursorMac() == id) resetCursor()
-        invalidate(false)
+        synchronized(lock) {
+            if (!token(id)) return
+            val liveMac = macId() == id
+            core.store.setFlag(onKey(id), false)
+            core.store.setPrefsString(revKey(id), (revOf(id) + 1).toString())
+            if (liveMac || cursorMac() == id) resetCursorLocked()
+            if (liveMac) revokeLocked(true)
+            syncWatchLocked()
+        }
         core.changed()
     }
 
     // The session socket was replaced (Wi-Fi, cable, Bluetooth). The old request is dead.
     fun linkChanged() {
-        if (!core.moduleOn("photos")) return
-        val now = core.link.sessionMarker()
-        val next = if (now != null && core.link.lockSessionCurrent(now)) now else null
-        if (next === marker) return
-        invalidate(false)
-        marker = next
-        if (next != null && heard) sendState()
+        val tell = synchronized(lock) {
+            if (!core.moduleOn("photos")) {
+                unwatchLocked()
+                return
+            }
+            val now = core.link.sessionMarker()
+            val next = if (now != null && core.link.lockSessionCurrent(now)) now else null
+            if (next === marker) {
+                syncWatchLocked()
+                return
+            }
+            val id = macId()
+            val same = next != null && id.isNotEmpty() && id == boundMac
+            revokeLocked(false)
+            marker = next
+            boundMac = if (next != null) id else ""
+            if (!same) {
+                heard = false
+                remoteOn = false
+                remoteSince = 0L
+                remoteMrev = 0
+            }
+            syncWatchLocked()
+            same
+        }
+        if (tell && admit()) sendState(null)
     }
 
     override fun onWelcome(host: Host) {
-        if (host.os != "mac" || !core.moduleOn("photos")) return
-        invalidate(false)
-        marker = core.link.sessionMarker()
-        heard = false
-        remoteOn = false
-        remoteSince = 0L
-        remoteMrev = 0
-        watch()
-        sendState()
+        synchronized(lock) {
+            if (host.os != "mac" || !core.moduleOn("photos")) {
+                revokeLocked(false)
+                marker = null
+                boundMac = ""
+                heard = false
+                unwatchLocked()
+                return
+            }
+            val socket = core.link.sessionMarker()
+            revokeLocked(false)
+            marker = socket
+            boundMac = if (token(host.id)) host.id else ""
+            heard = false
+            remoteOn = false
+            remoteSince = 0L
+            remoteMrev = 0
+            syncWatchLocked()
+        }
+        sendState(null)
     }
 
     override fun onClosed() {
-        invalidate(false)
-        marker = null
-        heard = false
-        unwatch()
+        synchronized(lock) {
+            // A close posted for the socket we already left must not wipe the replacement.
+            if (marker != null && core.link.lockSessionCurrent(marker)) return
+            revokeLocked(false)
+            marker = null
+            boundMac = ""
+            heard = false
+            remoteOn = false
+            remoteSince = 0L
+            remoteMrev = 0
+            unwatchLocked()
+        }
     }
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
-        if (!t.startsWith("backup.")) return false
-        val copy = JSONObject(m.toString())
-        jobs.execute {
-            runCatching {
-                dropped()
-                when (t) {
-                    Proto.T.BACKUP_STATE -> onMacState(copy)
-                    Proto.T.BACKUP_SYNC -> onSync(copy)
-                    Proto.T.BACKUP_TAKE -> onTake(copy)
-                    Proto.T.BACKUP_HAVE -> onHave(copy)
-                    Proto.T.BACKUP_DONE -> onDone(copy)
-                    Proto.T.BACKUP_REFUSE -> onMacRefuse(copy)
-                    Proto.T.BACKUP_STOP -> invalidate(false)
-                }
-            }.onFailure { Log.w("TwinDesk", "photo backup: ${it.javaClass.simpleName}") }
+        // Link hands backup frames to onIngress with the socket. Without that socket, do nothing.
+        return t.startsWith("backup.")
+    }
+
+    internal fun onIngress(owner: PbOwner, m: JSONObject) {
+        val t = m.optString("t")
+        if (!t.startsWith("backup.")) return
+        if (!owner.module || !core.moduleOn("photos") || !owner.peer || !core.link.peerBackup) return
+        if (owner.socket !== core.link.sessionMarker() || core.link.ble) return
+        when (t) {
+            Proto.T.BACKUP_STOP -> onStop(owner, m)
+            Proto.T.BACKUP_STATE -> onState(owner, m)
+            Proto.T.BACKUP_SYNC -> dispatch(owner, m, ::onSync)
+            Proto.T.BACKUP_TAKE -> onTake(owner, m)
+            Proto.T.BACKUP_HAVE -> onHave(owner, m)
+            Proto.T.BACKUP_DONE -> onDone(owner, m)
+            Proto.T.BACKUP_REFUSE -> onMacRefuse(owner, m)
         }
-        return true
     }
 
-    private fun onMacState(m: JSONObject) {
-        if (m.has("perm") || m.has("api") || m.opt("on") !is Boolean) return
-        val since = m.optLong("since", -1L)
-        if (!m.has("mrev") || since < 0L) return
-        val mrev = m.optInt("mrev", -1)
-        if (mrev < 0) return
-        val on = m.getBoolean("on")
-        val mrevChanged = heard && remoteMrev != mrev
-        val changed = heard && (mrevChanged || remoteOn != on || remoteSince != since)
-        remoteOn = on
-        remoteSince = since
-        remoteMrev = mrev
-        heard = true
-        if (mrevChanged) resetCursor()
-        if (changed) invalidate(true)
-        loadCursor()
-        sendState()
-        core.changed()
+    private fun dispatch(owner: PbOwner, m: JSONObject, block: (PbOwner, JSONObject) -> Unit) {
+        jobs.execute {
+            runCatching { block(owner, m) }.onFailure { Log.w("TwinDesk", "photo backup: ${it.javaClass.simpleName}") }
+        }
     }
 
-    private fun onSync(m: JSONObject) {
+    private fun onStop(owner: PbOwner, m: JSONObject) {
+        synchronized(lock) {
+            if (!sameSocket(owner)) return
+            val req = m.optString("req")
+            if (!token(req)) return
+            rememberDead(req)
+            // A stop names one request. A duplicate state heartbeat must not come through here,
+            // and this must not cancel a flight that already replaced that request.
+            if (flight?.req == req) revokeLocked(false)
+        }
+    }
+
+    private fun onState(owner: PbOwner, m: JSONObject) {
+        val tell = synchronized(lock) {
+            if (!live(owner)) return
+            if (m.has("perm") || m.has("api") || m.opt("on") !is Boolean) return
+            val since = longField(m.opt("since")) ?: return
+            if (since < 0L || !m.has("mrev")) return
+            val mrev = m.optInt("mrev", -1)
+            if (mrev < 0) return
+            val on = m.getBoolean("on")
+            val mrevChanged = heard && remoteMrev != mrev
+            val changed = heard && (mrevChanged || remoteOn != on || remoteSince != since)
+            remoteOn = on
+            remoteSince = since
+            remoteMrev = mrev
+            heard = true
+            if (mrevChanged) resetCursorLocked()
+            // Same on/since/mrev again (the Mac's state, delivered twice) is not a new flight's stop.
+            if (changed) revokeLocked(true)
+            loadCursorLocked()
+            syncWatchLocked()
+            true
+        }
+        if (tell) {
+            sendState(owner)
+            core.changed()
+        }
+    }
+
+    private fun onSync(owner: PbOwner, m: JSONObject) {
         val req = m.optString("req")
-        if (!token(req)) return
-        val id = macId()
-        if (id.isEmpty() || !live(epoch)) { refuse(req, "stop"); return }
-        if (m.optInt("rev", -1) != revOf(id) || m.optInt("mrev", -1) != remoteMrev) { refuse(req, "stop"); return }
-        val why = blocked()
-        if (why.isNotEmpty()) { refuse(req, why); return }
-        if (flightReq.isNotEmpty()) { refuse(req, "stop"); return }
-        if (hole) { hole = false; scan = null; offered = mutableListOf() }
-        val page = nextPage()
-        if (page == null) { query(req); return }
-        sendPage(req, page)
+        var queryEp = -1
+        synchronized(lock) {
+            if (!token(req) || !live(owner)) return
+            if (m.optInt("rev", -1) != revOf(owner.macId) || m.optInt("mrev", -1) != remoteMrev) {
+                refuse(owner, req, "stop")
+                return
+            }
+            val why = blocked()
+            if (why.isNotEmpty()) {
+                refuse(owner, req, why)
+                return
+            }
+            if (flight != null || scanJob) {
+                refuse(owner, req, "stop")
+                return
+            }
+            if (hole) {
+                hole = false
+                scan = null
+                offered = mutableListOf()
+            }
+            val page = nextPageLocked()
+            if (page != null) {
+                sendPageLocked(owner, req, page)
+                return
+            }
+            scanJob = true
+            queryEp = epoch
+        }
+        try {
+            query(owner, req, queryEp)
+        } finally {
+            synchronized(lock) { if (epoch == queryEp) scanJob = false }
+        }
     }
 
-    private fun onTake(m: JSONObject) {
-        val req = m.optString("req")
-        if (!token(req) || isDead(req)) { if (token(req)) refuse(req, "stop"); return }
-        val row = match(m) ?: run { refuse(req, "stop"); return }
-        if (!live(epoch)) return
-        val why = blocked()
-        if (why.isNotEmpty()) { refuse(req, why); return }
-        flightReq = req
-        rememberDead(req)
-        val ep = epoch
-        val mark = marker
-        sendOne(m, row, ep, mark)
+    private fun onTake(owner: PbOwner, m: JSONObject) {
+        val work = synchronized(lock) {
+            val req = m.optString("req")
+            if (!token(req) || !live(owner)) return
+            if (isDead(req) || flight != null) {
+                refuse(owner, req, "stop")
+                return
+            }
+            val row = matchLocked(m) ?: run {
+                refuse(owner, req, "stop")
+                return
+            }
+            val why = blocked()
+            if (why.isNotEmpty()) {
+                refuse(owner, req, why)
+                return
+            }
+            val f = Flight(owner, epoch, m, row, req, m.optString("inv"), m.optString("scan"), m.optString("batch"))
+            flight = f
+            rememberDead(req)
+            f
+        }
+        jobs.execute {
+            runCatching { sendOne(work) }.onFailure {
+                Log.w("TwinDesk", "photo backup: ${it.javaClass.simpleName}")
+                synchronized(lock) { if (flight === work) flight = null }
+            }
+        }
     }
 
-    private fun onHave(m: JSONObject) { settle(m, true) }
-    private fun onDone(m: JSONObject) { settle(m, true); if (m.optString("req") == flightReq) flightReq = "" }
-    private fun onMacRefuse(m: JSONObject) {
-        val why = m.optString("why")
-        val terminal = why == "date" || why == "gone" || why == "version" || why == "bad"
-        settle(m, terminal)
-        if (m.optString("req") == flightReq) flightReq = ""
-        if (!terminal) hole = true
+    private fun onHave(owner: PbOwner, m: JSONObject) {
+        synchronized(lock) {
+            if (!live(owner)) return
+            settle(m, true, fromFlight = false)
+        }
     }
 
-    private fun sendOne(m: JSONObject, row: Row, ep: Int, mark: Any?) {
-        val fresh = requery(row)
-        if (!live(ep, mark)) return
-        if (fresh == null) { settleRow(row, true); refuseEcho(m, "gone"); flightReq = ""; return }
-        if (fresh != "ok") { settleRow(row, true); refuseEcho(m, "version"); flightReq = ""; return }
-        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.getContentUri(row.vol), row.id)
+    private fun onDone(owner: PbOwner, m: JSONObject) {
+        synchronized(lock) {
+            val f = flight ?: return
+            if (!live(f.owner) || f.owner.socket !== owner.socket) return
+            if (m.optString("req") != f.req || m.optString("inv") != f.inv || m.optString("scan") != f.scan || m.optString("batch") != f.batch) return
+            if (m.optString("item") != f.row.item || PbGen.canonical(m.opt("gen")) != f.row.gen) return
+            val size = longField(m.opt("size")) ?: return
+            val sha = m.optString("sha256")
+            if (size != f.row.size.toLong() || !SHA.matches(sha) || sha != f.sha || f.sha.isEmpty()) return
+            if (!settle(m, true, fromFlight = true)) return
+            flight = null
+            clearAckLocked()
+        }
+    }
+
+    private fun onMacRefuse(owner: PbOwner, m: JSONObject) {
+        synchronized(lock) {
+            if (!sameSocket(owner)) return
+            val why = m.optString("why")
+            val terminal = why == "date" || why == "gone" || why == "version" || why == "bad"
+            val req = m.optString("req")
+            if (flight?.req == req && token(req)) {
+                if (!terminal) hole = true
+                else settle(m, true, fromFlight = true)
+                revokeLocked(false)
+                return
+            }
+            settle(m, terminal, fromFlight = false)
+            if (!terminal) hole = true
+        }
+    }
+
+    private fun sendOne(f: Flight) {
+        val fresh = requery(f.row)
+        synchronized(lock) {
+            if (!pumpingLocked(f)) return
+            when (fresh) {
+                null -> {
+                    settleRowLocked(f.row, true)
+                    refuseEcho(f, "gone")
+                    flight = null
+                    return
+                }
+                "permission" -> {
+                    hole = true
+                    refuseEcho(f, "permission")
+                    flight = null
+                    return
+                }
+                "ok" -> Unit
+                else -> {
+                    settleRowLocked(f.row, true)
+                    refuseEcho(f, "version")
+                    flight = null
+                    return
+                }
+            }
+        }
+        val uri = ContentUris.withAppendedId(MediaStore.Images.Media.getContentUri(f.row.vol), f.row.id)
         val stream = try {
-            if (Build.VERSION.SDK_INT < 30) { refuseEcho(m, "api"); flightReq = ""; return }
+            if (Build.VERSION.SDK_INT < 30) {
+                failPump(f, "api", settle = false)
+                return
+            }
             cr.openInputStream(MediaStore.setRequireOriginal(uri))
         } catch (_: SecurityException) {
-            hole = true
-            refuseEcho(m, "permission")
-            flightReq = ""
+            failPump(f, "permission", settle = false)
             return
         }
-        if (stream == null) { settleRow(row, true); refuseEcho(m, "gone"); flightReq = ""; return }
-        if (!sendEcho(Proto.T.BACKUP_ACCEPT, m, mark, ep, "size" to row.size)) { flightReq = ""; stream.close(); return }
+        if (stream == null) {
+            failPump(f, "gone", settle = true)
+            return
+        }
         stream.use { input ->
+            if (!room(f) || !sendEcho(f, Proto.T.BACKUP_ACCEPT, "size" to f.row.size)) {
+                failPump(f, "stop", settle = false)
+                return
+            }
             val md = MessageDigest.getInstance("SHA-256")
             val buf = ByteArray(CHUNK)
             var got = 0
             var seq = 0
             while (true) {
-                if (!live(ep, mark)) return
-                val n = input.read(buf)
+                if (!room(f)) {
+                    failPump(f, "stop", settle = false)
+                    return
+                }
+                val n = try {
+                    input.read(buf)
+                } catch (_: SecurityException) {
+                    failPump(f, "permission", settle = false)
+                    return
+                }
                 if (n < 0) break
                 if (n == 0) continue
-                if (got + n > row.size) { refuseEcho(m, "checksum"); flightReq = ""; return }
+                if (got + n > f.row.size) {
+                    failPump(f, "checksum", settle = false)
+                    return
+                }
                 md.update(buf, 0, n)
                 val data = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
-                if (!sendEcho(Proto.T.BACKUP_CHUNK, m, mark, ep, "seq" to seq, "data" to data)) { flightReq = ""; return }
+                if (!sendEcho(f, Proto.T.BACKUP_CHUNK, "seq" to seq, "data" to data)) {
+                    failPump(f, "stop", settle = false)
+                    return
+                }
                 got += n
                 seq += 1
             }
-            if (got != row.size) { refuseEcho(m, "checksum"); flightReq = ""; return }
+            if (got != f.row.size) {
+                failPump(f, "checksum", settle = false)
+                return
+            }
             val sha = md.digest().hex()
-            if (!sendEcho(Proto.T.BACKUP_END, m, mark, ep, "sha256" to sha, "size" to row.size)) flightReq = ""
+            synchronized(lock) {
+                if (!pumpingLocked(f)) return
+                f.sha = sha
+            }
+            if (!sendEcho(f, Proto.T.BACKUP_END, "sha256" to sha, "size" to f.row.size)) {
+                failPump(f, "stop", settle = false)
+                return
+            }
+            synchronized(lock) {
+                if (flight !== f) return
+                f.ended = true
+                armAckLocked(f)
+            }
+        }
+    }
+
+    private fun room(f: Flight): Boolean {
+        val deadline = System.nanoTime() + Proto.TIMEOUT_MS * 1_000_000L
+        while (true) {
+            if (!still(f)) return false
+            val queued = core.link.queuedFor(f.owner.socket)
+            if (queued < 0L) return false
+            if (queued <= QUEUE_MAX) return true
+            if (System.nanoTime() >= deadline) return false
+            try {
+                Thread.sleep(20)
+            } catch (_: InterruptedException) {
+                return false
+            }
+        }
+    }
+
+    private fun still(f: Flight): Boolean = synchronized(lock) { pumpingLocked(f) }
+
+    private fun failPump(f: Flight, why: String, settle: Boolean) {
+        synchronized(lock) {
+            if (flight !== f) return
+            if (why == "permission") hole = true
+            if (settle) settleRowLocked(f.row, true)
+            if (why == "stop") {
+                val socket = f.owner.socket
+                flight = null
+                clearAckLocked()
+                if (core.link.lockSessionCurrent(socket)) core.link.sendFor(socket, msg(Proto.T.BACKUP_STOP, "req" to f.req))
+            } else {
+                refuseEcho(f, why)
+                flight = null
+                clearAckLocked()
+            }
         }
     }
 
@@ -286,74 +593,134 @@ class PhotoBackup(core: Core) : Feature(core) {
         if (Build.VERSION.SDK_INT < 30) return "version"
         val cols = arrayOf(BaseColumns._ID, MediaColumns.SIZE, MediaColumns.RELATIVE_PATH, MediaColumns.VOLUME_NAME, MediaColumns.GENERATION_MODIFIED, MediaColumns.IS_TRASHED, MediaColumns.IS_PENDING)
         val sel = "${BaseColumns._ID}=? AND ${FileColumns.MEDIA_TYPE}=${FileColumns.MEDIA_TYPE_IMAGE} AND ${MediaColumns.IS_PENDING}=0 AND ${MediaColumns.IS_TRASHED}=0 AND ${MediaColumns.RELATIVE_PATH} LIKE ?"
-        val found = cr.query(MediaStore.Files.getContentUri(row.vol), cols, sel, arrayOf(row.id.toString(), CAMERA), null)?.use { c ->
+        val found = try {
+            cr.query(MediaStore.Files.getContentUri(row.vol), cols, sel, arrayOf(row.id.toString(), CAMERA), null)?.use { c ->
             if (!c.moveToFirst()) return@use false
-            val gen = c.getLong(c.getColumnIndexOrThrow(MediaColumns.GENERATION_MODIFIED))
+            val gen = if (c.isNull(c.getColumnIndexOrThrow(MediaColumns.GENERATION_MODIFIED))) "" else PbGen.canonical(c.getLong(c.getColumnIndexOrThrow(MediaColumns.GENERATION_MODIFIED)))
             val size = c.getLong(c.getColumnIndexOrThrow(MediaColumns.SIZE))
             val vol = c.getString(c.getColumnIndexOrThrow(MediaColumns.VOLUME_NAME)) ?: ""
             val ver = runCatching { MediaStore.getVersion(core.ctx, vol) }.getOrNull() ?: ""
             gen == row.gen && size == row.size.toLong() && vol == row.vol && ver == row.ver
         }
-        return when (found) { null, false -> if (found == null) null else "version"; else -> "ok" }
+        } catch (_: SecurityException) {
+            return "permission"
+        }
+        return when (found) {
+            null -> null
+            false -> "version"
+            else -> "ok"
+        }
     }
 
-    private fun query(syncReq: String) {
-        if (Build.VERSION.SDK_INT < 30) { refuse(syncReq, "api"); return }
-        val id = macId()
-        loadCursor()
-        val sinceSec = maxOf(sinceOf(id), remoteSince) / 1000L
+    private fun query(owner: PbOwner, syncReq: String, ep: Int) {
+        if (Build.VERSION.SDK_INT < 30) {
+            synchronized(lock) { if (epoch == ep && live(owner)) refuse(owner, syncReq, "api") }
+            return
+        }
+        val snap = synchronized(lock) {
+            if (epoch != ep || !live(owner)) null
+            else {
+                loadCursorLocked()
+                maxOf(sinceOf(owner.macId), remoteSince) / 1000L to vols.snapshot()
+            }
+        } ?: return
+        val sinceSec = snap.first
+        val marks = snap.second
+        val read = try {
+            readVolumes(marks, sinceSec)
+        } catch (_: SecurityException) {
+            synchronized(lock) { if (epoch == ep && live(owner)) refuse(owner, syncReq, "permission") }
+            return
+        }
+        synchronized(lock) {
+            if (epoch != ep || !live(owner)) return
+            val why = blocked()
+            if (why.isNotEmpty()) {
+                refuse(owner, syncReq, why)
+                return
+            }
+            hole = false
+            scan = Scan(Proto.randomHex(8), read.rows, read.remain, 0, "")
+            val page = nextPageLocked() ?: Page(emptyList(), false, false)
+            sendPageLocked(owner, syncReq, page)
+        }
+    }
+
+    private fun readVolumes(marks: List<Triple<String, String, Long>>, sinceSec: Long): Window {
+        val rows = mutableListOf<Row>()
+        var remain = false
+        val volumes = MediaStore.getExternalVolumeNames(core.ctx).toList().sorted()
+        for (vol in volumes) {
+            val room = WALK - rows.size
+            if (room <= 0) {
+                remain = true
+                break
+            }
+            val ver = runCatching { MediaStore.getVersion(core.ctx, vol) }.getOrNull() ?: continue
+            if (!fieldOk(vol) || !fieldOk(ver)) continue
+            val stored = marks.firstOrNull { it.first == vol }
+            val from = if (stored != null && stored.second == ver) stored.third else 0L
+            val batch = try {
+                readVolume(vol, ver, from, sinceSec, room)
+            } catch (e: SecurityException) {
+                throw e
+            } catch (_: RuntimeException) {
+                continue
+            }
+            rows.addAll(batch)
+            if (batch.size >= room) {
+                remain = true
+                break
+            }
+        }
+        return Window(rows, remain)
+    }
+
+    private fun readVolume(vol: String, ver: String, from: Long, sinceSec: Long, limit: Int): List<Row> {
         val sel = "${FileColumns.MEDIA_TYPE}=${FileColumns.MEDIA_TYPE_IMAGE} AND ${MediaColumns.IS_PENDING}=0 AND ${MediaColumns.IS_TRASHED}=0 AND ${MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaColumns.DATE_ADDED}>=? AND ${BaseColumns._ID}>?"
-        val args = arrayOf(CAMERA, sinceSec.toString(), cursor.toString())
+        val args = arrayOf(CAMERA, sinceSec.toString(), from.toString())
         val cols = arrayOf(BaseColumns._ID, MediaColumns.DISPLAY_NAME, MediaColumns.SIZE, MediaColumns.DATE_TAKEN, MediaColumns.DATE_ADDED, MediaColumns.VOLUME_NAME, MediaColumns.GENERATION_MODIFIED)
         val bundle = Bundle().apply {
             putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, sel)
             putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
             putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${BaseColumns._ID} ASC")
-            putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, WALK)
+            putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
         }
         val rows = mutableListOf<Row>()
-        try {
-            cr.query(MediaStore.Files.getContentUri("external"), cols, bundle, null)?.use { c ->
-                val iId = c.getColumnIndexOrThrow(BaseColumns._ID)
-                val iName = c.getColumnIndexOrThrow(MediaColumns.DISPLAY_NAME)
-                val iSize = c.getColumnIndexOrThrow(MediaColumns.SIZE)
-                val iTaken = c.getColumnIndexOrThrow(MediaColumns.DATE_TAKEN)
-                val iAdded = c.getColumnIndexOrThrow(MediaColumns.DATE_ADDED)
-                val iVol = c.getColumnIndexOrThrow(MediaColumns.VOLUME_NAME)
-                val iGen = c.getColumnIndexOrThrow(MediaColumns.GENERATION_MODIFIED)
-                while (c.moveToNext() && rows.size < WALK) {
-                    val mediaId = c.getLong(iId)
-                    if (mediaId <= 0L) continue
-                    val vol = c.getString(iVol) ?: ""
-                    val ver = runCatching { MediaStore.getVersion(core.ctx, vol) }.getOrNull() ?: ""
-                    val gen = if (c.isNull(iGen)) -1L else c.getLong(iGen)
-                    val size = if (c.isNull(iSize)) -1L else c.getLong(iSize)
-                    val name = safeName(if (c.isNull(iName)) "" else c.getString(iName) ?: "")
-                    val taken = if (c.isNull(iTaken)) 0L else c.getLong(iTaken)
-                    val addedSec = if (c.isNull(iAdded)) -1L else c.getLong(iAdded)
-                    val item = itemKey(vol, ver, mediaId)
-                    val skip = when {
-                        item.isEmpty() || gen < 0L || addedSec < 0L -> "bad"
-                        size <= 0L || size > MAX_BYTES || name.isEmpty() -> "bad"
-                        else -> null
-                    }
-                    rows.add(Row(mediaId, vol, ver, item, gen, if (skip == null) size.toInt() else 0, name, taken, addedSec * 1000L, skip, false))
+        cr.query(MediaStore.Files.getContentUri(vol), cols, bundle, null)?.use { c ->
+            val iId = c.getColumnIndexOrThrow(BaseColumns._ID)
+            val iName = c.getColumnIndexOrThrow(MediaColumns.DISPLAY_NAME)
+            val iSize = c.getColumnIndexOrThrow(MediaColumns.SIZE)
+            val iTaken = c.getColumnIndexOrThrow(MediaColumns.DATE_TAKEN)
+            val iAdded = c.getColumnIndexOrThrow(MediaColumns.DATE_ADDED)
+            val iVol = c.getColumnIndexOrThrow(MediaColumns.VOLUME_NAME)
+            val iGen = c.getColumnIndexOrThrow(MediaColumns.GENERATION_MODIFIED)
+            while (c.moveToNext() && rows.size < limit) {
+                val mediaId = c.getLong(iId)
+                if (mediaId <= 0L) continue
+                val gotVol = c.getString(iVol) ?: ""
+                if (gotVol != vol) continue
+                val gen = if (c.isNull(iGen)) null else PbGen.canonical(c.getLong(iGen))
+                val size = if (c.isNull(iSize)) -1L else c.getLong(iSize)
+                val name = safeName(if (c.isNull(iName)) "" else c.getString(iName) ?: "")
+                val taken = if (c.isNull(iTaken)) 0L else c.getLong(iTaken)
+                val addedSec = if (c.isNull(iAdded)) -1L else c.getLong(iAdded)
+                val item = itemKey(vol, ver, mediaId)
+                val skip = when {
+                    item.isEmpty() || gen == null || addedSec < 0L -> "bad"
+                    size <= 0L || size > MAX_BYTES || name.isEmpty() -> "bad"
+                    else -> null
                 }
+                rows.add(Row(mediaId, vol, ver, item, gen ?: "", if (skip == null) size.toInt() else 0, name, taken, addedSec * 1000L, skip, false))
             }
-        } catch (_: SecurityException) {
-            refuse(syncReq, "permission"); return
         }
-        hole = false
-        scan = Scan(Proto.randomHex(8), rows, rows.size >= WALK, 0)
-        drain()
-        sendPage(syncReq, nextPage() ?: Page(emptyList(), false, false))
+        return rows
     }
 
-    private class Page(val rows: List<Row>, val more: Boolean, val remain: Boolean)
-
-    private fun nextPage(): Page? {
+    /** Null when this scan has nothing left to offer, so the caller reads the volumes again. */
+    private fun nextPageLocked(): Page? {
         val s = scan ?: return null
-        drain()
+        drainLocked()
         val out = mutableListOf<Row>()
         var i = s.pos
         while (i < s.rows.size && out.size < PAGE) {
@@ -361,105 +728,125 @@ class PhotoBackup(core: Core) : Feature(core) {
             if (row.skip == null && !row.done) out.add(row)
         }
         val more = (i until s.rows.size).any { s.rows[it].skip == null && !s.rows[it].done }
-        if (out.isEmpty() && !more && s.remain) { scan = null; return null }
+        if (out.isEmpty() && !more) {
+            scan = null
+            offered = mutableListOf()
+            return null
+        }
         return Page(out, more, !more && s.remain)
     }
 
-    private fun sendPage(syncReq: String, page: Page) {
-        if (!live(epoch)) return
-        val id = macId()
+    private fun sendPageLocked(owner: PbOwner, syncReq: String, page: Page) {
+        if (!live(owner)) return
         offered = page.rows.toMutableList()
         val items = JSONArray()
         for (row in page.rows) {
             items.put(JSONObject().put("item", row.item).put("gen", row.gen).put("size", row.size).put("name", row.name).put("taken", row.taken).put("added", row.added))
         }
         val s = scan
-        send(msg(Proto.T.BACKUP_INV,
-            "req" to Proto.randomHex(8), "sync" to syncReq, "rev" to revOf(id), "mrev" to remoteMrev,
+        val inv = Proto.randomHex(8)
+        // Kept until the rows settle. Dropping the last page here left its cursor unmoved.
+        if (s != null) s.inv = inv
+        core.link.sendFor(owner.socket, msg(Proto.T.BACKUP_INV,
+            "req" to inv, "sync" to syncReq, "rev" to revOf(owner.macId), "mrev" to remoteMrev,
             "scan" to (s?.token ?: Proto.randomHex(8)), "page" to 0, "more" to page.more, "remain" to page.remain, "items" to items,
         ))
-        if (!page.more && !page.remain) scan = null
     }
 
-    private fun settle(m: JSONObject, terminal: Boolean) {
+    private fun settle(m: JSONObject, terminal: Boolean, fromFlight: Boolean): Boolean {
         val item = m.optString("item")
-        val gen = longGen(m.opt("gen")) ?: return
-        val row = offered.firstOrNull { !it.done && it.item == item && it.gen == gen } ?: return
-        if (!terminal) { hole = true; return }
-        settleRow(row, true)
+        val gen = PbGen.canonical(m.opt("gen")) ?: return false
+        val s = scan ?: return false
+        if (m.optString("scan") != s.token || (s.inv.isNotEmpty() && m.optString("inv") != s.inv)) return false
+        val row = offered.firstOrNull { !it.done && it.item == item && it.gen == gen } ?: return false
+        if (fromFlight && (flight?.row !== row && (flight?.row?.item != row.item || flight?.row?.gen != row.gen))) return false
+        if (!terminal) {
+            hole = true
+            return false
+        }
+        val flying = flight?.row
+        if (!fromFlight && flying != null && flying.item == row.item && flying.gen == row.gen) return false
+        settleRowLocked(row, true)
+        return true
     }
 
-    private fun settleRow(row: Row, terminal: Boolean) {
-        if (!terminal) { hole = true; return }
+    private fun settleRowLocked(row: Row, terminal: Boolean) {
+        if (!terminal) {
+            hole = true
+            return
+        }
         row.done = true
-        drain()
+        drainLocked()
     }
 
-    private fun drain() {
+    private fun drainLocked() {
         if (hole) return
         val s = scan ?: return
         var moved = false
         while (s.pos < s.rows.size && (s.rows[s.pos].done || s.rows[s.pos].skip != null)) {
-            cursor = s.rows[s.pos].id
+            val row = s.rows[s.pos]
+            vols.advance(row.vol, row.ver, row.id)
             s.pos++
             moved = true
         }
-        if (moved) saveCursor()
+        if (moved) saveCursorLocked()
     }
 
-    private fun match(m: JSONObject): Row? {
+    private fun matchLocked(m: JSONObject): Row? {
         if (!token(m.optString("req")) || !token(m.optString("batch")) || !token(m.optString("scan")) || !token(m.optString("inv"))) return null
+        val s = scan ?: return null
+        if (m.optString("scan") != s.token || m.optString("inv") != s.inv) return null
         val id = macId()
         if (m.optInt("rev", -1) != revOf(id) || m.optInt("mrev", -1) != remoteMrev) return null
-        val gen = longGen(m.opt("gen")) ?: return null
-        if (m.optInt("size", -1) <= 0) return null
-        return offered.firstOrNull { !it.done && it.item == m.optString("item") && it.gen == gen && it.size == m.optInt("size") }
+        val gen = PbGen.canonical(m.opt("gen")) ?: return null
+        val size = longField(m.opt("size")) ?: return null
+        if (size <= 0L || size > MAX_BYTES) return null
+        return offered.firstOrNull { !it.done && it.item == m.optString("item") && it.gen == gen && it.size.toLong() == size }
     }
 
-    private fun longGen(v: Any?): Long? = when (v) {
-        is Number -> v.toLong()
-        is String -> v.toLongOrNull()
-        else -> null
+    private fun refuseEcho(f: Flight, why: String) {
+        if (!live(f.owner)) return
+        core.link.sendFor(f.owner.socket, echo(Proto.T.BACKUP_REFUSE, f.take, f.row.gen, "why" to why))
     }
 
-    private fun refuseEcho(take: JSONObject, why: String) {
-        send(echo(Proto.T.BACKUP_REFUSE, take, "why" to why))
+    private fun sendEcho(f: Flight, t: String, vararg extra: Pair<String, Any?>): Boolean = synchronized(lock) {
+        if (!pumpingLocked(f)) false
+        else core.link.sendFor(f.owner.socket, echo(t, f.take, f.row.gen, *extra))
     }
 
-    private fun sendEcho(t: String, take: JSONObject, mark: Any?, ep: Int, vararg extra: Pair<String, Any?>): Boolean {
-        if (!live(ep, mark)) return false
-        return core.link.sendFor(mark, echo(t, take, *extra))
-    }
-
-    private fun echo(t: String, take: JSONObject, vararg extra: Pair<String, Any?>): JSONObject {
+    private fun echo(t: String, take: JSONObject, gen: String, vararg extra: Pair<String, Any?>): JSONObject {
         val o = msg(t,
             "req" to take.optString("req"), "batch" to take.optString("batch"), "item" to take.optString("item"),
-            "gen" to take.optLong("gen"), "rev" to take.optInt("rev"), "mrev" to take.optInt("mrev"),
+            "gen" to PbGen.echo(take.opt("gen"), gen), "rev" to take.optInt("rev"), "mrev" to take.optInt("mrev"),
             "scan" to take.optString("scan"), "inv" to take.optString("inv"),
         )
         for ((k, v) in extra) o.put(k, v)
         return o
     }
 
-    private fun refuse(req: String, why: String) {
-        val id = macId()
-        send(msg(Proto.T.BACKUP_REFUSE, "req" to req, "why" to why, "rev" to revOf(id), "mrev" to remoteMrev))
+    private fun refuse(owner: PbOwner, req: String, why: String) {
+        if (!live(owner)) return
+        core.link.sendFor(owner.socket, msg(Proto.T.BACKUP_REFUSE, "req" to req, "why" to why, "rev" to revOf(owner.macId), "mrev" to remoteMrev))
     }
 
-    private fun sendState() {
-        val mark = marker ?: return
-        val id = macId()
-        if (id.isEmpty() || !core.link.lockSessionCurrent(mark)) return
+    private fun sendState(owner: PbOwner?) {
+        val sent = synchronized(lock) {
+            val mark = owner?.socket ?: marker ?: return@synchronized null
+            val id = macId()
+            val current = if (owner != null) live(owner) else core.link.lockSessionCurrent(mark)
+            if (id.isEmpty() || !admit() || !current) null else mark to id
+        } ?: return
+        val (mark, id) = sent
         core.link.sendFor(mark, msg(Proto.T.BACKUP_STATE,
             "on" to core.store.flag(onKey(id), false), "since" to sinceOf(id), "rev" to revOf(id),
             "perm" to core.hub.perm("media"), "loc" to locGranted(), "api" to Build.VERSION.SDK_INT,
         ))
     }
 
-    private fun send(m: JSONObject) {
-        val mark = marker ?: return
-        if (!core.link.lockSessionCurrent(mark)) return
-        core.link.sendFor(mark, m)
+    private fun admit(): Boolean {
+        if (!core.moduleOn("photos") || !core.link.peerBackup) return false
+        val h = core.host ?: return false
+        return h.os == "mac" && core.link.lockSessionCurrent(core.link.sessionMarker())
     }
 
     private fun blocked(): String {
@@ -474,29 +861,69 @@ class PhotoBackup(core: Core) : Feature(core) {
         return ""
     }
 
-    private fun invalidate(sendStop: Boolean) {
+    /** Drops the in-memory flight and scan. The per-volume cursor file stays. */
+    private fun revokeLocked(sendStop: Boolean) {
         epoch++
-        scanStamp++
-        val req = flightReq
-        flightReq = ""
-        if (req.isNotEmpty()) rememberDead(req)
-        if (sendStop && req.isNotEmpty()) {
-            val mark = marker
-            if (mark != null) core.link.sendFor(mark, msg(Proto.T.BACKUP_STOP, "req" to req))
-        }
-    }
-
-    private fun dropped() {
-        if (seenStamp == scanStamp) return
-        seenStamp = scanStamp
+        scanJob = false
         scan = null
         offered = mutableListOf()
         hole = false
+        val f = flight
+        flight = null
+        clearAckLocked()
+        if (f != null) rememberDead(f.req)
+        if (sendStop && f != null && core.link.lockSessionCurrent(f.owner.socket)) {
+            core.link.sendFor(f.owner.socket, msg(Proto.T.BACKUP_STOP, "req" to f.req))
+        }
     }
 
-    private fun live(ep: Int, mark: Any? = marker): Boolean = ep == epoch && mark != null && core.link.lockSessionCurrent(mark)
+    private fun pumpingLocked(f: Flight): Boolean {
+        return flight === f && epoch == f.epoch && live(f.owner) && blocked().isEmpty() && revOf(f.owner.macId) == f.owner.rev
+    }
 
-    private fun watch() {
+    private fun live(owner: PbOwner): Boolean {
+        if (!owner.module || !core.moduleOn("photos") || !owner.peer || !core.link.peerBackup) return false
+        if (owner.macId.isEmpty() || macId() != owner.macId || revOf(owner.macId) != owner.rev) return false
+        if (core.link.sessionMarker() !== owner.socket) return false
+        return core.link.lockSessionCurrent(owner.socket)
+    }
+
+    private fun sameSocket(owner: PbOwner): Boolean {
+        return owner.macId.isNotEmpty() && macId() == owner.macId && core.link.sessionMarker() === owner.socket && core.link.lockSessionCurrent(owner.socket)
+    }
+
+    private fun setOn(on: Boolean, id: String, socket: Any?) {
+        val tell = synchronized(lock) {
+            if (!token(id) || id != macId()) return
+            if (on && (socket == null || core.link.sessionMarker() !== socket || !canAsk())) return
+            if (on() == on) return
+            revokeLocked(true)
+            core.store.setFlag(onKey(id), on)
+            core.store.setPrefsString(revKey(id), (revOf(id) + 1).toString())
+            if (on) core.store.setPrefsString(sinceKey(id), System.currentTimeMillis().toString())
+            resetCursorLocked()
+            syncWatchLocked()
+            true
+        }
+        if (tell) sendState(null)
+        core.changed()
+    }
+
+    private fun watchable(): Boolean {
+        if (Build.VERSION.SDK_INT < 30 || !core.moduleOn("photos") || !core.link.peerBackup) return false
+        if (!core.link.lockSessionCurrent(marker)) return false
+        val id = macId()
+        if (id.isEmpty() || !core.store.flag(onKey(id), false) || sinceOf(id) <= 0L) return false
+        if (!heard || !remoteOn || remoteSince <= 0L) return false
+        if (core.hub.perm("media") != "ok" || !locGranted()) return false
+        return true
+    }
+
+    private fun syncWatchLocked() {
+        if (watchable()) watchLocked() else unwatchLocked()
+    }
+
+    private fun watchLocked() {
         if (observer != null || Build.VERSION.SDK_INT < 30) return
         val o = object : ContentObserver(main) {
             override fun onChange(selfChange: Boolean, uri: Uri?) {
@@ -505,44 +932,84 @@ class PhotoBackup(core: Core) : Feature(core) {
             }
         }
         runCatching {
-            cr.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, o)
+            cr.registerContentObserver(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL), true, o)
             observer = o
         }.onFailure { runCatching { cr.unregisterContentObserver(o) } }
     }
 
-    private fun unwatch() {
+    private fun unwatchLocked() {
         observer?.let { o -> runCatching { cr.unregisterContentObserver(o) } }
         observer = null
         main.removeCallbacks(nudge)
     }
 
     private val nudge = Runnable {
-        jobs.execute {
-            if (flightReq.isEmpty() && core.link.lockSessionCurrent(marker)) sendState()
-        }
+        if (watchable() && flight == null) sendState(null)
     }
 
-    private fun resetCursor() {
-        cursor = 0L
+    private val ack = Runnable {
+        val stop = synchronized(lock) {
+            val f = flight ?: return@Runnable
+            if (!f.ended || f.req != ackReq) return@Runnable
+            val socket = f.owner.socket
+            val req = f.req
+            flight = null
+            ackReq = ""
+            rememberDead(req)
+            if (core.link.lockSessionCurrent(socket)) socket to req else null
+        }
+        if (stop != null) core.link.sendFor(stop.first, msg(Proto.T.BACKUP_STOP, "req" to stop.second))
+    }
+
+    private fun armAckLocked(f: Flight) {
+        ackReq = f.req
+        main.removeCallbacks(ack)
+        main.postDelayed(ack, ACK_MS)
+    }
+
+    private fun clearAckLocked() {
+        ackReq = ""
+        main.removeCallbacks(ack)
+    }
+
+    private fun resetCursorLocked() {
+        vols.clear()
         hole = false
-        scanStamp++
+        scan = null
+        offered = mutableListOf()
         runCatching { files.delete() }
     }
 
-    private fun loadCursor() {
+    private fun loadCursorLocked() {
         val id = macId()
-        val o = runCatching { JSONObject(files.readText()) }.getOrNull()
-        cursor = if (o != null && o.optString("mac") == id && o.optInt("rev") == revOf(id) && o.optInt("mrev") == remoteMrev) o.optLong("cursor").coerceAtLeast(0L) else 0L
+        vols.clear()
+        val o = runCatching { JSONObject(files.readText()) }.getOrNull() ?: return
+        if (o.optString("mac") != id || o.optInt("rev") != revOf(id) || o.optInt("mrev") != remoteMrev) return
+        // A file that only has one global cursor is from the synthetic external scan. It is not a position on any volume.
+        val tree = o.optJSONObject("vols") ?: return
+        val keys = tree.keys()
+        while (keys.hasNext()) {
+            val vol = keys.next()
+            val row = tree.optJSONObject(vol) ?: continue
+            val ver = row.optString("ver")
+            val cid = row.optLong("id", -1L)
+            if (fieldOk(vol) && fieldOk(ver) && cid >= 0L) vols.restore(vol, ver, cid)
+        }
     }
 
-    private fun saveCursor() {
+    private fun saveCursorLocked() {
         val id = macId()
         if (id.isEmpty()) return
-        val text = JSONObject().put("mac", id).put("rev", revOf(id)).put("mrev", remoteMrev).put("cursor", cursor).toString()
+        val tree = JSONObject()
+        for ((vol, ver, cid) in vols.snapshot()) tree.put(vol, JSONObject().put("ver", ver).put("id", cid))
+        val text = JSONObject().put("mac", id).put("rev", revOf(id)).put("mrev", remoteMrev).put("vols", tree).toString()
         val tmp = File(files.parentFile, files.name + ".tmp")
         runCatching {
             tmp.writeText(text)
-            if (!tmp.renameTo(files)) { files.writeText(text); tmp.delete() }
+            if (!tmp.renameTo(files)) {
+                files.writeText(text)
+                tmp.delete()
+            }
         }
     }
 
@@ -561,14 +1028,20 @@ class PhotoBackup(core: Core) : Feature(core) {
     private fun revKey(id: String) = "pb.rev.$id"
 
     private fun rememberDead(req: String) {
-        synchronized(dead) {
-            if (req in dead) return
-            dead.addLast(req)
-            while (dead.size > 64) dead.removeFirst()
-        }
+        if (req in dead) return
+        dead.addLast(req)
+        while (dead.size > 64) dead.removeFirst()
     }
 
-    private fun isDead(req: String) = synchronized(dead) { req in dead }
+    private fun isDead(req: String) = req in dead
+
+    private fun longField(v: Any?): Long? = when (v) {
+        is Int -> v.toLong()
+        is Long -> v
+        is Double -> if (!v.isNaN() && !v.isInfinite() && v % 1.0 == 0.0 && v >= Long.MIN_VALUE.toDouble() && v <= Long.MAX_VALUE.toDouble()) v.toLong() else null
+        is String -> v.toLongOrNull()
+        else -> null
+    }
 
     private fun longHint(name: String) = tr("New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.", "name" to name)
 
@@ -577,8 +1050,11 @@ class PhotoBackup(core: Core) : Feature(core) {
         private const val MAX_BYTES = 80L * 1024L * 1024L
         private const val PAGE = 40
         private const val WALK = 400
+        private const val QUEUE_MAX = 1024L * 1024L
+        private const val ACK_MS = 60_000L
         private const val CAMERA = "DCIM/Camera/%"
         private const val SEP = "\u001f"
+        private val SHA = Regex("^[0-9a-f]{64}$")
 
         private fun token(s: String) = s.length in 1..64 && s.all { it.isLetterOrDigit() || it == '.' || it == '_' || it == '-' }
 
@@ -605,4 +1081,63 @@ class PhotoBackup(core: Core) : Feature(core) {
             return if (s == "." || s == "..") "" else s
         }
     }
+}
+
+internal class PbOwner(val socket: Any, val macId: String, val rev: Int, val peer: Boolean, val module: Boolean)
+
+/** Canonical decimal generation. A JSON number is echoed only when it is a safe integer. */
+internal object PbGen {
+    const val MAX_SAFE = 9007199254740991L
+
+    fun canonical(v: Any?): String? = when (v) {
+        is String -> v.toLongOrNull()?.takeIf { it >= 0 && it.toString() == v && v.length <= 19 }?.toString()
+        is Long -> if (v >= 0) v.toString() else null
+        is Int -> if (v >= 0) v.toString() else null
+        is Double -> {
+            if (v.isNaN() || v.isInfinite() || v < 0 || v > MAX_SAFE || v % 1.0 != 0.0) null
+            else {
+                val n = v.toLong()
+                if (n.toDouble() == v) n.toString() else null
+            }
+        }
+        else -> null
+    }
+
+    fun echo(raw: Any?, canonical: String): Any {
+        val n = canonical.toLongOrNull()
+        if (n != null && n <= MAX_SAFE && raw is Number && raw !is Double && raw !is Float && raw.toLong() == n) return n
+        if (n != null && n <= MAX_SAFE && raw is Double && raw.toLong() == n && raw == n.toDouble()) return n
+        return canonical
+    }
+}
+
+/**
+ * One settled id per volume. A different MediaStore version starts again at 0, so a rebuilt
+ * volume cannot hide new camera photos behind the previous database's ids.
+ */
+internal class PbVolumes {
+    private class Mark(var version: String, var id: Long)
+    private val marks = HashMap<String, Mark>()
+
+    fun from(vol: String, version: String): Long {
+        val mark = marks[vol] ?: return 0L
+        if (mark.version != version) return 0L
+        return mark.id
+    }
+
+    fun advance(vol: String, version: String, id: Long): Boolean {
+        if (vol.isEmpty() || version.isEmpty() || id <= 0L) return false
+        if (id <= from(vol, version)) return false
+        marks[vol] = Mark(version, id)
+        return true
+    }
+
+    fun restore(vol: String, version: String, id: Long) {
+        if (vol.isEmpty() || version.isEmpty() || id < 0L) return
+        marks[vol] = Mark(version, id)
+    }
+
+    fun clear() = marks.clear()
+
+    fun snapshot(): List<Triple<String, String, Long>> = marks.map { Triple(it.key, it.value.version, it.value.id) }.sortedBy { it.first }
 }

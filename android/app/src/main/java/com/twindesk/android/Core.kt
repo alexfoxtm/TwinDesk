@@ -86,6 +86,14 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val net = Netlink(this)
     val hub = Hub(this) // Calls, Messages and Photos on the computer: nothing runs until one is on
     val photos = PhotoBackup(this) // new camera photos to a paired Mac; nothing is copied until both sides turn it on
+    init {
+        // The socket is captured here, on the link thread, before this post. onMessage only has the JSON.
+        link.backupIngress = { socket, m ->
+            val owner = photos.capture(socket)
+            val copy = photos.copyIn(m)
+            main.post { photos.onIngress(owner, copy) }
+        }
+    }
     val share = FolderShare(this) // shared folders with the computer, both ways
     val sound = PhoneSound(this) // this phone's sound there without wireless debugging
     val mirror = PhoneMirror(this) // this phone's screen there without wireless debugging

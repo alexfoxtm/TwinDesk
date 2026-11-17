@@ -949,8 +949,7 @@ private fun PhotoBackupCard(core: Core, v: Int) {
             enabled = pb.canToggle() || pb.on(),
         ) { want ->
             if (!want) pb.setOn(false)
-            else if (pb.needsLocationPrompt()) ask.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
-            else pb.setOn(true)
+            else if (pb.enableFromUi()) ask.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
         }
     }
 }

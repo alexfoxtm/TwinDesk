@@ -292,6 +292,17 @@ class Link(
     // Bytes queued on the socket (file sending waits while it is high).
     fun queued(): Long = ws?.queueSize() ?: 0
 
+    // Bytes still queued on this exact socket. -1 when it is no longer the primary IP session.
+    internal fun queuedFor(marker: Any?): Long {
+        val w = ws ?: return -1
+        if (marker == null || w !== marker || state != "connected" || parting || ble) return -1
+        return w.queueSize()
+    }
+
+    // Camera backup only (PhotoBackup.kt). Unset on the phone-to-phone link, which keeps today's path.
+    // The computer link drops backup frames that did not arrive on the primary IP socket.
+    @Volatile var backupIngress: ((WebSocket, JSONObject) -> Unit)? = null
+
     // ---- socket ----
 
     private fun open(m: String, address: String, port: Int, pinFp: String?) {
@@ -460,7 +471,7 @@ class Link(
                 val m = runCatching { JSONObject(text) }.getOrNull()
                 if (m?.optString("t") == Proto.T.WELCOME && m.optBoolean("resumed")) promote(webSocket)
                 else { pending = null; webSocket.cancel() }
-            } else if (webSocket === ws || webSocket === alt) onText(text)
+            } else if (webSocket === ws || webSocket === alt) onText(text, webSocket)
         }
         // The computer closed it (Disconnect, Forget…): answer at once. OkHttp waits for us to,
         // and until then neither side saw the session end.
@@ -512,7 +523,7 @@ class Link(
         helloTimer = exec.schedule({ if (state != "connected") { message = tr("No answer"); ws?.cancel() } }, if (ble) Proto.BLE_TIMEOUT_MS else Proto.TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
 
-    private fun onText(text: String) {
+    private fun onText(text: String, ingress: WebSocket) {
         val m = runCatching { JSONObject(text) }.getOrNull() ?: return
         val t = m.optString("t")
         lastRx = System.currentTimeMillis()
@@ -525,6 +536,17 @@ class Link(
             Proto.T.PING -> { if (state == "connected") raw(msg(Proto.T.PONG, "ts" to m.opt("ts"))); return }
             Proto.T.PONG -> { if (m.has("ts")) rttMs = maxOf(0, System.currentTimeMillis() - m.optLong("ts")); return }
             QUIET_IDLE -> { if (state == "connected") { val was = peerIdle; peerIdle = m.optBoolean("on"); if (was != peerIdle) nudge() }; return }
+        }
+        // Other frames still arrive on the fallback socket. Backup frames do not: the socket they
+        // came in on used to be discarded before Core.post, so a retired path could stop the new one.
+        if (t.startsWith("backup.")) {
+            val hook = backupIngress
+            if (hook != null) {
+                if (ingress === ws && !ble && state == "connected" && !parting) {
+                    runCatching { hook(ingress, m) }.onFailure { Log.w("TwinDesk", "photo backup", it) }
+                }
+                return
+            }
         }
         if (state == "connected") events.onMessage(m)
     }
