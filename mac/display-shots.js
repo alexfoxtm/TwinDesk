@@ -290,6 +290,8 @@ class DisplayShots {
 
   async _pass() {
     this._prune();
+    // A closed sheet with no history has nothing to capture or clear on lock.
+    if (!this.watched && !this._stored()) return;
     const epoch = this.epoch;
     const ticketAt = this.ticket;
     const sample = this._sample();

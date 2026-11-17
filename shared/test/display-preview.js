@@ -378,14 +378,19 @@ async function testGapAndClearAndOs() {
 }
 
 async function testNoWatchDoesNotCapture() {
+  let lockReads = 0;
   const h = harness({
     watch: false,
+    readLocked: async () => { lockReads++; return false; },
     look: look([row('1', '10', ['10'])]),
     sample: sampleOf(conn(), catalog([display('1', '10', ['10'])])),
     reply: shotBody('1'),
   });
   await h.shots.kick();
+  await h.shots.kick();
+  assert.strictEqual(lockReads, 0, 'idle state updates do not launch lock-state helpers');
   assert.strictEqual(h.calls.length, 0);
+  assert.strictEqual(h.timers.length, 0);
   assert.strictEqual(jpegSent(h.sent).length, 0);
 }
 
@@ -483,6 +488,7 @@ async function testLockClearsAStoredShot() {
     reply: shotBody('1'),
   });
   await h.shots.kick();
+  h.shots.cancel('close');
   h.box.locked = true;
   h.box.clock += Preview.MIN_GAP_MS;
   await h.shots.kick();
