@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
         Core.get(this).foreground() // a look at the session; one put off by Reconnect in the background
         Core.get(this).adb.check() // back from Settings: is wireless debugging on now?
         Core.get(this).hub.let { if (it.callsOn || it.messagesOn || it.mediaOn || it.filesOn) it.permsChanged() }
+        Core.get(this).photos.permsChanged() // photo backup stops if photo or location access changed in Settings
         Core.get(this).share.let { if (it.on && it.serving != it.allowed) it.core.bg.execute { it.sync() } } // All files access just allowed (or taken away)
     }
 
@@ -917,12 +918,40 @@ private fun MessagesPage(core: Core, v: Int) {
 private fun PhotosPage(core: Core, v: Int) {
     val name = them(core)
     WifiGate(core, tr("Photos on {name}", "name" to name))
-    if (!HubHead(core, v, "media", tr("Photos"), tr("View and copy this phone’s photos and videos on {name}.", "name" to them(core)))) return
-    MacCard(tr("On {name}", "name" to name)) {
-        MacRow(tr("Photos, videos and screenshots"), tr("Newest first, in Photos on {name}", "name" to name), first = true)
-        MacRow(tr("Save"), tr("Saved to the Downloads folder on {name}", "name" to name))
-        // Switched on on the computer (MediaAlerts.kt): said here while it is.
-        if (core.hub.mediaAlertsOn) MacRow(tr("New photos and videos"), tr("{name} shows a notification when the camera takes one. Only how many is sent, never the picture.", "name" to name))
+    if (HubHead(core, v, "media", tr("Photos"), tr("View and copy this phone’s photos and videos on {name}.", "name" to them(core)))) {
+        MacCard(tr("On {name}", "name" to name)) {
+            MacRow(tr("Photos, videos and screenshots"), tr("Newest first, in Photos on {name}", "name" to name), first = true)
+            MacRow(tr("Save"), tr("Saved to the Downloads folder on {name}", "name" to name))
+            // Switched on on the computer (MediaAlerts.kt): said here while it is.
+            if (core.hub.mediaAlertsOn) MacRow(tr("New photos and videos"), tr("{name} shows a notification when the camera takes one. Only how many is sent, never the picture.", "name" to name))
+        }
+    }
+    PhotoBackupCard(core, v)
+}
+
+// New camera photos into a folder on the paired Mac. Separate from Photos' own switch: this one
+// asks for the photo's location only when the person turns it on, and copies nothing without it.
+@Composable
+private fun PhotoBackupCard(core: Core, v: Int) {
+    @Suppress("UNUSED_EXPRESSION") v
+    val pb = core.photos
+    val name = them(core)
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        pb.onLocationResult(granted)
+    }
+    MacCard(tr("Back up new camera photos")) {
+        @Suppress("UNUSED_EXPRESSION") v
+        SwitchRow(
+            tr("Back up new camera photos"),
+            pb.hint(name),
+            pb.on(),
+            first = true,
+            enabled = pb.canToggle() || pb.on(),
+        ) { want ->
+            if (!want) pb.setOn(false)
+            else if (pb.needsLocationPrompt()) ask.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
+            else pb.setOn(true)
+        }
     }
 }
 

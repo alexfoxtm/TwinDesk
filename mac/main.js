@@ -123,6 +123,7 @@ let settings, id, server, pairing, discovery, link, peer, svc, actions, pairSync
 let web = null; // TwinDesk Web: this Mac as a page for iPhones and browsers (setupWeb)
 let localsend = null; // files with LocalSend-compatible apps (mac/localsend.js), off until turned on in Files
 let phoneHub = null; // Calls, Messages and Photos (loadHub); svc.hub is the Mac's sound capture (audiohub.js)
+let photoBackup = null; // new camera photos from a paired Android phone (mac/photobackup.js)
 
 const state = {
   macName: '',
@@ -299,6 +300,7 @@ function pushState() {
     if (svc && svc.phoneDrive) state.mount = { ...svc.phoneDrive.view, on: !!settings.mount.on };
     // Calls, Messages and Photos: the settings alone until the hub is loaded (setupHub).
     state.hub = phoneHub ? phoneHub.view : { ...settings.hub, connected: false };
+    state.photoBackup = photoBackup ? photoBackup.view() : null; // Photos: back up new camera photos. Mesh leaves this unset.
     if (updates) state.updates = updates.view;
     state.localApi = svc && svc.localApi ? svc.localApi.view() : null;
     state.web = web ? web.view() : { cfg: { ...settings.web }, devices: [] }; // TwinDesk Web (shared/web/webwire.js)
@@ -712,6 +714,9 @@ app.whenReady().then(() => {
   pairing.on('change', pushState);
   pairing.on('request', showWindow);
   peer = new Peer(server, link);
+  photoBackup = require('./photobackup').attach({
+    store, settings, peer, pushState, save: () => store.saveSettings(settings),
+  });
   peer.setPlain(settings.files.plain === true); // Files › Encrypt file transfers
   // The files engine (shared/fx2.js) stays up while another TwinDesk computer is on the network: a
   // session with it then starts without waiting for it. Alone, it isn't running at all.
@@ -1193,7 +1198,7 @@ app.whenReady().then(() => {
     if (on) loadSilence().start();
     else if (svc.silence) svc.silence.stop();
   };
-  actions = setupIpc({ state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link, ...svc, get silence() { return svc.silence; }, hub: loadHub, login, refreshPermissions, updates, applyRelay });
+  actions = setupIpc({ state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link, ...svc, get silence() { return svc.silence; }, hub: loadHub, photoBackup, login, refreshPermissions, updates, applyRelay });
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'assets', 'trayTemplate.png'))); // "Template": macOS tints it
   hud = new Hud(() => settings);
   hud.keep = () => !!peer.current; // the popup's window lives while a session is on (mac/hud.js)

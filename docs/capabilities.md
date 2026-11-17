@@ -40,6 +40,9 @@ old behaviour.
 | `resume: key` | welcome, then hello | The session may move to another path (Bluetooth to Wi-Fi, the cable) without ending | a new session |
 | `tail: [addresses]` | welcome | This computer's Tailscale addresses, for reaching it away from home (#161) | local discovery only |
 | `takeover: true` | hello | Take the session from the device that holds it | refused while busy |
+| `pb: 1` | Android hello, Mac welcome | This build can back up new camera photos from a paired Android phone into a folder on that Mac | no photo backup |
+
+`pb` is sent only by the Android phone and the Mac. Windows, Linux, iOS and TwinDesk Web do not send it. A missing field means that side can't, and nothing is copied. The phone still sends `pb: 1` below Android 11 so the Mac can say it needs Android 11. The messages are `backup.state`, `backup.sync`, `backup.inv`, `backup.take`, `backup.accept`, `backup.have`, `backup.chunk`, `backup.end`, `backup.done`, `backup.refuse` and `backup.stop`. The bytes are `backup.chunk` on the session socket, one photo at a time (32 KiB of the file per message), not `file.offer` and not fx. A partial photo permission, a missing photo-location permission, Bluetooth, or backup left off on either side sends nothing even when `pb` is present. An older phone with no `pb` is covered by `shared/test/photobackup.js`.
 
 ## Features in dev.state
 

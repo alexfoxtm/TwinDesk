@@ -718,6 +718,24 @@ function setupIpc(ctx) {
     hub(r) {
       ctx.hub().act(r);
     },
+    // Photos: back up new camera photos into a folder on this Mac (mac/photobackup.js).
+    async photoBackup(arg) {
+      const pb = ctx.photoBackup;
+      if (!pb || !arg || typeof arg !== 'object') return;
+      if (arg.do === 'folder') {
+        const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], buttonLabel: t('Choose…') });
+        if (r.canceled || !r.filePaths[0]) return;
+        pb.setFolder(r.filePaths[0]);
+        return;
+      }
+      if (arg.do !== 'on') return;
+      if (arg.on !== true) { pb.setOn(false); return; }
+      const view = pb.view();
+      if (view && view.folder) { pb.setOn(true); return; }
+      const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], buttonLabel: t('Choose…') });
+      if (r.canceled || !r.filePaths[0]) return;
+      pb.enable(r.filePaths[0]);
+    },
     // TwinDesk iPhone (shared/iossign.js): one action, and Choose an IPA….
     iosSign(o) {
       require('../shared/iossign-host.js').act(ctx.iosSign, dialog, o);
@@ -783,6 +801,7 @@ function setupIpc(ctx) {
       ctx.pairing.respond(!!allow);
     },
     forget(deviceId) {
+      if (ctx.photoBackup) ctx.photoBackup.forget(String(deviceId)); // consent for this phone; archived photos stay
       if (ctx.silence) { // Silence together: its lease and its switches go with the pairing
         ctx.silence.forget(String(deviceId));
         delete settings.silence.peers[String(deviceId)];

@@ -378,6 +378,20 @@
       // received or copied in, don't count. It says how many, never which: no id, name, path, place,
       // time or picture; the computer loads nothing because of it.
       MEDIA_NEW: 'media.new', // phone->computer {photos, videos}: how many since the last one
+      // Camera photo backup (shared/photobackup.js, PhotoBackup.kt). pb:1 on Android hello and Mac
+      // welcome; a missing pb means this build can't. Not file.offer and not fx: one image on the
+      // session socket, and every message echoes the request, the batch and the item revision.
+      BACKUP_STATE: 'backup.state', // phone {on, since, rev, perm, loc, api} | Mac {on, since, mrev}
+      BACKUP_SYNC: 'backup.sync', // Mac->phone {req, rev, mrev}: list new camera photos
+      BACKUP_INV: 'backup.inv', // phone->Mac {req, sync, rev, mrev, scan, page, more, remain, items}
+      BACKUP_TAKE: 'backup.take', // Mac->phone {req, inv, scan, batch, item, gen, size, rev, mrev}
+      BACKUP_ACCEPT: 'backup.accept', // phone echoes the take, then the bytes
+      BACKUP_HAVE: 'backup.have', // Mac already archived this revision: no bytes
+      BACKUP_CHUNK: 'backup.chunk', // phone {seq, data} plus the take's echo
+      BACKUP_END: 'backup.end', // phone {sha256, size} plus the take's echo
+      BACKUP_DONE: 'backup.done', // Mac, after the file is in the folder
+      BACKUP_REFUSE: 'backup.refuse', // {req, why} plus the echo when the item is known
+      BACKUP_STOP: 'backup.stop', // the transfer is dead; a retry uses a new request
       // Files: the phone's storage, through TwinDesk on it with All files access (no ADB). Paths are
       // relative to the phone's shared storage ('' its top, 'DCIM/Camera'), never '..'.
       FS_LIST: 'fs.list', // computer->phone {path, hidden?} | phone->computer {path, items: [{name, dir, size, at, n? (a folder's items)}], free, total, error?}

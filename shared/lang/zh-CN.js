@@ -2456,4 +2456,13 @@
   "The pointer at its real size, no border. Over Remote Desktop it shows no pointer": "指针为实际大小，无边框。在远程桌面中不显示指针",
   "The pointer at its real size; Windows 10 draws a yellow border around the screen": "指针为实际大小；Windows 10 会在屏幕四周画一圈黄色边框",
   "Desktop Duplication on Windows 10, Windows Graphics Capture on Windows 11": "Windows 10 使用桌面复制，Windows 11 使用 Windows 图形捕获",
+  "Back up new camera photos": "备份新的相机照片",
+  "New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.": "在这里和 {name} 上都打开后，这台手机相机的新照片会按年、月复制到你选择的文件夹。副本包含照片的位置。不会删除或替换任何文件。",
+  "Update TwinDesk on {name} to back up camera photos.": "请在 {name} 上更新 TwinDesk，才能备份相机照片。",
+  "Needs Android 11 or later.": "需要 Android 11 或更高版本。",
+  "Allow all photos on the phone. Selected photos can’t be backed up.": "请在手机上允许访问所有照片。无法备份仅选中的照片。",
+  "Allow photo locations on the phone. Backup copies that location with the photo.": "请在手机上允许访问照片位置。备份会连同位置一起复制。",
+  "Connect over Wi-Fi or a cable.": "请通过 Wi-Fi 或数据线连接。",
+  "Turn backup on on {name} and choose a folder.": "请在 {name} 上打开备份并选择一个文件夹。",
+  "Choose a folder on this Mac.": "请在这台 Mac 上选择一个文件夹。",
 });

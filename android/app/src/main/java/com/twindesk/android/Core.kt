@@ -85,6 +85,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val updates = Updates(this)
     val net = Netlink(this)
     val hub = Hub(this) // Calls, Messages and Photos on the computer: nothing runs until one is on
+    val photos = PhotoBackup(this) // new camera photos to a paired Mac; nothing is copied until both sides turn it on
     val share = FolderShare(this) // shared folders with the computer, both ways
     val sound = PhoneSound(this) // this phone's sound there without wireless debugging
     val mirror = PhoneMirror(this) // this phone's screen there without wireless debugging
@@ -103,7 +104,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // shown and its features hear nothing from the computer.
     val modulesAtStart: Set<String> = Modules.off(store)
     fun moduleOn(id: String) = id in Modules.FIXED || id !in modulesAtStart
-    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia, deck, silence)
+    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, photos, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia, deck, silence)
         .filter { f ->
             when (f) {
                 clip, fclip -> moduleOn("clipboard")
@@ -113,6 +114,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 pcMedia, nowPlaying -> moduleOn("media")
                 sound, macSound -> moduleOn("sound")
                 hub -> listOf("calls", "messages", "photos", "fileaccess").any(::moduleOn)
+                photos -> moduleOn("photos")
                 deck -> moduleOn("deck")
                 else -> true
             }
@@ -457,6 +459,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     fun forget(id: String) {
+        photos.forget(id)
         silence.forget(id)
         if (returnHost()?.id == id) stopReturn()
         companion.forget(id)
@@ -491,6 +494,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         lockView.linkChanged()
         runCatching { share.linkChanged() } // the session moved (Bluetooth <-> Wi-Fi): shared folders follow
         runCatching { remote.linkChanged() } // … and the Remote page's pace
+        runCatching { photos.linkChanged() } // … and a camera-photo backup bound to the previous socket
         changed()
     }
 

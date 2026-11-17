@@ -2456,4 +2456,13 @@
   "The pointer at its real size, no border. Over Remote Desktop it shows no pointer": "The pointer at its real size, no border. Over Remote Desktop it shows no pointer",
   "The pointer at its real size; Windows 10 draws a yellow border around the screen": "The pointer at its real size; Windows 10 draws a yellow border around the screen",
   "Desktop Duplication on Windows 10, Windows Graphics Capture on Windows 11": "Desktop Duplication on Windows 10, Windows Graphics Capture on Windows 11",
+  "Back up new camera photos": "Back up new camera photos",
+  "New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.": "New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.",
+  "Update TwinDesk on {name} to back up camera photos.": "Update TwinDesk on {name} to back up camera photos.",
+  "Needs Android 11 or later.": "Needs Android 11 or later.",
+  "Allow all photos on the phone. Selected photos can’t be backed up.": "Allow all photos on the phone. Selected photos can’t be backed up.",
+  "Allow photo locations on the phone. Backup copies that location with the photo.": "Allow photo locations on the phone. Backup copies that location with the photo.",
+  "Connect over Wi-Fi or a cable.": "Connect over Wi-Fi or a cable.",
+  "Turn backup on on {name} and choose a folder.": "Turn backup on on {name} and choose a folder.",
+  "Choose a folder on this Mac.": "Choose a folder on this Mac.",
 });

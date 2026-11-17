@@ -2455,4 +2455,13 @@
   "The pointer at its real size, no border. Over Remote Desktop it shows no pointer": "O ponteiro no tamanho real, sem borda. Na Área de Trabalho Remota não mostra o ponteiro",
   "The pointer at its real size; Windows 10 draws a yellow border around the screen": "O ponteiro no tamanho real; o Windows 10 desenha uma borda amarela ao redor da tela",
   "Desktop Duplication on Windows 10, Windows Graphics Capture on Windows 11": "Duplicação da Área de Trabalho no Windows 10, Windows Graphics Capture no Windows 11",
+  "Back up new camera photos": "Fazer backup das fotos novas da câmera",
+  "New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.": "As fotos novas da câmera são copiadas para a pasta escolhida, por ano e mês, depois que você liga isto aqui e em {name}. A cópia inclui o local da foto. Nada é apagado ou substituído.",
+  "Update TwinDesk on {name} to back up camera photos.": "Atualize o TwinDesk em {name} para fazer backup das fotos da câmera.",
+  "Needs Android 11 or later.": "Precisa do Android 11 ou mais recente.",
+  "Allow all photos on the phone. Selected photos can’t be backed up.": "Permita todas as fotos no telefone. Fotos selecionadas não podem ser copiadas.",
+  "Allow photo locations on the phone. Backup copies that location with the photo.": "Permita os locais das fotos no telefone. O backup copia esse local com a foto.",
+  "Connect over Wi-Fi or a cable.": "Conecte por Wi-Fi ou cabo.",
+  "Turn backup on on {name} and choose a folder.": "Ative o backup em {name} e escolha uma pasta.",
+  "Choose a folder on this Mac.": "Escolha uma pasta neste Mac.",
 });

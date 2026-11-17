@@ -113,7 +113,15 @@ UI.tab({
     const alertCard = UI.card('', [UI.row(tr('Notify about new photos and videos'),
       tr('Shows a notification on {me} when the phone’s camera takes a photo or a video, not for screenshots or pictures saved from elsewhere. Nothing is copied here until you save it.'), [alertSw])]);
     alertCard.hidden = true;
-    body.append(top.el, alertCard, wrap, viewer);
+    // New camera photos into a folder on this Mac. Only the direct Mac window has state.photoBackup,
+    // so mesh, Windows and Linux keep this card hidden. Save and the count notification are unchanged.
+    const backupSw = UI.switch((v) => UI.api.photoBackup({ do: 'on', on: v }), { label: tr('Back up new camera photos') });
+    const backupChoose = UI.button(tr('Choose…'), () => UI.api.photoBackup({ do: 'folder' }), 'small');
+    const backupRow = UI.row(tr('Back up new camera photos'), '', [backupSw], { literalHint: true });
+    const folderRow = UI.row(tr('Folder'), '', [backupChoose], { literalHint: true });
+    const backupCard = UI.card('', [backupRow, folderRow]);
+    backupCard.hidden = true;
+    body.append(top.el, alertCard, backupCard, wrap, viewer);
 
     let items = []; // {id, video, at, w, h, size, name, dur, album}
     let nextKey = '';
@@ -348,11 +356,32 @@ UI.tab({
       if (!page.hidden && UI.hubReady(UI.state, 'media') && !UI.onBle(UI.state)) { loaded = true; reset(); UI.hubAsk({ t: 'media.albums' }); }
     });
 
+    function backupHint(b) {
+      const name = b.name || '';
+      if (b.peer === false) return tr('Update TwinDesk on {name} to back up camera photos.', { name });
+      if (!b.on) return tr('New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.', { name });
+      if (b.why === 'peer') return tr('Update TwinDesk on {name} to back up camera photos.', { name });
+      if (b.why === 'api') return tr('Needs Android 11 or later.');
+      if (b.why === 'partial' || b.why === 'media') return tr('Allow all photos on the phone. Selected photos can’t be backed up.');
+      if (b.why === 'location') return tr('Allow photo locations on the phone. Backup copies that location with the photo.');
+      if (b.why === 'transport') return tr('Connect over Wi-Fi or a cable.');
+      if (b.why === 'consent') return tr('Turn backup on on {name} and choose a folder.', { name });
+      if (b.why === 'folder') return tr('Choose a folder on this Mac.');
+      return tr('New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.', { name });
+    }
+
     return (s) => {
       top.render(s);
       bigSave.textContent = tr('Save to {me}', { me: UI.fill('{me}') });
       alertCard.hidden = !(s.hub && s.hub.canMediaAlerts && UI.hubReady(s, 'media') && s.hub.perm.media.alerts && s.hub.perm.media.perm === 'ok'); // not with only chosen photos allowed
       alertSw.set(!!(s.hub && s.hub.mediaAlerts));
+      const b = s.photoBackup;
+      backupCard.hidden = !b;
+      if (b) {
+        backupSw.set(!!b.on);
+        backupRow.setHint(backupHint(b));
+        folderRow.setHint(b.folder || tr('Choose a folder on this Mac.'));
+      }
       const ready = UI.hubReady(s, 'media') && !UI.onBle(s); // over Bluetooth: the Wi-Fi Direct note only
       wrap.hidden = !ready;
       if (!ready) { loaded = false; view(null); return; }

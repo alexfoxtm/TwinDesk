@@ -2455,4 +2455,13 @@
   "The pointer at its real size, no border. Over Remote Desktop it shows no pointer": "İşaretçi gerçek boyutunda, çerçeve yok. Uzak Masaüstünde işaretçi görünmez",
   "The pointer at its real size; Windows 10 draws a yellow border around the screen": "İşaretçi gerçek boyutunda; Windows 10 ekranın çevresine sarı bir çerçeve çizer",
   "Desktop Duplication on Windows 10, Windows Graphics Capture on Windows 11": "Windows 10'da Masaüstü Çoğaltma, Windows 11'de Windows Graphics Capture",
+  "Back up new camera photos": "Yeni kamera fotoğraflarını yedekle",
+  "New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.": "Bunu burada ve {name} üzerinde açtıktan sonra kameranın yeni fotoğrafları seçtiğiniz klasöre yıl ve aya göre kopyalanır. Kopya fotoğrafın konumunu da içerir. Hiçbir şey silinmez veya değiştirilmez.",
+  "Update TwinDesk on {name} to back up camera photos.": "Kamera fotoğraflarını yedeklemek için {name} üzerinde TwinDesk’i güncelleyin.",
+  "Needs Android 11 or later.": "Android 11 veya daha yenisi gerekir.",
+  "Allow all photos on the phone. Selected photos can’t be backed up.": "Telefonda tüm fotoğraflara izin verin. Seçilen fotoğraflar yedeklenemez.",
+  "Allow photo locations on the phone. Backup copies that location with the photo.": "Telefonda fotoğraf konumlarına izin verin. Yedek, konumu fotoğrafla birlikte kopyalar.",
+  "Connect over Wi-Fi or a cable.": "Wi-Fi veya kabloyla bağlanın.",
+  "Turn backup on on {name} and choose a folder.": "{name} üzerinde yedeklemeyi açın ve bir klasör seçin.",
+  "Choose a folder on this Mac.": "Bu Mac’te bir klasör seçin.",
 });

@@ -1384,5 +1384,13 @@
   "Auto-rotate is on: the screen turns with this phone": "Автоповорот включён: экран поворачивается вместе с телефоном",
   "Auto-rotate is off: the screen stays as it is": "Автоповорот выключен: экран остаётся как есть",
   "Couldn’t take the screenshot": "Не удалось сделать снимок экрана",
-  "Screenshot saved in Pictures › TwinDesk": "Снимок экрана сохранён в «Изображения › TwinDesk»"
+  "Screenshot saved in Pictures › TwinDesk": "Снимок экрана сохранён в «Изображения › TwinDesk»",
+  "Back up new camera photos": "Сохранять новые фото с камеры",
+  "New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.": "Новые фото с камеры копируются в выбранную папку по году и месяцу, когда это включено здесь и на {name}. Копия включает место съёмки. Ничего не удаляется и не заменяется.",
+  "Update TwinDesk on {name} to back up camera photos.": "Обновите TwinDesk на {name}, чтобы сохранять фото с камеры.",
+  "Needs Android 11 or later.": "Нужен Android 11 или новее.",
+  "Allow all photos on the phone. Selected photos can’t be backed up.": "Разрешите доступ ко всем фото на телефоне. Выбранные фото сохранить нельзя.",
+  "Allow photo locations on the phone. Backup copies that location with the photo.": "Разрешите доступ к местам съёмки на телефоне. Копия сохраняет это место вместе с фото.",
+  "Connect over Wi-Fi or a cable.": "Подключитесь по Wi-Fi или кабелю.",
+  "Turn backup on on {name} and choose a folder.": "Включите сохранение на {name} и выберите папку."
 }

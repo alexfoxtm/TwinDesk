@@ -2455,4 +2455,13 @@
   "The pointer at its real size, no border. Over Remote Desktop it shows no pointer": "Указатель в реальном размере, без рамки. В удалённом рабочем столе указатель не виден",
   "The pointer at its real size; Windows 10 draws a yellow border around the screen": "Указатель в реальном размере; Windows 10 рисует жёлтую рамку вокруг экрана",
   "Desktop Duplication on Windows 10, Windows Graphics Capture on Windows 11": "Дублирование рабочего стола в Windows 10, Windows Graphics Capture в Windows 11",
+  "Back up new camera photos": "Сохранять новые фото с камеры",
+  "New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.": "Новые фото с камеры копируются в выбранную папку по году и месяцу, когда это включено здесь и на {name}. Копия включает место съёмки. Ничего не удаляется и не заменяется.",
+  "Update TwinDesk on {name} to back up camera photos.": "Обновите TwinDesk на {name}, чтобы сохранять фото с камеры.",
+  "Needs Android 11 or later.": "Нужен Android 11 или новее.",
+  "Allow all photos on the phone. Selected photos can’t be backed up.": "Разрешите доступ ко всем фото на телефоне. Выбранные фото сохранить нельзя.",
+  "Allow photo locations on the phone. Backup copies that location with the photo.": "Разрешите доступ к местам съёмки на телефоне. Копия сохраняет это место вместе с фото.",
+  "Connect over Wi-Fi or a cable.": "Подключитесь по Wi-Fi или кабелю.",
+  "Turn backup on on {name} and choose a folder.": "Включите сохранение на {name} и выберите папку.",
+  "Choose a folder on this Mac.": "Выберите папку на этом Mac.",
 });

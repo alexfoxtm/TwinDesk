@@ -164,6 +164,18 @@ object Proto {
         const val MEDIA_SAVE = "media.save"
         const val MEDIA_DELETE = "media.delete"
         const val MEDIA_NEW = "media.new" // phone->computer {photos, videos}: new camera photos and videos, how many (MediaAlerts.kt)
+        // Camera photo backup (PhotoBackup.kt). hello {pb:1}; bytes are backup.chunk, not a Save.
+        const val BACKUP_STATE = "backup.state"
+        const val BACKUP_SYNC = "backup.sync"
+        const val BACKUP_INV = "backup.inv"
+        const val BACKUP_TAKE = "backup.take"
+        const val BACKUP_ACCEPT = "backup.accept"
+        const val BACKUP_HAVE = "backup.have"
+        const val BACKUP_CHUNK = "backup.chunk"
+        const val BACKUP_END = "backup.end"
+        const val BACKUP_DONE = "backup.done"
+        const val BACKUP_REFUSE = "backup.refuse"
+        const val BACKUP_STOP = "backup.stop"
         const val FS_LIST = "fs.list"
         const val FS_DO = "fs.do"
         const val FS_DONE = "fs.done"

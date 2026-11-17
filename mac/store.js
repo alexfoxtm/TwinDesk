@@ -127,13 +127,31 @@ const DEFAULT_SETTINGS = {
   web: { on: false, port: 47870, screen: true, control: true, camera: true, mic: true },
   // Files with LocalSend-compatible apps (shared/localsend): nothing listens or announces until turned on.
   localsend: { on: false },
+  // New camera photos from a paired Android phone (shared/photobackup.js). Nothing is copied until
+  // this Mac and that phone each turn it on. peers: {deviceId: {on, since, rev, folder}}.
+  photoBackup: { peers: {} },
 };
+
+// A saved backup peer: a real id, an absolute folder, and a boolean switch. Anything else is dropped.
+function cleanPhotoPeers(raw) {
+  const peers = {};
+  if (!raw || typeof raw !== 'object') return peers;
+  for (const [id, p] of Object.entries(raw)) {
+    if (!/^[0-9A-Za-z._-]{1,64}$/.test(id) || !p || typeof p !== 'object') continue;
+    const folder = typeof p.folder === 'string' && path.isAbsolute(p.folder) ? p.folder : '';
+    const since = Number.isFinite(p.since) && p.since >= 0 ? p.since : 0;
+    const rev = Number.isInteger(p.rev) && p.rev >= 0 && p.rev <= Number.MAX_SAFE_INTEGER ? p.rev : 0;
+    peers[id] = { on: p.on === true && folder.length > 0, since, rev, folder };
+  }
+  return peers;
+}
 
 function loadSettings() {
   const s = read('settings.json', {});
   if (s.sharing) s.sharing.on = false; // screen sharing never starts by itself
   const out = { ...DEFAULT_SETTINGS, ...s };
-  for (const k of ['wake', 'sharing', 'virtual', 'kvm', 'keys', 'clipboard', 'ui', 'app', 'audio', 'terminal', 'files', 'smb', 'apps', 'receive', 'papps', 'notifs', 'updates', 'phone', 'mount', 'drive', 'hub', 'camera', 'remote', 'web', 'localsend', 'silence']) out[k] = { ...DEFAULT_SETTINGS[k], ...(s[k] || {}) };
+  for (const k of ['wake', 'sharing', 'virtual', 'kvm', 'keys', 'clipboard', 'ui', 'app', 'audio', 'terminal', 'files', 'smb', 'apps', 'receive', 'papps', 'notifs', 'updates', 'phone', 'mount', 'drive', 'hub', 'camera', 'remote', 'web', 'localsend', 'silence', 'photoBackup']) out[k] = { ...DEFAULT_SETTINGS[k], ...(s[k] || {}) };
+  out.photoBackup.peers = cleanPhotoPeers(s.photoBackup && s.photoBackup.peers);
   if (!out.silence.peers || typeof out.silence.peers !== 'object') out.silence.peers = {};
   if (!['', 'Command', 'Control', 'Alt', 'Shift'].includes(out.kvm.crossingModifier)) out.kvm.crossingModifier = '';
   out.rezume = require('../shared/rezume.js').normalize(s.rezume);

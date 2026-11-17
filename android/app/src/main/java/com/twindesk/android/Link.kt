@@ -142,6 +142,10 @@ class Link(
     // … and fast files v2 (the computers' shared/fx2.js, Fx2.kt): welcome {fx2: {port}}, the port of
     // the computer's files engine (0: none, an older computer).
     @Volatile private var fx2Port = 0
+    // welcome {pb: 1}: this Mac can back up new camera photos (PhotoBackup.kt). A resumed welcome
+    // has no pb; the first welcome's answer stays until the socket closes.
+    @Volatile var peerBackup = false
+        private set
     private var fxClient: Pair<String, OkHttpClient>? = null // (pinned fingerprint, client), kept for its connections
 
     private fun run(block: () -> Unit) = exec.execute { try { block() } catch (e: Exception) { Log.e("TwinDesk", "link", e) } }
@@ -499,7 +503,7 @@ class Link(
         }
         // rc and resume together: an older host treats hello+resume
         // as a socket move and refuses it. A plain phone hello would take whatever session it holds.
-        raw(msg(Proto.T.HELLO, "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "os" to Proto.OS, "token" to h.token, "fx" to 1, "fxPlain" to 1).apply {
+        raw(msg(Proto.T.HELLO, "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "os" to Proto.OS, "token" to h.token, "fx" to 1, "fxPlain" to 1, "pb" to 1).apply {
             if (!wired) put("fx2", 1)
             if (reclaimHello) { put("rc", 1); put("resume", "0") }
         })
@@ -629,6 +633,7 @@ class Link(
         lastUse = System.currentTimeMillis()
         pinger = exec.scheduleWithFixedDelay({ beat() }, Proto.PING_MS, Proto.PING_MS, TimeUnit.MILLISECONDS)
         setState("connected", "")
+        peerBackup = m.has("pb") && m.optInt("pb") == 1
         events.onWelcome(h)
     }
 
@@ -728,6 +733,7 @@ class Link(
         fxToken = ""
         fxPlain = null
         fx2Port = 0
+        peerBackup = false
         dropOthers()
         if (mode == "pair") {
             val p = pair
@@ -761,6 +767,7 @@ class Link(
         fxToken = ""
         fxPlain = null
         fx2Port = 0
+        peerBackup = false
         dropOthers()
         val wasConnected = state == "connected"
         if (wasConnected) state = "idle"
