@@ -275,7 +275,7 @@ class Hub extends EventEmitter {
   // ---- internals: devices ----
 
   _attach(s) {
-    s.tap((msg, source) => this._fromDevice(s, msg, source));
+    s.tap((msg, source, ws) => this._fromDevice(s, msg, source, ws));
     s.onLife((up, replaced) => (up ? this._up(s) : this._down(s, replaced)));
     s.onState(() => this._stateOf(s));
     s.refresh(); // a device that is already connected comes up now
@@ -284,7 +284,7 @@ class Hub extends EventEmitter {
   // A message of one device: roster messages are the mesh's, the rest goes to the bus (any device)
   // and to the route that follows this device. True keeps it away from the session's own handlers.
   // source is the guest link or host ctx that carried it, not a session rebuilt from the device id.
-  _fromDevice(s, msg, source) {
+  _fromDevice(s, msg, source, ws) {
     if (msg.t === ROSTER) {
       if (this.mesh && this.mesh.handle(s.id, msg)) this._change();
       return true;
@@ -299,7 +299,7 @@ class Hub extends EventEmitter {
       // A route takes the message only when someone listens for it (as the Windows facade does).
       if (r.targetId !== s.id) continue;
       if (r.listenerCount(`t:${msg.t}`) > 0 || r.listenerCount('message') > 0) {
-        r.deliver(msg);
+        r.deliver(msg, ws);
         consumed = true;
       }
     }

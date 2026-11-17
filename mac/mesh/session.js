@@ -34,7 +34,7 @@ class Session extends EventEmitter {
     this._up = false;
     this._linkMesh = false; // the guest link's welcome said mesh: 1
     this.meshCapable = false; // the device speaks the mesh (hello/welcome `mesh: 1`); set when it comes up
-    this.taps = []; // hub: fn(msg, source) -> true when it consumed the message (see _deliver)
+    this.taps = []; // hub: fn(msg, source, ws) -> true when it consumed the message (see _deliver)
     this._inbound = null; // the socket of the delivery now running, else null
     this.lifeFns = []; // hub: fn(up, replaced) when the device becomes connected or stops being connected
     // Fast files (shared/fastfile.js): this device's file bytes over HTTPS, when both apps can (hello
@@ -145,6 +145,21 @@ class Session extends EventEmitter {
     return false;
   }
 
+  // The socket send() writes right now, or null. Same choice as send(): the guest link when it
+  // is up, otherwise the host socket. A Save is bound to this object, not to the device id and
+  // not to the host ctx while the guest link is the one in use.
+  outbound() {
+    if (this.linkUp) {
+      const ws = this.link && this.link.ws;
+      return ws && ws.readyState === 1 && ws.released !== true ? ws : null;
+    }
+    if (this.hostUp && this.ctx && this.ctx.released !== true && this.ctx.authed !== false) {
+      const ws = this.ctx.ws;
+      return ws && ws.readyState === 1 && ws.released !== true ? ws : null;
+    }
+    return null;
+  }
+
   // A message as if the device had sent it.
   inject(msg) {
     if (this.connected) this._deliver(msg);
@@ -204,8 +219,8 @@ class Session extends EventEmitter {
     this.link = link;
     if (link && !this._subscribed.has(link)) {
       this._subscribed.add(link);
-      link.onAny = (msg) => {
-        if (this.link === link) this._fromLink(msg);
+      link.onAny = (msg, ws) => {
+        if (this.link === link) this._fromLink(msg, ws);
       };
       link.on('welcome', (msg) => {
         this._linkMesh = !!(msg && msg.mesh);
@@ -234,29 +249,29 @@ class Session extends EventEmitter {
   // Messages from the server ctx. Only the current authenticated socket, and the tap
   // receives that exact object. A released socket is not delivered. The guest link, when
   // it is up, is a different connection: a host message is not labeled as that link.
-  fromHost(msg, ctx) {
-    if (ctx !== this.ctx || !physical(ctx)) return;
-    this._deliver(msg, false, ctx);
+  fromHost(msg, ctx, ws = ctx && ctx.ws) {
+    if (ctx !== this.ctx || !physical(ctx, ws)) return;
+    this._deliver(msg, false, ctx, ws);
   }
 
   // ---- internals ----
 
-  _fromLink(msg) {
+  _fromLink(msg, ws = this.link && this.link.ws) {
     const link = this.link;
-    if (!physical(link)) return;
-    for (const m of P.swapRole(msg, this.swapIn)) this._deliver(m, false, link);
+    if (!physical(link, ws) || link.ws !== ws) return;
+    for (const m of P.swapRole(msg, this.swapIn)) this._deliver(m, false, link, ws);
   }
 
   // raw: from FastFiles itself (its file.chunk / held file.end), not for it again.
-  // source: the guest link or host ctx that carried this message. inject() has none.
-  // inbound() is that same object while taps and handlers run, so a preview ask cannot
+  // source: the guest link or host ctx that carried this message. ws is its actual socket.
+  // inbound() is the surrounding link/ctx while taps and handlers run, so a preview ask cannot
   // treat the guest link as the host socket. A nested delivery restores the previous one.
-  _deliver(msg, raw = false, source = null) {
+  _deliver(msg, raw = false, source = null, ws = null) {
     if (!raw && this.fx.incoming(msg)) return;
     const prev = this._inbound;
     this._inbound = source || null;
     try {
-      for (const tap of this.taps) if (tap(msg, source) === true) return;
+      for (const tap of this.taps) if (tap(msg, source, ws) === true) return;
       const fns = this.handlers.get(msg.t);
       if (fns) for (const fn of fns) fn(msg);
       else if (!this.unknown.has(msg.t)) {
@@ -339,9 +354,9 @@ class Sessions extends EventEmitter {
       const s = this.sessions.get(ctx.deviceId);
       if (s) s._changed();
     });
-    server.on('message', (msg, ctx) => {
+    server.on('message', (msg, ctx, ws) => {
       const s = this.sessions.get(ctx.deviceId);
-      if (s) s.fromHost(msg, ctx);
+      if (s) s.fromHost(msg, ctx, ws);
     });
     for (const ctx of server.clients.values()) this.ensure(ctx.deviceId).setCtx(ctx);
   }
@@ -373,8 +388,8 @@ class Sessions extends EventEmitter {
 }
 
 // The same shape meshGate rechecks. A missing socket, a release, or a closed socket is not live.
-function physical(conn) {
-  return !!(conn && conn.authed === true && !conn.released && conn.ws && conn.ws.readyState === 1);
+function physical(conn, ws) {
+  return !!(conn && conn.authed === true && !conn.released && ws && ws.readyState === 1 && (ws === conn.ws || ws === conn.alt));
 }
 
 module.exports = { Session, Sessions };
