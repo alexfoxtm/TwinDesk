@@ -394,7 +394,9 @@ const hashFile = (file) => new Promise((resolve, reject) => {
 
 class LocalSend extends EventEmitter {
   // dir: where the identity and files on their way are kept. alias(): this device's name.
-  // saveDir(): where accepted files go. port: 53317. host/multicast/allow: tests bind to loopback.
+  // saveDir(): where accepted files go. port: 53317, the protocol default. When that TCP port is
+  // taken, start() binds an OS-chosen port and advertises that one. Any other port is exact.
+  // host/multicast/allow: tests bind to loopback.
   // allowLocal(address): which of this computer's own addresses take connections. mark(path): the
   // app's own mark on what arrives, before it is in the folder (macOS: quarantine).
   constructor(opts) {
@@ -403,8 +405,8 @@ class LocalSend extends EventEmitter {
     this.identity = loadIdentity(this.o.dir);
     this.fingerprint = this.identity.fingerprint;
     this.running = false;
-    this.receiving = false; // our server has the port (else another app on this computer receives)
-    this.port = this.o.port;
+    this.receiving = false; // our server has a TCP port (else another app on this computer receives, or the bind failed)
+    this.port = this.o.port; // replaced with the bound TCP port before an announcement or /info is sent
     this.error = '';
     this._peers = new Map(); // id -> peer
     this._offers = new Map(); // offer id -> { offer, resolve }
@@ -453,6 +455,8 @@ class LocalSend extends EventEmitter {
   async _open(gen) {
     if (gen !== this._gen) return; // stopped before anything was opened
     this._sweepStaging();
+    // TCP first. The announcements below name this.port, which _listen sets from the socket that
+    // bound. UDP discovery stays on 53317 and is not that port.
     await this._listen(gen);
     if (gen === this._gen && this.o.multicast) await this._openUdp(gen);
     if (gen !== this._gen) return;
@@ -488,8 +492,13 @@ class LocalSend extends EventEmitter {
     if (server.closeAllConnections) server.closeAllConnections();
   }
 
-  _listen(gen) {
-    return new Promise((resolve) => {
+  // One TCP bind. The protocol default (53317) is tried again on an OS-chosen port when it is
+  // taken, so the LocalSend app on this computer can keep 53317. Any other requested port is exact:
+  // taken means send-only. The port in an announcement is the bound one, written here before the
+  // promise resolves; _open does not announce until then. A stop() while this is opening closes
+  // whichever socket comes up and does not leave the error from the port that was taken.
+  async _listen(gen) {
+    const attempt = (port) => new Promise((resolve) => {
       // requestCert: a sender is asked for its certificate and is the device that certificate is
       // (clientFingerprint); one that shows none is still heard, as a device nobody can name.
       const server = https.createServer({ key: this.identity.keyPem, cert: this.identity.certPem, minVersion: 'TLSv1.2', handshakeTimeout: 10 * 1000, requestCert: true, rejectUnauthorized: false }, (req, res) => {
@@ -508,25 +517,49 @@ class LocalSend extends EventEmitter {
       // The port is open on every network this computer is on; a connection that came in on an
       // address that isn't a local one (a public one) is closed before a byte of it is read.
       server.on('connection', (s) => { if (!this.o.allowLocal(v4(s.localAddress))) s.destroy(); });
+      let settled = false;
+      const finish = (result) => { if (!settled) { settled = true; resolve(result); } };
       server.once('error', (e) => {
-        // The port is someone's (the LocalSend app on this computer): it receives, we still find and send.
-        if (gen === this._gen) {
-          this.receiving = false;
-          this.error = e.code === 'EADDRINUSE' ? 'port' : e.message;
-        }
-        resolve();
+        server.on('error', () => {});
+        if (gen !== this._gen) { this._shut(server); finish({ stopped: true, server }); return; }
+        finish({ error: e, server });
       });
-      server.listen(this.o.port, this.o.host, () => {
+      server.listen(port, this.o.host, () => {
+        server.removeAllListeners('error');
         server.on('error', (e) => this.o.log(`[localsend] server: ${e.message}`));
-        if (gen !== this._gen) this._shut(server); // stopped while it was opening
-        else {
-          this._server = server;
-          this.receiving = true;
-          this.port = server.address().port;
-        }
-        resolve();
+        if (gen !== this._gen) { this._shut(server); finish({ stopped: true, server }); return; } // stopped while it was opening
+        finish({ server });
       });
     });
+
+    const publish = (server) => {
+      if (gen !== this._gen) { this._shut(server); return false; }
+      const bound = server.address();
+      const n = bound && typeof bound === 'object' ? bound.port : 0;
+      if (!n) { this._shut(server); this.receiving = false; this.error = 'port'; return false; }
+      this.port = n; // advertise this, never the port we hoped for
+      this._server = server;
+      this.error = '';
+      this.receiving = true;
+      return true;
+    };
+
+    const first = await attempt(this.o.port);
+    if (first.stopped || gen !== this._gen) { if (!first.stopped) this._shut(first.server); return; }
+    if (!first.error) { publish(first.server); return; }
+    this._shut(first.server);
+    // Only the protocol default moves. port 0 and any chosen port stay as the caller asked.
+    if (first.error.code === 'EADDRINUSE' && this.o.port === PORT) {
+      const second = await attempt(0);
+      if (second.stopped || gen !== this._gen) { if (!second.stopped) this._shut(second.server); return; }
+      if (!second.error) { publish(second.server); return; }
+      this._shut(second.server);
+      this.receiving = false;
+      this.error = second.error.code === 'EADDRINUSE' ? 'port' : second.error.message;
+      return;
+    }
+    this.receiving = false;
+    this.error = first.error.code === 'EADDRINUSE' ? 'port' : first.error.message;
   }
 
   // ---- discovery ----

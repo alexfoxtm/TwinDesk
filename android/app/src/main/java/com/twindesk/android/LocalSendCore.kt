@@ -426,8 +426,8 @@ class LocalSendCore(
     val identity = LsIdentity.load(dir)
     val fingerprint: String get() = identity.fingerprint
     @Volatile var running = false; private set
-    @Volatile var receiving = false; private set // our server has the port (else another app here receives)
-    @Volatile var port = opts.port; private set
+    @Volatile var receiving = false; private set // our server has a TCP port (else another app here receives, or the bind failed)
+    @Volatile var port = opts.port; private set // the bound TCP port once listen() has it; until then the requested one, which is not announced
     @Volatile var error = ""; private set
 
     private class InFile(val id: String, val folder: List<String>, val name: String, val size: Long, val type: String, val sha256: String, val text: String) {
@@ -497,7 +497,7 @@ class LocalSendCore(
                 running = true
                 error = ""
             }
-            listen()
+            listen() // sets port from the bound socket before any announce. UDP below stays on 53317.
             if (opts.multicast) openUdp()
             ticker = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "td-localsend-tick").apply { isDaemon = true } }.also { t ->
                 t.scheduleWithFixedDelay({ runCatching { expire(); announce() } }, Ls.ANNOUNCE_S, Ls.ANNOUNCE_S, TimeUnit.SECONDS)
@@ -557,42 +557,66 @@ class LocalSendCore(
         return SSLContext.getInstance("TLS").apply { init(arrayOf(keys), arrayOf(anyone), null) }
     }
 
+    // TCP 53317 is the protocol default. When it is taken, bind an OS-chosen port and advertise
+    // that one, so the LocalSend app on this phone can keep 53317. Any other requested port is
+    // exact: taken means send-only. UDP discovery is always 53317 (openUdp), never this TCP port.
+    // start() holds life across this, so a stop() waits and then closes whatever was published.
     private fun listen() {
         try {
-            val ss = serverContext().serverSocketFactory.createServerSocket() as SSLServerSocket
+            serveOn(opts.port)
+        } catch (e: IOException) {
+            if (e is BindException && opts.port == Ls.PORT) {
+                try {
+                    serveOn(0)
+                } catch (e2: IOException) {
+                    refuseListen(e2)
+                }
+            } else refuseListen(e)
+        }
+    }
+
+    private fun refuseListen(e: IOException) {
+        receiving = false
+        error = if (e is BindException) "port" else (e.message ?: "error")
+    }
+
+    private fun serveOn(bindPort: Int) {
+        val ss = serverContext().serverSocketFactory.createServerSocket() as SSLServerSocket
+        try {
             ss.reuseAddress = true
             ss.wantClientAuth = true // asked for, not demanded: a sender without one is heard as a device nobody can name
-            ss.bind(opts.bind?.let { InetSocketAddress(InetAddress.getByName(it), opts.port) } ?: InetSocketAddress(opts.port), 50)
-            server = ss
-            port = ss.localPort
-            receiving = true
-            Thread({
-                while (running) {
-                    val s = try { ss.accept() as SSLSocket } catch (e: IOException) { break }
-                    // The port is open on every network this device is on; a connection that came in on
-                    // an address that isn't a local one (a public one) is closed before a byte of it is read.
-                    if (s.localAddress?.let(opts.allowLocal) != true) { runCatching { s.close() }; continue }
-                    // One address can't hold every connection (and so keep everyone else out).
-                    val from = s.inetAddress?.hostAddress ?: ""
-                    val room = synchronized(perIp) {
-                        val n = perIp[from] ?: 0
-                        if (connections.get() >= Ls.MAX_CONNECTIONS || n >= Ls.MAX_CONNECTIONS_PER_IP) false else { perIp[from] = n + 1; true }
-                    }
-                    if (!room) { runCatching { s.close() }; continue }
-                    connections.incrementAndGet()
-                    pool.execute {
-                        try { serve(s) } finally {
-                            connections.decrementAndGet()
-                            synchronized(perIp) { val n = (perIp[from] ?: 1) - 1; if (n <= 0) perIp.remove(from) else perIp[from] = n }
-                        }
+            ss.bind(opts.bind?.let { InetSocketAddress(InetAddress.getByName(it), bindPort) } ?: InetSocketAddress(bindPort), 50)
+        } catch (e: IOException) {
+            runCatching { ss.close() }
+            throw e
+        }
+        if (!running) { runCatching { ss.close() }; return } // stopped before the socket was published
+        server = ss
+        port = ss.localPort // advertise this, never the port we hoped for
+        error = ""
+        receiving = true
+        Thread({
+            while (running) {
+                val s = try { ss.accept() as SSLSocket } catch (e: IOException) { break }
+                // The port is open on every network this device is on; a connection that came in on
+                // an address that isn't a local one (a public one) is closed before a byte of it is read.
+                if (s.localAddress?.let(opts.allowLocal) != true) { runCatching { s.close() }; continue }
+                // One address can't hold every connection (and so keep everyone else out).
+                val from = s.inetAddress?.hostAddress ?: ""
+                val room = synchronized(perIp) {
+                    val n = perIp[from] ?: 0
+                    if (connections.get() >= Ls.MAX_CONNECTIONS || n >= Ls.MAX_CONNECTIONS_PER_IP) false else { perIp[from] = n + 1; true }
+                }
+                if (!room) { runCatching { s.close() }; continue }
+                connections.incrementAndGet()
+                pool.execute {
+                    try { serve(s) } finally {
+                        connections.decrementAndGet()
+                        synchronized(perIp) { val n = (perIp[from] ?: 1) - 1; if (n <= 0) perIp.remove(from) else perIp[from] = n }
                     }
                 }
-            }, "td-localsend-accept").apply { isDaemon = true }.start()
-        } catch (e: IOException) {
-            // The port is someone's (the LocalSend app on this phone): it receives, we still find and send.
-            receiving = false
-            error = if (e is BindException) "port" else (e.message ?: "error")
-        }
+            }
+        }, "td-localsend-accept").apply { isDaemon = true }.start()
     }
 
     // ---- discovery ----

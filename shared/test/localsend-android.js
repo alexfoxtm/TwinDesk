@@ -13,6 +13,7 @@ const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const https = require('https');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
@@ -500,6 +501,47 @@ async function main() {
     assert.ok(peers.some((p) => p.id === real.id && p.verified && p.alias === 'Second Mac'), 'the proven device is listed');
     assert.ok(peers.some((p) => p.id === macPeer.id && p.verified), 'and the one proven before stays');
     mac2.stop();
+  }
+
+  // ---- TCP 53317 is taken: Kotlin binds another port, advertises it, and a send to it lands ----
+  {
+    const held = net.createServer((socket) => socket.destroy());
+    let ours = false;
+    try {
+      await new Promise((resolve, reject) => {
+        const fail = (e) => reject(e);
+        held.once('error', fail);
+        held.listen(ls.PORT, '127.0.0.1', () => { held.removeListener('error', fail); resolve(); });
+      });
+      ours = true;
+    } catch (e) {
+      if (e.code !== 'EADDRINUSE') throw e;
+    }
+    const alt = kotlin('coexist', '60000', '300', String(ls.PORT));
+    try {
+      const altReady = await alt.started;
+      assert.strictEqual(altReady.error, '');
+      assert.strictEqual(altReady.receiving, true);
+      assert.ok(altReady.port > 0 && altReady.port !== ls.PORT, `bound ${altReady.port}`);
+      assert.strictEqual(altReady.advertised, altReady.port);
+      const infoAlt = await raw(altReady.port, 'GET', `${API}/info`);
+      assert.strictEqual(infoAlt.status, 200);
+      assert.strictEqual(infoAlt.json.port, altReady.port);
+      assert.strictEqual(infoAlt.fp, altReady.fingerprint);
+      const data = Buffer.from('via-fallback');
+      const prep = await raw(altReady.port, 'POST', `${API}/prepare-upload`, offerOf([{ id: 'f', fileName: 'fallback.txt', data }]));
+      assert.strictEqual(prep.status, 200);
+      assert.strictEqual((await up(altReady.port, prep.json.sessionId, 'f', prep.json.files.f, data)).status, 200);
+      assert.strictEqual(fs.readFileSync(path.join(altReady.received, 'fallback.txt'), 'utf8'), 'via-fallback');
+      const onDefault = await raw(ls.PORT, 'GET', `${API}/info`);
+      assert.ok(onDefault.status !== 200 || onDefault.fp !== altReady.fingerprint);
+      if (ours) assert.strictEqual(held.listening, true);
+      await alt.cmd('stop');
+    } finally {
+      alt.child.removeAllListeners('exit');
+      if (alt.child.exitCode == null && !alt.child.killed) alt.child.kill();
+      if (ours) held.close();
+    }
   }
 
   mac.stop();

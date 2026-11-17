@@ -603,13 +603,51 @@ async function main() {
   await assert.rejects(a.probe('example.com'), (e) => e.code === 'address');
   await assert.rejects(a.probe('10.999.1.1'), (e) => e.code === 'address'); // never a name to look up
 
-  // ---- the port is another app's: we still find and send, and say we don't receive ----
+  // ---- a chosen port is another app's: no move, we still find and send, and say we don't receive ----
   const second = node('Second', { port: a.port });
   await second.start();
   assert.deepStrictEqual([second.receiving, second.error], [false, 'port']);
   const viaInfo = await second.probe('127.0.0.1', b.port); // GET /info, since there's nothing to register
   assert.ok(viaInfo.verified);
   assert.strictEqual((await finished(second, second.send(viaInfo.id, [path.join(src, 'hello.txt')]))).state, 'done');
+
+  // ---- TCP 53317 is taken: the default moves, the advertised port is the one bound, and a send to it lands ----
+  {
+    const held = http.createServer();
+    let ours = false;
+    try {
+      await new Promise((resolve, reject) => {
+        const fail = (e) => reject(e);
+        held.once('error', fail);
+        held.listen(ls.PORT, '127.0.0.1', () => { held.removeListener('error', fail); resolve(); });
+      });
+      ours = true;
+      closers.push(() => { held.close(); held.closeAllConnections(); });
+    } catch (e) {
+      if (e.code !== 'EADDRINUSE') throw e; // already taken here: the default still has to move off it
+    }
+    const coexist = node('Coexist', { port: ls.PORT });
+    await coexist.start();
+    assert.strictEqual(coexist.error, '');
+    assert.strictEqual(coexist.receiving, true);
+    assert.ok(coexist.port > 0 && coexist.port !== ls.PORT, `bound ${coexist.port}`);
+    assert.strictEqual(coexist.info(true).port, coexist.port);
+    assert.strictEqual(coexist.status().port, coexist.port);
+    const advertised = await raw(coexist.port, 'GET', `${API}/info`);
+    assert.strictEqual(advertised.status, 200);
+    assert.strictEqual(advertised.json.port, coexist.port);
+    assert.strictEqual(advertised.fp, coexist.fingerprint);
+    const prep = await raw(coexist.port, 'POST', `${API}/prepare-upload`, offerOf([one]));
+    assert.strictEqual(prep.status, 200);
+    assert.strictEqual((await up(coexist.port, prep.json.sessionId, 'k', prep.json.files.k, one.data)).status, 200);
+    assert.strictEqual(fs.readFileSync(path.join(coexist.save, 'k.txt'), 'utf8'), 'k');
+    const onDefault = await raw(ls.PORT, 'GET', `${API}/info`);
+    assert.ok(onDefault.status !== 200 || onDefault.fp !== coexist.fingerprint);
+    const bound = coexist.port;
+    coexist.stop();
+    assert.strictEqual(await accepts(bound), false);
+    if (ours) assert.strictEqual(held.listening, true);
+  }
 
   // ---- a flood of claims fills the list, and a device that proves itself still gets in ----
   const crowd = node('Crowd');

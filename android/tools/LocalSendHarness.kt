@@ -2,7 +2,9 @@
 // The phone's LocalSend-compatible core (LocalSendCore.kt) on a plain JVM, for
 // shared/test/localsend-android.js: one node on 127.0.0.1 that takes its orders as JSON lines on
 // stdin and says what happens as JSON lines on stdout. Not part of the app (Gradle doesn't build
-// this folder). Arguments: <directory> [approvalMs] [cooldownMs].
+// this folder). Arguments: <directory> [approvalMs] [cooldownMs] [port].
+// No port (the usual run) binds an OS-chosen port. 53317 is the protocol default: when it is taken
+// the core moves, and ready.advertised is the TCP port it bound.
 package com.twindesk.android
 
 import org.json.JSONArray
@@ -48,10 +50,12 @@ fun main(args: Array<String>) {
         override fun transfer(t: LsTransfer) = say(JSONObject().put("ev", "transfer").put("id", t.id).put("incoming", t.incoming).put("peer", t.peer).put("names", JSONArray(t.names))
             .put("files", t.files).put("total", t.total).put("done", t.done).put("state", t.state).put("error", t.error).put("arrived", t.arrived).put("saved", JSONArray(t.saved)))
     }
-    val node = LocalSendCore(dir, { "Kotlin node" }, sink, events, LsOptions(port = 0, bind = "127.0.0.1", multicast = false, deviceModel = "Harness",
+    val listenPort = args.getOrNull(3)?.toIntOrNull() ?: 0
+    val node = LocalSendCore(dir, { "Kotlin node" }, sink, events, LsOptions(port = listenPort, bind = "127.0.0.1", multicast = false, deviceModel = "Harness",
         approvalMs = args.getOrNull(1)?.toLong() ?: 60_000, cooldownMs = args.getOrNull(2)?.toLong() ?: 300, log = { System.err.println(it) }))
     node.start()
-    say(JSONObject().put("ev", "ready").put("port", node.port).put("fingerprint", node.fingerprint).put("receiving", node.receiving).put("received", received.path))
+    say(JSONObject().put("ev", "ready").put("port", node.port).put("advertised", node.info(true).optInt("port")).put("error", node.error)
+        .put("fingerprint", node.fingerprint).put("receiving", node.receiving).put("received", received.path))
 
     while (true) {
         val line = stdin.readLine() ?: break

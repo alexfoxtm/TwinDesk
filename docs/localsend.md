@@ -16,8 +16,13 @@ While it is off nothing is listened for, announced or accepted. On Android it ru
 
 ## What it does
 
-- **Finds devices** on the network by the protocol's multicast announce (224.0.0.167:53317), or by
+- **Finds devices** on the network by the protocol's multicast announce (UDP 224.0.0.167:53317), or by
   an address you type (*Add a device by its address*) where the network doesn't carry multicast.
+  Receiving starts on TCP 53317. When that port is already taken (the LocalSend app on this device),
+  receiving moves to a free port the operating system chooses. Other devices are told that TCP port,
+  in the announcement and in `/info`, and only after it is open. Discovery stays on UDP 53317.
+  A different port asked for by the caller is used as given: if it is taken, this device can still
+  find others and send, and does not receive.
 - **Sends** files (folders too, from the Mac) to a device you pick. The other person accepts there;
   a device that asks for its PIN gets a field for it.
 - **Receives** only what you accept. Every transfer is asked about first, with who it says it is,
@@ -93,3 +98,9 @@ node shared/test/localsend-android.js   # the Kotlin core on a JVM against the N
 
 `core.js` and `LocalSendCore.kt` are adapted from NectarLink and stay under the MPL-2.0
 (`licenses/MPL-2.0.txt`, `THIRD_PARTY_NOTICES`).
+
+The announcement's `port` (protocol section 3.1) is the TCP port peers connect to, not the UDP
+discovery port. Both cores therefore write it from the socket that bound (`address().port` /
+`localPort`) and do not announce until that bind has finished. Fallback applies only when the
+requested TCP port is the protocol default, 53317. `port: 0` and any other explicit port are bound
+exactly, which is what the tests use.
