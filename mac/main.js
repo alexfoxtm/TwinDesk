@@ -348,7 +348,7 @@ function onPreviewWant(m, inbound) {
   const auth = Preview.authorizeWant(sample && sample.conn, inbound);
   if (!auth || auth.ws !== inbound.ws) return;
   if (!m || m.on !== true) {
-    previewShots.cancel('close');
+    if (previewShots.watched && Preview.askEpoch(m && m.epoch) === previewShots.watched.epoch) previewShots.cancel('close');
     return;
   }
   if (!sample.sharing || !sample.input) {

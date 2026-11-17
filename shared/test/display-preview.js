@@ -508,6 +508,8 @@ async function testSheetOpenEpochOnEveryReply() {
   assert.strictEqual(pictures.length, 2);
   assert.strictEqual(pictures[0].msg.epoch, 41);
   assert.strictEqual(pictures[1].msg.epoch, 42);
+  await h.shots.watch(target, 41);
+  assert.strictEqual(h.shots.watched.epoch, 42, 'an older open cannot replace the current subscription');
   h.shots.cancel('session');
   assert.ok(h.sent.some((row) => row.msg.clear === true && row.msg.epoch === 42));
 

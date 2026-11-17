@@ -41,6 +41,7 @@ class DisplayShots {
     this.epoch = 0;
     this.ask = null;
     this.watched = null;
+    this.lastWatch = null;
     this.running = false;
     this.again = false;
     this.pending = Promise.resolve();
@@ -63,10 +64,13 @@ class DisplayShots {
       this.kick();
       return this.pending;
     }
+    const last = this.lastWatch;
+    if (last && last.conn === conn && last.ws === ws && ask <= last.epoch) return this.pending;
     if (watched && (watched.conn !== conn || watched.ws !== ws)) this.cancel('session');
     else if (watched) this.cancel('close');
     this.ask = ask;
     this.watched = { conn, ws, epoch: ask };
+    this.lastWatch = { conn, ws, epoch: ask };
     this.kick();
     return this.pending;
   }
