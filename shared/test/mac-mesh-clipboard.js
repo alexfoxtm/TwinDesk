@@ -22,7 +22,7 @@ function setup() {
   let ids = ['peer'];
   const bus = {
     on() {},
-    onPeer(event, fn) { peers[event].push(fn); },
+    onPeer(event, fn) { (peers[event] ??= []).push(fn); },
     send() { return true; },
     connectedIds() { return ids.slice(); },
     selectedId() { return ids[0] || null; },
