@@ -11,6 +11,7 @@
     <string name="label_remote">远程控制</string>
     <string name="label_deck">Deck</string>
     <string name="label_send">发送到电脑</string>
+    <string name="label_send_nearby">发送到附近设备</string>
     <string name="label_copy">复制到电脑</string>
     <string name="label_open">在电脑上打开</string>
     <string name="label_clip_tile">发送剪贴板</string>

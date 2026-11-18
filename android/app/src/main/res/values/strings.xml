@@ -12,6 +12,7 @@
     <string name="label_remote">Remote</string>
     <string name="label_deck">Deck</string>
     <string name="label_send">Send to computer</string>
+    <string name="label_send_nearby">Send nearby</string>
     <string name="label_copy">Copy to computer</string>
     <string name="label_open">Open on computer</string>
     <string name="label_clip_tile">Send clipboard</string>

@@ -11,6 +11,7 @@
     <string name="label_remote">Пульт</string>
     <string name="label_deck">Deck</string>
     <string name="label_send">Отправить на компьютер</string>
+    <string name="label_send_nearby">Отправить поблизости</string>
     <string name="label_copy">Копировать на компьютер</string>
     <string name="label_open">Открыть на компьютере</string>
     <string name="label_clip_tile">Отправить буфер обмена</string>

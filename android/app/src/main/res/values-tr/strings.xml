@@ -11,6 +11,7 @@
     <string name="label_remote">Uzaktan Kumanda</string>
     <string name="label_deck">Deck</string>
     <string name="label_send">Bilgisayara gönder</string>
+    <string name="label_send_nearby">Yakındaki cihaza gönder</string>
     <string name="label_copy">Bilgisayara kopyala</string>
     <string name="label_open">Bilgisayarda aç</string>
     <string name="label_clip_tile">Panoyu gönder</string>

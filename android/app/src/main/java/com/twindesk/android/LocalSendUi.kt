@@ -42,13 +42,13 @@ private fun Strong(label: String, onClick: () -> Unit) = Button(onClick = onClic
 }
 
 @Composable
-private fun Quiet(label: String, enabled: Boolean = true, onClick: () -> Unit) =
+internal fun LocalSendButton(label: String, enabled: Boolean = true, onClick: () -> Unit) =
     if (Modern.on) Button(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(50), contentPadding = PAD, modifier = Modifier.height(40.dp),
         colors = ButtonDefaults.buttonColors(containerColor = pal.chip, contentColor = pal.text), elevation = null) { Text(label, fontSize = 14.sp, maxLines = 1, fontWeight = FontWeight.Medium) }
     else OutlinedButton(onClick = onClick, enabled = enabled, shape = RoundedCornerShape(8.dp), contentPadding = PAD, modifier = Modifier.height(36.dp)) { Text(label, color = pal.text, fontSize = 14.sp, maxLines = 1) }
 
 @Composable
-private fun Field(value: String, placeholder: String, width: Int, type: KeyboardType, onValue: (String) -> Unit) = OutlinedTextField(
+internal fun LocalSendField(value: String, placeholder: String, width: Int, type: KeyboardType, onValue: (String) -> Unit) = OutlinedTextField(
     value, onValue, singleLine = true, placeholder = { Text(placeholder, color = pal.muted, fontSize = 14.sp) }, shape = RoundedCornerShape(10.dp),
     keyboardOptions = KeyboardOptions(keyboardType = type),
     colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = pal.accent, unfocusedBorderColor = pal.line, focusedTextColor = pal.text, unfocusedTextColor = pal.text),
@@ -71,7 +71,7 @@ fun LocalSendOffers(core: Core, v: Int) {
                 if (o.known) null else tr("a device not seen before"),
                 o.text.takeIf { it.isNotEmpty() }?.let { "“${it.take(200)}”" }).joinToString(" · ")
             MacRow(tr("{name} wants to send {file} ({size})", "name" to o.alias, "file" to LocalSend.what(o.names, o.files), "size" to FileClip.size(o.total)), hint, first = i == 0) {
-                Quiet(tr("Decline")) { ls.answer(o.id, false) }
+                LocalSendButton(tr("Decline")) { ls.answer(o.id, false) }
                 Strong(tr("Accept")) { ls.answer(o.id, true) }
             }
         }
@@ -88,7 +88,7 @@ fun LocalSendCards(core: Core, v: Int) {
     var target by rememberSaveable { mutableStateOf("") } // the device the file picker was opened for
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris -> if (uris.isNotEmpty() && target.isNotEmpty()) ls.send(target, uris) }
 
-    MacCard(tr("LocalSend-compatible devices"), action = if (on && !ls.starting) ({ Quiet(tr("Look again")) { ls.refresh() } }) else null) {
+    MacCard(tr("LocalSend-compatible devices"), action = if (on && !ls.starting) ({ LocalSendButton(tr("Look again")) { ls.refresh() } }) else null) {
         SwitchRow(tr("Files with LocalSend-compatible apps"), when {
             !on -> tr("Off. Turn on to find devices running LocalSend-compatible apps on this network, send them files and be asked about theirs.")
             ls.failed.isNotEmpty() -> tr("Couldn’t start receiving: {error}", "error" to ls.failed)
@@ -104,7 +104,7 @@ fun LocalSendCards(core: Core, v: Int) {
                 val state = if (!p.supported) LocalSend.unsupported(p.why) else if (!p.verified) tr("Not answering: it may only send") else ""
                 val fp = if (p.protocol == "https") LocalSend.short(p.fingerprint) else ""
                 val hint = listOf(p.ip + if (p.port == Ls.PORT) "" else ":${p.port}", p.deviceModel, fp, state).filter { it.isNotEmpty() }.joinToString(" · ")
-                MacRow(p.alias, hint) { Quiet(tr("Send…"), enabled = p.supported) { target = p.id; pick.launch("*/*") } }
+                MacRow(p.alias, hint) { LocalSendButton(tr("Send…"), enabled = p.supported) { target = p.id; pick.launch("*/*") } }
             }
             var address by rememberSaveable { mutableStateOf("") }
             MacRow(tr("Add a device by its address"), when {
@@ -115,25 +115,25 @@ fun LocalSendCards(core: Core, v: Int) {
                 ls.addError.isNotEmpty() -> tr("That isn’t a LocalSend-compatible device")
                 else -> tr("When it isn’t found by itself: its address is in that app’s settings")
             }) {
-                Field(address, "192.168.1.20", 170, KeyboardType.Uri) { address = it.take(21) }
-                Quiet(tr("Add"), enabled = !ls.adding && address.isNotBlank()) { ls.add(address) }
+                LocalSendField(address, "192.168.1.20", 170, KeyboardType.Uri) { address = it.take(21) }
+                LocalSendButton(tr("Add"), enabled = !ls.adding && address.isNotBlank()) { ls.add(address) }
             }
         }
     }
 
     val list = ls.transfers
-    if (list.isNotEmpty()) MacCard(tr("LocalSend transfers"), action = { Quiet(tr("Clear")) { ls.clear() } }) {
+    if (list.isNotEmpty()) MacCard(tr("LocalSend transfers"), action = { LocalSendButton(tr("Clear")) { ls.clear() } }) {
         list.forEachIndexed { i, t ->
             key(t.id) {
                 val label = LocalSend.line(t) + if (t.state == "running") " · ${Files.pct(t.done, t.total)}%" else ""
                 var pin by rememberSaveable { mutableStateOf("") }
                 MacRow(label, if (t.total > 0) FileClip.size(t.total) else "", first = i == 0) {
                     if (ls.asksPin(t.id)) {
-                        Field(pin, tr("PIN"), 110, KeyboardType.Text) { pin = it.take(64) }
-                        Quiet(tr("Send"), enabled = pin.isNotEmpty()) { ls.sendWithPin(t.id, pin) }
+                        LocalSendField(pin, tr("PIN"), 110, KeyboardType.Text) { pin = it.take(64) }
+                        LocalSendButton(tr("Send"), enabled = pin.isNotEmpty()) { ls.sendWithPin(t.id, pin) }
                     }
-                    if (t.live) Quiet(tr("Cancel")) { ls.cancel(t.id) }
-                    if (!t.live && t.incoming && t.arrived > 0) Quiet(tr("Show")) { ls.openIntent(t)?.let { runCatching { ctx.startActivity(it) } } }
+                    if (t.live) LocalSendButton(tr("Cancel")) { ls.cancel(t.id) }
+                    if (!t.live && t.incoming && t.arrived > 0) LocalSendButton(tr("Show")) { ls.openIntent(t)?.let { runCatching { ctx.startActivity(it) } } }
                 }
             }
         }

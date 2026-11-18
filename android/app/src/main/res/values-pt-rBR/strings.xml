@@ -11,6 +11,7 @@
     <string name="label_remote">Remoto</string>
     <string name="label_deck">Deck</string>
     <string name="label_send">Enviar para o computador</string>
+    <string name="label_send_nearby">Enviar a dispositivos próximos</string>
     <string name="label_copy">Copiar para o computador</string>
     <string name="label_open">Abrir no computador</string>
     <string name="label_clip_tile">Enviar área de transferência</string>

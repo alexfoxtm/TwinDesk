@@ -10,9 +10,12 @@ package com.twindesk.android
 
 import android.app.KeyguardManager
 import android.app.Notification
+import android.app.PendingIntent
+import android.content.ComponentName
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -40,6 +43,7 @@ class LocalSend(private val core: Core) : LsEvents {
     @Volatile var failed = ""; private set // why it couldn't start at all
     @Volatile private var node: LocalSendCore? = null
     private val life = Executors.newSingleThreadExecutor { r -> Thread(r, "td-localsend-life").apply { isDaemon = true } } // start and stop, in order
+    private val main = Handler(Looper.getMainLooper())
     private val work = Executors.newCachedThreadPool { r -> Thread(r, "td-localsend-work").apply { isDaemon = true } } // nothing of the network on the main thread
     private val lock = Any()
     private val history = ArrayList<LsTransfer>() // newest first
@@ -65,6 +69,13 @@ class LocalSend(private val core: Core) : LsEvents {
 
     private fun apply() = life.execute {
         val want = on
+        runCatching {
+            val component = ComponentName(ctx, LocalSendShareActivity::class.java)
+            val state = if (want) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+            if (ctx.packageManager.getComponentEnabledSetting(component) != state) {
+                ctx.packageManager.setComponentEnabledSetting(component, state, PackageManager.DONT_KILL_APP)
+            }
+        }.onFailure { Log.w("TwinDesk", "LocalSend share target", it) }
         if (want && node == null) {
             starting = true
             failed = ""
@@ -95,7 +106,11 @@ class LocalSend(private val core: Core) : LsEvents {
                 for (i in history.indices) if (history[i].live) history[i] = history[i].copy(state = "cancelled")
                 again.clear()
             }
-            for (i in 0 until SLOTS) { Notify.nm(ctx).cancel(ID_OFFER + i); Notify.nm(ctx).cancel(ID_MOVE + i) }
+            runCatching {
+                val manager = Notify.nm(ctx)
+                manager.activeNotifications.filter { it.tag?.startsWith(TAG_PREFIX) == true }
+                    .forEach { manager.cancel(it.tag, it.id) }
+            }
             addError = ""
         }
         if (!want) failed = ""
@@ -172,64 +187,123 @@ class LocalSend(private val core: Core) : LsEvents {
         }
     }
 
-    // Files chosen here, to a device that was found.
-    fun send(peerId: String, uris: List<Uri>) = work.execute {
+    // Capture the node before reading external files. An off/on cycle retires the request.
+    fun send(peerId: String, uris: List<Uri>) {
+        val n = node ?: return
+        work.execute {
+            val list = sources(uris)
+            if (node === n && on) start(n, peerId, list, null)
+        }
+    }
+
+    // The share activity owns the source grant through the transfer and cancels when it closes.
+    internal fun sendShared(peer: LsPeer, uris: List<Uri>, pin: String?, closed: () -> Boolean, result: (String?) -> Unit) {
+        val n = node
+        if (!on || n == null || !n.running || !samePeer(n, peer)) {
+            result(null)
+            return
+        }
+        work.execute {
+            val sources = if (closed()) emptyList() else sources(uris)
+            val id = when {
+                closed() || node !== n || !on || !samePeer(n, peer) -> null
+                sources.size != uris.size -> failedSend(peer, "read")
+                else -> start(n, peer.id, sources, pin, retryFromFiles = false)
+            }
+            if (closed() && id != null) n.cancel(id)
+            main.post {
+                if (closed()) {
+                    if (id != null) work.execute { n.cancel(id) }
+                } else result(id)
+            }
+        }
+    }
+
+    private fun samePeer(n: LocalSendCore, peer: LsPeer): Boolean = n.peers().any {
+        it.supported && it.id == peer.id && it.fingerprint == peer.fingerprint && it.ip == peer.ip && it.port == peer.port
+    }
+
+    private fun sources(uris: List<Uri>): List<LsSource> {
         val seen = HashSet<String>()
-        val sources = core.files.describe(uris).map { item ->
+        return core.files.describe(uris).map { item ->
             var name = item.name
             var i = 2
             while (!seen.add(name)) name = item.name.substringBeforeLast('.') + " ${i++}" + item.name.substringAfterLast('.', "").let { e -> if (e.isEmpty()) "" else ".$e" }
             LsSource(name, item.size, Files.mimeOf(name)) { ctx.contentResolver.openInputStream(item.uri) ?: throw java.io.IOException("can't open") }
         }
-        start(peerId, sources, null)
     }
 
     // The device asked for its PIN: the same files again, with it.
     fun sendWithPin(id: String, pin: String) {
         if (pin.isEmpty() || pin.length > 64) return
+        val n = node ?: return
         val a = synchronized(lock) {
             val x = again.remove(id) ?: return
             history.removeAll { it.id == id }
             x
         }
-        work.execute { start(a.peer, a.sources, pin) }
+        work.execute { if (node === n && on) start(n, a.peer, a.sources, pin) }
     }
 
-    private fun start(peerId: String, sources: List<LsSource>, pin: String?) {
-        val n = node ?: return
+    private fun start(n: LocalSendCore, peerId: String, sources: List<LsSource>, pin: String?, retryFromFiles: Boolean = true): String {
         val peer = n.peers().firstOrNull { it.id == peerId }
-        try {
+        return try {
             val id = n.send(peerId, sources, pin)
-            synchronized(lock) {
+            if (retryFromFiles) synchronized(lock) {
                 again[id] = Again(peerId, sources)
-                history.firstOrNull { it.id == id }?.let { if (!it.live && it.error != "pin") again.remove(id) } // it already ended
+                history.firstOrNull { it.id == id }?.let { if (!it.live && it.error != "pin") again.remove(id) }
             }
+            id
         } catch (e: Exception) {
-            // Shown where the transfers are: nothing was there to send, or the device is gone or not one we speak with.
-            record(LsTransfer("x-${Ls.token()}", false, peer?.alias ?: "", peer?.ip ?: "", emptyList(), 0, 0, 0, "failed", (e as? LsException)?.code ?: "failed"))
-            core.changed()
+            failedSend(peer, (e as? LsException)?.code ?: "failed")
         }
+    }
+
+    private fun failedSend(peer: LsPeer?, error: String): String {
+        val id = "x-${Ls.token()}"
+        record(LsTransfer(id, false, peer?.alias ?: "", peer?.ip ?: "", emptyList(), 0, 0, 0, "failed", error))
+        core.changed()
+        return id
     }
 
     fun clear() {
-        synchronized(lock) {
-            val gone = history.filter { !it.live }.map { it.id }
+        val gone = synchronized(lock) {
+            val ids = history.filter { !it.live }.map { it.id }
             history.removeAll { !it.live }
-            for (id in gone) again.remove(id)
+            for (id in ids) again.remove(id)
+            ids
         }
+        for (id in gone) cancelNotice(id, ID_MOVE)
         core.changed()
     }
 
-    private fun record(t: LsTransfer) = synchronized(lock) {
-        val i = history.indexOfFirst { it.id == t.id }
-        if (i >= 0) history[i] = t else history.add(0, t)
-        while (history.size > KEEP) {
-            val old = history.indexOfLast { !it.live }
-            if (old < 0) break
-            again.remove(history.removeAt(old).id)
+    private fun record(t: LsTransfer) {
+        val gone = synchronized(lock) {
+            val i = history.indexOfFirst { it.id == t.id }
+            if (i >= 0) history[i] = t else history.add(0, t)
+            val removed = ArrayList<String>()
+            while (history.size > KEEP) {
+                val old = history.indexOfLast { !it.live }
+                if (old < 0) break
+                val id = history.removeAt(old).id
+                again.remove(id)
+                removed.add(id)
+            }
+            // Only a transfer that ended on the other device's PIN is kept for another try.
+            if (!t.live && t.error != "pin") again.remove(t.id)
+            removed
         }
-        // Only a transfer that ended on the other device's PIN is kept for another try.
-        if (!t.live && t.error != "pin") again.remove(t.id)
+        for (id in gone) cancelNotice(id, ID_MOVE)
+    }
+
+    // PendingIntent identity includes the transfer identifier. Extras alone do not distinguish it.
+    private fun action(kind: String, id: String): PendingIntent = PendingIntent.getBroadcast(
+        ctx, 0, Intent(ctx, ActionReceiver::class.java).setAction(kind).setIdentifier(tag(id)).putExtra("arg", id),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    private fun cancelNotice(id: String, kind: Int) {
+        runCatching { Notify.nm(ctx).cancel(tag(id), kind) }
     }
 
     // ---- what the core reports (on its own threads) ----
@@ -242,9 +316,8 @@ class LocalSend(private val core: Core) : LsEvents {
             if (o.imitates) tr("Another device uses this name: this may not be the one you think.") else null,
             if (o.known) null else tr("This device hasn’t been seen before: accept only if you expect it."),
             o.text.takeIf { it.isNotEmpty() }?.let { "“${it.take(200)}”" }).joinToString(" ")
-        val slot = slot(o.id)
         runCatching {
-            Notify.nm(ctx).notify(ID_OFFER + slot, Notification.Builder(ctx, Notify.CH_INVITE)
+            Notify.nm(ctx).notify(tag(o.id), ID_OFFER, Notification.Builder(ctx, Notify.CH_INVITE)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setContentTitle(tr("{name} wants to send {file} ({size})", "name" to o.alias, "file" to what(o.names, o.files), "size" to FileClip.size(o.total)))
                 .setContentText(text)
@@ -252,9 +325,9 @@ class LocalSend(private val core: Core) : LsEvents {
                 .setContentIntent(Notify.openApp(ctx))
                 .setOnlyAlertOnce(true)
                 // Decline first: the one a hurried tap lands on.
-                .addAction(Notification.Action.Builder(null, tr("Decline"), Notify.action(ctx, ActionReceiver.LS_DECLINE, REQ_OFFER + slot * 2, o.id)).build())
+                .addAction(Notification.Action.Builder(null, tr("Decline"), action(ActionReceiver.LS_DECLINE, o.id)).build())
                 // Accept asks for the unlock first (Android 12 and later do it themselves; answer() refuses on a locked phone in any case).
-                .addAction(Notification.Action.Builder(null, tr("Accept"), Notify.action(ctx, ActionReceiver.LS_ACCEPT, REQ_OFFER + slot * 2 + 1, o.id))
+                .addAction(Notification.Action.Builder(null, tr("Accept"), action(ActionReceiver.LS_ACCEPT, o.id))
                     .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setAuthenticationRequired(true) }.build())
                 .build())
         }
@@ -262,14 +335,13 @@ class LocalSend(private val core: Core) : LsEvents {
     }
 
     override fun offerEnd(id: String, accepted: Boolean, why: String) {
-        runCatching { Notify.nm(ctx).cancel(ID_OFFER + slot(id)) }
+        cancelNotice(id, ID_OFFER)
         core.changed()
     }
 
     override fun transfer(t: LsTransfer) {
         record(t)
         val file = what(t.names, t.files)
-        val slot = slot(t.id)
         runCatching {
             val b = Notification.Builder(ctx, Notify.CH_FILES).setOnlyAlertOnce(true).setOngoing(t.live).setAutoCancel(!t.live)
             val pct = Files.pct(t.done, t.total)
@@ -281,10 +353,10 @@ class LocalSend(private val core: Core) : LsEvents {
                 else -> b.setSmallIcon(if (t.incoming) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_sys_upload_done)
                     .setContentTitle(line(t)).setContentText(if (t.incoming && t.arrived > 0) tr("In Downloads › TwinDesk") else "")
             }
-            if (t.live) b.addAction(Notification.Action.Builder(null, tr("Cancel"), Notify.action(ctx, ActionReceiver.LS_CANCEL, REQ_MOVE + slot, t.id)).build())
+            if (t.live) b.addAction(Notification.Action.Builder(null, tr("Cancel"), action(ActionReceiver.LS_CANCEL, t.id)).build())
             val open = if (!t.live && t.incoming && t.arrived > 0) openIntent(t) else null
-            b.setContentIntent(if (open != null) android.app.PendingIntent.getActivity(ctx, REQ_MOVE + slot, open, android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT) else Notify.openApp(ctx))
-            Notify.nm(ctx).notify(ID_MOVE + slot, b.build())
+            b.setContentIntent(if (open != null) PendingIntent.getActivity(ctx, 0, open.setIdentifier(tag(t.id)), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT) else Notify.openApp(ctx))
+            Notify.nm(ctx).notify(tag(t.id), ID_MOVE, b.build())
         }
         core.changed()
     }
@@ -299,13 +371,10 @@ class LocalSend(private val core: Core) : LsEvents {
     companion object {
         const val FLAG = "localsend"
         private const val KEEP = 30
-        private const val SLOTS = 20
-        private const val ID_OFFER = 30 // … 49: a question each
-        private const val ID_MOVE = 50 // … 69: a transfer each
-        private const val REQ_OFFER = 0x20000
-        private const val REQ_MOVE = 0x20100
-
-        private fun slot(id: String) = Math.floorMod(id.hashCode(), SLOTS)
+        private const val TAG_PREFIX = "localsend:"
+        private const val ID_OFFER = 30
+        private const val ID_MOVE = 50
+        private fun tag(id: String) = "$TAG_PREFIX$id"
 
         fun what(names: List<String>, files: Int): String = if (names.size == 1 && files == 1) names[0] else trCount(files, "file")
 

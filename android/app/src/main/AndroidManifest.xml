@@ -166,6 +166,24 @@
             </intent-filter>
         </activity-alias>
 
+        <!-- This target is enabled only while LocalSend is on. Keep the activity's temporary file grants through transfer. -->
+        <activity
+            android:name=".LocalSendShareActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/label_send_nearby"
+            android:icon="@mipmap/ic_launcher"
+            android:theme="@style/Theme.TwinDesk"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
         <!-- ReZume (Rezume.kt): a link shared opens on the computer. Enabled only while ReZume is on. -->
         <activity-alias
             android:name=".OpenOnComputer"

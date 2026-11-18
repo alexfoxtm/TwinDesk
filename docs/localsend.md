@@ -23,8 +23,10 @@ While it is off nothing is listened for, announced or accepted. On Android it ru
   in the announcement and in `/info`, and only after it is open. Discovery stays on UDP 53317.
   A different port asked for by the caller is used as given: if it is taken, this device can still
   find others and send, and does not receive.
-- **Sends** files (folders too, from the Mac) to a device you pick. The other person accepts there;
-  a device that asks for its PIN gets a field for it.
+- **Sends** files (folders too, from the Mac) to a device you pick. The other person accepts there.
+  A device that asks for its PIN gets a field for it. On Android, select **Send nearby** in another
+  app’s Share menu while LocalSend is enabled, then pick a device. The picker keeps the shared files
+  accessible while the transfer runs. Closing it cancels an unfinished send.
 - **Receives** only what you accept. Every transfer is asked about first, with who it says it is,
   its address and whether that device was checked before; there is no "always accept". Accepted
   files go to the Mac's received-files folder, or Downloads › TwinDesk on Android.
