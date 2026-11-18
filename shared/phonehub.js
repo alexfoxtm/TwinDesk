@@ -342,7 +342,8 @@ class PhoneHub extends EventEmitter {
     }
     // Photos › Save, Files › Save: the files come back as an ordinary Send (file.offer, drop 'send'),
     // taken even with Take files from {name} off, since they were asked for here (#239: stuck at 0%).
-    // The session goes with it: only that authenticated connection's one transfer is excepted.
+    // The session goes with it. Mac allows that connection's one Send (shared/asked-send.js).
+    // Windows and Linux keep their own short window and ignore the session.
     if (out.t === T.MEDIA_SAVE || out.t === T.FS_SAVE) this.emit('asked', this.phone);
     this.server.sendToClient(out);
   }
