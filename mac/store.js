@@ -114,7 +114,7 @@ const DEFAULT_SETTINGS = {
   // callAudio: the calls' sound on this Mac over Bluetooth (btDevices: which paired device each phone is).
   // mediaAlerts: a notification here for new camera photos and videos on the phone (photoalert.js), with media on.
   // callPause: Calls › Pause what plays here (shared/callpause.js).
-  hub: { calls: false, messages: false, media: false, files: false, mediaAlerts: false, callAudio: true, callPause: false, shareMount: false, shareServe: false, shareFolder: '' }, // share*: shared folders (foldershare.js)
+  hub: { calls: false, messages: false, media: false, files: false, mediaAlerts: false, callAudio: true, callPause: false, shareMount: false, shareServe: false, shareFolder: '', tether: false }, // share*: shared folders (foldershare.js)
   // Not on one network: Bluetooth for the session (blepipe.js), Wi-Fi for files and screens
   // (netlink.js). hotspots: {deviceId: {ssid, pass (safeStorage)}}, a phone's hotspot as typed once.
   net: { ble: true, blePc: false, bleWifiOff: true, hotspots: {}, tailscale: true, bleInput: false }, // ble: with phones, blePc: with computers; bleWifiOff: none on the same Wi-Fi (blepolicy.js wifiQuiet); tailscale: shared/tailnet.js; bleInput: mouse and keyboard over Bluetooth beside Wi-Fi (shared/bleinput.js)

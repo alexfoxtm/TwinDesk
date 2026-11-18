@@ -2483,4 +2483,12 @@
   "Turn backup on on {name} and choose a folder.": "Включите сохранение на {name} и выберите папку.",
   "Couldn’t save the backup. Check the folder and free space.": "Не удалось сохранить резервную копию. Проверьте папку и свободное место.",
   "Choose a folder on this Mac.": "Выберите папку на этом Mac.",
+  "Waiting for the cable": "Ждём кабель",
+  "Internet over USB": "Интернет через USB",
+  "The phone uses this computer’s internet through the USB cable, as a VPN there. Needs USB debugging. It comes back by itself when the phone is plugged in again.": "Телефон пользуется интернетом этого компьютера через USB-кабель (как VPN на телефоне). Нужна отладка по USB. Включается снова сама, когда телефон подключат опять.",
+  "{down} down, {up} up through this computer": "{down} получено, {up} отправлено через этот компьютер",
+  "Plug the phone into this computer with USB debugging on.": "Подключите телефон к этому компьютеру кабелем с включённой отладкой по USB.",
+  "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.": "Нажмите «Разрешить» в уведомлении TwinDesk на телефоне, затем подтвердите запрос VPN от Android.",
+  "It stopped.": "Остановлено.",
+  "Starting on the phone…": "Запуск на телефоне…",
 });

@@ -2484,4 +2484,12 @@
   "Turn backup on on {name} and choose a folder.": "Turn backup on on {name} and choose a folder.",
   "Couldn’t save the backup. Check the folder and free space.": "Couldn’t save the backup. Check the folder and free space.",
   "Choose a folder on this Mac.": "Choose a folder on this Mac.",
+  "Waiting for the cable": "Waiting for the cable",
+  "Internet over USB": "Internet over USB",
+  "The phone uses this computer’s internet through the USB cable, as a VPN there. Needs USB debugging. It comes back by itself when the phone is plugged in again.": "The phone uses this computer’s internet through the USB cable, as a VPN there. Needs USB debugging. It comes back by itself when the phone is plugged in again.",
+  "{down} down, {up} up through this computer": "{down} down, {up} up through this computer",
+  "Plug the phone into this computer with USB debugging on.": "Plug the phone into this computer with USB debugging on.",
+  "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.": "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.",
+  "It stopped.": "It stopped.",
+  "Starting on the phone…": "Starting on the phone…",
 });

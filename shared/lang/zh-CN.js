@@ -2484,4 +2484,12 @@
   "Turn backup on on {name} and choose a folder.": "请在 {name} 上打开备份并选择一个文件夹。",
   "Couldn’t save the backup. Check the folder and free space.": "无法保存备份。请检查文件夹和可用空间。",
   "Choose a folder on this Mac.": "请在这台 Mac 上选择一个文件夹。",
+  "Waiting for the cable": "等待数据线",
+  "Internet over USB": "通过 USB 上网",
+  "The phone uses this computer’s internet through the USB cable, as a VPN there. Needs USB debugging. It comes back by itself when the phone is plugged in again.": "手机通过 USB 数据线使用这台电脑的网络（在手机上作为 VPN）。需要 USB 调试。手机重新插入时会自动恢复。",
+  "{down} down, {up} up through this computer": "经这台电脑下载 {down}，上传 {up}",
+  "Plug the phone into this computer with USB debugging on.": "请在开启 USB 调试的情况下将手机连接到这台电脑。",
+  "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.": "在手机上的 TwinDesk 通知中点按“允许”，然后确认 Android 的 VPN 请求。",
+  "It stopped.": "已停止。",
+  "Starting on the phone…": "正在手机上启动…",
 });

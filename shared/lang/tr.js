@@ -2483,4 +2483,12 @@
   "Turn backup on on {name} and choose a folder.": "{name} üzerinde yedeklemeyi açın ve bir klasör seçin.",
   "Couldn’t save the backup. Check the folder and free space.": "Yedek kaydedilemedi. Klasörü ve boş alanı kontrol edin.",
   "Choose a folder on this Mac.": "Bu Mac’te bir klasör seçin.",
+  "Waiting for the cable": "Kablo bekleniyor",
+  "Internet over USB": "USB üzerinden internet",
+  "The phone uses this computer’s internet through the USB cable, as a VPN there. Needs USB debugging. It comes back by itself when the phone is plugged in again.": "Telefon, bu bilgisayarın internetini USB kablosu üzerinden (telefonda bir VPN olarak) kullanır. USB hata ayıklama gerekir. Telefon yeniden takıldığında kendiliğinden geri gelir.",
+  "{down} down, {up} up through this computer": "Bu bilgisayar üzerinden {down} indirildi, {up} yüklendi",
+  "Plug the phone into this computer with USB debugging on.": "Telefonu USB hata ayıklama açıkken bu bilgisayara takın.",
+  "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.": "Telefondaki TwinDesk bildiriminde İzin ver’e dokunun, ardından Android’in VPN isteğini onaylayın.",
+  "It stopped.": "Durdu.",
+  "Starting on the phone…": "Telefonda başlatılıyor…",
 });

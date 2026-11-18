@@ -96,6 +96,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         }
     }
     val share = FolderShare(this) // shared folders with the computer, both ways
+    val tether = Tether(this) // Internet over USB: the computer's internet through the cable (only when it offers it)
     val sound = PhoneSound(this) // this phone's sound there without wireless debugging
     val mirror = PhoneMirror(this) // this phone's screen there without wireless debugging
     val shots = Screenshots(this) // screenshots both ways, onto the other clipboard
@@ -113,7 +114,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // shown and its features hear nothing from the computer.
     val modulesAtStart: Set<String> = Modules.off(store)
     fun moduleOn(id: String) = id in Modules.FIXED || id !in modulesAtStart
-    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, photos, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia, deck, silence)
+    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, photos, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia, deck, silence, tether)
         .filter { f ->
             when (f) {
                 clip, fclip -> moduleOn("clipboard")
