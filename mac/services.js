@@ -30,7 +30,7 @@ const { Wake } = require('./wake');
 const { AppSend } = require('./appsend');
 const store = require('./store');
 
-function startServices({ server, getSettings, pushState, onHelperReady }) {
+function startServices({ server, getSettings, pushState, onHelperReady, clipboardPair }) {
   const s = getSettings;
   server.setMaxListeners(50); // one 'client'/'closed' listener per feature
   const helper = new Helper();
@@ -63,7 +63,7 @@ function startServices({ server, getSettings, pushState, onHelperReady }) {
     spaceLook,
     reply: (ctx, msg) => server.send(ctx, msg),
   });
-  const clipboard = new Clipboard(server, helper, s);
+  const clipboard = new Clipboard(server, helper, s, clipboardPair);
   const drop = new Drop({ server, helper, displays, getSettings: s });
   const fileSend = new FileSend(server, s, { outboxFile: require('path').join(require('electron').app.getPath('userData'), 'outbox.json') });
   kvm = new Kvm({ server, helper, getSettings: s, clipboard, input, drop, fileSend });
