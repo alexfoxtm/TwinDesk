@@ -1421,5 +1421,11 @@
   "Hide viewer controls": "隐藏查看器控件",
   "Scale": "缩放",
   "Show viewer controls": "显示查看器控件",
-  "View options": "查看选项"
+  "View options": "查看选项",
+  "1 device found": "已找到 1 台设备",
+  "{count} devices found": "已找到 {count} 台设备",
+  "Looking for nearby devices…": "正在查找附近的设备…",
+  "No reachable devices": "没有可连接的设备",
+  "Verified on this network": "已在此网络上验证",
+  "Checking availability…": "正在检查是否可连接…"
 }

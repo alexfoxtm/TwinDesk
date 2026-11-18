@@ -1421,5 +1421,11 @@
   "Hide viewer controls": "Ocultar controles do visualizador",
   "Scale": "Escala",
   "Show viewer controls": "Mostrar controles do visualizador",
-  "View options": "Opções de visualização"
+  "View options": "Opções de visualização",
+  "1 device found": "1 dispositivo encontrado",
+  "{count} devices found": "{count} dispositivos encontrados",
+  "Looking for nearby devices…": "Procurando dispositivos por perto…",
+  "No reachable devices": "Nenhum dispositivo acessível",
+  "Verified on this network": "Verificado nesta rede",
+  "Checking availability…": "Verificando disponibilidade…"
 }

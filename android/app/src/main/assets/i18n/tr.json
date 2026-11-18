@@ -1421,5 +1421,11 @@
   "Hide viewer controls": "Görüntüleyici denetimlerini gizle",
   "Scale": "Ölçek",
   "Show viewer controls": "Görüntüleyici denetimlerini göster",
-  "View options": "Görünüm seçenekleri"
+  "View options": "Görünüm seçenekleri",
+  "1 device found": "1 cihaz bulundu",
+  "{count} devices found": "{count} cihaz bulundu",
+  "Looking for nearby devices…": "Yakındaki cihazlar aranıyor…",
+  "No reachable devices": "Ulaşılabilir cihaz yok",
+  "Verified on this network": "Bu ağda doğrulandı",
+  "Checking availability…": "Erişilebilirlik kontrol ediliyor…"
 }

@@ -29,6 +29,8 @@ import android.widget.Toast
 import java.io.File
 import java.io.OutputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 class LocalSend(private val core: Core) : LsEvents {
     private val ctx: Context get() = core.ctx
@@ -42,7 +44,9 @@ class LocalSend(private val core: Core) : LsEvents {
     @Volatile var addError = ""; private set
     @Volatile var failed = ""; private set // why it couldn't start at all
     @Volatile private var node: LocalSendCore? = null
-    private val life = Executors.newSingleThreadExecutor { r -> Thread(r, "td-localsend-life").apply { isDaemon = true } } // start and stop, in order
+    @Volatile var scanning = false; private set
+    private var endScan: ScheduledFuture<*>? = null
+    private val life = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "td-localsend-life").apply { isDaemon = true } } // start and stop, in order
     private val main = Handler(Looper.getMainLooper())
     private val work = Executors.newCachedThreadPool { r -> Thread(r, "td-localsend-work").apply { isDaemon = true } } // nothing of the network on the main thread
     private val lock = Any()
@@ -89,6 +93,7 @@ class LocalSend(private val core: Core) : LsEvents {
                     LsOptions(deviceModel = Build.MODEL ?: "", deviceType = "mobile", log = { Log.d("TwinDesk", "localsend: $it") }))
                 node = n
                 n.start()
+                showScan() // the core announces for the first two seconds after opening
             } catch (e: Exception) {
                 Log.d("TwinDesk", "localsend: $e")
                 failed = e.message ?: e.javaClass.simpleName
@@ -113,7 +118,12 @@ class LocalSend(private val core: Core) : LsEvents {
             }
             addError = ""
         }
-        if (!want) failed = ""
+        if (!want) {
+            endScan?.cancel(false)
+            endScan = null
+            scanning = false
+            failed = ""
+        }
         core.changed()
     }
 
@@ -151,7 +161,23 @@ class LocalSend(private val core: Core) : LsEvents {
 
     // ---- what the page and the notifications do ----
 
-    fun refresh() = work.execute { runCatching { node?.announce() } }
+    fun refresh() = life.execute {
+        val current = node ?: return@execute
+        if (!on || !current.running || scanning) return@execute
+        showScan()
+        work.execute { runCatching { current.announce() } }
+    }
+
+    // Discovery stays active after this window. The timer only marks the visible search initiated here.
+    private fun showScan() {
+        scanning = true
+        endScan = life.schedule({
+            scanning = false
+            endScan = null
+            core.changed()
+        }, 5, TimeUnit.SECONDS)
+        core.changed()
+    }
 
     // Accept needs the phone unlocked: the notification's button is on the lock screen and the page
     // shows over it, and whoever holds a locked phone isn't its owner saying yes. Decline never does.

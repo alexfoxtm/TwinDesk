@@ -1421,5 +1421,11 @@
   "Hide viewer controls": "Скрыть элементы управления",
   "Scale": "Масштаб",
   "Show viewer controls": "Показать элементы управления",
-  "View options": "Параметры просмотра"
+  "View options": "Параметры просмотра",
+  "1 device found": "Найдено одно устройство",
+  "{count} devices found": "Найдено устройств: {count}",
+  "Looking for nearby devices…": "Поиск устройств поблизости…",
+  "No reachable devices": "Нет доступных устройств",
+  "Verified on this network": "Проверено в этой сети",
+  "Checking availability…": "Проверка доступности…"
 }

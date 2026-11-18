@@ -7,13 +7,24 @@ package com.twindesk.android
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -24,9 +35,13 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -85,10 +100,15 @@ fun LocalSendCards(core: Core, v: Int) {
     val ctx = LocalContext.current
     val on = ls.on
     val me = core.store.deviceName
+    val running = ls.running
+    val scanning = ls.scanning
+    val peers = if (on && running) ls.peers else emptyList()
+    val adding = ls.adding
+    val addError = ls.addError
     var target by rememberSaveable { mutableStateOf("") } // the device the file picker was opened for
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris -> if (uris.isNotEmpty() && target.isNotEmpty()) ls.send(target, uris) }
 
-    MacCard(tr("LocalSend-compatible devices"), action = if (on && !ls.starting) ({ LocalSendButton(tr("Look again")) { ls.refresh() } }) else null) {
+    MacCard(tr("LocalSend-compatible devices"), action = if (on && running) ({ LocalSendRefresh(scanning, ls::refresh) }) else null) {
         SwitchRow(tr("Files with LocalSend-compatible apps"), when {
             !on -> tr("Off. Turn on to find devices running LocalSend-compatible apps on this network, send them files and be asked about theirs.")
             ls.failed.isNotEmpty() -> tr("Couldn’t start receiving: {error}", "error" to ls.failed)
@@ -97,27 +117,10 @@ fun LocalSendCards(core: Core, v: Int) {
             ls.error == "port" -> tr("On as “{name}”: sending only. Port {port} is used by another app on this phone (LocalSend itself?): it receives.", "name" to me, "port" to Ls.PORT)
             else -> tr("On as “{name}”: sending only.", "name" to me)
         }, on, first = true) { ls.set(it) }
-        if (on && ls.running) {
-            val peers = ls.peers
-            if (peers.isEmpty()) MacRow(tr("No devices found yet"), tr("Open the app on the other device, on the same network"))
-            for (p in peers) {
-                val state = if (!p.supported) LocalSend.unsupported(p.why) else if (!p.verified) tr("Not answering: it may only send") else ""
-                val fp = if (p.protocol == "https") LocalSend.short(p.fingerprint) else ""
-                val hint = listOf(p.ip + if (p.port == Ls.PORT) "" else ":${p.port}", p.deviceModel, fp, state).filter { it.isNotEmpty() }.joinToString(" · ")
-                MacRow(p.alias, hint) { LocalSendButton(tr("Send…"), enabled = p.supported) { target = p.id; pick.launch("*/*") } }
-            }
-            var address by rememberSaveable { mutableStateOf("") }
-            MacRow(tr("Add a device by its address"), when {
-                ls.adding -> tr("Looking…")
-                ls.addError == "address" -> tr("Enter an address on this network, like 192.168.1.20")
-                ls.addError == "plain" -> tr("That device has encryption off, which TwinDesk doesn’t use")
-                ls.addError == "unreachable" || ls.addError == "timeout" -> tr("Nothing answered there")
-                ls.addError.isNotEmpty() -> tr("That isn’t a LocalSend-compatible device")
-                else -> tr("When it isn’t found by itself: its address is in that app’s settings")
-            }) {
-                LocalSendField(address, "192.168.1.20", 170, KeyboardType.Uri) { address = it.take(21) }
-                LocalSendButton(tr("Add"), enabled = !ls.adding && address.isNotBlank()) { ls.add(address) }
-            }
+        if (on && running) {
+            LocalSendDiscovery(peers, scanning)
+            LocalSendPeers(peers, scanning, tr("Send…")) { peer -> target = peer.id; pick.launch("*/*") }
+            LocalSendAddress(adding, addError, ls::add)
         }
     }
 
@@ -137,5 +140,81 @@ fun LocalSendCards(core: Core, v: Int) {
                 }
             }
         }
+    }
+}
+
+
+@Composable
+internal fun LocalSendRefresh(scanning: Boolean, onRefresh: () -> Unit) {
+    LocalSendButton(tr("Look again"), enabled = !scanning, onClick = onRefresh)
+}
+
+@Composable
+internal fun LocalSendDiscovery(peers: List<LsPeer>, scanning: Boolean, first: Boolean = false) {
+    val found = peers.count { it.supported && it.verified }
+    val status = when {
+        found == 1 -> tr("1 device found")
+        found > 1 -> tr("{count} devices found", "count" to found)
+        scanning -> tr("Looking for nearby devices…")
+        peers.isNotEmpty() -> tr("No reachable devices")
+        else -> tr("No devices found yet")
+    }
+    val hint = when {
+        scanning && found > 0 -> tr("Looking for nearby devices…")
+        !scanning && found == 0 -> tr("Open the app on the other device, on the same network")
+        else -> ""
+    }
+    if (!first) HorizontalDivider(Modifier.padding(horizontal = 20.dp), color = pal.line)
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        val color = when {
+            scanning -> pal.accent
+            found > 0 -> pal.good
+            peers.isNotEmpty() -> pal.warn
+            else -> pal.muted
+        }
+        Box(Modifier.size(32.dp).background(color.copy(alpha = 0.14f), CircleShape), contentAlignment = Alignment.Center) {
+            if (scanning) CircularProgressIndicator(Modifier.size(16.dp), color = color, strokeWidth = 2.dp)
+            else Box(Modifier.size(8.dp).background(color, CircleShape))
+        }
+        Column(Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }) {
+            Text(status, color = pal.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            if (hint.isNotEmpty()) Text(hint, color = pal.muted, fontSize = 12.5.sp)
+        }
+    }
+}
+
+@Composable
+internal fun LocalSendPeers(peers: List<LsPeer>, scanning: Boolean, send: String, onSend: (LsPeer) -> Unit) {
+    for (p in peers.sortedByDescending { it.supported && it.verified }) key(p.id) {
+        val status = when {
+            !p.supported -> LocalSend.unsupported(p.why)
+            p.verified -> tr("Verified on this network")
+            scanning -> tr("Checking availability…")
+            else -> tr("Not answering: it may only send")
+        }
+        val address = if (p.port == Ls.PORT) p.ip else "${p.ip}:${p.port}"
+        val fingerprint = if (p.protocol == "https") LocalSend.short(p.fingerprint) else ""
+        val hint = listOf(status, address, p.deviceModel, fingerprint).filter { it.isNotEmpty() }.joinToString(" · ")
+        MacRow(p.alias, hint) { LocalSendButton(send, enabled = p.supported) { onSend(p) } }
+    }
+}
+
+@Composable
+internal fun LocalSendAddress(adding: Boolean, error: String, onAdd: (String) -> Unit) {
+    var address by rememberSaveable { mutableStateOf("") }
+    MacRow(tr("Add a device by its address"), when {
+        adding -> tr("Looking…")
+        error == "address" -> tr("Enter an address on this network, like 192.168.1.20")
+        error == "plain" -> tr("That device has encryption off, which TwinDesk doesn’t use")
+        error == "unreachable" || error == "timeout" -> tr("Nothing answered there")
+        error.isNotEmpty() -> tr("That isn’t a LocalSend-compatible device")
+        else -> tr("When it isn’t found by itself: its address is in that app’s settings")
+    }) {
+        LocalSendField(address, "192.168.1.20", 170, KeyboardType.Uri) { address = it.take(21) }
+        LocalSendButton(tr("Add"), enabled = !adding && address.isNotBlank()) { onAdd(address) }
     }
 }

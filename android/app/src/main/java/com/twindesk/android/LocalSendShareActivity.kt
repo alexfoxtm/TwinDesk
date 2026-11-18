@@ -127,14 +127,14 @@ class LocalSendShareActivity : ComponentActivity() {
                     ls.starting || !ls.running -> Note(tr("Starting…"))
                     else -> {
                         if (peerGone) Note(tr("That device is gone"), "warn")
-                        val peers = ls.peers.filter { it.supported }
-                        MacCard(tr("LocalSend-compatible devices"), action = { LocalSendButton(tr("Look again")) { ls.refresh() } }) {
-                            if (peers.isEmpty()) MacRow(tr("No devices found yet"), tr("Open the app on the other device, on the same network"), first = true)
-                            for ((i, device) in peers.withIndex()) {
-                                val hint = listOf(device.ip, device.deviceModel, LocalSend.short(device.fingerprint))
-                                    .filter { it.isNotEmpty() }.joinToString(" · ")
-                                MacRow(device.alias, hint, first = i == 0) { LocalSendButton(tr("Send")) { send(device) } }
-                            }
+                        val peers = ls.peers
+                        val scanning = ls.scanning
+                        val adding = ls.adding
+                        val addError = ls.addError
+                        MacCard(tr("LocalSend-compatible devices"), action = { LocalSendRefresh(scanning, ls::refresh) }) {
+                            LocalSendDiscovery(peers, scanning, first = true)
+                            LocalSendPeers(peers, scanning, tr("Send")) { send(it) }
+                            LocalSendAddress(adding, addError, ls::add)
                         }
                     }
                 }
