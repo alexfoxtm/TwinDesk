@@ -113,17 +113,14 @@ class PhotoBackup(core: Core) : Feature(core) {
         return id.isNotEmpty() && allowed(id)
     }
 
-    /** The switch may turn on: this Mac negotiated pb, on an IP socket, with the Photos module and full photo access. */
-    fun canAsk(): Boolean {
+    // Let the person request permissions only for a Mac that negotiated backup over IP.
+    fun canToggle(): Boolean {
         if (!moduleOn() || Build.VERSION.SDK_INT < 30) return false
         if (!core.link.peerBackup || core.link.ble || !core.link.connected) return false
         val h = core.host ?: return false
         if (h.os != "mac" || !token(h.id)) return false
-        if (core.hub.perm("media") != "ok") return false
         return true
     }
-
-    fun canToggle(): Boolean = canAsk()
 
     fun hint(name: String): String {
         if (Build.VERSION.SDK_INT < 30) return tr("Needs Android 11 or later.")
@@ -131,8 +128,9 @@ class PhotoBackup(core: Core) : Feature(core) {
             return tr("Update TwinDesk on {name} to back up camera photos.", "name" to name)
         }
         if (!on()) {
-            val perm = if (core.link.connected && core.host?.os == "mac") core.hub.perm("media") else "ok"
+            val perm = if (core.link.connected && core.host?.os == "mac") photoPerm() else "ok"
             if (perm == "partial" || perm == "ask") return tr("Allow all photos on the phone. Selected photos can’t be backed up.")
+            if (canToggle() && !locGranted()) return tr("Allow photo locations on the phone. Backup copies that location with the photo.")
             return longHint(name)
         }
         return when (blocked()) {
@@ -146,27 +144,24 @@ class PhotoBackup(core: Core) : Feature(core) {
         }
     }
 
-    /**
-     * User tapped the switch on. Returns true when the caller must request photo location.
-     * The Mac and socket are fixed here; the permission result cannot opt in a different Mac.
-     */
-    fun enableFromUi(): Boolean {
-        if (!canAsk()) return false
+    // The Mac and socket at the tap own the permission result.
+    fun enableFromUi(): List<String> {
+        if (!canToggle()) return emptyList()
         val id = macId()
-        val socket = core.link.sessionMarker() ?: return false
-        if (!core.link.lockSessionCurrent(socket)) return false
-        if (!locGranted()) {
+        val socket = core.link.sessionMarker() ?: return emptyList()
+        if (!core.link.lockSessionCurrent(socket)) return emptyList()
+        if (!permissionsReady()) {
             armMac = id
             armSocket = socket
             armRev = revOf(id)
             armFp = core.host?.fp ?: ""
-            return true
+            return PbPermissions.request(Build.VERSION.SDK_INT)
         }
         setOn(true, id, socket)
-        return false
+        return emptyList()
     }
 
-    fun onLocationResult(granted: Boolean) {
+    fun onPermissionResult(resultReceived: Boolean) {
         val id = armMac
         val socket = armSocket
         val rev = armRev
@@ -175,11 +170,8 @@ class PhotoBackup(core: Core) : Feature(core) {
         armSocket = null
         armRev = -1
         armFp = ""
-        if (!granted || id.isEmpty() || socket == null) {
-            core.changed()
-            return
-        }
-        if (macId() != id || core.host?.fp != fp || revOf(id) != rev || core.link.sessionMarker() !== socket || !canAsk()) {
+        if (!resultReceived || id.isEmpty() || socket == null || macId() != id || core.host?.fp != fp ||
+            revOf(id) != rev || core.link.sessionMarker() !== socket || !canToggle() || !permissionsReady()) {
             core.changed()
             return
         }
@@ -199,7 +191,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                 unwatchLocked()
                 return
             }
-            val snap = core.hub.perm("media") + ":" + locGranted()
+            val snap = photoPerm() + ":" + locGranted()
             if (permSnap == snap) return
             val first = permSnap == null
             permSnap = snap
@@ -266,7 +258,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                 return
             }
             val socket = core.link.sessionMarker()
-            permSnap = core.hub.perm("media") + ":" + locGranted()
+            permSnap = photoPerm() + ":" + locGranted()
             revokeLocked(false)
             marker = socket
             boundMac = if (token(host.id)) host.id else ""
@@ -851,7 +843,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         val (mark, id) = sent
         core.link.sendFor(mark, msg(Proto.T.BACKUP_STATE,
             "on" to allowed(id), "since" to sinceOf(id), "rev" to revOf(id),
-            "perm" to (if (moduleOn()) core.hub.perm("media") else "none"), "loc" to locGranted(), "api" to Build.VERSION.SDK_INT,
+            "perm" to (if (moduleOn()) photoPerm() else "none"), "loc" to locGranted(), "api" to Build.VERSION.SDK_INT,
         ))
     }
 
@@ -865,7 +857,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         if (!core.link.peerBackup) return "peer"
         if (core.link.ble || !core.link.lockSessionCurrent(marker)) return "transport"
         if (Build.VERSION.SDK_INT < 30) return "api"
-        val perm = core.hub.perm("media")
+        val perm = photoPerm()
         if (perm != "ok") return if (perm == "partial") "partial" else "media"
         if (!locGranted()) return "location"
         val id = macId()
@@ -907,7 +899,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     private fun setOn(on: Boolean, id: String, socket: Any?) {
         val tell = synchronized(lock) {
             if (!token(id) || id != macId()) return
-            if (on && (socket == null || core.link.sessionMarker() !== socket || !canAsk())) return
+            if (on && (socket == null || core.link.sessionMarker() !== socket || !canToggle() || !permissionsReady())) return
             if (on() == on) return
             revokeLocked(true)
             core.store.setFlag(onKey(id), on)
@@ -930,7 +922,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         val id = macId()
         if (id.isEmpty() || !allowed(id) || sinceOf(id) <= 0L) return false
         if (!heard || !remoteOn || remoteSince <= 0L) return false
-        if (core.hub.perm("media") != "ok" || !locGranted()) return false
+        if (!permissionsReady()) return false
         return true
     }
 
@@ -1036,6 +1028,9 @@ class PhotoBackup(core: Core) : Feature(core) {
         return if (core.link.connected && h.os == "mac" && token(h.id)) h.id else ""
     }
 
+    private fun photoPerm() = PbPermissions.photoAccess(Build.VERSION.SDK_INT, core.hub::granted)
+    private fun permissionsReady() = photoPerm() == "ok" && locGranted()
+
     private fun locGranted() = core.ctx.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED
     private fun sinceOf(id: String) = core.store.prefsString(sinceKey(id), "0").toLongOrNull()?.coerceAtLeast(0L) ?: 0L
     private fun revOf(id: String) = core.store.prefsString(revKey(id), "0").toIntOrNull()?.coerceAtLeast(0) ?: 0
@@ -1104,6 +1099,24 @@ class PhotoBackup(core: Core) : Feature(core) {
             }
             return if (s == "." || s == "..") "" else s
         }
+    }
+}
+
+// Camera backup needs runtime photo grants even when All files access permits browsing.
+internal object PbPermissions {
+    private fun readPermission(api: Int) =
+        if (api >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
+
+    fun request(api: Int): List<String> = buildList {
+        add(readPermission(api))
+        if (api >= 34) add(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+        add(Manifest.permission.ACCESS_MEDIA_LOCATION)
+    }
+
+    fun photoAccess(api: Int, granted: (String) -> Boolean): String = when {
+        granted(readPermission(api)) -> "ok"
+        api >= 34 && granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) -> "partial"
+        else -> "ask"
     }
 }
 

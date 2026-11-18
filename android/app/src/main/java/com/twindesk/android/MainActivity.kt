@@ -929,15 +929,15 @@ private fun PhotosPage(core: Core, v: Int) {
     PhotoBackupCard(core, v)
 }
 
-// New camera photos into a folder on the paired Mac. Separate from Photos' own switch: this one
-// asks for the photo's location only when the person turns it on, and copies nothing without it.
+// New camera photos into a folder on the paired Mac. Opting in requests photo and embedded
+// location access.
 @Composable
 private fun PhotoBackupCard(core: Core, v: Int) {
     @Suppress("UNUSED_EXPRESSION") v
     val pb = core.photos
     val name = them(core)
-    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        pb.onLocationResult(granted)
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        pb.onPermissionResult(grants.isNotEmpty())
     }
     MacCard(tr("Back up new camera photos")) {
         @Suppress("UNUSED_EXPRESSION") v
@@ -949,7 +949,7 @@ private fun PhotoBackupCard(core: Core, v: Int) {
             enabled = pb.canToggle() || pb.on(),
         ) { want ->
             if (!want) pb.setOn(false)
-            else if (pb.enableFromUi()) ask.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
+            else pb.enableFromUi().takeIf { it.isNotEmpty() }?.let { ask.launch(it.toTypedArray()) }
         }
     }
 }
