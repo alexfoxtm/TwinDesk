@@ -1392,5 +1392,14 @@
   "Allow all photos on the phone. Selected photos can’t be backed up.": "Permita todas as fotos no telefone. Fotos selecionadas não podem ser copiadas.",
   "Allow photo locations on the phone. Backup copies that location with the photo.": "Permita os locais das fotos no telefone. O backup copia esse local com a foto.",
   "Connect over Wi-Fi or a cable.": "Conecte por Wi-Fi ou cabo.",
-  "Turn backup on on {name} and choose a folder.": "Ative o backup em {name} e escolha uma pasta."
+  "Turn backup on on {name} and choose a folder.": "Ative o backup em {name} e escolha uma pasta.",
+  "Actual size": "Tamanho real",
+  "Auto-rotate": "Giro automático",
+  "Direct touch": "Toque direto",
+  "Fill": "Preencher",
+  "Fit": "Ajustar",
+  "Hide viewer controls": "Ocultar controles do visualizador",
+  "Scale": "Escala",
+  "Show viewer controls": "Mostrar controles do visualizador",
+  "View options": "Opções de visualização"
 }

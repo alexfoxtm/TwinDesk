@@ -11,17 +11,18 @@ const root = path.join(__dirname, '../..');
 const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
 
 const viewer = read('android/app/src/main/java/com/twindesk/android/ViewerActivity.kt');
+const toolbar = read('android/app/src/main/java/com/twindesk/android/MacViewerToolbar.kt');
 const sheet = read('android/app/src/main/java/com/twindesk/android/DesktopOverview.kt');
 const web = read('android/app/src/main/java/com/twindesk/android/Web.kt');
 const gestures = read('android/app/src/main/assets/web/viewer.js');
 
 for (const label of ['tr("Mirror")', 'tr("Extend")', 'tr("Previous desktop")', 'tr("Next desktop")', 'tr("Displays & desktops")']) {
-  assert.ok(viewer.includes(label), label);
+  assert.ok(toolbar.includes(label), label);
 }
 assert.ok(viewer.includes('MacDisplayPick('));
-assert.ok(viewer.includes('s.space("prev")'));
-assert.ok(viewer.includes('s.space("next")'));
-assert.ok(viewer.includes('heightIn(min = 48.dp)'));
+assert.ok(toolbar.includes('onSpace("prev")'));
+assert.ok(toolbar.includes('onSpace("next")'));
+assert.ok(toolbar.includes('size(48.dp)'));
 
 assert.ok(sheet.includes('tr("Done")'));
 assert.ok(sheet.includes('tr("Not previewed yet")'));
@@ -99,9 +100,9 @@ assert.ok(sheet.includes('val viewingThis = marked && display.id == viewingId'))
 assert.ok(!sheet.includes('val current = desk.current && display.id == viewingId'));
 
 assert.ok(viewer.includes('val sheetReady'));
-assert.ok(viewer.includes('if (!sheetReady)'));
+assert.ok(toolbar.includes('if (sheetReady) onOverview() else onMenu("display")'));
 assert.ok(viewer.includes('!showLogin && !sheetReady && s.remote'));
-assert.ok(viewer.includes('!showLogin && !sheetReady && s.spaces'));
+assert.ok(viewer.includes('spaces = s.spaces && s.sharing && s.inputOn'));
 assert.ok(viewer.includes('LaunchedEffect(overview)'));
 assert.ok(viewer.includes('s.refreshDesktops()'));
 assert.ok(viewer.includes('onDisplay = { id -> if (id != desks.viewing && id != s.pendingDisplayId) s.selectDisplay(id) }'));

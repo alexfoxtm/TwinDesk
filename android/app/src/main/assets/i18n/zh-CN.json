@@ -1392,5 +1392,14 @@
   "Allow all photos on the phone. Selected photos can’t be backed up.": "请在手机上允许访问所有照片。无法备份仅选中的照片。",
   "Allow photo locations on the phone. Backup copies that location with the photo.": "请在手机上允许访问照片位置。备份会连同位置一起复制。",
   "Connect over Wi-Fi or a cable.": "请通过 Wi-Fi 或数据线连接。",
-  "Turn backup on on {name} and choose a folder.": "请在 {name} 上打开备份并选择一个文件夹。"
+  "Turn backup on on {name} and choose a folder.": "请在 {name} 上打开备份并选择一个文件夹。",
+  "Actual size": "实际大小",
+  "Auto-rotate": "自动旋转",
+  "Direct touch": "直接触控",
+  "Fill": "填充",
+  "Fit": "适合屏幕",
+  "Hide viewer controls": "隐藏查看器控件",
+  "Scale": "缩放",
+  "Show viewer controls": "显示查看器控件",
+  "View options": "查看选项"
 }

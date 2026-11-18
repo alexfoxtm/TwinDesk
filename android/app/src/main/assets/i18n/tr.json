@@ -1392,5 +1392,14 @@
   "Allow all photos on the phone. Selected photos can’t be backed up.": "Telefonda tüm fotoğraflara izin verin. Seçilen fotoğraflar yedeklenemez.",
   "Allow photo locations on the phone. Backup copies that location with the photo.": "Telefonda fotoğraf konumlarına izin verin. Yedek, konumu fotoğrafla birlikte kopyalar.",
   "Connect over Wi-Fi or a cable.": "Wi-Fi veya kabloyla bağlanın.",
-  "Turn backup on on {name} and choose a folder.": "{name} üzerinde yedeklemeyi açın ve bir klasör seçin."
+  "Turn backup on on {name} and choose a folder.": "{name} üzerinde yedeklemeyi açın ve bir klasör seçin.",
+  "Actual size": "Gerçek boyut",
+  "Auto-rotate": "Otomatik döndür",
+  "Direct touch": "Doğrudan dokunma",
+  "Fill": "Doldur",
+  "Fit": "Sığdır",
+  "Hide viewer controls": "Görüntüleyici denetimlerini gizle",
+  "Scale": "Ölçek",
+  "Show viewer controls": "Görüntüleyici denetimlerini göster",
+  "View options": "Görünüm seçenekleri"
 }

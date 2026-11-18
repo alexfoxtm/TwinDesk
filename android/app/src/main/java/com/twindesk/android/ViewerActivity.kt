@@ -1,17 +1,18 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // The Mac's screen, full screen: Mirror (the Mac's own screen) or Extend (a second screen for the
 // Mac, sized to this one). The picture and the touches are viewer.html's; this activity adds a
-// small bar (tap the handle at the top): Mirror / Extend, which display, Displays & desktops, previous/next desktop, keyboard, close.
-// When this Mac sends a desktop catalog, that sheet is the mirror, display, and desktop control.
-// Stop, the keyboard, and Close stay on the bar. An older Mac, or a picture that is not sharing
-// or not taking input, keeps Mirror, Extend, the display list, and previous/next.
+// toolbar. The Mac controls keep scaling local and put resolution next to the actual picture size.
+// The desktop overview still owns display and workspace choices. The login view is separate.
 package com.twindesk.android
 
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -50,9 +51,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -63,6 +68,7 @@ import kotlinx.coroutines.delay
 
 class ViewerActivity : ComponentActivity() {
     private var host: WebHost? = null
+    private lateinit var rail: MirrorRail
     private var started by mutableStateOf(false)
     private var attached = false
     private var viewport: Pair<Int, Int>? = null
@@ -79,11 +85,13 @@ class ViewerActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         val core = Core.get(this)
+        rail = MirrorRail(this, orient = { on -> ViewerOrientation.requested(core.host?.os, on) })
         val h = WebHost(this, "viewer.html", core) { ev, data ->
             if (ev == "playing" && data != null) core.screen.playing(data.optInt("w"), data.optInt("h"))
             if (ev == "videoState" && data != null) host?.let {
-                core.screen.videoState(it, data.optInt("generation"), data.optInt("session"), data.optBoolean("playing"))
+                core.screen.videoState(it, data.optInt("generation"), data.optInt("session"), data.optBoolean("playing"), data.optInt("w"), data.optInt("h"))
             }
+            if (ev.startsWith("viewer.scale.")) host?.let { core.screen.viewScaleChanged(it, ev.removePrefix("viewer.scale.")) }
         }
         host = h
         h.view.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
@@ -105,11 +113,12 @@ class ViewerActivity : ComponentActivity() {
                 val orientation = ViewerOrientation.apply(requestedOrientation, core.host?.os, auto)
                 if (requestedOrientation != orientation) requestedOrientation = orientation
             }
-            Viewer(core, h, locked, login, started, openLogin = {
-            login = true
-            locked.open()
-        }, closeLogin = { login = false; locked.close() }) { finish() } } }
-        MirrorRail(this, orient = { on -> ViewerOrientation.requested(Core.get(this).host?.os, on) }).attach()
+            Viewer(core, h, rail, locked, login, started, openLogin = {
+                login = true
+                locked.open()
+            }, closeLogin = { login = false; locked.close() }) { finish() }
+        } }
+        rail.attach()
     }
 
     override fun onStart() {
@@ -157,17 +166,20 @@ class ViewerActivity : ComponentActivity() {
 }
 
 @androidx.compose.runtime.Composable
-private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean, started: Boolean, openLogin: () -> Unit, closeLogin: () -> Unit, close: () -> Unit) {
+private fun Viewer(core: Core, host: WebHost, rail: MirrorRail, lockPage: LockPage, login: Boolean, started: Boolean, openLogin: () -> Unit, closeLogin: () -> Unit, close: () -> Unit) {
     val v by core.version.collectAsState()
     @Suppress("UNUSED_EXPRESSION") v
     var bar by remember { mutableStateOf(true) }
     var overview by remember(core.host?.id) { mutableStateOf(false) }
+    var menu by remember(core.host?.id) { mutableStateOf("") }
+    var action by remember { mutableStateOf(0) }
     val reduceMotion = android.provider.Settings.Global.getFloat(
         LocalContext.current.contentResolver,
         android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
         1f,
     ) == 0f
     val keyboard = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val touchExploration = LocalContext.current.getSystemService(android.view.accessibility.AccessibilityManager::class.java)?.isTouchExplorationEnabled == true
     val s = core.screen
     var fastLatched by remember(core.host?.id) { mutableStateOf(false) }
     LaunchedEffect(login, core.lockView.locked, s.videoPlaying, s.videoUnavailable, s.sharing) {
@@ -183,9 +195,19 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     // A stale RFB crop must stay behind the regular viewer until the next lock reconnects it.
     val fast = login && !core.lockView.locked && (s.videoPlaying || fastLatched || core.lockView.layoutStale)
     val showLogin = login && !fast
+    val macViewer = !showLogin && core.host?.os == "mac"
+    LaunchedEffect(macViewer) {
+        rail.showEdge(!macViewer)
+        menu = ""
+    }
+    BackHandler(menu.isNotEmpty()) { menu = ""; action++ }
     LaunchedEffect(login, fast) { if (login) lockPage.present(!fast) }
-    LaunchedEffect(bar, showLogin, s.spaceNote) {
-        if (bar && !showLogin && s.spaceNote.isEmpty()) { delay(4000); bar = false }
+    LaunchedEffect(bar, showLogin, s.spaceNote, menu, overview, action, keyboard, macViewer, s.sharing, touchExploration) {
+        if (bar && !showLogin && menu.isEmpty() && !overview && s.spaceNote.isEmpty() && !keyboard &&
+            (!macViewer || (s.sharing && !touchExploration))) {
+            delay(4000)
+            bar = false
+        }
     }
     LaunchedEffect(s.spaceNote, showLogin) {
         if (!showLogin && s.spaceNote.isNotEmpty()) bar = true
@@ -195,7 +217,11 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
     // The bar then drops the controls that sheet already has.
     val sheetReady = !showLogin && desks != null && desks.displays.isNotEmpty() && core.host?.os == "mac" && s.sharing && s.inputOn
     LaunchedEffect(overview) { if (overview) s.refreshDesktops() }
-    LaunchedEffect(sheetReady) { if (!sheetReady) overview = false }
+    LaunchedEffect(sheetReady, s.sharing, s.remote, s.spaces) {
+        if (!sheetReady) overview = false
+        if ((menu == "view" && !s.sharing) || (menu == "display" && (sheetReady || (!s.remote && !s.spaces)))) menu = ""
+    }
+    LaunchedEffect(overview) { if (!overview) action++ }
     LaunchedEffect(overview, sheetReady, started, s.previewEpoch) {
         s.previewSheet(overview && sheetReady && started)
     }
@@ -228,63 +254,97 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                 modifier = Modifier.align(Alignment.Center).fillMaxHeight().widthIn(max = 480.dp).fillMaxWidth().imePadding(),
             )
         }
-        // A small handle at the top: tap for the bar (the rest of the screen is the Mac's).
-        if (!showLogin || !keyboard) Box(
+        // The handle remains available when the Mac toolbar has faded.
+        if (macViewer && !overview && (!bar || !keyboard)) {
+            val label = if (bar) tr("Hide viewer controls") else tr("Show viewer controls")
+            Box(Modifier.align(Alignment.TopCenter).width(64.dp).height(48.dp)
+                .clip(RoundedCornerShape(16.dp)).semantics { contentDescription = label }
+                .clickable(role = Role.Button) { bar = !bar; menu = "" }, contentAlignment = Alignment.TopCenter) {
+                Box(Modifier.padding(top = 10.dp).width(34.dp).height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)).background(Color(0x99FFFFFF)))
+            }
+        }
+        // Keep the separate login and other-host controls.
+        if (!macViewer && (!showLogin || !keyboard)) Box(
             Modifier.align(Alignment.TopCenter).padding(top = 4.dp).width(72.dp).height(18.dp)
                 .clip(RoundedCornerShape(9.dp)).background(Color(0x55FFFFFF)).clickable { bar = !bar },
         )
-        AnimatedVisibility(bar && !(showLogin && keyboard), enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp)) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124))
-                        .horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(start = 8.dp).widthIn(max = 160.dp))
-                    // Which way the picture comes: the USB cable, or Wi-Fi.
-                    Text(
-                        if (core.link.wired) "USB" else if (Tailnet.isTailnet(core.link.endpoint()?.first.orEmpty())) "Tailscale" else "Wi-Fi", color = Color.White, fontSize = 11.sp,
-                        modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(6.dp))
-                            .background(if (core.link.wired) Color(0xFF30D158).copy(alpha = 0.35f) else Color(0x33FFFFFF)).padding(horizontal = 6.dp, vertical = 2.dp),
+        AnimatedVisibility(bar && !overview && !(showLogin && keyboard),
+            enter = if (reduceMotion) EnterTransition.None else fadeIn(),
+            exit = if (reduceMotion) ExitTransition.None else fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = if (macViewer) 40.dp else 28.dp,
+                start = if (macViewer) 10.dp else 0.dp, end = if (macViewer) 10.dp else 0.dp)) {
+            Column(Modifier.widthIn(max = if (macViewer) 520.dp else Dp.Unspecified), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (macViewer) {
+                    val transport = if (core.link.wired) "USB" else if (Tailnet.isTailnet(core.link.endpoint()?.first.orEmpty())) "Tailscale" else "Wi-Fi"
+                    MacViewerToolbar(
+                        title = name,
+                        detail = listOfNotNull(transport, s.decodedSize?.takeIf { s.videoPlaying && s.sharing }?.let { "${it.first} × ${it.second}" }).joinToString(" · "),
+                        menu = menu, onMenu = { menu = it; action++ },
+                        canDisplay = sheetReady || s.remote,
+                        canScale = s.sharing, scale = s.viewScale,
+                        canResolution = s.remote && s.sharing && core.link.connected,
+                        resolution = core.sync.value("res"),
+                        onResolution = { value -> if (core.link.connected && core.host?.os == "mac" && s.remote && s.sharing) core.sync.setValue("res", value) },
+                        onScale = { s.setViewScale(host, it) },
+                        sheetReady = sheetReady,
+                        onOverview = { overview = true; menu = ""; action++ },
+                        showModes = s.remote,
+                        mode = if (s.mode == "extend") "extend" else if (s.sharing) "mirror" else "",
+                        displays = if (s.remote) s.displays else emptyList(), displayId = s.displayId,
+                        spaces = s.spaces && s.sharing && s.inputOn,
+                        onMode = { s.pick(it) }, onDisplay = { s.pickDisplay(it) }, onSpace = { s.space(it) },
+                        keyboard = keyboard,
+                        onKeyboard = { s.keyboard(!keyboard); action++ },
+                        touchpad = core.store.flag("screen.touchpad", true),
+                        onTouchpad = { s.setOpt("screen.touchpad", it) },
+                        audio = core.store.flag("screen.sound", false),
+                        onAudio = { s.setOpt("screen.sound", it) },
+                        autoRotate = rail.autoRotate,
+                        onRotate = { rail.toggleRotation(); action++ },
+                        onScreenshot = rail::capture,
+                        onOpenLogin = if (core.lockView.locked && core.lockView.available && !login) ({ openLogin(); bar = true }) else null,
+                        onStop = if (s.remote && s.sharing) ({ closeLogin(); s.control(share = false) }) else null,
+                        onClose = { closeLogin(); s.end(); close() },
                     )
-                    if (s.remote && !showLogin) {
-                        if (!sheetReady) {
+                } else Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124))
+                            .horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(start = 8.dp).widthIn(max = 160.dp))
+                        // Which way the picture comes: the USB cable, or Wi-Fi.
+                        Text(
+                            if (core.link.wired) "USB" else if (Tailnet.isTailnet(core.link.endpoint()?.first.orEmpty())) "Tailscale" else "Wi-Fi", color = Color.White, fontSize = 11.sp,
+                            modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(6.dp))
+                                .background(if (core.link.wired) Color(0xFF30D158).copy(alpha = 0.35f) else Color(0x33FFFFFF)).padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                        if (s.remote && !showLogin) {
                             for (mode in listOf("mirror", "extend")) {
                                 val on = s.sharing && (s.mode == mode || (mode == "mirror" && s.mode == "custom" && s.displayId.isNotEmpty()))
                                 val label = if (mode == "mirror") tr("Mirror") else tr("Extend")
                                 if (on) FilledTonalButton(onClick = { bar = true }) { Text(label) }
                                 else TextButton(onClick = { s.pick(mode); bar = true }) { Text(label, color = Color.White) }
                             }
+                            if (s.sharing) TextButton(onClick = { closeLogin(); s.control(share = false) }) { Text(tr("Stop"), color = Color.White) }
                         }
-                        if (s.sharing) TextButton(onClick = { closeLogin(); s.control(share = false) }) { Text(tr("Stop"), color = Color.White) }
+                        if (core.lockView.locked && core.lockView.available && !login) TextButton(onClick = { openLogin(); bar = true }) { Text(tr("Open Mac login screen"), color = Color.White) }
+                        if (showLogin) TextButton(onClick = { closeLogin(); s.control(share = false); bar = true }) { Text(tr("Stop"), color = Color.White) }
+                        if (showLogin) TextButton(onClick = { closeLogin(); bar = true }) { Text(tr("Back"), color = Color.White) }
+                        TextButton(onClick = { if (showLogin) lockPage.keyboard(!keyboard) else s.keyboard(!keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
+                        TextButton(onClick = { closeLogin(); s.end(); close() }) { Text(tr("Close"), color = Color.White) }
                     }
-                    if (sheetReady) {
-                        TextButton(
-                            onClick = { overview = true; bar = true },
-                            modifier = Modifier.heightIn(min = 48.dp),
-                        ) { Text(tr("Displays & desktops"), color = Color.White) }
+                    if (!showLogin && !sheetReady && s.remote && s.displays.size > 1) {
+                        Row(
+                            Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124)).padding(horizontal = 8.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            MacDisplayPick(s.displays, if (s.sharing && s.mode != "extend") s.displayId else "", onDark = true) { s.pickDisplay(it); bar = true }
+                        }
                     }
-                    if (core.lockView.locked && core.lockView.available && !login) TextButton(onClick = { openLogin(); bar = true }) { Text(tr("Open Mac login screen"), color = Color.White) }
-                    if (showLogin) TextButton(onClick = { closeLogin(); s.control(share = false); bar = true }) { Text(tr("Stop"), color = Color.White) }
-                    if (showLogin) TextButton(onClick = { closeLogin(); bar = true }) { Text(tr("Back"), color = Color.White) }
-                    TextButton(onClick = { if (showLogin) lockPage.keyboard(!keyboard) else s.keyboard(!keyboard); bar = true }) { Text(if (keyboard) tr("Hide keyboard") else tr("Keyboard"), color = Color.White) }
-                    TextButton(onClick = { closeLogin(); s.end(); close() }) { Text(tr("Close"), color = Color.White) }
-                }
-                if (!showLogin && !sheetReady && s.remote && s.displays.size > 1) {
-                    Row(
-                        Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124)).padding(horizontal = 8.dp, vertical = 2.dp),
-                        horizontalArrangement = Arrangement.Center,
-                    ) {
-                        MacDisplayPick(s.displays, if (s.sharing && s.mode != "extend") s.displayId else "", onDark = true) { s.pickDisplay(it); bar = true }
-                    }
-                }
-                if (!showLogin && !sheetReady && s.spaces && s.sharing && s.inputOn && core.host?.os == "mac") {
-                    MacDesktopRow(
-                        onPrev = { s.space("prev"); bar = true },
-                        onNext = { s.space("next"); bar = true },
-                    )
                 }
                 if (!showLogin && s.spaceNote.isNotEmpty() && !overview) Text(
                     s.spaceNote,
@@ -313,20 +373,5 @@ private fun Viewer(core: Core, host: WebHost, lockPage: LockPage, login: Boolean
                 )
             }
         }
-    }
-}
-
-// Previous and next macOS desktop. Its own composable so the scroll state is not created
-// on a condition inside Viewer. Shown only while this Mac is sharing and taking input.
-@androidx.compose.runtime.Composable
-private fun MacDesktopRow(onPrev: () -> Unit, onNext: () -> Unit) {
-    Row(
-        Modifier.padding(top = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color(0xE6202124))
-            .horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 2.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TextButton(onClick = onPrev) { Text(tr("Previous desktop"), color = Color.White) }
-        TextButton(onClick = onNext) { Text(tr("Next desktop"), color = Color.White) }
     }
 }

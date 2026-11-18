@@ -1392,5 +1392,14 @@
   "Allow all photos on the phone. Selected photos can’t be backed up.": "Разрешите доступ ко всем фото на телефоне. Выбранные фото сохранить нельзя.",
   "Allow photo locations on the phone. Backup copies that location with the photo.": "Разрешите доступ к местам съёмки на телефоне. Копия сохраняет это место вместе с фото.",
   "Connect over Wi-Fi or a cable.": "Подключитесь по Wi-Fi или кабелю.",
-  "Turn backup on on {name} and choose a folder.": "Включите сохранение на {name} и выберите папку."
+  "Turn backup on on {name} and choose a folder.": "Включите сохранение на {name} и выберите папку.",
+  "Actual size": "Фактический размер",
+  "Auto-rotate": "Автоповорот",
+  "Direct touch": "Прямое касание",
+  "Fill": "Заполнить",
+  "Fit": "Вписать",
+  "Hide viewer controls": "Скрыть элементы управления",
+  "Scale": "Масштаб",
+  "Show viewer controls": "Показать элементы управления",
+  "View options": "Параметры просмотра"
 }

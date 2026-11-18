@@ -36,6 +36,7 @@
   let viewerGeneration = 0;
   let videoOwner = null;
   let frameProbe = 0;
+  let frameAllowed = true;
   let captureUnavailable = false;
   let name = t('the computer'); // the one we're connected to (opts)
   let streamAudio = false;
@@ -48,17 +49,42 @@
   let penFast = false; // Fast writing (opts.penFast): a stroke's samples in one in.mm (pts); off: each its own, paced
   let realTouch = false; // the computer injects real touch (screen.state touch): Direct sends in.tc
   let zoom = 1, panX = 0, panY = 0;
+  const PRESETS = ['fit', 'fill', 'actual'];
+  let scalePreset = 'fit', scaleMode = 'fit';
   let viewGestures = false; // Android explicitly opts into local Mac-view gestures
 
   function fitRect() {
     const vw = video.videoWidth, vh = video.videoHeight;
-    if (!vw || !vh) return null;
     const W = window.innerWidth, H = window.innerHeight;
+    if (!vw || !vh || W <= 0 || H <= 0) return null;
     const k = Math.min(W / vw, H / vh);
     return { x: (W - vw * k) / 2, y: (H - vh * k) / 2, w: vw * k, h: vh * k };
   }
+  function presetZoom(mode, r) {
+    if (!r) return 1;
+    if (mode === 'fill') return Math.max(window.innerWidth / r.w, window.innerHeight / r.h);
+    if (mode === 'actual') return video.videoWidth / (r.w * (window.devicePixelRatio || 1));
+    return 1;
+  }
+
+  function reportScale(mode) {
+    if (scaleMode === mode) return;
+    scaleMode = mode;
+    if (viewGestures && typeof TD.event === 'function') TD.event('viewer.scale.' + mode);
+  }
+
+  function selectScale(mode) {
+    if (!viewGestures || !PRESETS.includes(mode)) return;
+    cancelInput();
+    scalePreset = mode;
+    reportScale(mode);
+    panX = panY = 0;
+    applyViewport();
+  }
+
   function applyViewport() {
     const r = fitRect();
+    if (scaleMode !== 'custom') zoom = presetZoom(scaleMode, r);
     const dx = r ? Math.max(0, (r.w * zoom - window.innerWidth) / 2) : 0;
     const dy = r ? Math.max(0, (r.h * zoom - window.innerHeight) / 2) : 0;
     panX = Math.max(-dx, Math.min(dx, panX));
@@ -83,15 +109,16 @@
 
   function reportVideo(playing, owner = videoOwner) {
     if (!playing) frameProbe++;
+    else if (!frameAllowed) return;
     if (owner && owner === videoOwner && owner.pc === pc && video.srcObject === owner.stream &&
         (!playing || owner.pc.connectionState === 'connected') && typeof TD.videoState === 'function' && Number.isInteger(owner.generation) && owner.generation > 0 && Number.isInteger(owner.session)) {
-      TD.videoState(owner.generation, owner.session, playing);
+      TD.videoState(owner.generation, owner.session, playing, video.videoWidth, video.videoHeight);
     }
   }
 
   function requireCurrentFrame(owner = videoOwner) {
     if (typeof TD.videoState !== 'function') return;
-    if (!owner || owner !== videoOwner || owner.pc !== pc || video.srcObject !== owner.stream) return;
+    if (!frameAllowed || !owner || owner !== videoOwner || owner.pc !== pc || video.srcObject !== owner.stream) return;
     const probe = ++frameProbe;
     const current = () => probe === frameProbe && owner === videoOwner && owner.pc === pc && video.srcObject === owner.stream;
     if (typeof video.requestVideoFrameCallback === 'function') {
@@ -130,6 +157,7 @@
     const my = (pc = new RTCPeerConnection(msg.ice || { iceServers: [] }));
     session = msg.session;
     viewerGeneration = msg.viewerGeneration || 0;
+    frameAllowed = true;
     const queue = (pending = []);
     setOverlay(t('Connecting to {name}…', { name }));
     my.ontrack = (e) => {
@@ -183,20 +211,23 @@
   let videoAspect = 0;
   video.addEventListener('resize', () => {
     const aspect = video.videoHeight ? video.videoWidth / video.videoHeight : 0;
-    if (viewGestures && videoAspect && Math.abs(aspect - videoAspect) > 0.001) cancelViewTouch();
+    const nextZoom = scaleMode === 'custom' ? zoom : presetZoom(scaleMode, fitRect());
+    if (viewGestures && videoAspect && (Math.abs(aspect - videoAspect) > 0.001 || nextZoom !== zoom)) cancelInput();
     videoAspect = aspect;
     applyViewport(); TD.playing(video.videoWidth, video.videoHeight);
+    requireCurrentFrame();
   });
 
   window.tdRecv = (msg) => {
     if (msg.t !== 'rtc.ice') console.log(`viewer <- ${msg.t}${msg.session != null ? ` #${msg.session}` : ''}`);
     switch (msg.t) {
       case 'viewer.probe':
-        if (videoOwner && msg.session === session && Number.isInteger(msg.viewerGeneration) && msg.viewerGeneration > 0) {
+        if (pc && msg.session === session && Number.isInteger(msg.viewerGeneration) && msg.viewerGeneration > viewerGeneration) {
           reportVideo(false);
           viewerGeneration = msg.viewerGeneration;
-          videoOwner = { ...videoOwner, generation: viewerGeneration };
-          if (msg.accept === true) requireCurrentFrame();
+          if (videoOwner) videoOwner = { ...videoOwner, generation: viewerGeneration };
+          frameAllowed = msg.accept === true;
+          if (frameAllowed) requireCurrentFrame();
         }
         break;
       case 'stream.info': // its name is the display shared, not the computer
@@ -224,15 +255,30 @@
       case 'screen.state':
         if ('touch' in msg) realTouch = msg.touch === true;
         if (msg.on === false) captureUnavailable = false;
-        if (!pc && !captureUnavailable) setOverlay(msg.on ? t('Waiting for {name}…', { name }) : t('{name} isn’t sharing its screen. Start it with the button below.', { name }));
+        if (!pc && !captureUnavailable) setOverlay(msg.on ? t('Waiting for {name}…', { name })
+          : viewGestures ? t('{name} isn’t sharing its screen.', { name })
+          : t('{name} isn’t sharing its screen. Start it with the button below.', { name }));
         break;
-      case 'opts':
-        if (viewGestures !== (msg.viewGestures === true)) { cancelInput(); zoom = 1; panX = panY = 0; applyViewport(); }
-        viewGestures = msg.viewGestures === true;
+      case 'viewer.scale':
+        selectScale(msg.mode);
+        break;
+      case 'opts': {
+        const gestures = msg.viewGestures === true;
+        if (viewGestures !== gestures) {
+          cancelInput();
+          viewGestures = gestures;
+          scalePreset = 'fit';
+          reportScale('fit');
+          panX = panY = 0;
+          applyViewport();
+        }
+        if (viewGestures && msg.viewScale !== scalePreset) selectScale(msg.viewScale);
         if (msg.name) name = msg.name;
         sound = msg.sound !== false;
         pacing = ['smooth', 'steady'].includes(msg.pacing) ? msg.pacing : 'fast';
-        touchMode = msg.touch === 'direct' ? 'direct' : 'pad';
+        const touch = msg.touch === 'direct' ? 'direct' : 'pad';
+        if (touch !== touchMode) cancelInput();
+        touchMode = touch;
         if (Number(msg.speed) > 0) speed = Number(msg.speed);
         tapClick = msg.tap === true;
         if (msg.pen === false && penOn) penLeave(); // switched off while it is near
@@ -244,6 +290,7 @@
         applyAudio();
         if (pc) for (const r of pc.getReceivers()) if (r.track.kind === 'video') pace(r);
         break;
+      }
       case 'keyboard':
         if (msg.on) { kbd.value = ''; sent = ''; kbd.focus(); } else kbd.blur();
         break;
@@ -297,11 +344,11 @@
     if (gesture && gesture.frozen) return;
     if (gesture && gesture.latched) {
       if (gesture.ids.length !== 2 || touches.size !== 3 || performance.now() - gesture.started >= 150) return;
-      zoom = gesture.zoom; panX = gesture.panX; panY = gesture.panY; applyViewport();
+      zoom = gesture.zoom; panX = gesture.panX; panY = gesture.panY; reportScale(gesture.scale); applyViewport();
     }
     const ids = [...touches.keys()];
     const at = fingerGeometry(ids);
-    gesture = { ids, at, last: at, zoom, panX, panY, started: performance.now(), latched: false, frozen: false, mode: null, queued: false };
+    gesture = { ids, at, last: at, zoom, panX, panY, scale: scaleMode, started: performance.now(), latched: false, frozen: false, mode: null, queued: false };
   }
   function moveGesture(e) {
     const g = gesture;
@@ -346,16 +393,20 @@
       applyViewport();
       return;
     }
-    const next = Math.max(1, Math.min(4, g.at.span > 0 ? g.zoom * at.span / g.at.span : g.zoom));
-    zoom = next < 1.05 ? 1 : next;
+    const preset = presetZoom(scalePreset, fitRect());
+    const min = Math.min(1, preset, g.zoom);
+    const max = Math.max(4, preset, g.zoom);
+    const next = Math.max(min, Math.min(max, g.at.span > 0 ? g.zoom * at.span / g.at.span : g.zoom));
+    reportScale('custom');
+    zoom = Math.abs(next - 1) < 0.05 ? 1 : next;
     panX = at.x - window.innerWidth / 2 - (g.at.x - window.innerWidth / 2 - g.panX) * zoom / g.zoom;
     panY = at.y - window.innerHeight / 2 - (g.at.y - window.innerHeight / 2 - g.panY) * zoom / g.zoom;
     applyViewport();
   }
   function followCursor() {
-    if (!viewGestures || zoom <= 1) return;
+    if (!viewGestures) return;
     const r = drawn();
-    if (!r) return;
+    if (!r || (r.w <= window.innerWidth && r.h <= window.innerHeight)) return;
     const x = r.x + cur.x * r.w, y = r.y + cur.y * r.h;
     const margin = 32;
     if (x < margin) panX += margin - x;

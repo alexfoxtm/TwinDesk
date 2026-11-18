@@ -35,13 +35,14 @@ class MirrorRail(
 ) {
     private val prefs = activity.getSharedPreferences(ViewerOrientation.PREFS, Context.MODE_PRIVATE)
     private val dp = activity.resources.displayMetrics.density
+    private lateinit var overlay: FrameLayout
     private lateinit var rail: LinearLayout
     private lateinit var tab: TextView
     private lateinit var rotateBtn: TextView
 
     // Over the activity's content, at its right edge.
     fun attach() {
-        val root = FrameLayout(activity)
+        val root = FrameLayout(activity).also { overlay = it }
         rail = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -84,6 +85,14 @@ class MirrorRail(
         tab.text = if (on) "›" else "‹"
         prefs.edit().putBoolean("shown", on).apply()
     }
+
+    fun showEdge(show: Boolean) {
+        if (::overlay.isInitialized) overlay.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    val autoRotate get() = auto
+    fun toggleRotation() = setAuto(!auto)
+    fun capture() = shot()
 
     private var auto = true
     private fun setAuto(on: Boolean) {

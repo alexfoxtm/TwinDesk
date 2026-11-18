@@ -12,7 +12,7 @@ function fixture(local = true, touch = 'direct') {
   const nodes = { video, audio: {}, overlay: { classList: { toggle() {} } }, kbd: { value: '', addEventListener() {}, blur() {}, focus() {} } };
   const window = { innerWidth: 1000, innerHeight: 800, devicePixelRatio: 1,
     addEventListener(k, fn) { events.set(k, fn); },
-    TD: { send: (m) => sent.push(JSON.parse(m)), ready() {}, playing() {}, videoState: (generation, session, playing) => videoStates.push({ generation, session, playing }), haptic() {} } };
+    TD: { send: (m) => sent.push(JSON.parse(m)), ready() {}, playing() {}, videoState: (generation, session, playing, w, h) => videoStates.push({ generation, session, playing, w, h }), haptic() {} } };
   const document = { hidden: false, getElementById: (id) => nodes[id], addEventListener(k, fn) { docEvents.set(k, fn); },
     documentElement: { addEventListener() {} }, body: { appendChild() {}, classList: { toggle() {} } },
     createElement: () => ({ style: {}, getContext: () => ctx }) };
@@ -53,15 +53,20 @@ async function pinchPanAndControl() {
   assert.ok(!playback.videoStates.some(s => s.playing), 'old offer frame cannot permit handoff');
   playback.peers[1].ontrack({ track: { kind: 'video' }, receiver: {} });
   playback.videoEvents.get('playing')(); playback.videoFrame();
-  assert.deepStrictEqual(playback.videoStates.at(-1), { generation: 11, session: 2, playing: true });
+  assert.deepStrictEqual(playback.videoStates.at(-1), { generation: 11, session: 2, playing: true, w: 1920, h: 1080 });
   playback.videoEvents.get('playing')();
   playback.recv({ t: 'viewer.probe', session: 2, viewerGeneration: 12, accept: false });
-  playback.videoFrame();
+  playback.videoEvents.get('resize')(); playback.videoFrame();
   assert.ok(!playback.videoStates.some(s => s.generation === 12 && s.playing), 'locked state cancels queued playback');
   playback.recv({ t: 'viewer.probe', session: 2, viewerGeneration: 13, accept: true });
   assert.ok(!playback.videoStates.some(s => s.generation === 13 && s.playing), 'unlock waits for a fresh frame');
   playback.videoFrame();
-  assert.deepStrictEqual(playback.videoStates.at(-1), { generation: 13, session: 2, playing: true });
+  assert.deepStrictEqual(playback.videoStates.at(-1), { generation: 13, session: 2, playing: true, w: 1920, h: 1080 });
+  playback.video.videoWidth = 2560; playback.video.videoHeight = 1440;
+  playback.videoEvents.get('resize')();
+  assert.strictEqual(playback.videoStates.at(-1).w, 1920, 'new dimensions wait for an owned frame');
+  playback.videoFrame();
+  assert.deepStrictEqual(playback.videoStates.at(-1), { generation: 13, session: 2, playing: true, w: 2560, h: 1440 });
   playback.peers[1].connectionState = 'disconnected'; playback.peers[1].onconnectionstatechange();
   assert.strictEqual(playback.videoStates.at(-1).playing, false);
   playback.peers[1].connectionState = 'connected'; playback.peers[1].onconnectionstatechange(); playback.videoFrame();
@@ -159,6 +164,24 @@ function cancellationAndBounds() {
   f.pointer('pointerdown', 1, 100, 400); f.pointer('pointerdown', 2, 300, 400); f.sent.length = 0; f.pointer('pointermove', 2, 390, 400);
   f.frame();
   assert.deepStrictEqual(f.sent, []); assert.ok(!f.video.style.transform.includes('NaN'));
+  const presets = fixture();
+  presets.recv({ t: 'viewer.scale', mode: 'fill' });
+  near(Number(/scale\(([^)]+)/.exec(presets.video.style.transform)[1]), 800 / 562.5);
+  assert.deepStrictEqual(presets.sent, [], 'Fill changes the local view only');
+  presets.pointer('pointerdown', 1, 750, 200);
+  presets.pointer('pointerup', 1, 750, 200);
+  const filled = presets.sent.find(m => m.t === 'in.md');
+  near(filled.x, .5 + 250 / (800 * 16 / 9)); near(filled.y, .25);
+  presets.pointer('pointerdown', 1, 600, 300);
+  presets.pointer('pointermove', 1, 630, 300);
+  presets.sent.length = 0;
+  presets.window.devicePixelRatio = 2;
+  presets.recv({ t: 'viewer.scale', mode: 'actual' });
+  near(Number(/scale\(([^)]+)/.exec(presets.video.style.transform)[1]) * 1000 * 2, 1920);
+  presets.pointer('pointerup', 1, 630, 300);
+  assert.deepStrictEqual(presets.sent.map(m => m.t), ['in.mu'], 'scaling releases the drag once without replaying it');
+  presets.recv({ t: 'viewer.scale', mode: 'fit' });
+  assert.strictEqual(presets.video.style.transform, 'translate(0px, 0px) scale(1)');
   const real = fixture(); real.recv({ t: 'screen.state', touch: true });
   real.pointer('pointerdown', 1, 500, 400); real.pointer('pointerup', 1, 500, 400);
   assert.deepStrictEqual(real.sent.map((m) => m.t), ['in.tc', 'in.tc'], 'real touch remains unchanged');
