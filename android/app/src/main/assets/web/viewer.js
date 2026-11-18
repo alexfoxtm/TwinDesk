@@ -256,7 +256,7 @@
         if ('touch' in msg) realTouch = msg.touch === true;
         if (msg.on === false) captureUnavailable = false;
         if (!pc && !captureUnavailable) setOverlay(msg.on ? t('Waiting for {name}…', { name })
-          : viewGestures ? t('{name} isn’t sharing its screen.', { name })
+          : viewGestures ? t('{name} isn’t sharing its screen', { name })
           : t('{name} isn’t sharing its screen. Start it with the button below.', { name }));
         break;
       case 'viewer.scale':
