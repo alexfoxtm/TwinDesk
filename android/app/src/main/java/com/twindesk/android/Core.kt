@@ -504,6 +504,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     override fun onChange() {
         lockView.linkChanged()
+        tether.linkChanged()
         runCatching { share.linkChanged() } // the session moved (Bluetooth <-> Wi-Fi): shared folders follow
         runCatching { remote.linkChanged() } // … and the Remote page's pace
         runCatching { photos.linkChanged() } // … and a camera-photo backup bound to the previous socket
@@ -537,7 +538,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
         main.post {
             for (f in features) {
                 val mine = try {
-                    if (f === clip) clip.onMessage(t, m, route) else f.onMessage(t, m)
+                    when {
+                        f === clip -> clip.onMessage(t, m, route)
+                        f === tether -> tether.onMessage(t, m, route)
+                        else -> f.onMessage(t, m)
+                    }
                 } catch (e: Exception) { Log.e("TwinDesk", "message $t", e); true }
                 if (mine) return@post
             }

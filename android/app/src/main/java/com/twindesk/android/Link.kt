@@ -258,6 +258,8 @@ class Link(
         return TrustedRoute(w, h.id, h.fp)
     }
 
+    internal fun currentTrustedRoute(): TrustedRoute? = ws?.let(::trustedRoute)
+
     fun accepts(route: TrustedRoute?): Boolean = matches(route) != null
 
     // Only on the socket that is still this route. A retired socket, or a pair that has since
@@ -580,7 +582,7 @@ class Link(
             }
         }
         if (state == "connected") {
-            if (t == Proto.T.CLIP_POLICY || t == Proto.T.CLIP_QUEUE) events.onMessage(m, trustedRoute(ingress))
+            if (t == Proto.T.CLIP_POLICY || t == Proto.T.CLIP_QUEUE || t == Proto.T.TETHER) events.onMessage(m, trustedRoute(ingress))
             else events.onMessage(m)
         }
     }

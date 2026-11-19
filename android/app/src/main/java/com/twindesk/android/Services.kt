@@ -124,7 +124,7 @@ class ActionReceiver : BroadcastReceiver() {
             FCLIP_SAVE -> core.fclip.fetch(arg, save = true)
             ADB_ON -> core.adb.turnOn()
             SOUND_STOP -> core.sound.stop()
-            TETHER_STOP -> core.tether.userStop()
+            TETHER_STOP -> core.tether.userStop(arg)
             RING_STOP -> core.dev.stopRing()
             REZUME_DISMISS -> core.rezume.dismiss() // ReZume's notification: Dismiss
             PC_MEDIA -> core.pcMedia.control(arg.ifEmpty { "toggle" }) // the computer's media notification, or Play/Pause on ours

@@ -24,6 +24,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.provider.Settings
 import android.util.Log
@@ -33,57 +35,81 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.UUID
+import java.util.concurrent.FutureTask
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 class Tether(core: Core) : Feature(core) {
-    data class Offer(val port: Int, val token: String)
+    internal class Offer(val port: Int, val token: String, val route: Link.TrustedRoute) {
+        val id: String = UUID.randomUUID().toString()
 
-    @Volatile var offer: Offer? = null; private set
-    @Volatile var state = "off"; private set // off | ask | starting | on | error
-    @Volatile var why = ""; private set
+        fun accepts(request: String?, current: (Link.TrustedRoute) -> Boolean): Boolean =
+            request == id && current(route)
+    }
+
+    // The offer, actions and service's current Run are owned by the main thread.
+    private val main = Handler(Looper.getMainLooper())
+    private var offer: Offer? = null
+    private var state = "off" // off | ask | starting | on | error
+    private var why = ""
+    private var lastSocket: Any? = null
     private var lastSent = ""
 
-    override fun onWelcome(host: Host) {
-        offer = null
-        lastSent = ""
-        TetherVpn.stop(core.ctx)
-        set("off", "")
+    internal fun linkChanged() {
+        main.post { syncLink() }
     }
 
-    override fun onClosed() {
-        offer = null
-        TetherVpn.stop(core.ctx)
-        Notify.nm(core.ctx).cancel(Notify.ID_TETHER)
-        state = "off"
-        why = ""
+    override fun onClosed() = syncLink()
+
+    private fun syncLink() {
+        val route = core.link.currentTrustedRoute()
+        val active = offer
+        if (active != null && !core.link.accepts(active.route)) clear()
+        tell(route)
     }
 
-    override fun onMessage(t: String, m: JSONObject): Boolean {
+    internal fun onMessage(t: String, m: JSONObject, route: Link.TrustedRoute?): Boolean {
         if (t != Proto.T.TETHER) return false
+        if (route == null || !core.link.accepts(route)) return true
         val port = m.optInt("port")
         val token = m.str("token", 128)
+        clear()
         if (m.optBoolean("on") && port in 1..65535 && token.matches(Regex("[0-9a-f]{32,128}"))) {
-            offer = Offer(port, token)
-            start()
-        } else {
-            offer = null
-            TetherVpn.stop(core.ctx)
-            Notify.nm(core.ctx).cancel(Notify.ID_TETHER)
-            set("off", "")
-        }
+            val next = Offer(port, token, route)
+            offer = next
+            start(next)
+        } else tell(route)
         return true
     }
 
-    // The VPN permission first (once), then the VPN.
-    private fun start() {
+    private fun clear() {
+        val old = offer
+        offer = null
+        if (old != null) TetherVpn.running?.retire(old)
+        Notify.nm(core.ctx).cancel(Notify.ID_TETHER)
+        state = "off"
+        why = ""
+        core.changed()
+    }
+
+    internal fun current(request: String?): Offer? = offer?.takeIf { it.accepts(request, core.link::accepts) }
+    internal fun awaitingPermission(request: String?): Boolean = state == "ask" && current(request) != null
+
+    private fun promptIntent(ctx: Context, request: String) = Intent(ctx, TetherActivity::class.java)
+        .setIdentifier(request)
+        .putExtra(REQUEST, request)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    // Android's permission is app-wide; the action taken in response belongs to this offer.
+    private fun start(active: Offer) {
         val ctx = core.ctx
-        if (VpnService.prepare(ctx) == null) { launch(); return }
-        set("ask", "")
-        notifyAsk()
-        // In front, or allowed to draw over other apps: the prompt opens by itself.
+        if (VpnService.prepare(ctx) == null) { launch(active); return }
+        set(active, "ask")
+        if (current(active.id) == null) return
+        notifyAsk(active)
         if (inFront() || Settings.canDrawOverlays(ctx)) runCatching {
-            ctx.startActivity(Intent(ctx, TetherActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            ctx.startActivity(promptIntent(ctx, active.id))
         }
     }
 
@@ -92,50 +118,56 @@ class Tether(core: Core) : Feature(core) {
             android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
     }.getOrDefault(false)
 
-    fun launch() {
-        if (offer == null) return
+    internal fun permissionResult(request: String?, granted: Boolean, denied: String = "") {
+        if (state != "ask") return
+        val active = current(request) ?: return
+        if (granted) launch(active) else userStop(active.id, denied)
+    }
+
+    private fun launch(active: Offer) {
+        if (current(active.id) == null) return
         Notify.nm(core.ctx).cancel(Notify.ID_TETHER)
-        set("starting", "")
-        runCatching { core.ctx.startService(Intent(core.ctx, TetherVpn::class.java)) }
-            .onFailure { set("error", it.message ?: "couldn’t start") }
+        set(active, "starting")
+        val intent = Intent(core.ctx, TetherVpn::class.java).putExtra(REQUEST, active.id)
+        runCatching { core.ctx.startService(intent) }.onFailure { set(active, "error", it.message ?: "couldn’t start") }
     }
 
-    // The VPN permission refused, or Stop: off here and on the computer.
-    fun userStop(why: String = "") {
-        offer = null
-        TetherVpn.stop(core.ctx)
-        Notify.nm(core.ctx).cancel(Notify.ID_TETHER)
-        set("off", why)
-        if (core.link.connected) core.send(msg(Proto.T.TETHER_SET, "on" to false))
+    internal fun userStop(request: String, reason: String = "") {
+        val active = current(request) ?: return
+        clear()
+        why = reason
+        tell(active.route)
+        core.link.sendFor(active.route, msg(Proto.T.TETHER_SET, "on" to false))
     }
 
-    // From TetherVpn: running, or stopped (and why).
-    fun vpnState(s: String, w: String = "") {
-        if (s == "off" && offer == null && state == "off") return
-        set(s, w)
-    }
-
-    private fun set(s: String, w: String) {
+    internal fun set(active: Offer, s: String, w: String = ""): Boolean {
+        if (current(active.id) == null) return false
         state = s
         why = w
-        tell()
+        tell(active.route)
         core.changed()
+        return true
     }
 
-    fun tell() {
-        if (!core.link.connected) return
-        val m = msg(Proto.T.TETHER_STATE, "can" to true, "state" to state, "why" to why)
-        val key = m.toString()
-        if (key == lastSent) return
-        lastSent = key
-        core.send(m)
+    private fun tell(route: Link.TrustedRoute?) {
+        if (route == null || !core.link.accepts(route)) {
+            lastSocket = null
+            lastSent = ""
+            return
+        }
+        val reply = msg(Proto.T.TETHER_STATE, "can" to true, "state" to state, "why" to why)
+        val key = reply.toString()
+        if (lastSocket === route.marker && key == lastSent) return
+        if (core.link.sendFor(route, reply)) {
+            lastSocket = route.marker
+            lastSent = key
+        }
     }
 
-    private fun notifyAsk() {
+    private fun notifyAsk(active: Offer) {
         val ctx = core.ctx
         val name = core.host?.name ?: tr("your computer")
-        val open = PendingIntent.getActivity(ctx, 19, Intent(ctx, TetherActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val open = PendingIntent.getActivity(ctx, 19, promptIntent(ctx, active.id), PendingIntent.FLAG_IMMUTABLE)
         val text = tr("This phone can use {name}’s internet through the USB cable. Tap Allow, then confirm Android’s VPN request.", "name" to name)
         runCatching {
             Notify.nm(ctx).notify(Notify.ID_TETHER, Notification.Builder(ctx, Notify.CH_INVITE)
@@ -145,13 +177,19 @@ class Tether(core: Core) : Feature(core) {
                 .setStyle(Notification.BigTextStyle().bigText(text))
                 .setContentIntent(open)
                 .addAction(Notification.Action.Builder(null, tr("Allow"), open).build())
-                .addAction(Notification.Action.Builder(null, tr("Not now"), Notify.action(ctx, ActionReceiver.TETHER_STOP, 20)).build())
+                .addAction(Notification.Action.Builder(null, tr("Not now"), stopAction(ctx, active.id, 20)).build())
                 .setOnlyAlertOnce(true)
                 .build())
         }
     }
 
     companion object {
+        internal const val REQUEST = "tetherRequest"
+
+        internal fun stopAction(ctx: Context, request: String, code: Int): PendingIntent =
+            PendingIntent.getBroadcast(ctx, code, Intent(ctx, ActionReceiver::class.java)
+                .setAction(ActionReceiver.TETHER_STOP).setIdentifier(request).putExtra("arg", request), PendingIntent.FLAG_IMMUTABLE)
+
         const val PHONE_IP = "10.215.173.1"
         const val DNS_IP = "10.215.173.2" // the computer sends these queries to its own DNS server (tetherrelay.js)
         const val MTU = 16384 // as tetherrelay.js: big packets, fewer of them through adb
@@ -168,13 +206,15 @@ class Tether(core: Core) : Feature(core) {
 class TetherActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val core = Core.get(this)
-        if (core.tether.offer == null) { finish(); return }
+        val tether = Core.get(this).tether
+        val request = intent.getStringExtra(Tether.REQUEST)
+        if (!tether.awaitingPermission(request)) { finish(); return }
+        if (savedInstanceState != null) return
         val ask = VpnService.prepare(this)
-        if (ask == null) { core.tether.launch(); finish(); return }
+        if (ask == null) { tether.permissionResult(request, true); finish(); return }
         @Suppress("DEPRECATION")
-        runCatching { startActivityForResult(ask, 1) }.onFailure {
-            core.tether.userStop(tr("Android didn’t let TwinDesk ask for the VPN permission"))
+        runCatching { startActivityForResult(ask, PERMISSION) }.onFailure {
+            tether.permissionResult(request, false, tr("Android didn’t let TwinDesk ask for the VPN permission"))
             finish()
         }
     }
@@ -183,18 +223,20 @@ class TetherActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
-        val core = Core.get(this)
-        if (resultCode == RESULT_OK) core.tether.launch()
-        else core.tether.userStop(tr("The VPN permission wasn’t given on the phone"))
+        if (requestCode != PERMISSION) return
+        Core.get(this).tether.permissionResult(intent.getStringExtra(Tether.REQUEST), resultCode == RESULT_OK,
+            tr("The VPN permission wasn’t given on the phone"))
         finish()
     }
+
+    private companion object { const val PERMISSION = 1 }
 }
 
 // The VPN: the apps' IPv4 packets to and from the computer's relay.
 class TetherVpn : VpnService() {
     // One run per offer: its own socket and VPN interface, so a new offer (or Stop) ends the old one
     // without the old one's ending touching the new.
-    private class Run(val gen: Int) {
+    private class Run(val offer: Tether.Offer) {
         @Volatile var sock: Socket? = null
         @Volatile var tun: ParcelFileDescriptor? = null
         @Volatile var stopping = false
@@ -204,73 +246,93 @@ class TetherVpn : VpnService() {
         }
     }
 
+    private val main = Handler(Looper.getMainLooper())
     @Volatile private var cur: Run? = null
-    private var gen = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == STOP) { stopRun(); stopSelf(); return START_NOT_STICKY }
         val core = Core.get(this)
-        val offer = core.tether.offer ?: run { stopRun(); stopSelf(); return START_NOT_STICKY }
-        stopRun() // a new offer: start again with it
-        val r = Run(++gen)
+        val offer = core.tether.current(intent?.getStringExtra(Tether.REQUEST))
+        if (offer == null) {
+            if (cur == null) stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (cur?.offer === offer) return START_NOT_STICKY
+        stopRun()
+        val r = Run(offer)
         cur = r
         running = this
-        Thread({ run(core, offer, r) }, "td-tether").apply { isDaemon = true; start() }
+        Thread({ run(core, r) }, "td-tether").apply { isDaemon = true; start() }
         return START_NOT_STICKY
+    }
+
+    internal fun retire(offer: Tether.Offer) {
+        if (cur?.offer !== offer) return
+        stopRun()
+        stopSelf()
     }
 
     private fun stopRun() {
         val r = cur ?: return
+        cur = null
         r.stopping = true
         r.close()
     }
 
-    private fun run(core: Core, offer: Tether.Offer, r: Run) {
+    private fun run(core: Core, r: Run) {
         var why = ""
         try {
             val s = Socket()
             r.sock = s
+            if (r.stopping) return
             protect(s)
             s.tcpNoDelay = true
-            s.connect(InetSocketAddress("127.0.0.1", offer.port), 5000)
-            handshake(s, offer.token)
+            s.connect(InetSocketAddress("127.0.0.1", r.offer.port), 5000)
+            handshake(s, r.offer.token)
+            // Establishing a VPN can replace an existing interface. Do it on the same thread
+            // that accepts a new Run, after checking that both the Run and offer still own it.
+            val ready = FutureTask { establish(core, r) }
+            if (r.stopping || !main.post(ready)) return
+            val pfd = ready.get() ?: return
             if (r.stopping) return
-            val pfd = Builder()
-                .setSession(tr("Internet over USB"))
-                .addAddress(Tether.PHONE_IP, 24)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer(Tether.DNS_IP)
-                .setMtu(Tether.MTU)
-                .addDisallowedApplication(packageName) // TwinDesk's own session stays on the phone's networks
-                .setBlocking(true)
-                .setConfigureIntent(Notify.openApp(this))
-                .setMetered(false)
-                .establish() ?: throw Exception(tr("Android didn’t start the VPN (the permission was taken back?)"))
-            r.tun = pfd
-            if (r.stopping) return
-            core.tether.vpnState("on")
-            notifyOn(core)
             val up = Thread({ toComputer(pfd, s, r) }, "td-tether-up").apply { isDaemon = true; start() }
             toPhone(s.getInputStream(), FileOutputStream(pfd.fileDescriptor), r)
             up.interrupt()
             if (!r.stopping) why = tr("The cable or the computer ended it")
         } catch (e: Exception) {
             if (!r.stopping) {
-                why = e.message ?: "stopped"
-                Log.w("TwinDesk", "tether: $e")
+                why = (e.cause ?: e).message ?: "stopped"
+                Log.w("TwinDesk", "tether: $why")
             }
         } finally {
             r.close()
-            if (cur === r) { // still the current run: report, and the service ends
-                cur = null
-                running = null
+            main.post {
+                if (cur !== r) return@post
+                stopRun()
                 Notify.nm(this).cancel(Notify.ID_TETHER)
-                core.tether.vpnState(if (why.isNotEmpty()) "error" else "off", why)
+                core.tether.set(r.offer, if (why.isNotEmpty()) "error" else "off", why)
                 stopSelf()
             }
         }
     }
 
+    private fun establish(core: Core, r: Run): ParcelFileDescriptor? {
+        if (cur !== r || core.tether.current(r.offer.id) == null) return null
+        val pfd = Builder()
+            .setSession(tr("Internet over USB"))
+            .addAddress(Tether.PHONE_IP, 24)
+            .addRoute("0.0.0.0", 0)
+            .addDnsServer(Tether.DNS_IP)
+            .setMtu(Tether.MTU)
+            .addDisallowedApplication(packageName) // TwinDesk's own session stays on the phone's networks
+            .setBlocking(true)
+            .setConfigureIntent(Notify.openApp(this))
+            .setMetered(false)
+            .establish() ?: throw Exception(tr("Android didn’t start the VPN (the permission was taken back?)"))
+        r.tun = pfd
+        if (!core.tether.set(r.offer, "on")) return null
+        notifyOn(core, r.offer)
+        return pfd
+    }
     private fun handshake(s: Socket, token: String) {
         s.soTimeout = 5000
         val nonce = Proto.randomHex(16)
@@ -337,7 +399,7 @@ class TetherVpn : VpnService() {
         return true
     }
 
-    private fun notifyOn(core: Core) {
+    private fun notifyOn(core: Core, offer: Tether.Offer) {
         val name = core.host?.name ?: tr("your computer")
         runCatching {
             Notify.nm(this).notify(Notify.ID_TETHER, Notification.Builder(this, Notify.CH_LINK)
@@ -345,34 +407,28 @@ class TetherVpn : VpnService() {
                 .setContentTitle(tr("Using {name}’s internet over USB", "name" to name))
                 .setContentIntent(Notify.openApp(this))
                 .setOngoing(true)
-                .addAction(Notification.Action.Builder(null, tr("Stop"), Notify.action(this, ActionReceiver.TETHER_STOP, 21)).build())
+                .addAction(Notification.Action.Builder(null, tr("Stop"), Tether.stopAction(this, offer.id, 21)).build())
                 .build())
         }
     }
 
     override fun onRevoke() { // another VPN started, or it was switched off in Android's settings
-        val r = cur
-        stopRun()
-        cur = null
-        running = null
-        if (r != null) Core.get(this).tether.userStop(tr("Another VPN took over, or the VPN was switched off in Android’s settings"))
-        stopSelf()
+        val revoked = cur ?: return
+        main.post {
+            if (cur !== revoked) return@post
+            Core.get(this).tether.userStop(revoked.offer.id, tr("Another VPN took over, or the VPN was switched off in Android’s settings"))
+            if (cur === revoked) retire(revoked.offer)
+        }
     }
 
     override fun onDestroy() {
         stopRun()
-        cur = null
-        running = null
+        if (running === this) running = null
         super.onDestroy()
     }
 
     companion object {
-        const val STOP = "com.twindesk.android.TETHER_VPN_STOP"
-        @Volatile var running: TetherVpn? = null
-
-        fun stop(ctx: Context) {
-            if (running == null) return
-            runCatching { ctx.startService(Intent(ctx, TetherVpn::class.java).setAction(STOP)) }
-        }
+        internal var running: TetherVpn? = null
+            private set
     }
 }
