@@ -522,7 +522,7 @@ class PhoneViews extends EventEmitter {
         break;
       case 'key': {
         if (typeof m.code !== 'string') return;
-        const swap = P.keySwapNeeded(P.OS.MAC, P.OS.ANDROID) && this.getSettings().keys.swapCtrlCmd !== false;
+        const swap = P.keySwapNeeded(P.OS.MAC, P.OS.ANDROID) && this.getSettings().keys?.swapCtrlCmd !== false;
         let code = swap ? P.mapKeyFromOtherPlatform(m.code) : m.code;
         if (this._special(v, code, !!m.down)) break;
         const uhid = (this.getSettings().phone || {}).uhid === true;

@@ -138,6 +138,20 @@ for (const file of ['windows/phoneview.js', 'mac/phoneview.js']) {
 }
 
 {
+  const f = fixture('mac/phoneview.js', 'en');
+  const owner = Object.create(f.exported.PhoneViews.prototype);
+  const keys = [];
+  owner.getSettings = () => f.settings;
+  owner._special = (_view, code) => { keys.push(code); return true; };
+  const view = { kind: 'app', session: { closed: false } };
+  const input = { t: 'key', code: 'MetaLeft', down: true };
+  owner._input(view, input);
+  f.settings.keys = { swapCtrlCmd: false };
+  owner._input(view, input);
+  assert.deepStrictEqual(keys, ['ControlLeft', 'MetaLeft'], 'Mac phone windows use the default key mapping if the keys setting is missing');
+}
+
+{
   const f = fixture('mac/pcview.js', 'zh-CN'), server = new EventEmitter(), messages = [];
   server.current = { name: 'PC {name} $&' };
   const owner = new f.exported.PcView({ server, getSettings: () => f.settings });
