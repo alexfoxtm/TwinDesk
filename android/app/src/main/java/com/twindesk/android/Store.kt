@@ -78,12 +78,18 @@ class Store(private val ctx: Context) {
 
     fun putHost(h: Host, key: String = "hosts") {
         val old = hosts(key)
-        if (key == "hosts" && old.any { it.id == h.id && it.fp != h.fp }) LockVault(ctx).forget(h.id)
+        if (key == "hosts" && old.any { it.id == h.id && it.fp != h.fp }) {
+            LockVault(ctx).forget(h.id)
+            prefs.edit().remove("taskAlerts.${h.id}").apply()
+        }
         saveHosts(listOf(h) + old.filter { it.id != h.id }, key)
     }
 
     fun forgetHost(id: String, key: String = "hosts") {
-        if (key == "hosts") LockVault(ctx).forget(id)
+        if (key == "hosts") {
+            LockVault(ctx).forget(id)
+            prefs.edit().remove("taskAlerts.$id").apply()
+        }
         saveHosts(hosts(key).filter { it.id != id }, key)
     }
 

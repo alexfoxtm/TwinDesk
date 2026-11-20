@@ -88,6 +88,10 @@ class WebHost(ctx: Context, page: String, private val core: Core, private val on
         @JavascriptInterface fun videoState(generation: Int, session: Int, playing: Boolean, w: Int, h: Int) = main.post {
             onEvent("videoState", msg("videoState", "generation" to generation, "session" to session, "playing" to playing, "w" to w, "h" to h))
         }.let { }
+        @JavascriptInterface fun videoMetrics(generation: Int, session: Int, w: Int, h: Int, fps: Int, kbps: Int, dropped: Long) = main.post {
+            onEvent("videoMetrics", msg("videoMetrics", "generation" to generation, "session" to session,
+                "w" to w, "h" to h, "fps" to fps, "kbps" to kbps, "dropped" to dropped))
+        }.let { }
         @JavascriptInterface fun canDecodeVideo(codec: String, width: Int, height: Int, fps: Double): Boolean {
             val mime = when (codec.lowercase()) {
                 "video/h264" -> "video/avc"
@@ -165,6 +169,15 @@ data class MacDisplay(val id: String, val name: String, val w: Int, val h: Int) 
     }
 }
 
+data class StreamDoctorSample(val width: Int, val height: Int, val fps: Int?, val kbps: Int?, val droppedFrames: Long?) {
+    fun summary(): String = listOfNotNull(
+        "$width × $height",
+        fps?.let { tr("{value} fps", "value" to it) },
+        kbps?.let { tr("{value} Mb/s", "value" to String.format(java.util.Locale.ROOT, "%.1f", it / 1000.0)) },
+        droppedFrames?.let { tr("{count} dropped frames", "count" to it) },
+    ).joinToString(" · ")
+}
+
 // The Mac's screen: what it shares (screen.state), Start/Stop and Mirror/Extend (screen.ctl), and
 // the viewer page while ViewerActivity is open (screen.policy tells the Mac to stream).
 class Screen(core: Core) : Feature(core) {
@@ -199,6 +212,21 @@ class Screen(core: Core) : Feature(core) {
     private var videoMarker: Any? = null
     @Volatile var videoPlaying = false; private set
     @Volatile var videoUnavailable = false; private set
+    private data class DoctorReading(val marker: Any, val sample: StreamDoctorSample)
+    @Volatile private var doctorReading: DoctorReading? = null
+    val lastDoctorSample: StreamDoctorSample?
+        get() = doctorReading?.takeIf { core.link.connected &&
+            core.link.sessionMarker() === it.marker && !core.lockView.locked }?.sample
+
+    val doctorSummary: String? get() = lastDoctorSample?.summary()
+
+    fun doctorLinkChanged() {
+        val reading = doctorReading ?: return
+        if (!core.link.connected || core.link.sessionMarker() !== reading.marker) clearDoctor()
+    }
+
+    private fun clearDoctor() { doctorReading = null }
+
     private var wantStart = false // the viewer opened before we knew whether the Mac shares
     private var startedByUs = false // we started the Mac's sharing: stop it when the viewer closes
     @Volatile var autoOpened = false; private set // the computer started sharing and opened the viewer: it closes when that stops
@@ -305,7 +333,7 @@ class Screen(core: Core) : Feature(core) {
         if (host !== h) return
         previewSheet(false)
         host = null
-        resetVideo()
+        resetVideo(keepDoctor = true)
         viewing = false
         size = null
         wantStart = false
@@ -368,7 +396,8 @@ class Screen(core: Core) : Feature(core) {
         core.changed()
     }
 
-    private fun resetVideo() {
+    private fun resetVideo(keepDoctor: Boolean = false) {
+        if (!keepDoctor) clearDoctor()
         videoGeneration++
         videoSession = null
         videoMarker = null
@@ -417,6 +446,7 @@ class Screen(core: Core) : Feature(core) {
     }
 
     override fun onWelcome(host: Host) {
+        clearDoctor()
         sessionEpoch++
         endPreviewSession()
         this.host?.post(opts())
@@ -435,6 +465,7 @@ class Screen(core: Core) : Feature(core) {
     }
 
     fun lockChanged(locked: Boolean) {
+        clearDoctor()
         host?.post(msg("viewer.input", "on" to pointerInput(locked)))
         if (locked) endPreviewSession()
         else {
@@ -464,6 +495,33 @@ class Screen(core: Core) : Feature(core) {
         val step = DesktopSelect.onState(pending, desktopCatalog, displayId, System.currentTimeMillis(), frameFor())
         takeDesktop(step, state?.optString("spaceHold").orEmpty())
         core.changed()
+    }
+
+    internal fun onOffer(m: JSONObject, route: Link.TrustedRoute?): Boolean {
+        // Link's socket can change while Core hands this message to the UI thread.
+        if (route == null || !core.link.accepts(route)) return true
+        resetVideo()
+        videoUnavailable = false
+        videoSession = m.optInt("session", -1)
+        videoMarker = route.marker
+        host?.post(JSONObject(m.toString()).put("viewerGeneration", videoGeneration))
+        core.changed()
+        return true
+    }
+
+    fun videoMetrics(h: WebHost, generation: Int, session: Int, width: Int, height: Int, fps: Int, kbps: Int, dropped: Long) {
+        val marker = videoMarker ?: return
+        if (host !== h || !viewing || !sharing || !videoPlaying || core.lockView.locked ||
+            videoGeneration != generation || videoSession != session || !core.link.connected ||
+            core.link.sessionMarker() !== marker ||
+            width !in 1..16384 || height !in 1..16384) return
+        val sample = StreamDoctorSample(width, height, fps.takeIf { it in 0..240 },
+            kbps.takeIf { it in 0..1_000_000 }, dropped.takeIf { it in 0..1_000_000_000 })
+        val previous = doctorReading
+        if (previous?.sample != sample || previous.marker !== marker) {
+            doctorReading = DoctorReading(marker, sample)
+            core.changed()
+        }
     }
 
     fun videoDetail(h: WebHost, generation: Int, session: Int, height: Int) {
@@ -847,15 +905,7 @@ class Screen(core: Core) : Feature(core) {
             }
             "screen.textFocus" -> if (viewing && inputOn && !core.lockView.presented && core.host?.os == "mac") keyboard(true)
             "stream.info" -> { lastInfo = m; host?.post(m) }
-            "rtc.offer" -> {
-                resetVideo()
-                videoUnavailable = false
-                videoSession = m.optInt("session", -1)
-                videoMarker = core.link.sessionMarker()
-                host?.post(JSONObject(m.toString()).put("viewerGeneration", videoGeneration))
-                core.changed()
-            }
-            "stream.stop" -> { resetVideo(); videoUnavailable = m.optString("reason") == "capture-unavailable"; host?.post(m); core.changed() }
+            "stream.stop" -> { resetVideo(keepDoctor = true); videoUnavailable = m.optString("reason") == "capture-unavailable"; host?.post(m); core.changed() }
             "rtc.ice" -> host?.post(m)
             else -> return false
         }

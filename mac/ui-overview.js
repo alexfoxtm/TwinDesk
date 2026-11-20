@@ -88,6 +88,71 @@ UI.tab({
     const returnRow = UI.row('', tr('Reconnecting…'), [UI.button(tr('Disconnect'), () => api.disconnectPhone(), 'small')], { literal: true });
     const returnCard = UI.card('', [returnRow]);
 
+    const doctorLink = UI.row(tr('Transport'), '');
+    const doctorNetwork = UI.row(tr('Local Network'), '');
+    const doctorScreen = UI.row(tr('Screen Recording'), '');
+    const doctorAccess = UI.row(tr('mac.accessibility'), '');
+    const doctorAdb = UI.row(tr('Wireless debugging'), '');
+    const doctorStream = UI.row(tr('Screen sharing'), '');
+    const doctorRows = el('div', { attrs: { id: 'connection-doctor-rows' } }, [
+      doctorLink, doctorNetwork, doctorScreen, doctorAccess, doctorAdb, doctorStream,
+    ]);
+    doctorRows.hidden = true;
+    const doctorToggle = UI.button(tr('Show'), () => {
+      doctorRows.hidden = !doctorRows.hidden;
+      doctorToggle.textContent = doctorRows.hidden ? tr('Show') : tr('Hide');
+      doctorToggle.setAttribute('aria-expanded', String(!doctorRows.hidden));
+      if (!doctorRows.hidden && last) updateDoctor(last);
+    }, 'small');
+    doctorToggle.setAttribute('aria-expanded', 'false');
+    doctorToggle.setAttribute('aria-controls', 'connection-doctor-rows');
+    const doctor = UI.card(tr('Connection Doctor'), [doctorRows], { actions: [doctorToggle] });
+
+    // Display scoped observations already collected by the connection and capture paths.
+    function updateDoctor(s) {
+      const c = s.client, phone = s.phone?.connected;
+      if (c) {
+        const transport = c.id === phone?.id && phone.usb ? tr('USB cable')
+          : UI.onBle(s) || s.net?.onGroup || s.net?.lan ? UI.via(s) : 'IP';
+        doctorLink.setHint([transport, c.rttMs == null ? '' : `${tr('Round-trip time')} · ${c.rttMs} ms`].filter(Boolean).join(' · '));
+      } else {
+        const status = s.guest?.status?.state;
+        doctorLink.setHint(s.phone?.returning || status === 'reconnecting' ? tr('Reconnecting…')
+          : s.pairing || s.guest?.pairing ? tr('Pairing…')
+            : status === 'connecting' ? tr('Connecting…')
+              : status === 'identity_changed' ? tr('Identity could not be verified') : tr('Not connected'));
+      }
+
+      const permission = (allowed) => allowed === true ? tr('Allowed') : allowed === false ? tr('Not allowed') : tr('Unknown');
+      doctorNetwork.setHint(permission(s.discovery?.localNetwork));
+      const screen = s.permissions?.screen;
+      doctorScreen.setHint(permission(screen === 'granted' ? true : ['denied', 'restricted', 'not-determined'].includes(screen) ? false : null));
+      doctorAccess.setHint(permission(s.permissions?.accessibility));
+
+      doctorAdb.hidden = c?.os !== 'android' || c?.id !== phone?.id;
+      if (!doctorAdb.hidden) {
+        const adb = s.phone?.bridge;
+        doctorAdb.setHint(adb?.state === 'ready' ? adb.inputBlocked ? tr('Touch blocked') : tr('Ready')
+          : adb?.state === 'needsPair' ? tr('Not paired') : adb?.state === 'waitingWifi' ? tr('Waiting for Wi-Fi')
+            : adb?.state === 'error' || adb?.state === 'missing' ? tr('Problem') : tr('Not in use'));
+      }
+
+      // A negotiated connection is only ready. Measured sender dimensions need actual encoded frames.
+      const stream = !s.stream?.deviceId || s.stream.deviceId === c?.id ? s.stream : null;
+      const status = String(stream?.status || '');
+      const sending = c && s.sharing?.on && status === 'live' && stream.fps > 0 && stream.width > 0 && stream.height > 0;
+      if (sending) {
+        const video = [`${stream.width} × ${stream.height}`, tr('{value} fps', { value: stream.fps })];
+        if (stream.mbps > 0) video.push(tr('{value} Mb/s', { value: stream.mbps }));
+        doctorStream.setHint(video.join(' · '));
+      } else {
+        doctorStream.setHint(!s.sharing?.on ? tr('Off') : !c ? tr('Not connected')
+          : status.startsWith('error') || status === 'failed' ? tr('Problem')
+            : status === 'live' ? tr('Ready') : status === 'waiting for Wi-Fi' ? tr('Waiting for Wi-Fi')
+              : tr('Waiting for the picture…'));
+      }
+    }
+
     body.append(
       permCard,
       UI.card('', [addrRow, ipRow]),
@@ -95,6 +160,7 @@ UI.tab({
       ...(qrPair ? [qrPair.el] : []),
       hero,
       returnCard,
+      doctor,
       adb.el,
       ...(tether ? [tether.el] : []),
       UI.card(tr('Paired'), [pairedList]),
@@ -162,6 +228,7 @@ UI.tab({
     const update = (s) => {
       if (webCard) webCard.render(s);
       last = s;
+      if (!doctorRows.hidden) updateDoctor(s);
       const p = UI.names(s);
       bleSw.set(!s.net || s.net.ble !== false);
       blePcSw.set(!!s.net && s.net.blePc === true);

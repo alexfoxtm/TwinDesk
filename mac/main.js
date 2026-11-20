@@ -124,6 +124,7 @@ let web = null; // TwinDesk Web: this Mac as a page for iPhones and browsers (se
 let localsend = null; // files with LocalSend-compatible apps (mac/localsend.js), off until turned on in Files
 let phoneHub = null; // Calls, Messages and Photos (loadHub); svc.hub is the Mac's sound capture (audiohub.js)
 let photoBackup = null; // new camera photos from a paired Android phone (mac/photobackup.js)
+let fileShelf = null;
 
 const state = {
   macName: '',
@@ -588,6 +589,12 @@ function phoneAdb(b) {
 // while nothing is connected. Set again only when what it shows changes: a menu replaced while it's open closes (or its click
 // goes nowhere), and the state is pushed every second (the ping time isn't in it for that reason).
 let trayKey = '';
+function showFileShelf() {
+  if (!svc || modulesAtStart.includes('files')) return;
+  fileShelf ||= new (require('./file-shelf').FileShelf)({ drop: svc.drop, latestPhoto: () => photoBackup?.latest(), t });
+  fileShelf.show();
+}
+
 function updateTray() {
   if (!tray) return;
   const c = state.client;
@@ -638,6 +645,7 @@ function updateTray() {
     disconnect: c ? { label: phone ? t('Disconnect Phone') : t('Disconnect {name}', { name }), click: () => actions.disconnect() } : null,
     update: updates && updates.status.available ? { label: t('TwinDesk {version} available…', { version: updates.status.latest }), click: showUpdateWindow } : null,
     rezume: rezumeItems(),
+    fileShelf: showFileShelf,
     open: showWindow,
     quit: () => app.quit(),
   };
@@ -717,7 +725,8 @@ app.whenReady().then(() => {
   const backupEnabled = () => !modulesAtStart.includes('media') && Mods.isOn(settings.modules, 'media');
   pairing.photoBackupOn = backupEnabled;
   if (!modulesAtStart.includes('media')) photoBackup = require('./photobackup').attach({
-    store, settings, peer, pushState, save: () => store.saveSettings(settings), enabled: backupEnabled,
+    store, settings, peer, save: () => store.saveSettings(settings), enabled: backupEnabled,
+    pushState: () => { pushState(); fileShelf?.refresh(); },
   });
   peer.setPlain(settings.files.plain === true); // Files › Encrypt file transfers
   // The files engine (shared/fx2.js) stays up while another TwinDesk computer is on the network: a
@@ -734,6 +743,7 @@ app.whenReady().then(() => {
   });
   peer.on('closed', () => {
     if (previewShots) previewShots.cancel('session');
+    fileShelf?.refresh();
     pushState();
   });
   peer.on('rtt', pushState);
@@ -776,13 +786,19 @@ app.whenReady().then(() => {
   // General › Local API (shared/localapi.js): off unless switched on.
   {
     const { LocalApi } = require('../shared/localapi.js');
+    const { TaskAlerts } = require('./task-alerts.js');
+    const taskAlerts = new TaskAlerts(peer);
     const api = new LocalApi({ dir: app.getPath('userData'), actions: {
       status: () => ({ connected: !!peer.current, device: peer.current ? peer.current.name : '' }),
       send: (paths) => svc.fileSend.send(paths),
       clipboard: (text) => require('electron').clipboard.writeText(text),
+      taskAlerts,
     } });
     svc.localApi = api;
-    svc.applyLocalApi = () => api.apply(!!settings.app.localApi).catch((e) => console.error('[api] ' + e.message)).then(() => pushState());
+    svc.applyLocalApi = () => {
+      if (!settings.app.localApi) taskAlerts.clear();
+      return api.apply(!!settings.app.localApi).catch((e) => console.error('[api] ' + e.message)).then(() => pushState());
+    };
     if (settings.app.localApi) svc.applyLocalApi();
     app.on('will-quit', () => { api.stop(); });
   }
@@ -1208,7 +1224,7 @@ app.whenReady().then(() => {
     if (on) loadSilence().start();
     else if (svc.silence) svc.silence.stop();
   };
-  actions = setupIpc({ state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link, ...svc, get silence() { return svc.silence; }, hub: loadHub, photoBackup, login, refreshPermissions, updates, applyRelay });
+  actions = setupIpc({ state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link, ...svc, get silence() { return svc.silence; }, hub: loadHub, photoBackup, showFileShelf, login, refreshPermissions, updates, applyRelay });
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'assets', 'trayTemplate.png'))); // "Template": macOS tints it
   hud = new Hud(() => settings);
   hud.keep = () => !!peer.current; // the popup's window lives while a session is on (mac/hud.js)
@@ -1679,6 +1695,7 @@ app.on('before-quit', (event) => {
     return;
   }
   if (svc && svc.mic) svc.mic.shutdown();
+  fileShelf?.shutdown();
   if (svc && svc.rzShelf) svc.rzShelf.shutdown();
   if (svc && svc.rz) svc.rz.shutdown();
   quitting = true;

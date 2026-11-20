@@ -118,6 +118,7 @@ class MainActivity : ComponentActivity() {
         Core.get(this).adb.check() // back from Settings: is wireless debugging on now?
         Core.get(this).hub.let { if (it.callsOn || it.messagesOn || it.mediaOn || it.filesOn) it.permsChanged() }
         Core.get(this).photos.permsChanged() // photo backup stops if photo or location access changed in Settings
+        Core.get(this).taskAlerts.linkChanged()
         Core.get(this).share.let { if (it.on && it.serving != it.allowed) it.core.bg.execute { it.sync() } } // All files access just allowed (or taken away)
     }
 
@@ -649,6 +650,8 @@ private fun OverviewPage(core: Core, v: Int, connection: Boolean) {
     if (Modern.on) HeroCard { HeroBody(core, v, me, host, link, heroAccent) } else MacCard { HeroBody(core, v, me, host, link, heroAccent) }
 
 
+    if (connection) ConnectionDoctorCard(core, v)
+
     // The computer's own controls (dev.state, DevCtl.kt): ring, lock, sleep, Bluetooth, Do not disturb, volume.
     if (!connection && host != null) ComputerCard(core, host.name)
 
@@ -716,6 +719,66 @@ private fun OverviewPage(core: Core, v: Int, connection: Boolean) {
 
     // Connect with Android (PeerUi.kt): another phone, beside the computer, at the bottom.
     if (connection) AndroidSection(core, v)
+}
+
+@Composable
+private fun ConnectionDoctorCard(core: Core, version: Int) {
+    var expanded by remember { mutableStateOf(false) }
+    MacCard {
+        MacRow(tr("Connection Doctor"), first = true) {
+            Secondary(if (expanded) tr("Hide") else tr("Show")) { expanded = !expanded }
+        }
+        if (expanded) ConnectionDoctorDetails(core, version)
+    }
+}
+
+@Composable
+private fun ConnectionDoctorDetails(core: Core, version: Int) {
+    @Suppress("UNUSED_EXPRESSION") version
+    val link = core.link
+    val selected = if (link.pair == null) link.host?.let { current -> core.hosts().find { it.id == current.id && it.fp == current.fp } } else null
+    val close = selected?.let(link::doctorClose)
+    val endpoint = if (link.connected) link.endpoint() else null
+    val transport = when {
+        !link.connected -> tr("Not connected")
+        link.wired -> "USB"
+        link.ble -> tr("Bluetooth")
+        endpoint?.first == "127.0.0.1" && endpoint.second in Relay.ports -> tr("Your own relay")
+        Tailnet.isTailnet(endpoint?.first.orEmpty()) -> "Tailscale"
+        else -> tr(core.net.via)
+    }
+    val status = when {
+        link.pair != null -> tr("Pairing…")
+        link.connected -> tr("Connected")
+        link.state == "connecting" -> tr("Connecting…")
+        link.state == "failed" -> tr("Connection failed")
+        core.returning != null -> tr("Reconnecting…")
+        else -> tr("Not connected")
+    }
+    val reason = when (close?.reason) {
+        ConnectionCloseReason.LOCAL -> tr("Disconnected here")
+        ConnectionCloseReason.INTERRUPTED -> tr("Connection interrupted")
+        ConnectionCloseReason.ASLEEP -> tr("Computer asleep")
+        ConnectionCloseReason.REPLACED -> tr("Another device took over")
+        ConnectionCloseReason.RELEASED -> tr("Computer ended the connection")
+        ConnectionCloseReason.BAD_PAIRING -> tr("Pairing no longer accepted")
+        ConnectionCloseReason.IDENTITY -> tr("Identity could not be verified")
+        ConnectionCloseReason.VERSION -> tr("Different app version")
+        ConnectionCloseReason.PAUSED -> tr("Reconnect paused")
+        null -> tr("No connection event recorded")
+    }
+    MacRow(tr("Pairing"), selected?.let { tr("Paired · {name}", "name" to it.name) } ?: tr("No computer selected"))
+    MacRow(tr("Connection"), status)
+    if (link.connected) {
+        MacRow(tr("Transport"), transport)
+        MacRow(tr("Round-trip time"), link.rttMs?.let { "$it ms" } ?: tr("No reply measured yet"))
+    }
+    if (selected != null) {
+        val stamp = close?.let { android.text.format.DateFormat.getTimeFormat(LocalContext.current).format(java.util.Date(it.at)) }
+        MacRow(tr("Last connection event"), listOfNotNull(reason, stamp).joinToString(" · "))
+    }
+    MacRow(if (core.screen.viewing && core.screen.videoPlaying) tr("Stream") else tr("Last stream"),
+        core.screen.doctorSummary ?: tr("No stream measured on this connection"))
 }
 
 // The connected computer's controls, when it has them (an older TwinDesk says nothing: no card).
@@ -1533,6 +1596,16 @@ private fun NotificationsPage(core: Core, v: Int) {
     val paired = core.adb.paired
     val inOn = core.sync.get("notifs", "in")
     val shown = core.notifs.shown
+    val taskRoute = core.link.currentTrustedRoute()
+    val taskOn = core.taskAlerts.enabled
+    val taskCanNotify = core.taskAlerts.canNotify
+    val taskHint = if (taskCanNotify)
+        tr("Receive completion alerts for tasks you start on {name}.", "name" to name)
+    else tr("Allow notifications in Android settings to receive task alerts.")
+    val askTaskNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        core.taskAlerts.linkChanged()
+        core.changed()
+    }
     val companion = core.companion
     val companionState = companion.state
     val companionBusy = companion.busy
@@ -1598,6 +1671,28 @@ private fun NotificationsPage(core: Core, v: Int) {
     MacCard {
         DirHead(name, false, me, true)
         SwitchRow(tr("Show {name}’s notifications here", "name" to name), tr("{count} shown", "count" to shown), inOn, first = true) { core.sync.set("notifs", "in", it) }
+        if (core.host?.os == "mac") {
+            SwitchRow(tr("Task alerts"), taskHint, taskOn) { on ->
+                core.taskAlerts.setEnabled(taskRoute, on)
+                if (on && !core.taskAlerts.canNotify) {
+                    if (Build.VERSION.SDK_INT >= 33 &&
+                        ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                    ) {
+                        askTaskNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        val intent = if (Notify.nm(ctx).areNotificationsEnabled()) {
+                            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                                .putExtra(Settings.EXTRA_CHANNEL_ID, Notify.CH_TASK)
+                        } else {
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                        }
+                        runCatching { ctx.startActivity(intent) }
+                    }
+                }
+            }
+        }
     }
     if (silence.peer) SilenceCard(core, silence, name)
     // Each app on its own (#102): every app on the phone, as a block list or an allow list (AppCards.kt).
@@ -1834,6 +1929,7 @@ private fun ModulesCard(core: Core) {
             if (id in Modules.FIXED) continue
             SwitchRow(tr(t.title), "", id !in off) {
                 Modules.set(core.store, id, it)
+                if (id == "notifications") core.taskAlerts.modulesChanged()
                 off = Modules.off(core.store)
                 if (id == "files") core.localSend.start()
                 if (id == "photos") core.photos.modulesChanged()
@@ -1912,7 +2008,7 @@ private fun GeneralPage(core: Core, v: Int) {
     ) { core.changed() }
     val askNotify = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
-    ) { core.changed() }
+    ) { core.taskAlerts.linkChanged(); core.changed() }
     // Every permission and feature in one place: each is asked for only when switched on elsewhere,
     // or here.
     MacCard(tr("Permissions")) {

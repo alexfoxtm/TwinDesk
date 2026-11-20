@@ -107,6 +107,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val bank = BankGuard(this) // a banking app opened: debugging off, and TwinDesk exits (General › Banking apps)
     val pcMedia = PcMedia(this) // what plays on the computer: the Media page and a media notification here
     val silence = Silence(this) // Notifications › Silence together: Do not disturb here and the Mac's Focus, each way when switched on
+    val taskAlerts = TaskAlerts(this)
     // Connect with Android: another phone, on a session of its own beside the computer's (Peer.kt).
     // Not a Feature: the computer's messages never reach it, nor its the computer.
     val peer = Peer(this)
@@ -475,6 +476,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         silence.forget(id)
         if (returnHost()?.id == id) stopReturn()
         companion.forget(id)
+        taskAlerts.forget(id)
         if (link.host?.id == id) link.disconnect()
         store.forgetHost(id)
         changed()
@@ -504,7 +506,9 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     override fun onChange() {
         lockView.linkChanged()
+        screen.doctorLinkChanged()
         tether.linkChanged()
+        runCatching { taskAlerts.linkChanged() }
         runCatching { share.linkChanged() } // the session moved (Bluetooth <-> Wi-Fi): shared folders follow
         runCatching { remote.linkChanged() } // … and the Remote page's pace
         runCatching { photos.linkChanged() } // … and a camera-photo backup bound to the previous socket
@@ -535,12 +539,18 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     override fun onMessage(m: JSONObject, route: Link.TrustedRoute?) {
         val t = m.optString("t")
+        if (t == Proto.T.TASK_ALERT) {
+            val alert = TaskAlertGate.parse(m.opt("id"), m.opt("title"), m.opt("ok"))
+            main.post { taskAlerts.receive(alert, route) }
+            return
+        }
         main.post {
             for (f in features) {
                 val mine = try {
                     when {
                         f === clip -> clip.onMessage(t, m, route)
                         f === tether -> tether.onMessage(t, m, route)
+                        f === screen && t == "rtc.offer" -> screen.onOffer(m, route)
                         else -> f.onMessage(t, m)
                     }
                 } catch (e: Exception) { Log.e("TwinDesk", "message $t", e); true }

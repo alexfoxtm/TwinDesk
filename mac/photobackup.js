@@ -148,6 +148,30 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
       if (Object.hasOwn(peers(), key)) { delete peers()[key]; save(); }
       pushState();
     },
+    latest() {
+      const ctx = control();
+      if (!ctx || ledger.broken) return null;
+      const { on, folder } = row(ctx);
+      if (!on || !folder) return null;
+      const history = ledger.data.peers[`${ctx.deviceId}:${ctx.photoBackupPair}`]?.items || {};
+      const candidates = [];
+      for (const item of Object.values(history)) {
+        for (const receipt of Object.values(item || {})) {
+          if (receipt?.state === 'done' && receipt.root === folder && Number.isFinite(receipt.mtime)) {
+            candidates.push(receipt);
+          }
+        }
+      }
+      candidates.sort((a, b) => b.mtime - a.mtime);
+      try {
+        for (const receipt of candidates) {
+          if (ledger.hasArchived(receipt, folder, receipt.size)) {
+            return { path: receipt.dest, name: path.basename(receipt.dest), size: receipt.size, at: receipt.mtime };
+          }
+        }
+      } catch { /* the archive folder may be offline */ }
+      return null;
+    },
     view() {
       const ctx = control(undefined, false);
       if (!ctx) return null;

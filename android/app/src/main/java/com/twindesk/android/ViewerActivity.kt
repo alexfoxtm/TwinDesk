@@ -91,6 +91,10 @@ class ViewerActivity : ComponentActivity() {
             if (ev == "videoState" && data != null) host?.let {
                 core.screen.videoState(it, data.optInt("generation"), data.optInt("session"), data.optBoolean("playing"), data.optInt("w"), data.optInt("h"))
             }
+            if (ev == "videoMetrics" && data != null) host?.let {
+                core.screen.videoMetrics(it, data.optInt("generation"), data.optInt("session"), data.optInt("w"), data.optInt("h"),
+                    data.optInt("fps", -1), data.optInt("kbps", -1), data.optLong("dropped", -1))
+            }
             if (ev == "videoDetail" && data != null) host?.let {
                 core.screen.videoDetail(it, data.optInt("generation"), data.optInt("session"), data.optInt("height", -1))
             }
@@ -282,7 +286,8 @@ private fun Viewer(core: Core, host: WebHost, rail: MirrorRail, lockPage: LockPa
                     val transport = if (core.link.wired) "USB" else if (Tailnet.isTailnet(core.link.endpoint()?.first.orEmpty())) "Tailscale" else "Wi-Fi"
                     MacViewerToolbar(
                         title = name,
-                        detail = listOfNotNull(transport, s.decodedSize?.takeIf { s.videoPlaying && s.sharing }?.let { "${it.first} × ${it.second}" }).joinToString(" · "),
+                        detail = listOfNotNull(transport, if (s.videoPlaying && s.sharing) s.lastDoctorSample?.summary()
+                            ?: s.decodedSize?.let { "${it.first} × ${it.second}" } else null).joinToString(" · "),
                         menu = menu, onMenu = { menu = it; action++ },
                         canDisplay = sheetReady || s.remote,
                         canScale = s.sharing, scale = s.viewScale,

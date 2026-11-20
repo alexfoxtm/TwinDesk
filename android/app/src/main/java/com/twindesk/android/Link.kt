@@ -66,6 +66,11 @@ class Link(
     // resume onto the network (Core), false again, with the Bluetooth socket kept as the fallback.
     @Volatile var ble = false; private set
     val connected get() = state == "connected"
+    private val connectionObservations = ConnectionObservations()
+
+    internal fun doctorClose(h: Host): ConnectionCloseObservation? =
+        if (store.hosts(hostsKey).any { it.id == h.id && it.fp == h.fp })
+            connectionObservations.forPair(h.id, h.fp) else null
 
     private val exec = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "td-link").apply { isDaemon = true } }
     @Volatile private var ws: WebSocket? = null
@@ -167,6 +172,7 @@ class Link(
         dialAdmit = if (wantReclaim) admit else null
         reclaimHello = wantReclaim
         pair = null
+        connectionObservations.select(h.id, h.fp)
         host = h
         wired = viaUsb
         ble = viaBle
@@ -192,7 +198,10 @@ class Link(
     fun disconnect() {
         parting = true
         run {
-            if (state == "connected" || helloSent) raw(msg(Proto.T.BYE))
+            if (state == "connected" || helloSent) {
+                host?.let { connectionObservations.closed(it.id, it.fp, "local", false, System.currentTimeMillis()) }
+                raw(msg(Proto.T.BYE))
+            }
             closeSocket()
             setState("idle", "")
         }
@@ -582,8 +591,9 @@ class Link(
             }
         }
         if (state == "connected") {
-            if (t == Proto.T.CLIP_POLICY || t == Proto.T.CLIP_QUEUE || t == Proto.T.TETHER) events.onMessage(m, trustedRoute(ingress))
-            else events.onMessage(m)
+            if (t == Proto.T.CLIP_POLICY || t == Proto.T.CLIP_QUEUE || t == Proto.T.TETHER || t == "rtc.offer" || t == Proto.T.TASK_ALERT) {
+                events.onMessage(m, trustedRoute(ingress))
+            } else events.onMessage(m)
         }
     }
 
@@ -801,6 +811,7 @@ class Link(
             return
         }
         val was = state
+        host?.let { connectionObservations.closed(it.id, it.fp, lastCode, failure == "identity", System.currentTimeMillis()) }
         if (failure == "identity" && !wasReclaim) {
             setState("failed", tr("{name} looks different now. Forget it and pair again.", "name" to (host?.name ?: tr("The computer"))))
         } else if (failure == "identity") {
