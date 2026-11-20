@@ -20,6 +20,7 @@
   const video = document.getElementById('video');
   const audio = document.getElementById('audio');
   const overlay = document.getElementById('overlay');
+  const pointerCue = document.getElementById('pointer-cue');
   const kbd = document.getElementById('kbd');
   // The app's language (I18n.kt through TD.tr): {name} parts filled from vars, English without the app.
   const t = (text, vars = {}) => (typeof TD.tr === 'function' ? TD.tr(text, JSON.stringify(vars))
@@ -166,8 +167,33 @@
   }
   const steadySdp = (sdp) => (pacing === 'steady' ? sdp.replace(/^a=extmap:[^\r\n]*\/playout-delay\r?\n/gm, '') : sdp);
 
+  let cueFrame = null, cueTimer = null;
+  let shareAllowsCue = false, inputAllowsCue = false;
+
+  function hidePointerCue() {
+    clearTimeout(cueTimer);
+    if (cueFrame !== null) cancelAnimationFrame(cueFrame);
+    cueFrame = cueTimer = null;
+    if (pointerCue) pointerCue.hidden = true;
+  }
+
+  function previewPointer() {
+    if (!pointerCue || !viewGestures || !shareAllowsCue || !inputAllowsCue || document.hidden ||
+        !frameAllowed || !videoOwner?.playing || pc?.connectionState !== 'connected') return;
+    clearTimeout(cueTimer);
+    cueTimer = setTimeout(hidePointerCue, 160);
+    if (cueFrame !== null) return;
+    cueFrame = requestAnimationFrame(() => {
+      cueFrame = null;
+      const r = drawn();
+      if (!r) return hidePointerCue();
+      pointerCue.style.transform = `translate(${r.x + cur.x * r.w}px, ${r.y + cur.y * r.h}px)`;
+      pointerCue.hidden = false;
+    });
+  }
+
   function reportVideo(playing, owner = videoOwner) {
-    if (!playing) { frameProbe++; cancelDetail(); if (owner) owner.playing = false; }
+    if (!playing) { frameProbe++; cancelDetail(); hidePointerCue(); if (owner) owner.playing = false; }
     else if (!frameAllowed) return;
     if (owner && owner === videoOwner && owner.pc === pc && video.srcObject === owner.stream &&
         (!playing || owner.pc.connectionState === 'connected') && typeof TD.videoState === 'function' && Number.isInteger(owner.generation) && owner.generation > 0 && Number.isInteger(owner.session)) {
@@ -316,8 +342,14 @@
           ? t('Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…', { name })
           : t('{name} isn’t sharing its screen', { name }));
         break;
+      case 'viewer.input':
+        inputAllowsCue = msg.on === true;
+        if (!inputAllowsCue) hidePointerCue();
+        break;
       case 'screen.state':
         if ('touch' in msg) realTouch = msg.touch === true;
+        shareAllowsCue = msg.on === true && msg.remote !== false && !msg.spaceHold;
+        if (!shareAllowsCue) hidePointerCue();
         if (msg.on === false) { captureUnavailable = false; cancelDetail(); }
         if (!pc && !captureUnavailable) setOverlay(msg.on ? t('Waiting for {name}…', { name })
           : viewGestures ? t('{name} isn’t sharing its screen', { name })
@@ -327,6 +359,8 @@
         selectScale(msg.mode);
         break;
       case 'opts': {
+        inputAllowsCue = msg.inputOn === true;
+        if (!inputAllowsCue) hidePointerCue();
         const gestures = msg.viewGestures === true;
         if (viewGestures !== gestures) {
           cancelInput();
@@ -388,6 +422,7 @@
   const SLOP = 10;
   let gesture = null;
   function cancelFinger() {
+    hidePointerCue();
     if (one) {
       clearTimeout(one.timer);
       if (one.dragging) send({ t: 'in.mu', x: one.p.x, y: one.p.y, b: B.LEFT });
@@ -632,9 +667,11 @@
     cur.y = Math.min(1, Math.max(0, cur.y + (dy * g) / r.h));
     followCursor();
     sendAt(cur.x, cur.y);
+    previewPointer();
   }
   function padUp(e) {
     if (e.pointerId !== one.id) return;
+    hidePointerCue();
     clearTimeout(one.timer);
     if (tapClick && !one.moved && !one.right && performance.now() - one.t0 < 300) {
       send({ t: 'in.md', x: cur.x, y: cur.y, b: B.LEFT });
@@ -698,6 +735,7 @@
     penAt = performance.now();
     if (!penNear) { // the hand comes with it: let go of what fingers were doing
       penNear = true;
+      hidePointerCue();
       if (one) {
         clearTimeout(one.timer);
         if (one.dragging) send({ t: 'in.mu', x: one.p.x, y: one.p.y, b: B.LEFT });
@@ -875,6 +913,7 @@
   let mouseLast = { x: 0.5, y: 0.5 };
   function cancelInput() {
     cancelDetail();
+    hidePointerCue();
     if (one) {
       clearTimeout(one.timer);
       if (one.dragging) send({ t: 'in.mu', x: one.p.x, y: one.p.y, b: B.LEFT });

@@ -330,7 +330,7 @@ class Screen(core: Core) : Feature(core) {
     // pen: a stylus is a pen on the computer (its pressure, tilt, eraser), else a mouse; penFast: a
     // stroke's samples batched per event (Fast writing), else each its own, paced (every point lands).
     fun opts(): JSONObject = msg("opts", "sound" to core.store.flag("screen.sound", false), "pacing" to (core.store.flag("screen.smooth", false).let { if (it) "smooth" else "fast" }),
-        "viewGestures" to (core.host?.os == "mac"), "viewScale" to savedScale, "name" to (core.host?.name ?: "the computer"), "touch" to (if (core.store.flag("screen.touchpad", true)) "pad" else "direct"),
+        "viewGestures" to (core.host?.os == "mac"), "inputOn" to (inputOn && !core.lockView.locked), "viewScale" to savedScale, "name" to (core.host?.name ?: "the computer"), "touch" to (if (core.store.flag("screen.touchpad", true)) "pad" else "direct"),
         "speed" to core.remote.speed.toDouble(), "tap" to core.remote.tapClick, "pen" to core.store.flag("screen.pen", true),
         "penFast" to core.store.flag("screen.penFast", false))
 
@@ -425,6 +425,7 @@ class Screen(core: Core) : Feature(core) {
     }
 
     fun lockChanged(locked: Boolean) {
+        host?.post(msg("viewer.input", "on" to (inputOn && !locked)))
         if (locked) endPreviewSession()
         else {
             previewEpoch++
@@ -795,6 +796,7 @@ class Screen(core: Core) : Feature(core) {
             "stream.input" -> {
                 val wasOn = inputOn
                 inputOn = m.optBoolean("on", true)
+                host?.post(msg("viewer.input", "on" to (inputOn && !core.lockView.locked)))
                 if (!inputOn) {
                     endPreviewSession()
                     cancelDesktopWait()
