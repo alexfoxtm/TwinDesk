@@ -382,7 +382,7 @@ function sendScreenState() {
   const spaces = Spaces.offerSpaces(look, viewed);
   const held = appsHeld();
   const offer = Spaces.catalogOffer(svc.displays.list(), { remote: settings.sharing.remote !== false, held });
-  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, modes: ['extend', 'mirror'], spaces, ...Pick.stateFields(svc.displays.list(), svc.displays.target(), settings.sharing.remote !== false && !held) };
+  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, input: !!svc.input.enabled(), modes: ['extend', 'mirror'], spaces, ...Pick.stateFields(svc.displays.list(), svc.displays.target(), settings.sharing.remote !== false && !held) };
   const desktops = Spaces.desktopCatalog(look, viewed, offer.named, { offerDisplays: offer.offerDisplays });
   if (desktops) msg.desktops = desktops;
   const spaceHold = Spaces.spaceHold(look);

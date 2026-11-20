@@ -323,6 +323,16 @@ class Screen(core: Core) : Feature(core) {
         core.changed()
     }
 
+    private fun pointerInput(locked: Boolean = core.lockView.locked): Boolean {
+        if (locked) return false
+        val input = state?.opt("input") as? Boolean
+        return when (core.host?.os) {
+            "mac" -> inputOn && input != false // older Macs already report stream.input
+            "win", "linux" -> input == true
+            else -> false
+        }
+    }
+
     // name: the computer we're connected to, for the viewer's messages (stream.info's is the
     // display it shares, e.g. the Mac's "TwinDesk (virtual)"; a PC or Linux sends none).
     // touch: "pad" (slide moves the pointer, tap clicks) or "direct" (the
@@ -330,7 +340,7 @@ class Screen(core: Core) : Feature(core) {
     // pen: a stylus is a pen on the computer (its pressure, tilt, eraser), else a mouse; penFast: a
     // stroke's samples batched per event (Fast writing), else each its own, paced (every point lands).
     fun opts(): JSONObject = msg("opts", "sound" to core.store.flag("screen.sound", false), "pacing" to (core.store.flag("screen.smooth", false).let { if (it) "smooth" else "fast" }),
-        "viewGestures" to (core.host?.os == "mac"), "inputOn" to (inputOn && !core.lockView.locked), "viewScale" to savedScale, "name" to (core.host?.name ?: "the computer"), "touch" to (if (core.store.flag("screen.touchpad", true)) "pad" else "direct"),
+        "viewGestures" to (core.host?.os == "mac"), "inputOn" to pointerInput(), "viewScale" to savedScale, "name" to (core.host?.name ?: "the computer"), "touch" to (if (core.store.flag("screen.touchpad", true)) "pad" else "direct"),
         "speed" to core.remote.speed.toDouble(), "tap" to core.remote.tapClick, "pen" to core.store.flag("screen.pen", true),
         "penFast" to core.store.flag("screen.penFast", false))
 
@@ -425,7 +435,7 @@ class Screen(core: Core) : Feature(core) {
     }
 
     fun lockChanged(locked: Boolean) {
-        host?.post(msg("viewer.input", "on" to (inputOn && !locked)))
+        host?.post(msg("viewer.input", "on" to pointerInput(locked)))
         if (locked) endPreviewSession()
         else {
             previewEpoch++
@@ -765,6 +775,7 @@ class Screen(core: Core) : Feature(core) {
         stickyNote = false
         spaceNote = ""
         endPreviewSession()
+        host?.post(msg("viewer.input", "on" to false))
         host?.post(msg("stream.stop"))
     }
 
@@ -773,6 +784,7 @@ class Screen(core: Core) : Feature(core) {
             "screen.state" -> {
                 val was = state
                 state = m
+                host?.post(msg("viewer.input", "on" to pointerInput()))
                 host?.post(m)
                 val on = m.optBoolean("on")
                 if (!on || !m.optBoolean("remote", true)) endPreviewSession()
@@ -796,7 +808,7 @@ class Screen(core: Core) : Feature(core) {
             "stream.input" -> {
                 val wasOn = inputOn
                 inputOn = m.optBoolean("on", true)
-                host?.post(msg("viewer.input", "on" to (inputOn && !core.lockView.locked)))
+                host?.post(msg("viewer.input", "on" to pointerInput()))
                 if (!inputOn) {
                     endPreviewSession()
                     cancelDesktopWait()

@@ -151,7 +151,7 @@
     panY = Math.max(-dy, Math.min(dy, panY));
     video.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   }
-  window.addEventListener('resize', () => { if (viewGestures) cancelViewTouch(); applyViewport(); scheduleDetail(); });
+  window.addEventListener('resize', () => { if (viewGestures) cancelViewTouch(); else hidePointerCue(); applyViewport(); scheduleDetail(); });
 
   function setOverlay(t) {
     overlay.textContent = t || '';
@@ -178,7 +178,7 @@
   }
 
   function previewPointer() {
-    if (!pointerCue || !viewGestures || !shareAllowsCue || !inputAllowsCue || document.hidden ||
+    if (!pointerCue || !shareAllowsCue || !inputAllowsCue || document.hidden ||
         !frameAllowed || !videoOwner?.playing || pc?.connectionState !== 'connected') return;
     clearTimeout(cueTimer);
     cueTimer = setTimeout(hidePointerCue, 160);
@@ -348,7 +348,7 @@
         break;
       case 'screen.state':
         if ('touch' in msg) realTouch = msg.touch === true;
-        shareAllowsCue = msg.on === true && msg.remote !== false && !msg.spaceHold;
+        shareAllowsCue = msg.on === true && !msg.spaceHold;
         if (!shareAllowsCue) hidePointerCue();
         if (msg.on === false) { captureUnavailable = false; cancelDetail(); }
         if (!pc && !captureUnavailable) setOverlay(msg.on ? t('Waiting for {name}…', { name })
@@ -643,6 +643,7 @@
         TD.haptic();
       }, 550);
     } else if (touches.size === 2) {
+      hidePointerCue();
       if (one) { clearTimeout(one.timer); one = null; }
       const [a, b] = [...touches.values()];
       two = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
@@ -963,8 +964,10 @@
       else fingerUp(e);
     }
   });
-  document.addEventListener('visibilitychange', () => { if (viewGestures && document.hidden) cancelInput(); });
-  window.addEventListener('blur', () => { if (viewGestures) cancelInput(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (viewGestures) cancelInput(); else hidePointerCue(); }
+  });
+  window.addEventListener('blur', () => { if (viewGestures) cancelInput(); else hidePointerCue(); });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('wheel', (e) => {
     e.preventDefault();

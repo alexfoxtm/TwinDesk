@@ -215,8 +215,8 @@ function cancellationAndBounds() {
   assert.ok((-1500 + pos + 2000) >= 32 && (-1500 + pos + 2000) <= 968, 'tap brings the touchpad cursor into view');
 }
 const zoomDetail = { baseline: 1080, fps: 60, sizes: [null, { width: 2560, height: 1440 }, { width: 3840, height: 2160 }] };
-async function detailedViewer(session = 40, touch = 'direct') {
-  const f = fixture(true, touch);
+async function detailedViewer(session = 40, touch = 'direct', local = true) {
+  const f = fixture(local, touch);
   f.recv({ t: 'rtc.offer', session, viewerGeneration: session + 100, sdp: 'fixture', detail: zoomDetail });
   await new Promise(resolve => setImmediate(resolve));
   f.peers[0].ontrack({ track: { kind: 'video' }, receiver: {} });
@@ -271,22 +271,24 @@ async function zoomRejectsUnavailableAndRetiredPicture() {
   assert.strictEqual(f.detailRequests.length, 1, 'Stop cancels the pending detail request');
 }
 async function trackpadCueTracksZoomedPicture() {
-  const f = await detailedViewer(50, 'pad');
-  f.recv({ t: 'screen.state', on: true, remote: true });
-  f.recv({ t: 'viewer.input', on: true });
-  zoomIn(f);
-  f.sent.length = 0;
-  f.pointer('pointerdown', 3, 500, 400);
-  f.pointer('pointermove', 3, 530, 430);
-  f.frame();
-  assert.equal(f.cue.hidden, false);
-  assert.deepStrictEqual(f.sent.map(m => m.t), ['in.mm'], 'the cue adds no input messages');
-  const [panX, panY, scale] = f.video.style.transform.match(/-?[0-9.]+/g).map(Number);
-  const [x, y] = f.cue.style.transform.match(/-?[0-9.]+/g).map(Number);
-  near(x, (1000 - 1000 * scale) / 2 + panX + f.sent[0].x * 1000 * scale);
-  near(y, (800 - 562.5 * scale) / 2 + panY + f.sent[0].y * 562.5 * scale);
-  f.advance(160);
-  assert.equal(f.cue.hidden, true, 'idle cue clears without waiting for a remote frame');
+  for (const local of [true, false]) {
+    const f = await detailedViewer(50, 'pad', local);
+    f.recv({ t: 'screen.state', on: true, remote: true });
+    f.recv({ t: 'viewer.input', on: true });
+    if (local) zoomIn(f);
+    f.sent.length = 0;
+    f.pointer('pointerdown', 3, 500, 400);
+    f.pointer('pointermove', 3, 530, 430);
+    f.frame();
+    assert.equal(f.cue.hidden, false);
+    assert.deepStrictEqual(f.sent.map(m => m.t), ['in.mm'], 'the cue adds no input messages');
+    const [panX, panY, scale] = f.video.style.transform.match(/-?[0-9.]+/g).map(Number);
+    const [x, y] = f.cue.style.transform.match(/-?[0-9.]+/g).map(Number);
+    near(x, (1000 - 1000 * scale) / 2 + panX + f.sent[0].x * 1000 * scale);
+    near(y, (800 - 562.5 * scale) / 2 + panY + f.sent[0].y * 562.5 * scale);
+    f.advance(160);
+    assert.equal(f.cue.hidden, true, 'idle cue clears without waiting for a remote frame');
+  }
 }
 
 async function trackpadCueDoesNotSurviveRevocation() {
