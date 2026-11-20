@@ -87,9 +87,48 @@ async function getStream(sourceId, width, height, fps, audio) {
   }
 }
 
+// Offer a few aspect-preserving sizes above the manual baseline, up to 4K.
+function detailSizes(source, width, height) {
+  if (!source || !source.width || !source.height) return [];
+  const maxHeight = Math.floor(Math.min(2160, source.height, 4096 * source.height / source.width) / 2) * 2;
+  return [...new Set([1440, maxHeight])]
+    .filter((h) => h > height && h <= maxHeight)
+    .map((h) => ({ width: Math.round(source.width * h / source.height / 2) * 2, height: h }))
+    .filter((size) => size.width > width && size.width <= source.width);
+}
+
+async function setDetail(me, height) {
+  if (!me.detail || !Number.isInteger(height)) return;
+  const size = height === 0 ? me.detail.base : me.detail.sizes.find((s) => s.height === height);
+  if (!size) return;
+  me.detail.next = size;
+  if (me.detail.sizing) return;
+  me.detail.sizing = true;
+  try {
+    // This track belongs to one offer. Coalesce requests while Chromium changes its constraints.
+    while (cur === me && me.detail.next) {
+      const next = me.detail.next;
+      me.detail.next = null;
+      if (next === me.detail.applied) continue;
+      try {
+        await me.detail.track.applyConstraints({
+          width: { ideal: next.width, max: next.width },
+          height: { ideal: next.height, max: next.height },
+          frameRate: { ideal: me.detail.fps, max: me.detail.fps },
+        });
+        me.detail.applied = next;
+      } catch (e) {
+        if (cur === me) console.warn('screen detail size unavailable:', e.message);
+      }
+    }
+  } finally {
+    me.detail.sizing = false;
+  }
+}
+
 // Every frame matters more than the last bit of sharpness: under pressure the encoder lowers
 // quality, never the frame rate (dropped frames are what feels jagged and what adds lag).
-async function start({ session, bitrateMbps, sourceId, width, height, audio, fps = 60, ice, codec, steady }) {
+async function start({ session, bitrateMbps, sourceId, width, height, audio, fps = 60, ice, codec, steady, detailSource }) {
   close();
   const me = { session, pendingIce: [], remoteSet: false, last: null };
   cur = me;
@@ -97,6 +136,11 @@ async function start({ session, bitrateMbps, sourceId, width, height, audio, fps
     me.stream = await getStream(sourceId, width, height, fps, audio);
     if (cur !== me) return me.stream.getTracks().forEach((t) => t.stop());
     const track = me.stream.getVideoTracks()[0];
+    const sizes = detailSizes(detailSource, width, height);
+    if (sizes.length && typeof track.applyConstraints === 'function') {
+      const base = { width, height };
+      me.detail = { track, base, sizes, fps, applied: base };
+    }
     track.contentHint = 'motion';
     track.onended = () => cur === me && api.state({ session, status: 'error: capture ended' });
 
@@ -136,7 +180,8 @@ async function start({ session, bitrateMbps, sourceId, width, height, audio, fps
     if (cur !== me) return;
     // Playback › Steady: no "show it now" on the frames (shared/screencodec.js steady()).
     const sdp = steady ? window.TwinDeskScreenCodec.steady(pc.localDescription.sdp) : pc.localDescription.sdp;
-    api.send({ t: P.T.RTC_OFFER, session, sdp });
+    const detail = me.detail && { baseline: height, fps, sizes: me.detail.sizes };
+    api.send({ t: P.T.RTC_OFFER, session, sdp, ...(detail ? { detail } : {}) });
     const pl = /a=fmtp:\d+ .*profile-level-id=([0-9a-f]{6})/i.exec(pc.localDescription.sdp);
     console.log(`offer: first H.264 profile-level-id ${pl ? pl[1] : 'none'}`);
     api.state({ session, status: 'waiting for answer' });
@@ -151,7 +196,9 @@ async function onRemote(msg) {
   const me = cur;
   if (!me || !me.pc || msg.session !== me.session) return;
   try {
-    if (msg.t === P.T.RTC_ANSWER) {
+    if (msg.t === P.T.RTC_DETAIL) {
+      await setDetail(me, msg.height);
+    } else if (msg.t === P.T.RTC_ANSWER) {
       await me.pc.setRemoteDescription({ type: 'answer', sdp: withOpus(withBitrate(msg.sdp, me.bitrateMbps)) });
       if (window.TwinDeskScreenCodec) console.log(`sending ${window.TwinDeskScreenCodec.negotiated(msg.sdp) || 'no video'} (Encoder: ${me.codec || 'h264'})`);
       me.remoteSet = true;

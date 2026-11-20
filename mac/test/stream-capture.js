@@ -26,22 +26,35 @@ const { Stream: MeshStream } = require('../mesh/stream.js');
 Module._load = originalLoad;
 
 test('passes selected display, bounded dimensions and audio to the capture window', async () => {
-  const server = new EventEmitter();
-  server.current = { os: 'android', transport: 'ip' };
-  server.sendToClient = () => {};
-  const displays = new EventEmitter();
-  displays.target = () => ({ id: 2, label: 'Display', pixelWidth: 5120, pixelHeight: 2880, hz: 60 });
-  const settings = { bitrateMbps: 12, streamMaxHeight: 1080, sharing: { on: true, audio: true } };
-  const stream = new Stream(server, displays, () => settings, { release() {}, loopback() {} });
-  const sent = [];
-  stream._ensureWindow = async () => { stream.win = { isDestroyed: () => false, webContents: { send: (channel, msg) => sent.push({ channel, msg }) } }; };
-  await stream.restart('test');
-  const start = sent.find((entry) => entry.channel === 'start');
-  assert.ok(start, 'capture window receives a start message');
-  assert.equal(start.msg.sourceId, 'screen:2:0');
-  assert.equal(start.msg.width, 1920);
-  assert.equal(start.msg.height, 1080);
-  assert.equal(start.msg.audio, 'loopback');
+  for (const Class of [Stream, MeshStream]) {
+    const server = new EventEmitter();
+    const socket = {};
+    server.current = { os: 'android', transport: 'ip', conn: socket };
+    server.sendToClient = () => {};
+    server.outbound = (ctx) => ctx === server.current ? socket : null;
+    const displays = new EventEmitter();
+    displays.target = () => ({ id: 2, label: 'Display', pixelWidth: 5120, pixelHeight: 2880, hz: 60 });
+    const settings = { bitrateMbps: 12, streamMaxHeight: 1080, sharing: { on: true, audio: true } };
+    const stream = new Class(server, displays, () => settings, { release() {}, loopback() {} });
+    const sent = [];
+    stream._ensureWindow = async () => { stream.win = { isDestroyed: () => false, webContents: { send: (channel, msg) => sent.push({ channel, msg }) } }; };
+    await stream.restart('test');
+    const start = sent.find((entry) => entry.channel === 'start');
+    assert.ok(start, 'capture window receives a start message');
+    assert.equal(start.msg.sourceId, 'screen:2:0');
+    assert.equal(start.msg.width, 1920);
+    assert.equal(start.msg.height, 1080);
+    assert.equal(start.msg.audio, 'loopback');
+    assert.deepEqual(start.msg.detailSource, { width: 5120, height: 2880 });
+
+    const detail = { t: 'rtc.detail', session: start.msg.session, height: 1440 };
+    const from = (ws) => server.emit('t:rtc.detail', detail, Class === Stream ? server.current : { source: () => ws }, ws);
+    from({});
+    assert.equal(sent.length, 1, 'another socket cannot adjust this stream');
+    from(socket);
+    assert.deepEqual(sent.slice(1), [{ channel: 'remote', msg: detail }]);
+    assert.equal(settings.streamMaxHeight, 1080, 'zoom does not change the saved baseline');
+  }
 });
 
 test('capture errors reach only the current viewer without raw error details', () => {

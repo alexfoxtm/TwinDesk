@@ -8,6 +8,7 @@ package com.twindesk.android
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.MediaCodecList
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -22,6 +23,10 @@ class WebHost(ctx: Context, page: String, private val core: Core, private val on
     private val main = Handler(Looper.getMainLooper())
     private var ready = false
     private val queue = mutableListOf<JSONObject>()
+    private val videoDecoders by lazy {
+        runCatching { MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter { !it.isEncoder } }
+            .getOrDefault(emptyList())
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     val view: WebView = object : WebView(ctx) {
@@ -82,6 +87,24 @@ class WebHost(ctx: Context, page: String, private val core: Core, private val on
         }.let { }
         @JavascriptInterface fun videoState(generation: Int, session: Int, playing: Boolean, w: Int, h: Int) = main.post {
             onEvent("videoState", msg("videoState", "generation" to generation, "session" to session, "playing" to playing, "w" to w, "h" to h))
+        }.let { }
+        @JavascriptInterface fun canDecodeVideo(codec: String, width: Int, height: Int, fps: Double): Boolean {
+            val mime = when (codec.lowercase()) {
+                "video/h264" -> "video/avc"
+                "video/h265", "video/hevc" -> "video/hevc"
+                "video/vp8" -> "video/x-vnd.on2.vp8"
+                "video/vp9" -> "video/x-vnd.on2.vp9"
+                "video/av1" -> "video/av01"
+                else -> return false
+            }
+            if (width !in 1..4096 || height !in 1..2160 || !fps.isFinite() || fps !in 1.0..120.0) return false
+            return videoDecoders.any { decoder ->
+                runCatching { decoder.getCapabilitiesForType(mime).videoCapabilities
+                    ?.areSizeAndRateSupported(width, height, fps) == true }.getOrDefault(false)
+            }
+        }
+        @JavascriptInterface fun detail(generation: Int, session: Int, height: Int) = main.post {
+            onEvent("videoDetail", msg("videoDetail", "generation" to generation, "session" to session, "height" to height))
         }.let { }
         @JavascriptInterface fun playing(w: Int, h: Int) = main.post { onEvent("playing", JSONObject().put("w", w).put("h", h)) }.let { }
         @JavascriptInterface fun haptic() = main.post { view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) }.let { }
@@ -430,6 +453,14 @@ class Screen(core: Core) : Feature(core) {
         val step = DesktopSelect.onState(pending, desktopCatalog, displayId, System.currentTimeMillis(), frameFor())
         takeDesktop(step, state?.optString("spaceHold").orEmpty())
         core.changed()
+    }
+
+    fun videoDetail(h: WebHost, generation: Int, session: Int, height: Int) {
+        if (host !== h || !viewing || !sharing || !videoPlaying || core.host?.os != "mac" ||
+            core.lockView.locked || videoGeneration != generation || videoSession != session ||
+            height !in 0..2160 || videoMarker == null || !core.link.connected ||
+            core.link.sessionMarker() !== videoMarker) return
+        core.link.sendFor(videoMarker, msg("rtc.detail", "session" to session, "height" to height))
     }
 
     fun playing(w: Int, h: Int) {

@@ -52,6 +52,64 @@
   const PRESETS = ['fit', 'fill', 'actual'];
   let scalePreset = 'fit', scaleMode = 'fit';
   let viewGestures = false; // Android explicitly opts into local Mac-view gestures
+  let detail = null;
+  let detailTimer = null;
+  let detailRevision = 0;
+  let detailHeight = 0;
+
+  function cancelDetail() {
+    clearTimeout(detailTimer);
+    detailTimer = null;
+    detailRevision++;
+  }
+
+  function readDetail(raw) {
+    if (!raw || !Number.isInteger(raw.baseline) || raw.baseline < 1 ||
+        !Number.isFinite(raw.fps) || raw.fps < 1 || raw.fps > 120 || !Array.isArray(raw.sizes)) return null;
+    const sizes = raw.sizes.slice(0, 8).filter(size => size && Number.isInteger(size.width) &&
+      Number.isInteger(size.height) && size.width > 0 && size.width <= 4096 &&
+      size.height > raw.baseline && size.height <= 2160);
+    if (!sizes.length) return null;
+    return { baseline: raw.baseline, fps: raw.fps, sizes: sizes.sort((a, b) => a.height - b.height) };
+  }
+
+  function scheduleDetail() {
+    cancelDetail();
+    const owner = videoOwner, revision = detailRevision;
+    if (!detail || !viewGestures || typeof TD.detail !== 'function' ||
+        typeof TD.canDecodeVideo !== 'function' || !owner?.playing ||
+        (scaleMode !== 'custom' && detailHeight === 0)) return;
+    const current = () => revision === detailRevision && owner === videoOwner &&
+      owner.pc === pc && owner.playing && frameAllowed && !document.hidden &&
+      pc.connectionState === 'connected' && !touches.size;
+    detailTimer = setTimeout(async () => {
+      detailTimer = null;
+      if (!current()) return;
+      let height = 0;
+      const r = fitRect();
+      if (!r) return;
+      const need = r.h * zoom * (window.devicePixelRatio || 1) / 1.04;
+      if (scaleMode === 'custom' && zoom > 1 && need > detail.baseline) {
+        if (!owner.detailSizes?.length) {
+          let codec;
+          try {
+            const stats = await owner.pc.getStats();
+            const inbound = [...stats.values()].find(stat =>
+              stat.type === 'inbound-rtp' && (stat.kind === 'video' || stat.mediaType === 'video'));
+            codec = stats.get(inbound?.codecId)?.mimeType;
+          } catch { return; }
+          if (!current() || typeof codec !== 'string') return;
+          owner.detailSizes = detail.sizes.filter(size =>
+            TD.canDecodeVideo(codec, size.width, size.height, detail.fps));
+        }
+        const supported = owner.detailSizes;
+        height = (supported.find(size => size.height >= need) || supported.at(-1))?.height || 0;
+      }
+      if (!current() || height === detailHeight) return;
+      detailHeight = height;
+      TD.detail(owner.generation, owner.session, height);
+    }, 400);
+  }
 
   function fitRect() {
     const vw = video.videoWidth, vh = video.videoHeight;
@@ -80,6 +138,7 @@
     reportScale(mode);
     panX = panY = 0;
     applyViewport();
+    scheduleDetail();
   }
 
   function applyViewport() {
@@ -91,7 +150,7 @@
     panY = Math.max(-dy, Math.min(dy, panY));
     video.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   }
-  window.addEventListener('resize', () => { if (viewGestures) cancelViewTouch(); applyViewport(); });
+  window.addEventListener('resize', () => { if (viewGestures) cancelViewTouch(); applyViewport(); scheduleDetail(); });
 
   function setOverlay(t) {
     overlay.textContent = t || '';
@@ -108,11 +167,13 @@
   const steadySdp = (sdp) => (pacing === 'steady' ? sdp.replace(/^a=extmap:[^\r\n]*\/playout-delay\r?\n/gm, '') : sdp);
 
   function reportVideo(playing, owner = videoOwner) {
-    if (!playing) frameProbe++;
+    if (!playing) { frameProbe++; cancelDetail(); if (owner) owner.playing = false; }
     else if (!frameAllowed) return;
     if (owner && owner === videoOwner && owner.pc === pc && video.srcObject === owner.stream &&
         (!playing || owner.pc.connectionState === 'connected') && typeof TD.videoState === 'function' && Number.isInteger(owner.generation) && owner.generation > 0 && Number.isInteger(owner.session)) {
+      owner.playing = playing;
       TD.videoState(owner.generation, owner.session, playing, video.videoWidth, video.videoHeight);
+      if (playing) scheduleDetail();
     }
   }
 
@@ -138,6 +199,8 @@
   function closePc() {
     reportVideo(false);
     videoOwner = null;
+    detail = null;
+    detailHeight = 0;
     if (pc) pc.close();
     pc = null;
     session = null;
@@ -156,6 +219,7 @@
     // On a USB cable the computer sends its relay (msg.ice): the picture goes through adb.
     const my = (pc = new RTCPeerConnection(msg.ice || { iceServers: [] }));
     session = msg.session;
+    detail = readDetail(msg.detail);
     viewerGeneration = msg.viewerGeneration || 0;
     frameAllowed = true;
     const queue = (pending = []);
@@ -254,7 +318,7 @@
         break;
       case 'screen.state':
         if ('touch' in msg) realTouch = msg.touch === true;
-        if (msg.on === false) captureUnavailable = false;
+        if (msg.on === false) { captureUnavailable = false; cancelDetail(); }
         if (!pc && !captureUnavailable) setOverlay(msg.on ? t('Waiting for {name}…', { name })
           : viewGestures ? t('{name} isn’t sharing its screen', { name })
           : t('{name} isn’t sharing its screen. Start it with the button below.', { name }));
@@ -448,6 +512,7 @@
   const real = () => realTouch && touchMode === 'direct';
 
   function fingerDown(e) {
+    cancelDetail();
     if (penNear || performance.now() - Math.max(penAway, penAt) < PALM_MS) return; // the hand holding the pen
     if (real()) return tcDown(e);
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -513,10 +578,10 @@
     touches.delete(e.pointerId);
     if (viewGestures && gesture) {
       if (gesture.ids.includes(e.pointerId)) gesture.frozen = true;
-      if (!touches.size) gesture = null;
+      if (!touches.size) { gesture = null; scheduleDetail(); }
       return;
     }
-    if (touches.size === 0) two = null;
+    if (touches.size === 0) { two = null; scheduleDetail(); }
     if (!one) return;
     if (touchMode === 'pad') return padUp(e);
     clearTimeout(one.timer);
@@ -809,6 +874,7 @@
   const keyHeld = new Set();
   let mouseLast = { x: 0.5, y: 0.5 };
   function cancelInput() {
+    cancelDetail();
     if (one) {
       clearTimeout(one.timer);
       if (one.dragging) send({ t: 'in.mu', x: one.p.x, y: one.p.y, b: B.LEFT });

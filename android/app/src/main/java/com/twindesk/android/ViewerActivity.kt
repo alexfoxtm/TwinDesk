@@ -91,6 +91,9 @@ class ViewerActivity : ComponentActivity() {
             if (ev == "videoState" && data != null) host?.let {
                 core.screen.videoState(it, data.optInt("generation"), data.optInt("session"), data.optBoolean("playing"), data.optInt("w"), data.optInt("h"))
             }
+            if (ev == "videoDetail" && data != null) host?.let {
+                core.screen.videoDetail(it, data.optInt("generation"), data.optInt("session"), data.optInt("height", -1))
+            }
             if (ev.startsWith("viewer.scale.")) host?.let { core.screen.viewScaleChanged(it, ev.removePrefix("viewer.scale.")) }
         }
         host = h
