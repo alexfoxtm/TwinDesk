@@ -295,6 +295,7 @@ class PhoneViews extends EventEmitter {
     if (open) {
       const dark = this.getSettings().phone?.keepPanelOff === true;
       if (!open.session?.closed && open.keepPanelOff === dark && !(open.started && !open.session?.videoStarted)) {
+        if (open.win.isMinimized()) open.win.restore();
         open.win.show();
         open.win.focus();
         if (dark) this._resumeDarkApp(open);
@@ -401,7 +402,14 @@ class PhoneViews extends EventEmitter {
     win.webContents.once('did-finish-load', () => {
       v.ready = true;
       for (const [ch, m] of v.queue.splice(0)) win.webContents.send(ch, m);
+      if (kind === 'app') this._send(v, 'phoneview:opts', { minimized: win.isMinimized() });
     });
+    if (kind === 'app') {
+      const paintState = () => this._send(v, 'phoneview:opts', { minimized: win.isMinimized() });
+      win.on('minimize', paintState);
+      win.on('restore', paintState);
+      win.on('show', paintState);
+    }
     // A camera's window: closed, it only hides (the camera stops with Camera's switch).
     if (kind === 'camera') {
       win.on('close', (e) => {
