@@ -1393,6 +1393,7 @@ function loadHub() {
     callwin.update(hub, { corner: 'top', open: goTab, getLanguage: () => i18n.locale });
   };
   hub.on('call', popup);
+  // Use CallMedia for the Calls pause option on Mac in place of CallPause.
   const callMedia = new (require('../../shared/callmedia.js').CallMedia)(hub);
   peer.route.onState(() => callMedia.refresh()); // also sees socket changes on the same route
   app.on('before-quit', () => callMedia.reset());

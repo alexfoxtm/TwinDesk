@@ -235,7 +235,7 @@ class PhoneHub extends EventEmitter {
       case 'opt':
         if (typeof r.callAudio === 'boolean') s.callAudio = r.callAudio;
         if (typeof r.mediaAlerts === 'boolean' && this.mediaAlert) s.mediaAlerts = r.mediaAlerts;
-        if (typeof r.callPause === 'boolean') s.callPause = r.callPause; // Calls › Pause media during calls
+        if (typeof r.callPause === 'boolean') s.callPause = r.callPause; // Calls › Pause what plays here (shared/callpause.js)
         if (typeof r.btDevice === 'string') this.btDevice(r.btDevice.slice(0, 400)); // Windows' device ids are long
         this.save();
         if (this.phone) this.policy();

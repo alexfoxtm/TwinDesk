@@ -113,7 +113,6 @@ const DEFAULT_SETTINGS = {
   // Calls, Messages, Photos and Files from a phone (shared/phonehub.js), each off until switched on.
   // callAudio: the calls' sound on this Mac over Bluetooth (btDevices: which paired device each phone is).
   // mediaAlerts: a notification here for new camera photos and videos on the phone (photoalert.js), with media on.
-  // callPause: pause local media during calls (shared/callmedia.js).
   hub: { calls: false, messages: false, media: false, files: false, mediaAlerts: false, callAudio: true, callPause: false, shareMount: false, shareServe: false, shareFolder: '', tether: false }, // share*: shared folders (foldershare.js); tether: Internet over USB (tether.js)
   // Not on one network: Bluetooth for the session (blepipe.js), Wi-Fi for files and screens
   // (netlink.js). hotspots: {deviceId: {ssid, pass (safeStorage)}}, a phone's hotspot as typed once.
