@@ -166,6 +166,7 @@ object Proto {
         const val MEDIA_THUMB = "media.thumb"
         const val MEDIA_VIEW = "media.view"
         const val MEDIA_SAVE = "media.save"
+        const val MEDIA_SAVE_AS = "media.saveAs"
         const val MEDIA_DELETE = "media.delete"
         const val MEDIA_NEW = "media.new" // phone->computer {photos, videos}: new camera photos and videos, how many (MediaAlerts.kt)
         // Camera photo backup (PhotoBackup.kt). hello {pb:1}; bytes are backup.chunk, not a Save.

@@ -375,6 +375,7 @@
       MEDIA_THUMB: 'media.thumb', // computer->phone {ids}: these next (the ones still waiting are dropped) | phone->computer {id, data}
       MEDIA_VIEW: 'media.view', // computer->phone {id} | phone->computer {id, data}: a big preview
       MEDIA_SAVE: 'media.save', // computer->phone {ids}: send these files here (they come as file.offer, drop 'send')
+      MEDIA_SAVE_AS: 'media.saveAs', // Mac->Android {id, batch}: one original photo (file.offer, drop 'photo-save-as', same batch)
       MEDIA_DELETE: 'media.delete', // computer->phone {ids}: remove them (phones that say media.remove) | phone->computer {ids: gone, failed, confirm: waiting for Delete tapped on the phone}
       // New camera photos and videos, for a notification on the computer. Only from a phone that says
       // media.alerts in hub.state, only while hub.policy has media and mediaAlerts, and with media's

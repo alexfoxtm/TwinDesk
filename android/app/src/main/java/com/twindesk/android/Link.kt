@@ -55,8 +55,7 @@ class Link(
     interface Events {
         fun onChange()
         fun onWelcome(host: Host)
-        fun onMessage(m: JSONObject)
-        fun onMessage(m: JSONObject, route: TrustedRoute?) = onMessage(m)
+        fun onMessage(m: JSONObject, route: TrustedRoute?, source: WebSocket)
         fun onClosed(host: Host, code: String?)
     }
 
@@ -341,6 +340,11 @@ class Link(
         if (quietSince != 0L && probeAt == 0L) probeAt = System.currentTimeMillis()
         return w.send(m.toString())
     }
+    internal fun photoRoute(source: WebSocket): Boolean =
+        !parting && connected && !ble && ws === source && host?.os == "mac"
+
+    internal fun sendPhoto(m: JSONObject, source: WebSocket): Boolean =
+        photoRoute(source) && source.send(m.toString())
 
     // send() for the pointer's hot path (WebHost's TD.move): the line written into one builder, made
     // once. Never held for Wi-Fi (Netlink.holdOut holds only files). kind: 0 remote.mm, 1 remote.wh,
@@ -644,9 +648,11 @@ class Link(
             }
         }
         if (state == "connected") {
-            if (t == Proto.T.CLIP_POLICY || t == Proto.T.CLIP_QUEUE || t == Proto.T.TETHER || t == "rtc.offer" || t == Proto.T.TASK_ALERT) {
-                events.onMessage(m, trustedRoute(ingress))
-            } else events.onMessage(m)
+            val route = when (t) {
+                Proto.T.CLIP_POLICY, Proto.T.CLIP_QUEUE, Proto.T.TETHER, "rtc.offer", Proto.T.TASK_ALERT -> trustedRoute(ingress)
+                else -> null
+            }
+            events.onMessage(m, route, ingress)
         }
     }
 

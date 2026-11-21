@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
+import okhttp3.WebSocket
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -501,6 +502,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         screen.doctorLinkChanged()
         tether.linkChanged()
         runCatching { taskAlerts.linkChanged() }
+        files.photoRouteChanged()
         runCatching { share.linkChanged() } // the session moved (Bluetooth <-> Wi-Fi): shared folders follow
         runCatching { remote.linkChanged() } // … and the Remote page's pace
         runCatching { photos.linkChanged() } // … and a camera-photo backup bound to the previous socket
@@ -527,9 +529,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         changed()
     }
 
-    override fun onMessage(m: JSONObject) = onMessage(m, null)
-
-    override fun onMessage(m: JSONObject, route: Link.TrustedRoute?) {
+    override fun onMessage(m: JSONObject, route: Link.TrustedRoute?, source: WebSocket) {
         val t = m.optString("t")
         if (t == Proto.T.TASK_ALERT) {
             val alert = TaskAlertGate.parse(m.opt("id"), m.opt("title"), m.opt("ok"))
@@ -537,6 +537,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
             return
         }
         main.post {
+            if (t == Proto.T.MEDIA_SAVE_AS) {
+                if (link.photoRoute(source)) hub.savePhotoAs(m, source)
+                return@post
+            }
+            if (files.onPhotoReply(t, m, source)) return@post
             for (f in features) {
                 val mine = try {
                     when {
