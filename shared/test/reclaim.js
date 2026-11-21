@@ -69,7 +69,16 @@ async function mainPath(dir, tls) {
     assert.strictEqual(first.ctx.authed, true);
     assert.strictEqual(first.sent[0].rc, 1);
     assert.strictEqual(h.pairing.returnPhone, ANDROID);
-    closed(h.server, first);
+    assert.strictEqual(h.server.sleep(true), ANDROID);
+    assert.strictEqual(error(first).code, P.E.ASLEEP);
+    h.server._onSocketClose(first.ws);
+    assert.strictEqual(error(hello(h.server)).code, P.E.ASLEEP);
+    assert.strictEqual(error(hello(h.server, true)).code, P.E.ASLEEP);
+    assert.deepStrictEqual(store.read('phone-return.json', null), { id: ANDROID });
+    h.server.sleep(false);
+    const awake = hello(h.server, true);
+    assert.strictEqual(awake.ctx.authed, true);
+    closed(h.server, awake);
     h.server.endPhoneGrace();
     assert.strictEqual(h.server.current, null);
     // Restart with the persisted last-owner consent, after the legacy grace is gone.
@@ -105,6 +114,13 @@ async function failurePath(dir, tls) {
   try {
     hello(server);
     free();
+    const slept = await deferred(server, () => {
+      server.sleep(true);
+      server.sleep(false);
+    });
+    assert.strictEqual(error(slept).code, P.E.ASLEEP);
+    assert.strictEqual(slept.ctx.authed, false);
+    assert.strictEqual(pairing.returnPhone, ANDROID);
     const raced = await deferred(server, () => { hello(server, false, DESKTOP); });
     assert.strictEqual(error(raced).code, P.E.RELEASED);
     assert.strictEqual(server.current.deviceId, DESKTOP);

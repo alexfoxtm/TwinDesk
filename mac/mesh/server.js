@@ -202,6 +202,7 @@ class Server extends EventEmitter {
     }
 
     if (!ctx.authed) {
+      if (this.asleep && msg.t === P.T.HELLO) return this.fail(ctx, P.E.ASLEEP, 'Asleep');
       if (msg.t === P.T.HELLO && typeof msg.resume === 'string') return this._resume(ctx, msg);
       if (msg.t === P.T.HELLO || msg.t.startsWith('pair.')) return this.emit('preauth', ctx, msg);
       return this.fail(ctx, P.E.BAD_MESSAGE, `"${msg.t}" is not allowed before welcome`);
@@ -315,6 +316,7 @@ class Server extends EventEmitter {
   // Mark ctx authenticated. A client with the same device id replaces the older socket of that
   // device only; other devices are untouched.
   authenticate(ctx, who, welcome) {
+    if (this.asleep) return this.fail(ctx, P.E.ASLEEP, 'Asleep');
     const { deviceId, name, os } = who;
     ctx.pendingId = deviceId;
     // The files engine (fx2, shared/meshfx.js) starts on demand and its port goes in this welcome:
@@ -322,7 +324,7 @@ class Server extends EventEmitter {
     const wait = ctx.fxWanted && ctx.fx2Wanted && !ctx.fx2Waited && this.fx2Wait ? this.fx2Wait(1500) : null;
     if (wait) {
       ctx.fx2Waited = true;
-      const go = () => { if (!ctx.authed && this.sockets.has(ctx) && ctx.ws.readyState === ctx.ws.OPEN) this.authenticate(ctx, who, welcome); };
+      const go = () => { if (!ctx.released && !ctx.authed && this.sockets.has(ctx) && ctx.ws.readyState === ctx.ws.OPEN) this.authenticate(ctx, who, welcome); };
       return void wait.then(go, go);
     }
     const old = this.clients.get(deviceId);
@@ -381,6 +383,20 @@ class Server extends EventEmitter {
       setTimeout(() => c.ws.terminate(), 1000); // an older phone app never answers the close
     }
     this.endPhoneGrace();
+  }
+
+  // Suspend closes the session and any welcome still waiting on fast files.
+  sleep(on) {
+    this.asleep = !!on;
+    if (!on) return [];
+    const guests = [...this.clients.keys()];
+    for (const ctx of this.sockets) {
+      const waiting = !ctx.authed && ctx.fx2Waited;
+      if (ctx.released || ctx.expectedClose || (this.clients.get(ctx.deviceId) !== ctx && !waiting)) continue;
+      ctx.released = true;
+      this.fail(ctx, P.E.ASLEEP, 'Asleep');
+    }
+    return guests;
   }
 
   // Close every socket that belongs to a device id (used by Forget).
