@@ -66,11 +66,11 @@ function childRelative(root, file) {
 }
 
 function identityOf(st) {
-  return { dev: st.dev, ino: st.ino, size: st.size, mtime: st.mtimeMs, folder: st.isDirectory() };
+  return { dev: st.dev, ino: st.ino, birthtimeMs: st.birthtimeMs, folder: st.isDirectory() };
 }
 
 function sameIdentity(a, b) {
-  return !!a && !!b && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtime === b.mtime && a.folder === b.folder;
+  return !!a && !!b && a.dev === b.dev && a.ino === b.ino && a.birthtimeMs === b.birthtimeMs && a.folder === b.folder;
 }
 
 // file is under the canonical parent. A link at the file, or at a folder between it and that
@@ -410,4 +410,4 @@ function startLocalSend(o) {
   };
 }
 
-module.exports = { startLocalSend, quarantine, completedIncoming, openReceipt, ACTIONS: ['lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal'] };
+module.exports = { startLocalSend, quarantine, completedIncoming, openReceipt, sameIdentity, ACTIONS: ['lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal'] };

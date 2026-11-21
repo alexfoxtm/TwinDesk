@@ -282,6 +282,7 @@ test('unfinished, linked, cleared and supplied LocalSend paths are not revealed'
   const before = path.join(dir, 'before.txt');
   fs.writeFileSync(before, 'original');
   const stamped = wire.completedIncoming([{ id: 'before', dir: 'in', state: 'done', at: now + 1, saved: [before] }]);
+  fs.renameSync(before, path.join(dir, 'before-original.txt'));
   fs.writeFileSync(before, 'replaced-before-open');
   const earlyDrop = new EventEmitter();
   earlyDrop.recent = [];
@@ -331,6 +332,7 @@ test('unfinished, linked, cleared and supplied LocalSend paths are not revealed'
     const own = event(shelf);
     ipcMain.emit('file-shelf:drag', { ...own, senderFrame: {} }, id);
     ipcMain.emit('file-shelf:reveal', { ...own, sender: { id: -1 } }, id);
+    fs.renameSync(real, path.join(dir, 'real-original.txt'));
     fs.writeFileSync(real, 'replaced-contents');
     ipcMain.emit('file-shelf:drag', own, id);
     ipcMain.emit('file-shelf:reveal', own, id);
@@ -386,4 +388,35 @@ test('unfinished, linked, cleared and supplied LocalSend paths are not revealed'
     } finally { service.shutdown(); }
     shelf.shutdown();
   } finally { shelf.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('edited LocalSend receipts can still be dragged and revealed', () => {
+  const dir = tmp();
+  const folder = path.join(dir, 'album');
+  const file = path.join(dir, 'notes.txt');
+  const child = path.join(folder, 'a.txt');
+  fs.mkdirSync(folder);
+  fs.writeFileSync(child, 'photo');
+  fs.writeFileSync(file, 'notes');
+  const transfers = [{ id: 'receipt', dir: 'in', state: 'done', saved: [folder, file] }];
+  const rows = wire.completedIncoming(transfers, { receivedDir: dir });
+  const pins = new Map([['receipt', rows.map(row => ({ canonical: row.path, root: dir, identity: row.identity }))]]);
+  const shelf = new FileShelf({ receipts: () => wire.completedIncoming(transfers, { pins }) });
+  try {
+    shelf.show();
+    fs.writeFileSync(path.join(folder, '.DS_Store'), 'finder');
+    fs.unlinkSync(child);
+    fs.appendFileSync(file, ' edited');
+    const { items } = read(shelf);
+    assert.deepEqual(items.map(item => [item.name, item.size]), [['album', null], ['notes.txt', 12]]);
+    for (const [index, saved] of [folder, file].entries()) {
+      ipcMain.emit('file-shelf:drag', event(shelf), items[index].id);
+      ipcMain.emit('file-shelf:reveal', event(shelf), items[index].id);
+      assert.equal(dragged.at(-1).file, saved);
+      assert.equal(revealed.at(-1), saved);
+    }
+  } finally {
+    shelf.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
