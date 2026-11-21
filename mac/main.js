@@ -1568,6 +1568,7 @@ function loadHub() {
     // phone (answer, end, mute, hold and the keypad still work). mac/callaudio.js is kept, unused.
     send: (paths, batch) => !!(svc.fileSend && svc.fileSend.sendBatch(paths, 'send', batch)), // Files: into a folder on the phone
     shareSheet: (paths) => new (require('electron').ShareMenu)({ filePaths: paths }).popup(win && !win.isDestroyed() ? { browserWindow: win } : {}), // Photos › Share
+    savePhotoAs: require('./photo-save-as.js').action(svc.drop, () => win, t),
     choose: () => dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, { properties: ['openFile', 'openDirectory', 'multiSelections'] })
       .then((r) => (r.canceled ? [] : r.filePaths)),
     mediaAlert: require('./photoalert.js').photoAlerts({ Notification, t, open: goTab }), // Photos › Notify about new photos and videos
@@ -1582,6 +1583,7 @@ function loadHub() {
   });
   phoneHub = hub;
   require('../shared/asked-send.js').wireAsked(hub, svc.drop); // Photos/Files › Save comes back as one Send (#239)
+  hub.on('change', () => svc.drop.checkPhotoSave());
   hub.on('change', pushState);
   hub.on('data', (m) => win && !win.isDestroyed() && win.webContents.send('hub', m));
   const popup = () => {

@@ -162,6 +162,13 @@ class Media(private val hub: Hub, private val core: Core) {
         if (uris.isNotEmpty()) core.files.send(core.files.describe(uris), "send")
     }
 
+    fun savePhotoAs(id: String, batch: String, source: okhttp3.WebSocket, grant: Any): Boolean {
+        val u = uri(id) ?: return false
+        val item = core.files.describe(listOf(u)).singleOrNull() ?: return false
+        if (item.size <= 0 || item.size > Proto.FILE_MAX_BYTES) return false
+        return core.files.send(listOf(item), "photo-save-as", batch, photoSocket = source, photoGrant = grant)
+    }
+
     // Remove these from the phone. Answers media.delete {ids: the ones gone, failed, confirm: how many
     // wait for Delete to be tapped here}.
     fun delete(ids: JSONArray?): JSONObject {

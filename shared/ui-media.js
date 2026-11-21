@@ -79,6 +79,12 @@ UI.tab({
     const prev = UI.button('‹', () => step(-1));
     const next = UI.button('›', () => step(1));
     const bigSave = UI.button(tr('Save'), () => viewing && save([viewing.id]), 'primary');
+    const bigSaveAs = UI.button(tr('Save As…'), () => {
+      if (viewing && !viewing.video && viewing.saveKey) {
+        UI.api.hub({ do: 'savePhotoAs', id: viewing.id, name: viewing.name, key: viewing.saveKey });
+      }
+    });
+    bigSaveAs.hidden = true;
     let confirmBig = false;
     const bigRemove = UI.button(tr('Remove'), () => {
       if (!viewing) return;
@@ -106,7 +112,7 @@ UI.tab({
     const closeBtn = UI.button(tr('Close'), () => view(null));
     const viewer = el('div', { class: 'hub-viewer', hidden: true }, [
       el('div', { class: 'hub-viewer-stage' }, [prev, bigImg, next]),
-      el('div', { class: 'hub-viewer-bar' }, [el('div', { class: 'hub-grow' }, [bigName, bigSub]), bigRemove, bigCopy, bigOpen, bigOpenWith, bigShare, bigSave, closeBtn]),
+      el('div', { class: 'hub-viewer-bar' }, [el('div', { class: 'hub-grow' }, [bigName, bigSub]), bigRemove, bigCopy, bigOpen, bigOpenWith, bigShare, bigSave, bigSaveAs, closeBtn]),
     ]);
     // A notification here for new camera photos and videos: off until switched on, and shown only
     // where it works (this computer shows them, the connected phone tells them).
@@ -278,6 +284,7 @@ UI.tab({
     // Copy and Share: photos only (a video's is a still), Share where this computer has one.
     function paintBig() {
       const photo = !!viewing && !viewing.video;
+      bigSaveAs.hidden = !photo || !viewing.saveKey || viewing.saveKey !== UI.state?.hub?.photoSaveKey;
       bigCopy.hidden = bigOpen.hidden = !photo;
       bigOpenWith.hidden = !photo || !winPc;
       bigOpen.disabled = bigOpenWith.disabled = !bigData;
@@ -302,7 +309,8 @@ UI.tab({
     UI.hubOn('media.list', (m) => {
       if (m.kind !== kind || (m.before || '') !== nextKey || (m.album || '') !== album) return; // an answer for an older filter or album
       asking = false;
-      const fresh = (m.items || []).filter((x) => x && x.id && !tiles.has(x.id));
+      let fresh = (m.items || []).filter((x) => x && x.id && !tiles.has(x.id));
+      if (m.saveKey) fresh = fresh.map((it) => ({ ...it, saveKey: m.saveKey }));
       items = items.concat(fresh);
       more = !!m.more;
       nextKey = m.next || nextKey;
@@ -343,6 +351,7 @@ UI.tab({
     });
 
     let loaded = false;
+    let saveKey = '';
     UI.onShown(page, (shown) => {
       if (!shown) view(null);
       else if (UI.hubReady(UI.state, 'media') && !UI.onBle(UI.state) && !loaded) { loaded = true; reset(); UI.hubAsk({ t: 'media.albums' }); }
@@ -389,9 +398,12 @@ UI.tab({
         backupRow.setHint(backupHint(b));
         folderRow.setHint(b.folder || tr('Choose a folder on this Mac.'));
       }
+      const key = s.hub?.photoSaveKey || '';
+      if (saveKey !== key) { saveKey = key; loaded = false; view(null); }
       const ready = UI.hubReady(s, 'media') && !UI.onBle(s); // over Bluetooth: the Wi-Fi Direct note only
       wrap.hidden = !ready;
       if (!ready) { loaded = false; view(null); return; }
+      paintBig();
       if (!loaded) { loaded = true; reset(); UI.hubAsk({ t: 'media.albums' }); }
     };
   },
