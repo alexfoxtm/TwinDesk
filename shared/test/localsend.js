@@ -686,6 +686,65 @@ async function main() {
     service.apply();
     await until(() => service.view().running, 'Files module restarts LocalSend');
   }
+
+  // A chosen folder may be a link. The receipt uses the real folder, and only the file that arrived.
+  {
+    const base = path.join(tmp, 'receipt-real');
+    const via = path.join(tmp, 'receipt-link');
+    fs.mkdirSync(base);
+    fs.symlinkSync(base, via);
+    const revealed = [];
+    const clicks = [];
+    const cfg = { localsend: { on: true } };
+    const service = startLocalSend({
+      dir: path.join(tmp, 'receipt-data'), settings: () => cfg, pushState() {}, save() {},
+      name: () => 'Receipt fixture', receivedDir: () => via,
+      say(_title, _body, onClick) { if (onClick) clicks.push(onClick); },
+      reveal: (p) => revealed.push(p),
+      ask: async () => true,
+      core: { host: '127.0.0.1', port: 0, multicast: false, log: () => {} },
+    });
+    closers.push(() => service.shutdown());
+    await until(() => service.view().running, 'receipt listener');
+    assert.strictEqual(service.view().folder, via, 'the Files page still shows the chosen folder');
+    const sendOne = async (name, body) => {
+      const file = { id: name, fileName: name, data: Buffer.from(body) };
+      const prep = await raw(service.node.port, 'POST', `${API}/prepare-upload`, offerOf([file]));
+      assert.strictEqual(prep.status, 200, name);
+      assert.strictEqual((await up(service.node.port, prep.json.sessionId, name, prep.json.files[name], file.data)).status, 200, name);
+      return until(() => service.view().transfers.find((t) => t.dir === 'in' && t.state === 'done' && t.saved && t.saved.some((p) => p.endsWith(name))), name);
+    };
+    const first = await sendOne('from-phone.txt', 'phone');
+    const linkPath = path.join(via, 'from-phone.txt');
+    const canonical = fs.realpathSync(path.join(base, 'from-phone.txt'));
+    assert.strictEqual(first.saved[0], linkPath, 'the transfer keeps the path that was written');
+    assert.notStrictEqual(canonical, linkPath);
+    assert.strictEqual(fs.readFileSync(canonical, 'utf8'), 'phone');
+    const shown = service.view().transfers.find((t) => t.id === first.id);
+    assert.ok(shown && !Object.hasOwn(shown, 'identity'), 'identity stays off the page state');
+    assert.strictEqual(shown.saved[0], linkPath);
+    assert.strictEqual(service.receipts.length, 1);
+    assert.strictEqual(service.receipts[0].path, canonical);
+    assert.strictEqual(service.receipts[0].identity.folder, false);
+    assert.strictEqual(clicks.length, 1);
+    clicks[0]();
+    service.actions.lsReveal(first.id);
+    assert.deepStrictEqual(revealed, [canonical, canonical]);
+    service.actions.lsClear();
+    clicks[0]();
+    assert.deepStrictEqual(revealed, [canonical, canonical], 'clearing history revokes the arrival notification');
+    assert.deepStrictEqual(service.receipts, []);
+    assert.ok(!service.view().transfers.some((t) => t.id === first.id));
+    const second = await sendOne('second.txt', 'second');
+    const secondPath = fs.realpathSync(path.join(base, 'second.txt'));
+    assert.strictEqual(service.receipts.map((item) => item.path).join(','), secondPath);
+    fs.writeFileSync(secondPath, 'replaced');
+    revealed.length = 0;
+    service.actions.lsReveal(second.id);
+    assert.deepStrictEqual(revealed, [], 'a file replaced after it arrived is not revealed');
+    assert.deepStrictEqual(service.receipts, [], 'a replacement is not published again');
+    assert.ok(service.view().transfers.some((t) => t.id === second.id && t.saved[0] === path.join(via, 'second.txt')));
+  }
   b.stop();
   assert.strictEqual(b.peers().length, 0);
   assert.ok((await raw(b.port, 'GET', `${API}/info`)).error);

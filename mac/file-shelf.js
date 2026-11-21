@@ -76,7 +76,7 @@ class FileShelf {
       if (item && item.ok && typeof item.path === 'string') ranked.push({ path: item.path, at: item.at });
     }
     for (const item of received) {
-      if (item && typeof item.path === 'string') ranked.push({ path: item.path, at: item.at });
+      if (item && typeof item.path === 'string') ranked.push({ path: item.path, at: item.at, identity: item.identity });
     }
     ranked.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
     const sources = [photo && typeof photo.path === 'string' ? { path: photo.path, photo: true } : null, ...ranked].filter(Boolean);
@@ -86,6 +86,8 @@ class FileShelf {
       if (seen.has(source.path)) continue;
       const identity = fileIdentity(source.path);
       if (!identity) continue;
+      // A LocalSend receipt names the file that finished. A different file at that path is not it.
+      if (source.identity && !same(source.identity, identity)) continue;
       seen.add(source.path);
       found.push({ path: source.path, name: path.basename(source.path), photo: source.photo === true, identity });
     }

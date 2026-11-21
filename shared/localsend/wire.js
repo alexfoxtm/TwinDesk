@@ -27,26 +27,147 @@ const path = require('path');
 const { LocalSend, PORT } = require('./core.js');
 
 const KEEP = 30; // transfers shown
-const SAVED_CAP = 40; // files of one transfer shown from its saved list
+const SAVED_CAP = 40; // eligible files published from one look at the retained history
+const REVEAL_MAX = 1000; // revealSaved rejects an index above 999
+const SCAN_BUDGET = KEEP * SAVED_CAP; // how many retained saved paths one publication may stat
 
-// Completed incoming files already recorded on these transfers. Not a directory listing, and nothing
-// but the path and the transfer's time is returned.
-function completedIncoming(transfers) {
+// The folder the person chose (Downloads, or their own). A link or a different case is the same
+// folder. The path stored on the transfer stays what was written; publication uses this one.
+function chosenParent(dir) {
+  try {
+    if (typeof dir === 'function') dir = dir();
+    if (typeof dir !== 'string' || !dir) return null;
+    const configured = path.resolve(dir);
+    if (!path.isAbsolute(configured)) return null;
+    const real = fs.realpathSync(configured);
+    const st = fs.lstatSync(real);
+    if (st.isSymbolicLink() || !st.isDirectory()) return null;
+    return { configured, real };
+  } catch {
+    return null;
+  }
+}
+
+function namesMatch(a, b) {
+  return process.platform === 'linux' ? a === b : a.toLowerCase() === b.toLowerCase();
+}
+
+// The part of file under root, or ''. A different case of the same folder still counts, on a
+// volume that treats it as the same. '..' is not a child.
+function childRelative(root, file) {
+  if (!root || !file) return '';
+  const base = root.endsWith(path.sep) ? root : root + path.sep;
+  if (file.length < base.length) return '';
+  const head = file.slice(0, base.length);
+  if (!(process.platform === 'linux' ? head === base : namesMatch(head, base))) return '';
+  const rel = file.slice(base.length);
+  if (!rel || rel.split(path.sep).some((part) => !part || part === '.' || part === '..')) return '';
+  return rel;
+}
+
+function identityOf(st) {
+  return { dev: st.dev, ino: st.ino, size: st.size, mtime: st.mtimeMs, folder: st.isDirectory() };
+}
+
+function sameIdentity(a, b) {
+  return !!a && !!b && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtime === b.mtime && a.folder === b.folder;
+}
+
+// file is under the canonical parent. A link at the file, or at a folder between it and that
+// parent, is not the entry that was saved. The path returned is the canonical one.
+function walkSaved(rootReal, rel) {
+  const parts = rel.split(path.sep);
+  let current = rootReal;
+  for (let i = 0; i < parts.length; i++) {
+    const name = parts[i];
+    if (!name || name === '.' || name === '..' || path.isAbsolute(name)) return null;
+    const next = path.join(current, name);
+    let st;
+    try { st = fs.lstatSync(next); } catch { return null; }
+    if (st.isSymbolicLink()) return null;
+    const last = i === parts.length - 1;
+    if (!last) {
+      if (!st.isDirectory()) return null;
+      current = next;
+      continue;
+    }
+    if (!st.isFile() && !st.isDirectory()) return null;
+    let real;
+    try { real = fs.realpathSync(next); } catch { return null; }
+    const back = childRelative(rootReal, real);
+    if (!back) return null;
+    const backParts = back.split(path.sep);
+    if (backParts.length !== parts.length || !backParts.every((part, at) => namesMatch(part, parts[at]))) return null;
+    return { canonical: real, root: rootReal, identity: identityOf(st) };
+  }
+  return null;
+}
+
+function readUnder(parent, file) {
+  if (!parent || typeof file !== 'string' || !path.isAbsolute(file)) return null;
+  let resolved;
+  try { resolved = path.resolve(file); } catch { return null; }
+  const rel = childRelative(parent.configured, resolved) || childRelative(parent.real, resolved);
+  if (!rel) return null;
+  return walkSaved(parent.real, rel);
+}
+
+// No chosen parent: the stored path itself has to already be canonical. This is the check the
+// shelf used before a save folder was allowed to be a link.
+function strictEntry(file) {
+  try {
+    if (typeof file !== 'string' || !path.isAbsolute(file)) return null;
+    const st = fs.lstatSync(file);
+    if (st.isSymbolicLink() || (!st.isFile() && !st.isDirectory())) return null;
+    if (fs.realpathSync(file) !== file) return null;
+    return { canonical: file, root: path.dirname(file), identity: identityOf(st) };
+  } catch {
+    return null;
+  }
+}
+
+function entryNow(file, parent) {
+  return parent ? readUnder(parent, file) : strictEntry(file);
+}
+
+// The identity taken at completion still names this path: same file, and no link in its container.
+function stillThere(row) {
+  if (!row || typeof row.canonical !== 'string' || typeof row.root !== 'string' || !row.identity) return false;
+  const rel = childRelative(row.root, row.canonical);
+  if (!rel) return false;
+  const live = walkSaved(row.root, rel);
+  return !!live && live.canonical === row.canonical && sameIdentity(live.identity, row.identity);
+}
+
+// Completed incoming files from the retained history. Missing and linked paths are not counted, so
+// a transfer whose files are gone does not crowd out an older one that is still there. The scan
+// looks at a bounded number of retained paths. `pins` is the identity taken when each transfer
+// finished; a file replaced since then is left out and is not recorded again. The identity stays
+// with this list for the shelf in this process. It is not part of the page's state.
+function completedIncoming(transfers, opt) {
   const out = [];
   const seen = new Set();
   if (!Array.isArray(transfers)) return out;
+  const pins = opt && opt.pins;
+  const parent = pins ? null : chosenParent(opt && opt.receivedDir);
   const n = Math.min(transfers.length, KEEP);
-  for (let i = 0; i < n; i++) {
+  let looked = 0;
+  for (let i = 0; i < n && out.length < SAVED_CAP; i++) {
     const tr = transfers[i];
     if (!tr || typeof tr !== 'object' || tr.dir !== 'in' || tr.state !== 'done' || !Array.isArray(tr.saved)) continue;
     const at = typeof tr.at === 'number' && Number.isFinite(tr.at) && tr.at > 0 ? tr.at : 0;
+    const pin = pins && pins.get(tr.id);
+    if (pins && !pin) continue;
     const max = Math.min(tr.saved.length, SAVED_CAP);
-    for (let index = 0; index < max; index++) {
+    for (let index = 0; index < max && out.length < SAVED_CAP; index++) {
+      if (++looked > SCAN_BUDGET) return out;
       const file = tr.saved[index];
-      if (typeof file !== 'string' || !path.isAbsolute(file) || seen.has(file)) continue;
-      seen.add(file);
-      out.push({ path: file, at });
-      if (out.length >= SAVED_CAP) return out;
+      if (typeof file !== 'string' || !path.isAbsolute(file)) continue;
+      const row = pin ? pin[index] : entryNow(file, parent);
+      if (!stillThere(row)) continue;
+      if (seen.has(row.canonical)) continue;
+      seen.add(row.canonical);
+      out.push({ path: row.canonical, at, identity: row.identity });
     }
   }
   return out;
@@ -62,30 +183,28 @@ function revealSaved(transfers, arg) {
     else if (Number.isInteger(arg.index)) index = arg.index;
     else index = -1;
   }
-  if (!id || index < 0 || index > 999) return '';
+  if (!id || index < 0 || index > 999) return null;
   const tr = (Array.isArray(transfers) ? transfers : []).find((item) => item && item.id === id);
-  if (!tr || tr.dir !== 'in' || tr.state === 'waiting' || tr.state === 'running' || !Array.isArray(tr.saved) || index >= tr.saved.length) return '';
+  if (!tr || tr.dir !== 'in' || tr.state === 'waiting' || tr.state === 'running' || !Array.isArray(tr.saved) || index >= tr.saved.length) return null;
   const file = tr.saved[index];
-  return typeof file === 'string' ? file : '';
+  if (typeof file !== 'string' || !file) return null;
+  return { id, index, file };
 }
 
-// Still the file or folder that was saved: an absolute path, not a link, and not something that
-// has gone.
-function canShow(file) {
-  try {
-    if (typeof file !== 'string' || !path.isAbsolute(file)) return false;
-    const st = fs.lstatSync(file);
-    if (!st.isFile() && !st.isDirectory()) return false;
-    return fs.realpathSync(file) === file;
-  } catch {
-    return false;
+function openReceipt(transfers, arg, reveal, opt) {
+  const found = revealSaved(transfers, arg);
+  if (!found || typeof reveal !== 'function') return false;
+  const pins = opt && opt.pins;
+  if (pins) {
+    if (!pins.has(found.id)) return false;
+    const row = pins.get(found.id)[found.index];
+    if (!stillThere(row)) return false;
+    reveal(row.canonical);
+    return true;
   }
-}
-
-function openReceipt(transfers, arg, reveal) {
-  const file = revealSaved(transfers, arg);
-  if (!canShow(file) || typeof reveal !== 'function') return false;
-  reveal(file);
+  const live = entryNow(found.file, chosenParent(opt && opt.receivedDir));
+  if (!live) return false;
+  reveal(live.canonical);
   return true;
 }
 
@@ -113,6 +232,21 @@ function startLocalSend(o) {
   const transfers = []; // newest first
   const sources = new Map(); // a transfer of ours -> what it was, for another try with a PIN
   const asking = new Map(); // offer id -> AbortController of its question
+  const pins = new Map(); // transfer id -> identity of each saved entry, taken once when it finished
+
+  // The chosen folder, canonicalized, and the file or folder that was actually stored. Taken once:
+  // a later file at that path is not this receipt.
+  function bind(tr) {
+    if (!tr || typeof tr.id !== 'string' || pins.has(tr.id)) return;
+    if (tr.dir !== 'in' || tr.state === 'waiting' || tr.state === 'running') return;
+    const saved = Array.isArray(tr.saved) ? tr.saved : [];
+    let parent = null;
+    try { parent = chosenParent(o.receivedDir); } catch { parent = null; }
+    const n = Math.min(saved.length, REVEAL_MAX);
+    const rows = new Array(n);
+    for (let index = 0; index < n; index++) rows[index] = entryNow(saved[index], parent);
+    pins.set(tr.id, rows);
+  }
 
   const push = () => { try { o.pushState(); } catch { /* no window */ } };
   const what = (tr) => (tr.names.length === 1 && tr.files === 1 ? tr.names[0] : t(tr.files === 1 ? '{count} file' : '{count} files', { count: tr.files }));
@@ -125,8 +259,10 @@ function startLocalSend(o) {
       const old = transfers.findLastIndex((x) => x.state !== 'waiting' && x.state !== 'running');
       if (old < 0) break;
       sources.delete(transfers[old].id);
+      pins.delete(transfers[old].id);
       transfers.splice(old, 1);
     }
+    if (transfers.some((item) => item.id === tr.id)) bind(tr);
   }
 
   function make() {
@@ -149,7 +285,7 @@ function startLocalSend(o) {
       const before = transfers.find((x) => x.id === tr.id);
       record(tr);
       if (o.say && tr.dir === 'in' && before && before.state === 'running' && tr.state !== 'running') {
-        const reveal = () => openReceipt(transfers, tr.id, o.reveal);
+        const reveal = () => openReceipt(transfers, tr.id, o.reveal, { pins });
         if (tr.state === 'done') o.say(t('Received from {name}', { name: tr.peer.alias }), what(tr), reveal);
         else if (tr.arrived) o.say(t('Stopped: {count} of {total} files from {name} arrived', { count: tr.arrived, total: tr.files, name: tr.peer.alias }), '', reveal);
       }
@@ -254,11 +390,15 @@ function startLocalSend(o) {
     lsCancel(id) { if (node && typeof id === 'string') node.cancel(id); },
     lsClear() {
       for (let i = transfers.length - 1; i >= 0; i--) {
-        if (transfers[i].state !== 'waiting' && transfers[i].state !== 'running') { sources.delete(transfers[i].id); transfers.splice(i, 1); }
+        if (transfers[i].state !== 'waiting' && transfers[i].state !== 'running') {
+          sources.delete(transfers[i].id);
+          pins.delete(transfers[i].id);
+          transfers.splice(i, 1);
+        }
       }
       push();
     },
-    lsReveal(arg) { openReceipt(transfers, arg, o.reveal); },
+    lsReveal(arg) { openReceipt(transfers, arg, o.reveal, { pins }); },
   };
 
   apply();
@@ -266,7 +406,7 @@ function startLocalSend(o) {
     view, actions, apply,
     shutdown: () => { if (node) { node.stop(); node = null; } },
     get node() { return node; },
-    get receipts() { return completedIncoming(transfers); },
+    get receipts() { return completedIncoming(transfers, { pins }); },
   };
 }
 

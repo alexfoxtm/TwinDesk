@@ -135,6 +135,8 @@ test('completed LocalSend receipts show on the shelf and in activity from histor
   const shelf = new FileShelf({ drop, latestPhoto: () => ({ path: dup }), receipts: () => list, t: (s) => s });
   try {
     assert.deepEqual(list.map((item) => item.path), [received, second, dup, folder, older]);
+    assert.equal(list[0].identity.folder, false);
+    assert.equal(list[3].identity.folder, true);
     assert.ok(!JSON.stringify(list).includes('fp-secret') && !JSON.stringify(list).includes('10.1.1.1'));
     assert.deepEqual(wire.ACTIONS, ACTIONS);
     shelf.show();
@@ -181,6 +183,42 @@ test('completed LocalSend receipts show on the shelf and in activity from histor
     const owned = TL.build({ localsend: { transfers } }).find((item) => item.path === older);
     assert.equal(owned.meta.ls, 'in-older', 'clearing TwinDesk recent leaves the LocalSend receipt');
     assert.equal(TL.localsendReveal(incoming, []), null);
+
+    const realFolder = path.join(dir, 'downloads-real');
+    const downloads = path.join(dir, 'Downloads');
+    fs.mkdirSync(realFolder);
+    fs.symlinkSync(realFolder, downloads);
+    const viaLink = path.join(downloads, 'via.txt');
+    fs.writeFileSync(viaLink, 'via');
+    const viaCanonical = fs.realpathSync(viaLink);
+    const viaTransfers = [{ id: 'via', dir: 'in', state: 'done', at: now + 50, saved: [viaLink], peer: { alias: 'Pixel', fingerprint: 'fp-via' } }];
+    const viaList = wire.completedIncoming(viaTransfers, { receivedDir: downloads });
+    assert.equal(viaList.length, 1);
+    assert.equal(viaList[0].path, viaCanonical);
+    assert.notEqual(viaList[0].path, viaLink);
+    const viaOpened = [];
+    assert.equal(wire.openReceipt(viaTransfers, 'via', (p) => viaOpened.push(p), { receivedDir: downloads }), true);
+    assert.deepEqual(viaOpened, [viaCanonical]);
+    list = viaList;
+    drop.recent = [];
+    const viaState = read(shelf);
+    assert.deepEqual(viaState.items.map((item) => item.name), ['same.txt', 'via.txt']);
+    assert.equal(viaState.items[0].id, photoId);
+    ipcMain.emit('file-shelf:drag', event(shelf), viaState.items[1].id);
+    assert.equal(dragged.at(-1).file, viaCanonical);
+    ipcMain.emit('file-shelf:reveal', event(shelf), viaState.items[1].id);
+    assert.equal(revealed.at(-1), viaCanonical);
+    if (process.platform !== 'linux') {
+      const lowerDir = path.join(dir, 'downloads');
+      const lowerFile = path.join(lowerDir, 'via.txt');
+      const cased = wire.completedIncoming(
+        [{ id: 'case', dir: 'in', state: 'done', at: now, saved: [lowerFile] }],
+        { receivedDir: lowerDir },
+      );
+      let realLower = '';
+      try { realLower = fs.realpathSync(lowerFile); } catch { realLower = ''; }
+      if (realLower && realLower !== lowerFile) assert.equal(cased[0] && cased[0].path, realLower);
+    }
 
     const many = [];
     for (let i = 0; i < 12; i++) {
@@ -229,6 +267,48 @@ test('unfinished, linked, cleared and supplied LocalSend paths are not revealed'
     { id: 'stop', dir: 'in', state: 'cancelled', at: now + 3, saved: [dropFile], arrived: 1, peer: { fingerprint: 'fp-stop' } },
   ];
   let list = wire.completedIncoming(transfers);
+  assert.deepEqual(list.map((item) => item.path), [real], 'a linked saved path is not an eligible receipt');
+  const missing = [];
+  for (let i = 0; i < 40; i++) missing.push(path.join(dir, 'missing', `m-${i}.txt`));
+  assert.deepEqual(wire.completedIncoming([
+    { id: 'gone', dir: 'in', state: 'done', at: now + 20, saved: missing },
+    { id: 'in-real', dir: 'in', state: 'done', at: now, saved: [real] },
+  ]).map((item) => item.path), [real], 'missing newest files do not take the receipt places');
+  const before = path.join(dir, 'before.txt');
+  fs.writeFileSync(before, 'original');
+  const stamped = wire.completedIncoming([{ id: 'before', dir: 'in', state: 'done', at: now + 1, saved: [before] }]);
+  fs.writeFileSync(before, 'replaced-before-open');
+  const earlyDrop = new EventEmitter();
+  earlyDrop.recent = [];
+  const early = new FileShelf({ drop: earlyDrop, latestPhoto: () => null, receipts: () => stamped });
+  early.show();
+  assert.deepEqual(read(early).items, [], 'a file replaced before the shelf opens is not admitted');
+  early.shutdown();
+  const box = path.join(dir, 'box');
+  const outside = path.join(dir, 'outside');
+  fs.mkdirSync(box);
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'secret.txt'), 'nope');
+  const linkedBox = path.join(box, 'album');
+  fs.symlinkSync(outside, linkedBox);
+  const nested = path.join(linkedBox, 'secret.txt');
+  const boxed = [{ id: 'box', dir: 'in', state: 'done', at: now, saved: [nested] }];
+  assert.deepEqual(wire.completedIncoming(boxed, { receivedDir: box }), []);
+  assert.equal(wire.openReceipt(boxed, 'box', () => {}), false);
+  const saveReal = path.join(dir, 'save-real');
+  const saveLink = path.join(dir, 'save-link');
+  fs.mkdirSync(saveReal);
+  fs.symlinkSync(saveReal, saveLink);
+  const partialFile = path.join(saveLink, 'partial.txt');
+  fs.writeFileSync(partialFile, 'part');
+  const partialOpened = [];
+  assert.equal(wire.openReceipt(
+    [{ id: 'part', dir: 'in', state: 'cancelled', at: now, saved: [partialFile], arrived: 1 }],
+    'part',
+    (p) => partialOpened.push(p),
+    { receivedDir: saveLink },
+  ), true);
+  assert.deepEqual(partialOpened, [fs.realpathSync(partialFile)], 'a partial file in a linked save folder still opens');
   let boom = false;
   drop.recent = [{ path: dropFile, ok: true, at: now - 10 }];
   const shelf = new FileShelf({
@@ -237,7 +317,6 @@ test('unfinished, linked, cleared and supplied LocalSend paths are not revealed'
   });
   const beforeDrag = dragged.length, beforeReveal = revealed.length;
   try {
-    assert.deepEqual(list.map((item) => item.path), [real, link]);
     shelf.show();
     const state = read(shelf);
     assert.deepEqual(state.items.map((item) => item.name), ['real.txt', 'drop.txt']);
@@ -252,6 +331,7 @@ test('unfinished, linked, cleared and supplied LocalSend paths are not revealed'
     ipcMain.emit('file-shelf:reveal', own, id);
     assert.equal(dragged.length, beforeDrag);
     assert.equal(revealed.length, beforeReveal);
+    assert.deepEqual(read(shelf).items.map((item) => item.name), ['drop.txt'], 'a replacement is not admitted on refresh');
     list = [];
     const left = read(shelf);
     assert.deepEqual(left.items.map((item) => item.name), ['drop.txt'], 'cleared history is not replaced by a folder scan');
@@ -277,6 +357,7 @@ test('unfinished, linked, cleared and supplied LocalSend paths are not revealed'
     assert.deepEqual(TL.localsendReveal(linkItem, transfers), { id: 'in-real', index: 1 });
     const opened = [];
     assert.equal(wire.openReceipt(transfers, TL.localsendReveal(linkItem, transfers), (p) => opened.push(p)), false);
+    assert.equal(wire.openReceipt(transfers, TL.localsendReveal(linkItem, transfers), (p) => opened.push(p), { receivedDir: dir }), false);
     assert.equal(wire.openReceipt(transfers, { id: 'out', path: real }, (p) => opened.push(p)), false);
     assert.equal(wire.openReceipt(transfers, { id: 'run', path: real }, (p) => opened.push(p)), false);
     assert.equal(wire.openReceipt(transfers, { id: 'stop', path: '/etc/passwd' }, (p) => opened.push(p)), true);
