@@ -44,7 +44,7 @@ class Hub extends EventEmitter {
     this.selectedId = null;
     this.sessions = new Sessions({ links });
     this.bus = this._makeBus();
-    this._busHandlers = new Map(); // type -> [fn(msg, fromId, source)]
+    this._busHandlers = new Map(); // type -> [fn(msg, fromId, ingress, source)]
     this._peerHandlers = new Map(); // 'welcome' | 'closed' -> [fn(peerId, info)]
     this.forgotten = new Set(); // forgetPeer(): not listed as "via" until it connects again
     this.routes = [];
@@ -280,7 +280,7 @@ class Hub extends EventEmitter {
   // ---- internals: devices ----
 
   _attach(s) {
-    s.tap((msg, source, ws) => this._fromDevice(s, msg, source, ws));
+    s.tap((msg, source) => this._fromDevice(s, msg, source));
     s.onLife((up, replaced) => (up ? this._up(s) : this._down(s, replaced)));
     s.onState(() => this._stateOf(s));
     s.refresh(); // a device that is already connected comes up now
@@ -288,8 +288,9 @@ class Hub extends EventEmitter {
 
   // A message of one device: roster messages are the mesh's, the rest goes to the bus (any device)
   // and to the route that follows this device. True keeps it away from the session's own handlers.
-  // source is the guest link or host ctx that carried it, not a session rebuilt from the device id.
-  _fromDevice(s, msg, source, ws) {
+  // source: the socket the message arrived on (session.js). Passed through so a route does
+  // not rebuild the view from whichever connection send() would use now.
+  _fromDevice(s, msg, source) {
     if (msg.t === ROSTER) {
       if (this.mesh && this.mesh.handle(s.id, msg)) this._change();
       return true;
@@ -298,13 +299,17 @@ class Hub extends EventEmitter {
     const fns = this._busHandlers.get(msg.t);
     if (fns) {
       consumed = true;
-      for (const fn of fns) fn(msg, s.id, source, ws);
+      const ingress = s.inbound();
+      // Spaces handlers require the authenticated primary connection.
+      if (ingress || (msg.t !== P.T.SCREEN_SPACE && msg.t !== P.T.SCREEN_DESKTOPS)) {
+        for (const fn of fns) fn(msg, s.id, ingress, source);
+      }
     }
     for (const r of this.routes) {
       // A route takes the message only when someone listens for it (as the Windows facade does).
       if (r.targetId !== s.id) continue;
       if (r.listenerCount(`t:${msg.t}`) > 0 || r.listenerCount('message') > 0) {
-        r.deliver(msg, ws);
+        r.deliver(msg, source);
         consumed = true;
       }
     }

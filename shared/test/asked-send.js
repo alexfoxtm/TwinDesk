@@ -436,12 +436,14 @@ async function meshOverlap() {
     const next = sock('rejoin');
     link.ws = next;
     link.onAny(offer('stale', 'stale-batch'), guestWs);
-    assert.strictEqual(arrived.length, 2, 'the previous socket never reaches the route');
+    assert.strictEqual(arrived[2].source(), null, 'the previous socket is not this Link anymore');
     box.drop.allowAsked(route.current);
     assert.strictEqual(route.current.conn, next, 'a new Save binds the socket send() uses after the reconnect');
+    box.offer(offer('stale', 'stale-batch'), arrived[2]);
+    assert.ok(refused(box.sent, 'stale'), 'a message from the old socket is not the new Save');
     link.onAny(offer('rejoined', 'rejoin-batch'), next);
-    assert.strictEqual(arrived[2].source(), next);
-    box.offer(offer('rejoined', 'rejoin-batch'), arrived[2]);
+    assert.strictEqual(arrived[3].source(), next);
+    box.offer(offer('rejoined', 'rejoin-batch'), arrived[3]);
     assert.ok(box.sent.some((m) => m.t === P.T.FILE_ACCEPT && m.id === 'rejoined'), 'the offer on the new socket is the new Save');
 
     // Stop before closed: the link is down and the host ctx is released, sockets still OPEN,
@@ -451,8 +453,11 @@ async function meshOverlap() {
     link.authed = false;
     ctx.released = true;
     server.emit('message', offer('after-stop', 'stop-batch'), ctx, hostWs);
+    assert.strictEqual(arrived[4].conn, null, 'a released host ctx is not an ingress');
     link.onAny(offer('guest-stopped', 'stop-batch'), next);
-    assert.strictEqual(arrived.length, 3, 'neither socket can reach the route after Stop');
+    assert.strictEqual(arrived[5].conn, null, 'the guest socket is not live once the link is down');
+    box.offer(offer('guest-stopped', 'stop-batch'), arrived[5]);
+    assert.ok(refused(box.sent, 'guest-stopped'), 'Stop refuses the grant before the closed event');
     console.log('  mesh: overlap and a reconnect on the same Link follow the socket that was used');
   } finally {
     box.drop.clearAsked();

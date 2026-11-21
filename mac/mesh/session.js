@@ -34,8 +34,8 @@ class Session extends EventEmitter {
     this._up = false;
     this._linkMesh = false; // the guest link's welcome said mesh: 1
     this.meshCapable = false; // the device speaks the mesh (hello/welcome `mesh: 1`); set when it comes up
-    this.taps = []; // hub: fn(msg, source, ws) -> true when it consumed the message (see _deliver)
-    this._inbound = null; // the socket of the delivery now running, else null
+    this.taps = []; // hub: fn(msg, source) -> true when it consumed the message (see _deliver)
+    this._inbound = null; // Desktop preview reads this during synchronous delivery.
     this.lifeFns = []; // hub: fn(up, replaced) when the device becomes connected or stops being connected
     // Fast files (shared/fastfile.js): this device's file bytes over HTTPS, when both apps can (hello
     // fx: 1, welcome fx: token). Not the files engine (fx2): it serves one session at a time.
@@ -246,32 +246,30 @@ class Session extends EventEmitter {
     this._sync();
   }
 
-  // Messages from the server ctx. Only the current authenticated socket, and the tap
-  // receives that exact object. A released socket is not delivered. The guest link, when
-  // it is up, is a different connection: a host message is not labeled as that link.
-  fromHost(msg, ctx, ws = ctx && ctx.ws) {
-    if (ctx !== this.ctx || !physical(ctx, ws)) return;
-    this._deliver(msg, false, ctx, ws);
+  // Messages from the server ctx (only the one that is current). ws is the socket that
+  // received this message (the primary or its fallback), not whichever send() would use now.
+  fromHost(msg, ctx, ws) {
+    if (ctx !== this.ctx) return;
+    this._deliver(msg, false, ws && typeof ws === 'object' ? ws : null);
   }
 
   // ---- internals ----
 
-  _fromLink(msg, ws = this.link && this.link.ws) {
-    const link = this.link;
-    if (!physical(link, ws) || link.ws !== ws) return;
-    for (const m of P.swapRole(msg, this.swapIn)) this._deliver(m, false, link, ws);
+  // ws: the socket link.js passed from the message callback. Not this.link.ws read again —
+  // a reconnect on that same Link replaces it.
+  _fromLink(msg, ws) {
+    const sock = ws && typeof ws === 'object' ? ws : null;
+    for (const m of P.swapRole(msg, this.swapIn)) this._deliver(m, false, sock);
   }
 
   // raw: from FastFiles itself (its file.chunk / held file.end), not for it again.
-  // source: the guest link or host ctx that carried this message. ws is its actual socket.
-  // inbound() is the surrounding link/ctx while taps and handlers run, so a preview ask cannot
-  // treat the guest link as the host socket. A nested delivery restores the previous one.
-  _deliver(msg, raw = false, source = null, ws = null) {
+  // source: the socket this message arrived on, or absent when it was injected.
+  _deliver(msg, raw = false, source) {
     if (!raw && this.fx.incoming(msg)) return;
-    const prev = this._inbound;
-    this._inbound = source || null;
+    const previous = this._inbound;
+    this._inbound = this._desktopIngress(source);
     try {
-      for (const tap of this.taps) if (tap(msg, source, ws) === true) return;
+      for (const tap of this.taps) if (tap(msg, source) === true) return;
       const fns = this.handlers.get(msg.t);
       if (fns) for (const fn of fns) fn(msg);
       else if (!this.unknown.has(msg.t)) {
@@ -279,13 +277,19 @@ class Session extends EventEmitter {
         console.log('[session] ignoring message type', msg.t, 'from', this.id);
       }
     } finally {
-      this._inbound = prev;
+      this._inbound = previous;
     }
   }
 
-  // The socket this delivery arrived on. Null for inject(), and null outside _deliver.
   inbound() {
-    return this._inbound || null;
+    return this._inbound;
+  }
+
+  // Desktop preview and Spaces bind to a live primary connection and its socket.
+  _desktopIngress(socket) {
+    if (!socket || socket.readyState !== 1) return null;
+    const conn = this.link?.ws === socket ? this.link : this.ctx?.ws === socket ? this.ctx : null;
+    return conn?.authed === true && !conn.released ? conn : null;
   }
 
   // Emits 'welcome' when the device becomes connected and 'closed' when it stops being connected.
@@ -385,11 +389,6 @@ class Sessions extends EventEmitter {
     const id = link.pairing && link.pairing.macId;
     if (id) this.ensure(id).setLink(link);
   }
-}
-
-// The same shape meshGate rechecks. A missing socket, a release, or a closed socket is not live.
-function physical(conn, ws) {
-  return !!(conn && conn.authed === true && !conn.released && ws && ws.readyState === 1 && (ws === conn.ws || ws === conn.alt));
 }
 
 module.exports = { Session, Sessions };
