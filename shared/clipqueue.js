@@ -68,7 +68,7 @@ function itemsOf(m) {
 // clipboard, onChange); concealed(): the clipboard holds a password now.
 class MeshClipQueue {
   constructor(clip, { concealed = async () => false, nameOf = (id) => id,
-    activePair = (id) => id, knownPair = () => true, currentSocket = () => null, changed = () => clip.onChange() } = {}) {
+    activePair = (id) => id, knownPair = () => true, currentSocket = () => null, applyLatest, changed = () => clip.onChange() } = {}) {
     this.clip = clip;
     this.concealed = concealed;
     this.nameOf = nameOf;
@@ -77,6 +77,7 @@ class MeshClipQueue {
     this.activePair = activePair;
     this.knownPair = knownPair;
     this.currentSocket = currentSocket;
+    this.applyLatest = applyLatest;
     this.known = new Map();
     this.epoch = 0;
     this.pasteEpoch = 0;
@@ -173,6 +174,7 @@ class MeshClipQueue {
     this.changed();
     if (clip.cfg.queueLatest) {
       const last = items[items.length - 1].text;
+      if (this.applyLatest) return this.applyLatest(last, () => epoch === this.pasteEpoch && allowed() && clip.cfg.queueLatest);
       let now = '';
       try { now = await clip._readText(); } catch (_) { /* write it */ }
       if (epoch !== this.pasteEpoch || !allowed() || !clip.cfg.queueLatest) return;

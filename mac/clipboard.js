@@ -26,7 +26,10 @@ class Clipboard extends EventEmitter {
     this.lastSent = null;
     this.lastReceived = null;
     this.readSequence = 0;
+    this.receiveSequence = 0;
+    this.lastAppliedText = 0;
     this.receiving = 0;
+    this.pending = null; // a sendIfChanged held back while a clip is received: its why
     this.concealed = false; // last helper report for the current item
     this.remote = false; // … and whether it came from another Apple device (Universal Clipboard, #211)
     this.peerAccepts = true; // the PC's last clip.policy
@@ -44,6 +47,11 @@ class Clipboard extends EventEmitter {
       connected: () => !!this.server.current,
       ble: () => !!(this.server.current && this.server.current.transport === 'ble'),
       peerName: () => (this.server.current && this.server.current.name) || 'the other device',
+      onReceiveStart: () => { ++this.receiving; ++this.receiveSequence; },
+      onReceiveEnd: (written) => {
+        if (written) ++this.readSequence;
+        this._endReceive();
+      },
       remember: (dir, item) => this._remember(dir, item),
       popup: (kind, text, presentation) => this.emit('popup', kind, presentation || text),
       onChange: () => this.emit('change'),
@@ -55,14 +63,12 @@ class Clipboard extends EventEmitter {
       if (pair !== this.queueOwner?.pair) this.queue.clear();
       this.queueOwner = pair ? { ctx, pair } : null;
       ++this.queueEpoch;
-      ++this.readSequence;
       this.peerAccepts = true;
       this.images.reset();
       this.sendPolicy();
       this._watch();
     });
     server.on('closed', () => {
-      ++this.readSequence;
       ++this.queueEpoch;
       this.checkQueuePair();
       this.images.reset();
@@ -140,38 +146,54 @@ class Clipboard extends EventEmitter {
     const c = this.cfg;
     if (!c.enabled || !c.receive || !P.clipAllowed(msg.text)) return;
     ++this.queueEpoch;
-    const sequence = ++this.readSequence;
-    const peer = this.server.current;
+    const sequence = ++this.receiveSequence;
     ++this.receiving;
     try {
       // A Universal Clipboard item isn't read to compare: reading it fetches it from the other device.
       const write = this.remote || (await readText()) !== msg.text;
-      if (sequence !== this.readSequence || peer !== this.server.current || !this.cfg.enabled || !this.cfg.receive) return;
+      if (sequence !== this.receiveSequence) return; // a newer clip or picture came in meanwhile
       if (write) await clipboard.writeText(msg.text);
-      if (sequence !== this.readSequence || peer !== this.server.current) return;
+      // A newer clip may have been applied while this one was written.
+      if (sequence < this.lastAppliedText) return;
+      this.lastAppliedText = sequence;
+      ++this.readSequence;
       this.images.text();
-      this.lastSent = null;
       this.lastReceived = msg.text;
       this._remember('in', msg.text);
       this.emit('change');
     } finally {
-      --this.receiving;
-      if (sequence === this.readSequence) ++this.readSequence;
+      this._endReceive();
     }
+  }
+
+  _endReceive() {
+    if (--this.receiving || !this.pending) return;
+    const why = this.pending;
+    this.pending = null;
+    if (why === 'instant' && this.cfg.mode !== 'instant') return;
+    this.sendIfChanged(why).catch((e) => console.error('[clip] clipboard not sent:', e.message));
   }
 
   // Send our clipboard if allowed and changed since it was last sent or received: its text, else
   // its picture (Clipboard › Pictures).
   async sendIfChanged(why) {
     const c = this.cfg;
-    if (!c.enabled || !c.send || !this.server.current || this.receiving) return;
+    if (!c.enabled || !c.send || !this.server.current) return;
     if (!this.peerAccepts) return this._skip(`${this.server.current ? this.server.current.name : 'the other computer'} doesn’t take the clipboard`);
     // A Universal Clipboard copy from another Apple device: not read the moment it lands (that
     // fetches it from there, with macOS's "Pasting from …" dialog, #211); it goes on the switch.
     if (why === 'instant' && this.remote) return;
-    const sequence = ++this.readSequence, peer = this.server.current;
-    const valid = () => sequence === this.readSequence && peer === this.server.current && !this.receiving && this.cfg.enabled && this.cfg.send && this.peerAccepts;
+    // While a clip is being put on the clipboard nothing is read: the call runs again after it.
+    const defer = () => {
+      if (!this.receiving) return false;
+      if (why !== 'instant' || !this.pending) this.pending = why;
+      return true;
+    };
+    if (defer()) return;
+    const sequence = ++this.readSequence;
+    const valid = () => sequence === this.readSequence && this.server.current && this.cfg.enabled && this.cfg.send && this.peerAccepts && !defer();
     const text = await readText();
+    if (!valid()) return;
     if (require('../shared/otp.js').isQuiet(text)) return; // a code copied by itself (Notifications): kept here only
     // Files copied in Finder: the clipboard also holds their names and icon, which aren't the copy.
     // Files go with the Files tab's shortcuts (fclip.js).
@@ -299,10 +321,19 @@ class Clipboard extends EventEmitter {
     this.emit('change');
     if (this.cfg.queueLatest) {
       const last = items[items.length - 1].text;
-      const same = !this.remote && (await readText().catch(() => '')) === last;
-      if (epoch !== this.queueEpoch || !allowed() || !this.cfg.queueLatest) return;
-      this.lastReceived = last;
-      if (!same) clipboard.writeText(last);
+      const sequence = ++this.receiveSequence;
+      ++this.receiving;
+      try {
+        const same = !this.remote && (await readText().catch(() => '')) === last;
+        if (sequence !== this.receiveSequence || epoch !== this.queueEpoch || !allowed() || !this.cfg.queueLatest) return;
+        if (!same) await clipboard.writeText(last);
+        if (sequence < this.lastAppliedText) return;
+        this.lastAppliedText = sequence;
+        ++this.readSequence;
+        this.lastReceived = last;
+      } finally {
+        this._endReceive();
+      }
     }
   }
 
