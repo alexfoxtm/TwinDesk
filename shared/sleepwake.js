@@ -32,8 +32,13 @@ function sleepWake({ powerMonitor, server, discovery, canInvite = () => true }) 
     const until = wokeAt + INVITE_FOR_MS;
     clearInterval(timer);
     timer = setInterval(() => {
-      if (s?.clients) waiting = waiting.filter((id) => !s.clients.has(id));
-      else if (s?.current) waiting = [];
+      const host = server();
+      // A session that sleep ended can still be here while its socket closes: that one doesn't count.
+      const live = (ctx) => !!ctx && ctx.ws.readyState === ctx.ws.OPEN && !ctx.expectedClose;
+      // One session at a time: an invite makes a computer take the session over, so once anyone
+      // holds it nobody is invited. Multi-device: only the guests that aren't back yet.
+      if (host && !host.clients) waiting = live(host.current) ? [] : waiting;
+      else waiting = waiting.filter((id) => !live(host?.clients.get(id)));
       if (!waiting.length || Date.now() > until) return clearInterval(timer);
       const disc = discovery();
       for (const id of waiting) {

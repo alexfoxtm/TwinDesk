@@ -13,7 +13,7 @@ test('suspend closes every guest and wake invites an eligible computer at its di
     sockets: new Set(), clients: new Map(), busyFlags: new Map(), authSeq: 0, _now: Date.now,
     ilPool: { drop() {} },
   });
-  server.on('preauth', (ctx) => server.authenticate(ctx, { deviceId: 'phone', name: 'Phone', os: P.OS.ANDROID }, { t: P.T.WELCOME }));
+  server.on('preauth', (ctx, msg) => server.authenticate(ctx, { deviceId: msg.id, name: 'Guest', os: P.OS.WIN }, { t: P.T.WELCOME }));
   const powerMonitor = new EventEmitter();
   const invites = [];
   const found = new Map();
@@ -29,8 +29,8 @@ test('suspend closes every guest and wake invites an eligible computer at its di
     const ws = {
       OPEN: 1, readyState: 1,
       send(raw) { sent.push(JSON.parse(raw)); },
-      close() { this.readyState = 3; server._onSocketClose(this); },
-      terminate() { this.close(); },
+      close() { this.readyState = 2; },
+      terminate() { this.readyState = 3; server._onSocketClose(this, 1006); },
     };
     const ctx = { ws, transport: 'ip', address: '127.0.0.1' };
     ws.ctx = ctx;
@@ -54,6 +54,8 @@ test('suspend closes every guest and wake invites an eligible computer at its di
       found.set(os, { os, address: '192.0.2.' + found.size });
       guests.push(guest);
     }
+    const closed = [];
+    server.on('closed', (...args) => closed.push(args));
     powerMonitor.emit('suspend');
     assert.deepEqual(ended, [P.OS.ANDROID, P.OS.IOS, P.OS.WIN]);
     assert.equal(server.clients.size, 0);
@@ -68,9 +70,39 @@ test('suspend closes every guest and wake invites an eligible computer at its di
     t.mock.timers.tick(2000);
     assert.deepEqual(invites, ['192.0.2.50']);
     const awake = socket();
-    hello(awake, { v: P.PROTOCOL_VERSION });
+    hello(awake, { v: P.PROTOCOL_VERSION, id: 'new' });
     assert.equal(awake.sent.at(-1).t, P.T.WELCOME);
+    const returning = socket();
+    hello(returning, { v: P.PROTOCOL_VERSION, id: P.OS.WIN });
+    assert.equal(returning.sent.at(-1).t, P.T.WELCOME);
+    for (const guest of guests) guest.ws.terminate();
+    assert.deepEqual(closed, guests.map(({ ctx }) => [ctx, false]));
+    assert.equal(server.clients.get(P.OS.WIN), returning.ctx);
   } finally {
     powerMonitor.emit('suspend');
   }
+});
+
+test('a one-session host stops inviting its old guest once anyone holds the session', (t) => {
+  const powerMonitor = new EventEmitter();
+  const invites = [];
+  const ws = (readyState) => ({ OPEN: 1, readyState });
+  const server = { current: { deviceId: 'pc-a', ws: ws(1) }, sleep(on) { return on ? 'pc-a' : null; } };
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  sleepWake({
+    powerMonitor, server: () => server,
+    discovery: () => ({ get: () => ({ address: '192.0.2.7' }), invite: (address) => invites.push(address) }),
+  });
+  powerMonitor.emit('suspend');
+  // The session sleep ended is still closing: its guest is invited.
+  server.current = { deviceId: 'pc-a', ws: ws(2), expectedClose: true };
+  powerMonitor.emit('resume');
+  t.mock.timers.tick(2000);
+  assert.deepEqual(invites, ['192.0.2.7']);
+  // Another device connects first: inviting pc-a now would have it take the session over.
+  server.current = { deviceId: 'phone-b', ws: ws(1) };
+  t.mock.timers.tick(2000);
+  server.current = null;
+  t.mock.timers.tick(2000);
+  assert.deepEqual(invites, ['192.0.2.7']);
 });

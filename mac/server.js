@@ -137,6 +137,7 @@ class Server extends EventEmitter {
   }
 
   _onMessage(ctx, data, isBinary, ws) {
+    if (ws?.detached) return;
     ctx.lastRx = ws.lastRx = Date.now();
     let msg;
     try {
@@ -381,10 +382,18 @@ class Server extends EventEmitter {
     const guest = this.current;
     for (const ctx of this.sockets) {
       const waiting = !ctx.authed && ctx.fx2Waited;
-      if (ctx.released || ctx.expectedClose || (ctx !== guest && !waiting)) continue;
+      if (ctx !== guest && !waiting) continue;
       // Suppress grace for this socket while preserving the phone's saved return.
+      const { ws, alt } = ctx;
       ctx.released = true;
-      this.fail(ctx, P.E.ASLEEP, 'Asleep');
+      if (!ctx.expectedClose) this.fail(ctx, P.E.ASLEEP, 'Asleep');
+      // End the session even if the guest never answers the Close frame.
+      if (this.sockets.has(ctx)) this._onSocketClose(ws);
+      ws.detached = true;
+      setTimeout(() => {
+        ws.terminate();
+        if (alt) alt.terminate();
+      }, 1000).unref();
     }
     this.endPhoneGrace();
     return guest?.deviceId || '';
