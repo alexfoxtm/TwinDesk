@@ -339,6 +339,34 @@ async function main() {
     assert.strictEqual((await raw(ready.port, 'POST', `${API}/prepare-upload`, offerOf([{ id: 'x', fileName: 'huge.bin', size: 900000000000000, data: Buffer.alloc(0) }]))).status, 507, 'more than fits');
     assert.strictEqual((await raw(ready.port, 'GET', '/api/localsend/v1/info')).status, 404, 'v1 is not spoken');
     assert.strictEqual((await raw(ready.port, 'GET', `${API}/nothing`)).status, 404);
+
+    // A component over the byte budget whose kept prefix is only dots or spaces lands inside its folder, as "file".
+    // "..." is still dropped. A truncated Windows reserved name is still prefixed.
+    const dots = `${'.'.repeat(205)}${'a'.repeat(20)}`;
+    const spaced = `.${' '.repeat(200)}${'a'.repeat(20)}`;
+    const multi = `${'.'.repeat(205)}${'я'.repeat(20)}`;
+    const con = `CON${' '.repeat(197)}${'b'.repeat(20)}`;
+    const odd = [
+      { id: 'dots', fileName: `holiday/${dots}`, data: Buffer.from('D') },
+      { id: 'spaces', fileName: `gap/${spaced}`, data: Buffer.from('S') },
+      { id: 'multi', fileName: `notes/${multi}`, data: Buffer.from('M') },
+      { id: 'plain', fileName: 'skip/...', data: Buffer.from('P') },
+      { id: 'con', fileName: con, data: Buffer.from('C') },
+    ];
+    const beforeOdd = k.offers.length;
+    const oddPrep = await raw(ready.port, 'POST', `${API}/prepare-upload`, offerOf(odd));
+    assert.strictEqual(oddPrep.status, 200);
+    const oddOffer = await until(() => k.offers[beforeOdd], 'the truncated names were asked about');
+    assert.deepStrictEqual([...oddOffer.names].sort(), ['_CON', 'gap', 'holiday', 'notes', 'skip']);
+    for (const f of odd) assert.strictEqual((await up(ready.port, oddPrep.json.sessionId, f.id, oddPrep.json.files[f.id], f.data)).status, 200, f.id);
+    const oddEnd = await until(() => [...k.seen.values()].find((x) => x.id === `in-${oddPrep.json.sessionId}` && x.state === 'done'), 'truncated names arrived');
+    assert.strictEqual(oddEnd.arrived, odd.length);
+    assert.strictEqual(fs.readFileSync(path.join(kReceived, 'holiday/file'), 'utf8'), 'D');
+    assert.strictEqual(fs.readFileSync(path.join(kReceived, 'gap/file'), 'utf8'), 'S');
+    assert.strictEqual(fs.readFileSync(path.join(kReceived, 'notes/file'), 'utf8'), 'M');
+    assert.strictEqual(fs.readFileSync(path.join(kReceived, 'skip'), 'utf8'), 'P');
+    assert.strictEqual(fs.readFileSync(path.join(kReceived, '_CON'), 'utf8'), 'C');
+    assert.ok(!fs.existsSync(path.join(kReceived, 'holiday', dots)));
   }
 
   // ---- one question per address at a time ----

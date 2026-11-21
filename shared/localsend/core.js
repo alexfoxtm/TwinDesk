@@ -184,6 +184,7 @@ function cleanSegment(raw) {
       prefix += point;
     }
     name = (prefix + tail).replace(/[. ]+$/, '');
+    if (!name) name = 'file'; // the part that fit was only dots and spaces
   }
   return /^(CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])$/i.test(name.split('.')[0].trimEnd()) ? '_' + name : name;
 }

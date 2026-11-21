@@ -200,6 +200,7 @@ object Ls {
                 index = next
             }
             name = (name.substring(0, index) + extension).trimEnd('.', ' ')
+            if (name.isEmpty()) name = "file" // the part that fit was only dots and spaces
         }
         val stem = name.substringBefore('.').trimEnd().uppercase(Locale.ROOT)
         return if (RESERVED.matches(stem)) "_$name" else name

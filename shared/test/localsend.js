@@ -144,6 +144,45 @@ async function main() {
   assert.strictEqual(ls.splitName(`${'d/'.repeat(100)}f`).folder.length, 32);
   const long = ls.cleanSegment(`${'я'.repeat(400)}.jpeg`);
   assert.ok(Buffer.byteLength(long) <= 200 && long.endsWith('.jpeg'));
+  // A component over the byte budget whose kept prefix is only dots or spaces is still a file.
+  // Ordinary cleaning of an empty, ".", ".." or a short run of dots and spaces stays empty.
+  const odd = path.join(tmp, 'odd');
+  fs.mkdirSync(odd);
+  const samples = [
+    ['dots', `${'.'.repeat(205)}${'a'.repeat(20)}`],
+    ['spaces', `.${' '.repeat(200)}${'a'.repeat(20)}`],
+    ['multi', `${'.'.repeat(205)}${'я'.repeat(20)}`],
+  ];
+  for (const [label, bad] of samples) {
+    assert.ok(Buffer.byteLength(bad) > 200, label);
+    assert.strictEqual(ls.cleanSegment(bad), 'file', label);
+    assert.deepStrictEqual(ls.splitName(`holiday/${bad}`), { folder: ['holiday'], name: 'file' }, label);
+    const file = path.join(odd, bad);
+    fs.writeFileSync(file, 'x');
+    const plan = ls.planFiles([file]);
+    assert.strictEqual(plan.list.length, 1, label);
+    assert.strictEqual(plan.list[0].name, 'file', label);
+    assert.deepStrictEqual(plan.names, ['file'], label);
+  }
+  const box = path.join(tmp, 'box');
+  fs.mkdirSync(box);
+  fs.writeFileSync(path.join(box, samples[0][1]), 'd');
+  fs.writeFileSync(path.join(box, 'keep.txt'), 'k');
+  const nested = ls.planFiles([box]);
+  assert.deepStrictEqual(nested.names, ['box']);
+  assert.deepStrictEqual(nested.list.map((f) => f.name).sort(), ['box/file', 'box/keep.txt']);
+  assert.strictEqual(ls.cleanSegment('...'), '');
+  assert.strictEqual(ls.cleanSegment('   '), '');
+  assert.strictEqual(ls.cleanSegment('.'), '');
+  assert.strictEqual(ls.cleanSegment('..'), '');
+  assert.deepStrictEqual(ls.splitName('holiday/...'), { folder: [], name: 'holiday' });
+  assert.deepStrictEqual(ls.splitName('holiday/   /a.txt'), { folder: ['holiday'], name: 'a.txt' });
+  assert.strictEqual(ls.cleanSegment('.txt'), '.txt');
+  const con = `CON${' '.repeat(197)}${'b'.repeat(20)}`;
+  assert.ok(Buffer.byteLength(con) > 200);
+  assert.strictEqual(ls.cleanSegment(con), '_CON');
+  fs.writeFileSync(path.join(odd, '...'), 'z');
+  assert.deepStrictEqual(ls.planFiles([path.join(odd, '...')]), { list: [], names: [], total: 0 });
   for (const [addr, ok] of [['192.168.1.4', true], ['10.0.0.1', true], ['172.16.0.1', true], ['172.32.0.1', false], ['169.254.3.3', true], ['100.64.0.1', true], ['127.0.0.1', true], ['::ffff:192.168.0.2', true], ['8.8.8.8', false], ['fe80::1', false], ['', false]]) {
     assert.strictEqual(ls.isLocalAddress(addr), ok, addr);
   }
