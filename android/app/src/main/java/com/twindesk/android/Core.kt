@@ -514,7 +514,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 if (link.photoRoute(source)) hub.savePhotoAs(m, source)
                 return@post
             }
-            if (!files.photoReplyAllowed(t, m, source)) return@post
+            if (files.onPhotoReply(t, m, source)) return@post
             for (f in features) {
                 val mine = try { f.onMessage(t, m) } catch (e: Exception) { Log.e("TwinDesk", "message $t", e); true }
                 if (mine) return@post

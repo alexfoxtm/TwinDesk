@@ -35,6 +35,7 @@ class Hub(core: Core) : Feature(core) {
     @Volatile var callsOn = false; private set
     @Volatile var messagesOn = false; private set
     @Volatile var mediaOn = false; private set
+    @Volatile var photoSaveGrant: Any? = null; private set
     @Volatile var filesOn = false; private set // the computer browses this phone's storage (All files access)
     @Volatile var btAudio = false; private set // the computer takes calls' sound over Bluetooth
     @Volatile private var btAddress = "" // the computer's Bluetooth address (hub.bt)
@@ -122,12 +123,13 @@ class Hub(core: Core) : Feature(core) {
     fun savePhotoAs(m: JSONObject, source: okhttp3.WebSocket) {
         val batch = m.opt("batch") as? String ?: return
         val id = m.opt("id") as? String ?: return
-        if (!mediaOn || !batch.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
+        val grant = photoSaveGrant ?: return
+        if (!batch.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
             || !id.matches(Regex("i[0-9]{1,18}"))) return
         val md = media()
         run {
-            if (!mediaOn || !core.link.photoRoute(source)) return@run
-            val sent = md.savePhotoAs(id, batch, source)
+            if (grant !== photoSaveGrant || !core.link.photoRoute(source)) return@run
+            val sent = md.savePhotoAs(id, batch, source, grant)
             if (!sent) core.link.sendPhoto(msg(Proto.T.MEDIA_SAVE_AS, "batch" to batch, "ok" to false), source)
         }
     }
@@ -140,6 +142,12 @@ class Hub(core: Core) : Feature(core) {
     // permissions change: start() does nothing when already running.
     private fun apply() {
         val live = core.link.connected && peer
+        if (live && mediaOn && perm("media") in listOf("ok", "partial")) {
+            if (photoSaveGrant == null) photoSaveGrant = Any()
+        } else if (photoSaveGrant != null) {
+            photoSaveGrant = null
+            core.files.photoRouteChanged()
+        }
         if (live && callsOn) (calls ?: Calls(this, core).also { calls = it }).start() else { calls?.stop(); calls = null }
         if (live && messagesOn) (messages ?: Messages(this, core).also { messages = it }).start() else { messages?.stop(); messages = null }
         if (!(live && mediaOn)) { media?.stop(); media = null }

@@ -224,7 +224,7 @@ class Drop extends EventEmitter {
     const r = this.photoRequest;
     const size = m.size;
     if (!r || !this._photoSource(r, ctx, ws)) return; // no reply on a different route
-    if (r.file || m.batch !== r.batch || m.count !== 1 || m.index !== 0 || m.cont
+    if (!m.id || r.file || m.batch !== r.batch || m.count !== 1 || m.index !== 0 || m.cont
       || !Number.isSafeInteger(size) || size <= 0 || size > P.FILE_MAX_BYTES) {
       return this.server.sendNow({ t: P.T.FILE_REFUSE, id: m.id, why: 'not_allowed' });
     }

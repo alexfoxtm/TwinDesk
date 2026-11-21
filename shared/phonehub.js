@@ -25,6 +25,7 @@ const { connectionOf } = require('./asked-send.js');
 const T = P.T;
 const WHAT = ['calls', 'messages', 'media', 'files'];
 const isPhone = (ctx) => !!ctx && P.isPhoneOs(ctx.os); // an iPhone answers Photos and Files; Calls and Messages it says it can't
+const sameConnection = (a, b) => a?.conn === b?.conn && a?.deviceId === b?.deviceId;
 const str = (v, n = 200) => (typeof v === 'string' ? v.slice(0, n) : '');
 const picture = (v, max) => (typeof v === 'string' && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(v) && v.length <= max ? v : '');
 
@@ -80,6 +81,7 @@ class PhoneHub extends EventEmitter {
     }
     this.state = null; // hub.state: the phone's permissions (null: no phone, or one too old to know these)
     this.savePhotoAs = savePhotoAs;
+    this.photoPolicyRoute = null;
     this.photoSavePeer = null;
     this.call = null; // {state: 'ringing'|'offhook', number, name, photo, dir, since}
     this.ended = null; // the call that just ended {..., missed, at}
@@ -89,15 +91,11 @@ class PhoneHub extends EventEmitter {
 
     server.on('client', (ctx) => isPhone(ctx) && this.started());
     server.on('closed', (ctx) => isPhone(ctx) && this.stopped());
-    if (savePhotoAs) server.on('transport', () => {
-      const route = this.photoConnection;
-      const peer = this.photoSavePeer;
-      if (route && peer && route.deviceId === peer.deviceId && route.conn !== peer.conn) {
-        this.photoSavePeer = null;
-        this.policy(); // Bluetooth -> Wi-Fi resumes the session, so ask for hub.state on the new socket.
-        this.emit('change');
-      }
-    });
+    if (savePhotoAs) {
+      const routeChanged = () => this.photoRouteChanged();
+      if (typeof server.route?.onState === 'function') server.route.onState(routeChanged);
+      else server.on('transport', routeChanged);
+    }
     const on = (t, fn) => server.on(`t:${t}`, (m, ctx, ws) => isPhone(ctx) && fn(m, ctx, ws));
     on(T.HUB_STATE, (m, ctx, ws) => {
       const perm = (x) => (x && ['ok', 'partial', 'ask', 'none'].includes(x.perm) ? x.perm : 'ask');
@@ -105,9 +103,9 @@ class PhoneHub extends EventEmitter {
       const bt = m.bt && typeof m.bt === 'object' ? m.bt : {};
       const source = savePhotoAs && connectionOf(ctx, ws);
       const route = source && this.photoConnection;
-      if (route && route.conn === source.conn && route.deviceId === source.deviceId) {
-        if (m.media?.saveAs !== true) this.photoSavePeer = null;
-        else if (this.photoSavePeer?.conn !== route.conn) this.photoSavePeer = { ...route, key: crypto.randomUUID() };
+      if (route && sameConnection(route, source)) {
+        if (m.media?.saveAs !== true || !['ok', 'partial'].includes(perm(m.media))) this.photoSavePeer = null;
+        else if (!sameConnection(route, this.photoSavePeer)) this.photoSavePeer = { ...route, key: crypto.randomUUID() };
       }
       // The phone couldn't drop its old pairing and asks its person to forget this computer: this
       // computer forgets the phone too, or it keeps keys the phone no longer has and TwinDesk's own
@@ -165,6 +163,7 @@ class PhoneHub extends EventEmitter {
   started() {
     this.emit('unasked'); // a new connection does not keep the previous Save
     this.state = null;
+    this.photoPolicyRoute = this.savePhotoAs ? this.photoConnection : null;
     this.photoSavePeer = null;
     this.call = null;
     this.unread = 0;
@@ -181,6 +180,7 @@ class PhoneHub extends EventEmitter {
     if (this.tether) this.tether.stopped();
     const had = this.call;
     this.state = null;
+    this.photoPolicyRoute = null;
     this.photoSavePeer = null;
     this.call = null;
     this.applyAudio();
@@ -191,6 +191,16 @@ class PhoneHub extends EventEmitter {
   policy() {
     const s = this.settings;
     this.server.sendToClient({ t: T.HUB_POLICY, calls: !!s.calls, messages: !!s.messages, media: !!s.media, files: !!s.files, bt: !!(this.makeAudio && s.calls && s.callAudio) }); // bt: be this computer's hands-free (none on a Mac)
+  }
+
+  photoRouteChanged() {
+    const route = this.photoConnection;
+    if (sameConnection(route, this.photoPolicyRoute)) return;
+    this.photoSavePeer = null;
+    this.photoPolicyRoute = route;
+    // A resumed session may move sockets without a new client event or a transport change.
+    if (route) this.policy();
+    this.emit('change');
   }
 
   // ---- from the window ----
@@ -264,10 +274,8 @@ class PhoneHub extends EventEmitter {
 
   get photoSaveRoute() {
     const peer = this.photoSavePeer;
-    if (!peer || this.phone?.transport === 'ble' || !this.settings.media
-      || !this.state || !['ok', 'partial'].includes(this.state.media.perm)) return null;
-    const route = this.photoConnection;
-    return route && route.conn === peer.conn && route.deviceId === peer.deviceId ? peer : null;
+    if (!peer || this.phone?.transport === 'ble' || !this.settings.media) return null;
+    return sameConnection(this.photoConnection, peer) ? peer : null;
   }
 
   // Photos: the picture on this computer's clipboard.
@@ -467,7 +475,7 @@ class PhoneHub extends EventEmitter {
     if (m.t === T.MEDIA_LIST && this.savePhotoAs) {
       const peer = this.photoSaveRoute;
       const source = connectionOf(ctx, ws);
-      m = { ...m, saveKey: peer && source && source.conn === peer.conn && source.deviceId === peer.deviceId ? peer.key : '' };
+      m = { ...m, saveKey: peer && sameConnection(peer, source) ? peer.key : '' };
     }
     if ('data' in m) m = { ...m, data: picture(m.data, 12e6) }; // pictures only (thumbnails, previews, MMS)
     if (m.t === T.SMS_NEW && m.msg && !m.msg.out) {
