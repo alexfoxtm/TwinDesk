@@ -8,6 +8,8 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { BrowserWindow, ipcMain, nativeImage, nativeTheme, screen, shell } = require('electron');
 
+const { sameIdentity } = require('../shared/localsend/wire');
+
 const shelves = new Map();
 let wired = false;
 const LIMIT = 8;
@@ -17,12 +19,12 @@ function fileIdentity(file) {
     if (typeof file !== 'string' || !path.isAbsolute(file) || fs.realpathSync(file) !== file) return null;
     const stat = fs.lstatSync(file);
     if (!stat.isFile() && !stat.isDirectory()) return null;
-    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtime: stat.mtimeMs, folder: stat.isDirectory() };
+    return { dev: stat.dev, ino: stat.ino, birthtimeMs: stat.birthtimeMs, size: stat.size, mtime: stat.mtimeMs, folder: stat.isDirectory() };
   } catch { return null; }
 }
 
 function same(a, b) {
-  return !!a && !!b && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtime === b.mtime && a.folder === b.folder;
+  return sameIdentity(a, b) && a.size === b.size && a.mtime === b.mtime;
 }
 
 function owner(event) {
@@ -87,7 +89,7 @@ class FileShelf {
       const identity = fileIdentity(source.path);
       if (!identity) continue;
       // A LocalSend receipt names the file that finished. A different file at that path is not it.
-      if (source.identity && !same(source.identity, identity)) continue;
+      if (source.identity && !sameIdentity(source.identity, identity)) continue;
       seen.add(source.path);
       found.push({ path: source.path, name: path.basename(source.path), photo: source.photo === true, identity });
     }

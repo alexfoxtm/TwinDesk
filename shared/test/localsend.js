@@ -710,13 +710,13 @@ async function main() {
     closers.push(() => service.shutdown());
     await until(() => service.view().running, 'receipt listener');
     assert.strictEqual(service.view().folder, via, 'the Files page still shows the chosen folder');
-    const sendOne = async (name, body, next = chosenDir) => {
+    const sendOne = async (name, body, next = chosenDir, savedName = name) => {
       const file = { id: name, fileName: name, data: Buffer.from(body) };
       const prep = await raw(service.node.port, 'POST', `${API}/prepare-upload`, offerOf([file]));
       assert.strictEqual(prep.status, 200, name);
       chosenDir = next;
       assert.strictEqual((await up(service.node.port, prep.json.sessionId, name, prep.json.files[name], file.data)).status, 200, name);
-      return until(() => service.view().transfers.find((t) => t.dir === 'in' && t.state === 'done' && t.saved && t.saved.some((p) => p.endsWith(name))), name);
+      return until(() => service.view().transfers.find((t) => t.dir === 'in' && t.state === 'done' && t.saved && t.saved.some((p) => p.endsWith(savedName))), name);
     };
     const first = await sendOne('from-phone.txt', 'phone', nextDir);
     assert.strictEqual(service.view().folder, nextDir);
@@ -744,11 +744,38 @@ async function main() {
     const second = await sendOne('second.txt', 'second');
     const secondPath = fs.realpathSync(path.join(base, 'second.txt'));
     assert.strictEqual(service.receipts.map((item) => item.path).join(','), secondPath);
+    fs.appendFileSync(secondPath, ' edited');
+    revealed.length = 0;
+    assert.deepStrictEqual(service.receipts.map((item) => item.path), [secondPath]);
+    service.actions.lsReveal(second.id);
+    clicks.at(-1)();
+    assert.deepStrictEqual(revealed, [secondPath, secondPath]);
+
+    const over = await sendOne('over.txt', 'original');
+    const overPath = fs.realpathSync(path.join(base, 'over.txt'));
+    fs.unlinkSync(secondPath);
     fs.writeFileSync(secondPath, 'replaced');
+    const replacement = path.join(base, 'replacement.txt');
+    fs.writeFileSync(replacement, 'replacement');
+    fs.renameSync(replacement, overPath);
     revealed.length = 0;
     service.actions.lsReveal(second.id);
-    assert.deepStrictEqual(revealed, [], 'a file replaced after it arrived is not revealed');
-    assert.deepStrictEqual(service.receipts, [], 'a replacement is not published again');
+    service.actions.lsReveal(over.id);
+    clicks.at(-1)();
+    assert.deepStrictEqual(revealed, [], 'replacements are not revealed');
+    assert.deepStrictEqual(service.receipts, [], 'replacements are not published again');
+
+    const album = await sendOne('album/a.txt', 'photo', chosenDir, 'album');
+    const albumPath = fs.realpathSync(path.join(base, 'album'));
+    const added = path.join(albumPath, '.DS_Store');
+    for (const change of [() => fs.writeFileSync(added, 'finder'), () => fs.unlinkSync(path.join(albumPath, 'a.txt'))]) {
+      change();
+      assert.deepStrictEqual(service.receipts.map((item) => item.path), [albumPath]);
+      revealed.length = 0;
+      service.actions.lsReveal(album.id);
+      clicks.at(-1)();
+      assert.deepStrictEqual(revealed, [albumPath, albumPath]);
+    }
     assert.ok(service.view().transfers.some((t) => t.id === second.id && t.saved[0] === path.join(via, 'second.txt')));
   }
   b.stop();
