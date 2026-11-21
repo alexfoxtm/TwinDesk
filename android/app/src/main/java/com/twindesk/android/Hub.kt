@@ -119,6 +119,19 @@ class Hub(core: Core) : Feature(core) {
         return true
     }
 
+    fun savePhotoAs(m: JSONObject, source: okhttp3.WebSocket) {
+        val batch = m.opt("batch") as? String ?: return
+        val id = m.opt("id") as? String ?: return
+        if (!mediaOn || !batch.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
+            || !id.matches(Regex("i[0-9]{1,18}"))) return
+        val md = media()
+        run {
+            if (!mediaOn || !core.link.photoRoute(source)) return@run
+            val sent = md.savePhotoAs(id, batch, source)
+            if (!sent) core.link.sendPhoto(msg(Proto.T.MEDIA_SAVE_AS, "batch" to batch, "ok" to false), source)
+        }
+    }
+
     private fun media(): Media = media ?: Media(this, core).also { media = it }
 
     private fun fs(): FsBrowse = fs ?: FsBrowse(core).also { fs = it }
@@ -160,7 +173,7 @@ class Hub(core: Core) : Feature(core) {
                 .put("sims", calls?.sims() ?: JSONArray()).put("companion", CallCompanion.allowed(core.ctx)),
             "messages" to JSONObject().put("perm", perm("messages")).put("missing", jsonArray(missing("messages"))).put("sims", messages?.sims() ?: JSONArray())
                 .put("mms", true), // pictures and group texts (sms.send image, addrs)
-            "media" to JSONObject().put("perm", perm("media")).put("remove", true), // media.delete
+            "media" to JSONObject().put("perm", perm("media")).put("remove", true).put("saveAs", true),
             "files" to JSONObject().put("perm", perm("files")),
             "bt" to if (callsOn) bt() else JSONObject(),
             "opens" to Settings.canDrawOverlays(core.ctx), // Allow on the computer opens the prompt here (else a notification)

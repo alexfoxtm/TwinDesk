@@ -49,7 +49,7 @@ class Link(
     interface Events {
         fun onChange()
         fun onWelcome(host: Host)
-        fun onMessage(m: JSONObject)
+        fun onMessage(m: JSONObject, source: WebSocket)
         fun onClosed(host: Host, code: String?)
     }
 
@@ -67,7 +67,7 @@ class Link(
     val connected get() = state == "connected"
 
     private val exec = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "td-link").apply { isDaemon = true } }
-    private var ws: WebSocket? = null
+    @Volatile private var ws: WebSocket? = null
     private var mode = "" // session | pair
     private var nw = ""
     private var pairNonce = "" // pairing through the cable: the nonce the computer sent us over adb
@@ -249,6 +249,12 @@ class Link(
         if (quietSince != 0L && probeAt == 0L) probeAt = System.currentTimeMillis()
         return w.send(m.toString())
     }
+
+    internal fun photoRoute(source: WebSocket): Boolean =
+        !parting && connected && !ble && ws === source && host?.os == "mac"
+
+    internal fun sendPhoto(m: JSONObject, source: WebSocket): Boolean =
+        photoRoute(source) && source.send(m.toString())
 
     // send() for the pointer's hot path (WebHost's TD.move): the line written into one builder, made
     // once. Never held for Wi-Fi (Netlink.holdOut holds only files). kind: 0 remote.mm, 1 remote.wh,
@@ -432,7 +438,7 @@ class Link(
                 val m = runCatching { JSONObject(text) }.getOrNull()
                 if (m?.optString("t") == Proto.T.WELCOME && m.optBoolean("resumed")) promote(webSocket)
                 else { pending = null; webSocket.cancel() }
-            } else if (webSocket === ws || webSocket === alt) onText(text)
+            } else if (webSocket === ws || webSocket === alt) onText(text, webSocket)
         }
         // The computer closed it (Disconnect, Forget…): answer at once. OkHttp waits for us to,
         // and until then neither side saw the session end.
@@ -484,7 +490,7 @@ class Link(
         helloTimer = exec.schedule({ if (state != "connected") { message = tr("No answer"); ws?.cancel() } }, if (ble) Proto.BLE_TIMEOUT_MS else Proto.TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
 
-    private fun onText(text: String) {
+    private fun onText(text: String, source: WebSocket) {
         val m = runCatching { JSONObject(text) }.getOrNull() ?: return
         val t = m.optString("t")
         lastRx = System.currentTimeMillis()
@@ -498,7 +504,7 @@ class Link(
             Proto.T.PONG -> { if (m.has("ts")) rttMs = maxOf(0, System.currentTimeMillis() - m.optLong("ts")); return }
             QUIET_IDLE -> { if (state == "connected") { val was = peerIdle; peerIdle = m.optBoolean("on"); if (was != peerIdle) nudge() }; return }
         }
-        if (state == "connected") events.onMessage(m)
+        if (state == "connected") events.onMessage(m, source)
     }
 
     private fun onNonce(m: JSONObject) {

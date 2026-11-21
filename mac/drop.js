@@ -22,7 +22,8 @@ const { shell, screen } = require('electron');
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 const { receiverHook } = require('../shared/fastfile.js');
-const { AskedSends } = require('../shared/asked-send.js');
+const { AskedSends, connectionOf, DEFAULT_MS } = require('../shared/asked-send.js');
+const photoSave = require('./photo-save-as.js');
 const { DragIn } = require('./dragin');
 
 const DESKTOP = path.join(os.homedir(), 'Desktop');
@@ -100,7 +101,7 @@ class Drop extends EventEmitter {
     // Fast files v2 (shared/fx2.js): the files engine writes the file into its tmp; we finish it.
     if (server.fx && server.fx.receiver) {
       server.fx.receiver(receiverHook({
-        find: (id) => { const t = this.active.get(id); return t && !t.ending ? t : null; },
+        find: (id) => { const t = this.active.get(id); return t && !t.ending && !t.photo ? t : null; },
         progress: (t) => {
           if (t.got - (t.shown || 0) < 4 * 1024 * 1024) return;
           t.shown = t.got;
@@ -111,6 +112,7 @@ class Drop extends EventEmitter {
       }));
     }
     this.expected = new Map(); // batch (fclip id) -> dir chosen when this Mac pasted
+    this.photoRequest = null;
     // Photos › Save / Files › Save (#239): one Send from the session that was asked, with Accept files off.
     this.asked = new AskedSends();
     this.dragIn = new DragIn({ server, helper, getSettings, remember: (r) => this._remember(r) });
@@ -121,10 +123,23 @@ class Drop extends EventEmitter {
 
     const on = (t, fn) => server.on(`t:${t}`, fn);
     on(P.T.FILE_OFFER, (m, ctx, ws) => this._offer(m, ctx, ws));
-    on(P.T.FILE_CHUNK, (m) => this._chunk(m));
-    on(P.T.FILE_END, (m) => this._end(m));
-    on(P.T.FILE_CANCEL, (m) => (m.pause ? this._paused(m.id) : this._abort(m.id, 'cancelled', false)));
+    on(P.T.MEDIA_SAVE_AS, (m, ctx, ws) => {
+      const r = this.photoRequest;
+      if (r && !r.file && m.ok === false && m.batch === r.batch && this._photoSource(r, ctx, ws)) this._finishPhoto(r, 'The photo is unavailable');
+    });
+    const receive = (m, ctx, ws) => {
+      const t = this.active.get(m.id);
+      return !t?.photo || this._photoSource(t.photo, ctx, ws);
+    };
+    on(P.T.FILE_CHUNK, (m, ctx, ws) => { if (receive(m, ctx, ws)) this._chunk(m); });
+    on(P.T.FILE_END, (m, ctx, ws) => { if (receive(m, ctx, ws)) this._end(m); });
+    on(P.T.FILE_CANCEL, (m, ctx, ws) => {
+      if (!receive(m, ctx, ws)) return;
+      if (m.pause) this._paused(m.id);
+      else this._abort(m.id, 'cancelled', false);
+    });
     server.on('closed', (ctx) => {
+      this.checkPhotoSave();
       this.asked.release(ctx); // Stop / Forget / the session replaced: this Save is over
       if (!server.current) {
         for (const [batch, b] of this.batches) this._keep(batch, b);
@@ -132,6 +147,8 @@ class Drop extends EventEmitter {
         this.batches.clear();
       }
     });
+    server.on('transport', () => this.checkPhotoSave());
+    if (server.route) server.route.onState(() => this.checkPhotoSave());
   }
 
   get cfg() {
@@ -169,9 +186,82 @@ class Drop extends EventEmitter {
     this.asked.clear();
   }
 
+  async savePhotoAs({ id, route, live, choose }) {
+    if (this.photoRequest || !live()) return false;
+    const request = { route, live };
+    this.photoRequest = request;
+    try {
+      const target = await choose();
+      if (!target || this.photoRequest !== request || !live()) return false;
+      Object.assign(request, { target, batch: crypto.randomUUID(), until: Date.now() + DEFAULT_MS });
+      request.timer = setTimeout(() => this._finishPhoto(request, 'timed out'), DEFAULT_MS);
+      request.timer.unref();
+      if (this.server.sendNow({ t: P.T.MEDIA_SAVE_AS, id, batch: request.batch }) === false) {
+        this._finishPhoto(request, 'disconnected');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      if (this.photoRequest === request) this._finishPhoto(request, e.message);
+      return false;
+    } finally {
+      if (this.photoRequest === request && !request.batch) this.photoRequest = null;
+    }
+  }
+
+  checkPhotoSave() {
+    const r = this.photoRequest;
+    if (r && !r.live()) this._finishPhoto(r, 'disconnected');
+  }
+
+  _photoSource(r, ctx, ws) {
+    if (this.photoRequest !== r || !r.batch || !r.live() || Date.now() >= r.until) return false;
+    const source = connectionOf(ctx, ws);
+    return source && source.conn === r.route.conn && source.deviceId === r.route.deviceId;
+  }
+
+  _offerPhoto(m, ctx, ws) {
+    const r = this.photoRequest;
+    const size = m.size;
+    if (!r || !this._photoSource(r, ctx, ws)) return; // no reply on a different route
+    if (r.file || m.batch !== r.batch || m.count !== 1 || m.index !== 0 || m.cont
+      || !Number.isSafeInteger(size) || size <= 0 || size > P.FILE_MAX_BYTES) {
+      return this.server.sendNow({ t: P.T.FILE_REFUSE, id: m.id, why: 'not_allowed' });
+    }
+    const name = path.basename(r.target.final);
+    try {
+      const staged = photoSave.stage(r.target);
+      this.active.set(m.id, { id: m.id, name, size, ...staged, photo: r, got: 0, seq: 0, hash: crypto.createHash('sha256'), at: Date.now(), ...writes() });
+    } catch (e) {
+      r.file = m.id;
+      return this._finishPhoto(r, e.message);
+    }
+    r.file = m.id;
+    this.server.sendNow({ t: P.T.FILE_ACCEPT, id: m.id });
+    this._changed();
+  }
+
+  _finishPhoto(r, error) {
+    if (this.photoRequest !== r) return;
+    if (error && this.active.has(r.file)) return this._abort(r.file, error, false);
+    const live = r.live();
+    this.photoRequest = null;
+    clearTimeout(r.timer);
+    if (live && r.batch) {
+      if (r.file) this.server.sendNow({ t: P.T.FILE_DONE, id: r.file, ok: !error, ...(error ? { error: 'Save As failed' } : {}) });
+      this.server.sendNow({ t: P.T.FILES_DONE, batch: r.batch, ok: !error, files: error ? 0 : 1 });
+    }
+    if (r.target) {
+      const final = r.target.final;
+      this._remember({ name: path.basename(final), size: 0, path: error ? null : final, ok: !error, ...(error ? { error } : {}) });
+      if (!error && this.cfg.reveal) shell.showItemInFolder(final);
+    }
+  }
+
   async _offer(m, ctx, ws) {
     const refuse = (why) => this.server.sendToClient({ t: P.T.FILE_REFUSE, id: m.id, why });
     if (typeof m.id !== 'string' || this.active.has(m.id)) return;
+    if (m.drop === 'photo-save-as') return this._offerPhoto(m, ctx, ws);
     if (m.drop === 'send' || m.drop === 'paste' || m.drop === 'rezume') return this._offerBatch(m, refuse, ctx, ws); // rezume: a document taken here (shared/rezume.js)
     if (!this.cfg.acceptDrops) return refuse('not_allowed');
     const size = Number(m.size);
@@ -297,7 +387,7 @@ class Drop extends EventEmitter {
 
   _chunk(m) {
     const t = this.active.get(m.id);
-    if (!t) return;
+    if (!t || (t.photo && t.ending)) return;
     if (m.seq !== t.seq || (typeof m.data !== 'string' && !Buffer.isBuffer(m.data))) return this._abort(m.id, 'chunks out of order', true);
     const buf = (typeof m.data === 'string' ? Buffer.from(m.data, 'base64') : m.data); // a Buffer from fast files (shared/fastfile.js)
     if (t.got + buf.length > t.size) return this._abort(m.id, 'more data than offered', true);
@@ -355,6 +445,20 @@ class Drop extends EventEmitter {
       return this._abort(t.id, t.got !== t.size ? 'size mismatch' : 'checksum mismatch', true);
     }
     this.active.delete(t.id);
+    if (t.photo) {
+      let error = '';
+      try {
+        if (this.photoRequest !== t.photo || !t.photo.live() || Date.now() >= t.photo.until) throw new Error('The photo request expired');
+        const target = t.photo.target;
+        // An ordinary incoming batch may already have reserved this name or its containing tree.
+        for (const b of this.batches.values()) {
+          if (b.placed.some((p) => photoSave.contains(p, target.final))) throw new Error('Another transfer is using the destination');
+        }
+        photoSave.publish(target, t.tmp);
+      } catch (e) { error = e.message; }
+      photoSave.discard(t.tmp);
+      return this._finishPhoto(t.photo, error);
+    }
     if (t.batch) {
       const b = this.batches.get(t.batch);
       if (b) b.doneBytes += t.size;
@@ -468,8 +572,10 @@ class Drop extends EventEmitter {
     t.q.then(() => {
       if (t.fd !== null) try { fs.closeSync(t.fd); } catch { /* already closed */ }
       t.fd = null;
-      fs.rmSync(t.tmp, { force: true });
+      if (t.photo) photoSave.discard(t.tmp);
+      else fs.rmSync(t.tmp, { force: true });
     });
+    if (t.photo) return this._finishPhoto(t.photo, error);
     if (tell) this.server.sendToClient({ t: P.T.FILE_DONE, id, ok: false, error });
     if (t.batch) return this._batchStep(t.batch, false);
     if (t.drag) {

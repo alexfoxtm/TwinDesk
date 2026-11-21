@@ -1203,6 +1203,7 @@ function loadHub() {
     audio: (opts) => require('../callaudio.js').create({ helper: svc.helper, ...opts }), // the calls' sound over Bluetooth
     send: (paths, batch) => !!(svc.fileSend && svc.fileSend.sendBatch(paths, 'send', batch)), // Files: into a folder on the phone
     shareSheet: (paths) => new (require('electron').ShareMenu)({ filePaths: paths }).popup(win && !win.isDestroyed() ? { browserWindow: win } : {}), // Photos › Share
+    savePhotoAs: require('../photo-save-as.js').action(svc.drop, () => win, t),
     choose: () => dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, { properties: ['openFile', 'openDirectory', 'multiSelections'] })
       .then((r) => (r.canceled ? [] : r.filePaths)),
     tether: { adb: svc && svc.phone.bridge.adb, cableSerial: (id) => svc && svc.wired && svc.wired.cableSerial(id) }, // Internet over USB (shared/tether.js)
@@ -1216,6 +1217,7 @@ function loadHub() {
   });
   phoneHub = hub;
   require('../../shared/asked-send.js').wireAsked(hub, svc.drop); // Photos/Files › Save comes back as one Send (#239)
+  hub.on('change', () => svc.drop.checkPhotoSave());
   hub.on('change', pushState);
   hub.on('data', (m) => win && !win.isDestroyed() && win.webContents.send('hub', m));
   const popup = () => {

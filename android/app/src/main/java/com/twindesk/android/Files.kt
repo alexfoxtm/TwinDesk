@@ -68,12 +68,12 @@ class Files(core: Core) : Feature(core) {
         @Volatile var paused = false // the computer paused it: the rest comes on Resume there
     }
 
-    class Outgoing(val id: String, val uri: Uri, val name: String, val size: Long, val batch: String) {
+    class Outgoing(val id: String, val uri: Uri, val name: String, val size: Long, val batch: String, val photoSocket: okhttp3.WebSocket? = null) {
         var state = "offered" // offered | accepted | sending
         var sent = 0L
     }
 
-    class OutBatch(val id: String, val kind: String, val name: String, val files: Int, val bytes: Long) {
+    class OutBatch(val id: String, val kind: String, val name: String, val files: Int, val bytes: Long, val photoSocket: okhttp3.WebSocket? = null) {
         var sent = 0L
         val key = (id.hashCode() and 0x7fff) or 0x8000 // its notification (apart from the incoming ones')
         var shown = false // big enough for one (the progress bar while it goes)
@@ -219,7 +219,7 @@ class Files(core: Core) : Feature(core) {
         outBatches.remove(batchId)?.let { b ->
             for (f in outgoing.filter { it.batch == batchId }) {
                 outgoing.remove(f) // its upload thread sees it gone and stops
-                core.send(msg(Proto.T.FILE_CANCEL, "id" to f.id))
+                sendOutgoing(f, msg(Proto.T.FILE_CANCEL, "id" to f.id))
             }
             Notify.cancelFiles(core.ctx, b.key)
             recent.add(0, tr("Cancelled sending {file}", "file" to b.name))
@@ -308,7 +308,10 @@ class Files(core: Core) : Feature(core) {
             dropped.clear()
         }
         // Send files cut off: what hadn't arrived goes again when the computer is back.
-        for (b in outBatches.values) if (b.kind == "send") { keepRest(b.id, false); Notify.cancelFiles(core.ctx, b.key) }
+        for (b in outBatches.values) {
+            if (b.kind == "send") keepRest(b.id, false)
+            if (b.kind == "send" || b.photoSocket != null) Notify.cancelFiles(core.ctx, b.key)
+        }
         for (b in outBatches.keys.toList()) forgetOut(b)
         for (o in outgoing) cancelOut(o.id)
         outBatches.clear()
@@ -695,8 +698,9 @@ class Files(core: Core) : Feature(core) {
 
     // Offer every file now (kind 'send' = Send to computer, 'paste' = the computer pasted what we copied).
     // Not connected, for Send files: kept for the computer last connected (Waiting, above), when that's on.
-    fun send(items: List<Item>, kind: String, batch: String = UUID.randomUUID().toString(), cont: String = ""): Boolean {
+    fun send(items: List<Item>, kind: String, batch: String = UUID.randomUUID().toString(), cont: String = "", photoSocket: okhttp3.WebSocket? = null): Boolean {
         if (items.isEmpty()) return false
+        if (photoSocket != null && (!core.link.photoRoute(photoSocket) || items.size != 1)) return false
         if (!core.link.connected) {
             val h = lastHost()
             if (kind != "send" || h == null || keepHours <= 0) return false
@@ -709,7 +713,9 @@ class Files(core: Core) : Feature(core) {
         val unique = items.map { if (it.rel.contains('/')) return@map it; var n = it.name; var i = 2; while (!seen.add(n)) { n = it.name.substringBeforeLast('.') + " ${i++}" + it.name.substringAfterLast('.', "").let { e -> if (e.isEmpty()) "" else ".$e" } }; it.copy(name = n) }
         val bytes = unique.sumOf { it.size }
         val tops = unique.map { it.rel.ifEmpty { it.name }.substringBefore('/') }.toSet()
-        outBatches[batch] = OutBatch(batch, kind, if (tops.size == 1) tops.first() else trCount(tops.size, "item"), unique.size, bytes)
+        val out = OutBatch(batch, kind, if (tops.size == 1) tops.first() else trCount(tops.size, "item"), unique.size, bytes, photoSocket)
+        if (photoSocket == null) outBatches[batch] = out
+        else if (outBatches.putIfAbsent(batch, out) != null) return false
         if (kind == "send") {
             outItems[batch] = unique
             if (cont.isNotEmpty()) outCont[batch] = cont
@@ -718,19 +724,52 @@ class Files(core: Core) : Feature(core) {
         unique.forEachIndexed { index, it ->
             val id = UUID.randomUUID().toString()
             val rel = it.rel.ifEmpty { it.name }
-            outgoing.add(Outgoing(id, it.uri, it.name, it.size, batch))
+            val file = Outgoing(id, it.uri, it.name, it.size, batch, photoSocket)
+            outgoing.add(file)
             if (kind == "send") offered[id] = batch to rel
-            core.send(msg(Proto.T.FILE_OFFER, "id" to id, "name" to it.name, "size" to it.size, "drop" to kind, "batch" to batch, "rel" to rel, "index" to index, "count" to unique.size, "bytes" to bytes, *more))
+            val sent = sendOutgoing(file, msg(Proto.T.FILE_OFFER, "id" to id, "name" to it.name, "size" to it.size, "drop" to kind, "batch" to batch, "rel" to rel, "index" to index, "count" to unique.size, "bytes" to bytes, *more))
+            if (!sent && photoSocket != null) {
+                outgoing.remove(file)
+                outBatches.remove(batch, out)
+                return false
+            }
         }
         core.changed()
         return true
+    }
+
+    private fun sendOutgoing(file: Outgoing, m: JSONObject): Boolean {
+        val socket = file.photoSocket ?: return core.send(m)
+        if (m.optString("t") != Proto.T.FILE_CANCEL && !core.hub.mediaOn) return false
+        return core.link.sendPhoto(m, socket)
+    }
+
+    fun photoReplyAllowed(t: String, m: JSONObject, source: okhttp3.WebSocket): Boolean {
+        val socket = when (t) {
+            Proto.T.FILES_DONE -> outBatches[m.optString("batch")]?.photoSocket
+            Proto.T.FILE_ACCEPT, Proto.T.FILE_REFUSE, Proto.T.FILE_CANCEL ->
+                outgoing.firstOrNull { it.id == m.optString("id") }?.photoSocket
+            else -> null
+        }
+        return socket == null || (socket === source && core.link.photoRoute(source))
+    }
+
+    fun photoRouteChanged() {
+        for (b in outBatches.values) {
+            val socket = b.photoSocket ?: continue
+            if (!core.link.photoRoute(socket) && outBatches.remove(b.id, b)) {
+                outgoing.removeIf { it.batch == b.id }
+                Notify.cancelFiles(core.ctx, b.key)
+            }
+        }
     }
 
     private fun pumpNext() {
         while (true) {
             val f = outgoing.firstOrNull { it.state == "accepted" } ?: return
             f.state = "sending"
-            val fx = if (fxBroken) null else core.link.fx()
+            // Save As uses only chunks on the socket that requested it.
+            val fx = if (fxBroken || f.photoSocket != null) null else core.link.fx()
             val port2 = fx?.let { if (it.plain != null && it.plain.fx2Port > 0) it.plain.fx2Port else it.fx2Port } ?: 0
             if (fx != null && port2 > 0 && !fx2Broken) {
                 val hashes = try {
@@ -778,19 +817,27 @@ class Files(core: Core) : Feature(core) {
                 core.ctx.contentResolver.openInputStream(f.uri)!!.use { s ->
                     val buf = ByteArray(Proto.FILE_CHUNK_BYTES)
                     while (true) {
-                        if (!outgoing.contains(f) || !core.link.connected) return
-                        while (core.link.queued() > 1024 * 1024) Thread.sleep(5)
+                        if (!outgoing.contains(f) || !core.link.connected) {
+                            if (f.photoSocket == null) return
+                            throw IOException("cancelled")
+                        }
+                        while ((f.photoSocket?.queueSize() ?: core.link.queued()) > 1024 * 1024) {
+                            if (f.photoSocket != null && (!outgoing.contains(f) || !core.link.photoRoute(f.photoSocket))) throw IOException("cancelled")
+                            Thread.sleep(5)
+                        }
                         val n = s.readNBytesCompat(buf)
                         if (n <= 0) break
                         md.update(buf, 0, n)
-                        core.send(msg(Proto.T.FILE_CHUNK, "id" to f.id, "seq" to seq++, "data" to Base64.getEncoder().encodeToString(buf.copyOf(n))))
+                        val sent = sendOutgoing(f, msg(Proto.T.FILE_CHUNK, "id" to f.id, "seq" to seq++, "data" to Base64.getEncoder().encodeToString(buf.copyOf(n))))
+                        if (!sent && f.photoSocket != null) throw IOException("disconnected")
                         sentBytes(f, n)
                     }
                 }
-                core.send(msg(Proto.T.FILE_END, "id" to f.id, "sha256" to md.digest().hex()))
+                val sent = sendOutgoing(f, msg(Proto.T.FILE_END, "id" to f.id, "sha256" to md.digest().hex()))
+                if (!sent && f.photoSocket != null) throw IOException("disconnected")
             } catch (e: Exception) {
                 Log.w("TwinDesk", "send ${f.name}: ${e.message}")
-                core.send(msg(Proto.T.FILE_CANCEL, "id" to f.id))
+                sendOutgoing(f, msg(Proto.T.FILE_CANCEL, "id" to f.id))
             }
             outgoing.remove(f)
         }

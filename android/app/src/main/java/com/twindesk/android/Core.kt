@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
+import okhttp3.WebSocket
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -480,6 +481,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // ---- Link.Events ----
 
     override fun onChange() {
+        files.photoRouteChanged()
         runCatching { share.linkChanged() } // the session moved (Bluetooth <-> Wi-Fi): shared folders follow
         runCatching { remote.linkChanged() } // … and the Remote page's pace
         changed()
@@ -505,9 +507,14 @@ class Core private constructor(val ctx: Context) : Link.Events {
         changed()
     }
 
-    override fun onMessage(m: JSONObject) {
+    override fun onMessage(m: JSONObject, source: WebSocket) {
         val t = m.optString("t")
         main.post {
+            if (t == Proto.T.MEDIA_SAVE_AS) {
+                if (link.photoRoute(source)) hub.savePhotoAs(m, source)
+                return@post
+            }
+            if (!files.photoReplyAllowed(t, m, source)) return@post
             for (f in features) {
                 val mine = try { f.onMessage(t, m) } catch (e: Exception) { Log.e("TwinDesk", "message $t", e); true }
                 if (mine) return@post
