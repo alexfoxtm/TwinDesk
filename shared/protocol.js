@@ -257,12 +257,12 @@
       PAPP_SIZE: 'papp.size', // M->W {wid, w, h} physical px
       PAPP_RETURN: 'papp.return', // M->W {wid}: a window moved here (papp.windows moved: true) goes back, dragged past the edge home
       // A phone (os 'android') as the peer
-      PHONE_INFO: 'phone.info', // phone->Mac {model, maker, sdk, release, battery?, charging?, colors: ['#rrggbb'], wallpaper?: data URL (small JPEG), app? (versionName), caps?: ['mirror.native', 'input.pinch', 'input.pinch.stroke', …] (what it can do without wireless debugging; an older app sends none). input.pinch alone is fork c49da681's normalized pinch. input.pinch.stroke, added beside it, is the pixel pinch. Upstream sends neither and still speaks the pixel pinch.}
+      PHONE_INFO: 'phone.info', // phone->Mac {model, maker, sdk, release, battery?, charging?, colors: ['#rrggbb'], wallpaper?: data URL (small JPEG), app? (versionName), caps?: ['mirror.native', …] (what it can do without wireless debugging; an older app sends none)}
       PHONE_APPS_LIST: 'phone.apps.list', // Mac->phone
       PHONE_APPS: 'phone.apps', // phone->Mac {apps: [{id (package), name, icon (data URL PNG)}]}
       PHONE_POINTER: 'phone.pointer', // Mac->phone {on, x?, y?}: where the Mac's pointer is while it drives the phone (the app draws it)
       // Driving the phone without wireless debugging (shared/phoneinput.js): the phone applies the input itself
-      PHONE_IN: 'phone.in', // computer->phone {a: 'd'|'m'|'u'|'s'|'k'|'z', …}: touch, scroll, key, pinch. 'z' is either {x, y, from, to, vert} pixels (upstream, and input.pinch.stroke) or {x, y, v} normalized (input.pinch alone). A 'z' that carries both is dropped (shared/pinchwire.js)
+      PHONE_IN: 'phone.in', // computer->phone {a: 'd'|'m'|'u'|'s'|'k', …}: touch, scroll, key
       PHONE_INPUT: 'phone.input', // phone->computer {on}: it can apply phone.in (its Accessibility service is on)
       PHONE_INPUT_ASK: 'phone.input.ask', // computer->phone: the person wants to drive it: ask to switch that on
       PHONE_INPUT_VIA: 'phone.input.via', // computer->phone {via: 'adb'|'phone'}: the input choice changed here (phone.input carries the phone's)

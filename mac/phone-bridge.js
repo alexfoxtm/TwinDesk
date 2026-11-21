@@ -82,11 +82,10 @@ class PhoneBridge extends EventEmitter {
     this.control = null; // control-only session
     // Without wireless debugging: the phone applies the input itself (shared/phoneinput.js), when
     // it says it can (phone.input {on}).
-    // phone.info picks the pinch dialect (shared/pinchwire.js). Read at send time: it arrives after this.
     // A retired phone's touch, scroll or pinch must not go out on the phone that replaced it.
     this.input = new PhoneInput((m) => {
       if (this._currentPhone(this.server.current)) this.server.sendToClient(m);
-    }, () => this.phone && this.phone.info);
+    });
     this.phoneInput = false;
     this.kvm = null; // the pointer while the Mac drives the phone: {route, x, y, push}
     this.keys = new KeyState();
