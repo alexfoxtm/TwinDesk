@@ -1,6 +1,6 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // Files with LocalSend-compatible apps, as a part of the app: the setting (off until turned on),
-// the state the Files page shows and its actions. The protocol is shared/localsend/core.js (MPL-2.0);
+// the state the Files page shows and its actions. The protocol is shared/localsend/core.js;
 // this file holds nothing of Electron either, so the Mac, Windows and Linux apps wire it the same way
 // and give it their own dialogs:
 //

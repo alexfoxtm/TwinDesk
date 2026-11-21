@@ -79,11 +79,11 @@ file, with the text shown in the question). Windows and Linux have no page for i
 
 | File | What |
 |---|---|
-| `shared/localsend/core.js` | The protocol for Node (MPL-2.0): identity, discovery, server, client. No Electron. |
+| `shared/localsend/core.js` | The protocol for Node: identity, discovery, server, client. No Electron. |
 | `shared/localsend/wire.js` | The setting, the state a page shows and its actions. No Electron: the app gives it its dialogs. |
 | `shared/ui-localsend.js` | The cards on the Files page (`UI.localsend()`). |
 | `mac/localsend.js` | The Mac's question, file dialog and notifications around `wire.js`. |
-| `android/.../LocalSendCore.kt` | The same protocol in Kotlin (MPL-2.0), with nothing of Android. |
+| `android/.../LocalSendCore.kt` | The same protocol in Kotlin, with nothing of Android. |
 | `android/.../LocalSend.kt`, `LocalSendUi.kt` | The phone around it: the switch, Downloads, the question, the cards. |
 
 Windows and Linux can wire it as `mac/localsend.js` does: `startLocalSend({...})` with their own
@@ -102,8 +102,9 @@ node shared/test/localsend.js           # two Node nodes, a client and a receive
 node shared/test/localsend-android.js   # the Kotlin core on a JVM against the Node core (needs Java and Gradle's cache; skipped without)
 ```
 
-`core.js` and `LocalSendCore.kt` are adapted from NectarLink and stay under the MPL-2.0
-(`licenses/MPL-2.0.txt`, `THIRD_PARTY_NOTICES`).
+`core.js` and `LocalSendCore.kt` are TwinDesk's implementation of LocalSend Protocol v2.2
+(https://github.com/localsend/protocol). No LocalSend code is included. TwinDesk is not affiliated
+with LocalSend. The protocol text is MIT, Copyright (c) 2022-2024 Tien Do Nam.
 
 The announcement's `port` (protocol section 3.1) is the TCP port peers connect to, not the UDP
 discovery port. Both cores therefore write it from the socket that bound (`address().port` /

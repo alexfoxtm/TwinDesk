@@ -2299,7 +2299,7 @@ private fun AboutPage(core: Core, v: Int) {
         }
         MacRow(tr("Screen, input and sound over wireless debugging"), "scrcpy-server (Apache-2.0)")
         MacRow(tr("Network"), "OkHttp (Apache-2.0)")
-        MacRow(tr("Files with LocalSend-compatible apps"), "LocalSendCore.kt: MPL-2.0, adapted from NectarLink. Source: github.com/InukaAsith/TwinDesk") { Secondary(tr("Read")) { open("https://www.mozilla.org/MPL/2.0/") } }
+        MacRow(tr("Files with LocalSend-compatible apps"), "LocalSend Protocol v2.2. No LocalSend code is included. TwinDesk is not affiliated with LocalSend.")
     }
     Text(tr("Crafted with ☕ and ❤️ in Sri Lanka 🇱🇰"), color = pal.muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp))

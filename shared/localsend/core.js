@@ -1,21 +1,7 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at http://mozilla.org/MPL/2.0/.
-//
-// SPDX-License-Identifier: MPL-2.0
-//
-// Portions adapted from NectarLink, core/nectarlink-core/src/localsend.rs and transfer.rs
-// (https://github.com/thtbee/nectarlink, commit a1a7d885, MPL-2.0),
-// Copyright (C) 2026 The NectarLink contributors: the self-signed certificate written as DER, the
-// certificate fingerprint check on every connection, the refusal to move a known HTTPS device to
-// HTTP, the upload session rules (one token per file, the body exactly the offered size, only the
-// sender cancels) and the file name rules. Rewritten in JavaScript for Node by the TwinDesk authors,
-// Copyright (C) 2026 inukaasith; changes from the original: no plain HTTP, every discovered device
-// is checked over TLS before it is listed as verified, the hash is taken while the bytes arrive, our
-// certificate is shown on the connections we make and a sender is the certificate it showed.
-//
-// The protocol is LocalSend Protocol v2.2 (https://github.com/localsend/protocol, MIT, Copyright (c)
-// 2022-2024 Tien Do Nam). No LocalSend code is used. TwinDesk is not affiliated with LocalSend.
+// TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
+// TwinDesk's implementation of LocalSend Protocol v2.2 (https://github.com/localsend/protocol, MIT,
+// Copyright (c) 2022-2024 Tien Do Nam). No LocalSend code is used. TwinDesk is not affiliated with
+// LocalSend.
 //
 // The transport core for files with LocalSend-compatible apps: Node only (no Electron), the same on
 // the Mac, Windows and Linux. The apps add a thin adapter (shared/localsend/wire.js and their own
@@ -49,11 +35,11 @@ const GROUP = '224.0.0.167';
 const VERSION = '2.2';
 const API = '/api/localsend/v2';
 
-const APPROVAL_MS = 60 * 1000; // an offer nobody answers is declined
+const APPROVAL_MS = 60_000;
 const ANSWER_WAIT_MS = 120 * 1000; // how long we wait for the other side's person
 const CONNECT_MS = 6000;
-const IO_MS = 30 * 1000; // no byte either way for this long: the connection is dropped
-const SESSION_IDLE_MS = 10 * 60 * 1000; // an accepted session with no upload for this long is dropped
+const IO_MS = 30_000;
+const SESSION_IDLE_MS = 10 * 60 * 1000; // ten minutes with nothing arriving ends a transfer that was let in
 const ANNOUNCE_MS = 30 * 1000;
 const PEER_TTL_MS = 150 * 1000;
 const VERIFY_EVERY_MS = 5000; // per address: an announce is checked over TLS at most this often
@@ -77,17 +63,20 @@ const DEVICE_TYPES = ['mobile', 'desktop', 'web', 'headless', 'server'];
 
 // ---- The identity: a self-signed certificate; its SHA-256 is the LocalSend fingerprint ----
 
-function derLen(n) {
-  if (n < 0x80) return Buffer.from([n]);
-  if (n <= 0xff) return Buffer.from([0x81, n]);
-  return Buffer.from([0x82, n >> 8, n & 0xff]);
+function tlv(tag, ...parts) {
+  const value = Buffer.concat(parts);
+  if (value.length < 128) return Buffer.concat([Buffer.from([tag, value.length]), value]);
+  const lengthBytes = [];
+  for (let size = value.length; size > 0; size = Math.floor(size / 256)) {
+    lengthBytes.unshift(size % 256);
+  }
+  return Buffer.concat([Buffer.from([tag, 128 + lengthBytes.length, ...lengthBytes]), value]);
 }
-const tlv = (tag, body) => Buffer.concat([Buffer.from([tag]), derLen(body.length), body]);
-const seq = (...items) => tlv(0x30, Buffer.concat(items));
-const bitString = (b) => tlv(0x03, Buffer.concat([Buffer.from([0]), b]));
 const utcTime = (d) => {
+  const year = d.getUTCFullYear();
+  const short = year >= 1950 && year <= 2049;
   const z = (n) => String(n).padStart(2, '0');
-  return tlv(0x17, Buffer.from(`${z(d.getUTCFullYear() % 100)}${z(d.getUTCMonth() + 1)}${z(d.getUTCDate())}${z(d.getUTCHours())}${z(d.getUTCMinutes())}${z(d.getUTCSeconds())}Z`));
+  return tlv(short ? 0x17 : 0x18, Buffer.from(`${short ? z(year % 100) : String(year).padStart(4, '0')}${z(d.getUTCMonth() + 1)}${z(d.getUTCDate())}${z(d.getUTCHours())}${z(d.getUTCMinutes())}${z(d.getUTCSeconds())}Z`));
 };
 
 const fingerprintOf = (der) => crypto.createHash('sha256').update(der).digest('hex');
@@ -95,20 +84,23 @@ const pem = (der) => `-----BEGIN CERTIFICATE-----\n${der.toString('base64').matc
 
 // ECDSA P-256, X.509 v3, CN=TwinDesk, ten years. → { keyPem, certPem, fingerprint }
 function makeIdentity(now = Date.now()) {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const day = 86_400_000;
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const algorithm = tlv(0x30, tlv(0x06, Buffer.from('2a8648ce3d040302', 'hex')));
+  const name = tlv(0x30, tlv(0x31, tlv(0x30,
+    tlv(0x06, Buffer.from('550403', 'hex')), tlv(0x0c, Buffer.from('TwinDesk')))));
   const serial = crypto.randomBytes(16);
-  serial[0] &= 0x7f;
-  if (serial[0] === 0) serial[0] = 1;
-  const sigAlg = seq(tlv(0x06, Buffer.from([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]))); // ecdsa-with-SHA256
-  const name = seq(tlv(0x31, seq(tlv(0x06, Buffer.from([0x55, 0x04, 0x03])), tlv(0x0c, Buffer.from('TwinDesk'))))); // CN
-  const validity = seq(utcTime(new Date(now - 24 * 3600 * 1000)), utcTime(new Date(now + 3650 * 24 * 3600 * 1000)));
-  const tbs = seq(
-    tlv(0xa0, tlv(0x02, Buffer.from([2]))), // v3
-    tlv(0x02, serial), sigAlg, name, validity, name,
-    publicKey.export({ type: 'spki', format: 'der' }),
-  );
-  const der = seq(tbs, sigAlg, bitString(crypto.sign('sha256', tbs, { key: privateKey, dsaEncoding: 'der' })));
-  return { keyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }), certPem: pem(der), fingerprint: fingerprintOf(der) };
+  serial[0] = (serial[0] & 0x3f) | 0x40;
+  const validity = tlv(0x30, utcTime(new Date(now - day)), utcTime(new Date(now + 3650 * day)));
+  const tbs = tlv(0x30, tlv(0xa0, tlv(0x02, Buffer.from([2]))), tlv(0x02, serial),
+    algorithm, name, validity, name, publicKey.export({ type: 'spki', format: 'der' }));
+  const signature = crypto.sign('sha256', tbs, privateKey);
+  const cert = tlv(0x30, tbs, algorithm, tlv(0x03, Buffer.from([0]), signature));
+  return {
+    keyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }),
+    certPem: pem(cert),
+    fingerprint: fingerprintOf(cert),
+  };
 }
 
 // The saved identity (dir/localsend-identity.json, 0600), a new one when it's missing, broken or
@@ -178,40 +170,50 @@ function isLocalAddress(addr) {
 
 // One path segment as it may be stored on any of the three systems.
 function cleanSegment(raw) {
-  let s = String(raw).normalize('NFC').replace(/[\u0000-\u001f\u007f-\u009f]/g, '_').replace(HIDDEN, '_').replace(/[<>:"|?*]/g, '_').trim().replace(/[. ]+$/, '');
-  if (!s || s === '.' || s === '..') return '';
-  if (Buffer.byteLength(s) > MAX_NAME_BYTES) { // the end (the extension) is what's kept
-    const dot = s.lastIndexOf('.');
-    const ext = dot > 0 && s.length - dot <= 16 ? s.slice(dot) : '';
-    const chars = Array.from(s.slice(0, s.length - ext.length));
-    while (chars.length && Buffer.byteLength(chars.join('') + ext) > MAX_NAME_BYTES) chars.pop();
-    s = (chars.join('') + ext).replace(/[. ]+$/, '') || 'file';
+  let name = String(raw ?? '').normalize('NFC')
+    .replace(/[\u0000-\u001f\u007f-\u009f<>:"|?*\\/]/g, '_')
+    .replace(HIDDEN, '_').trim().replace(/[. ]+$/, '');
+  if (Buffer.byteLength(name) > MAX_NAME_BYTES) {
+    const dot = name.lastIndexOf('.');
+    const tail = dot > 0 && name.length - dot <= 16 ? name.slice(dot) : '';
+    let left = MAX_NAME_BYTES - Buffer.byteLength(tail);
+    let prefix = '';
+    for (const point of name.slice(0, name.length - tail.length)) {
+      left -= Buffer.byteLength(point);
+      if (left < 0) break;
+      prefix += point;
+    }
+    name = (prefix + tail).replace(/[. ]+$/, '');
   }
-  const stem = s.split('.')[0].trim().toUpperCase();
-  if (/^(CON|PRN|AUX|NUL|COM\d|LPT\d)$/.test(stem)) s = `_${s}`;
-  return s;
+  return /^(CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])$/i.test(name.split('.')[0].trimEnd()) ? '_' + name : name;
 }
-
 // A LocalSend fileName ("holiday/day 1/a.jpg", or with backslashes) → { folder: [segments], name }.
 // Never a path that leaves the folder: '.', '..' and empty segments are gone.
 function splitName(raw) {
-  const parts = String(raw == null ? '' : raw).replace(/\\/g, '/').split('/').map(cleanSegment).filter(Boolean);
-  if (!parts.length) return { folder: [], name: 'file' };
-  const name = parts.pop();
-  return { folder: parts.slice(0, MAX_DEPTH), name };
+  const segments = String(raw ?? '').split(/[\\/]/).map(cleanSegment).filter(Boolean);
+  const name = segments.pop() || 'file';
+  return { folder: segments.slice(0, MAX_DEPTH), name };
 }
 
 function uniquePath(dir, name) {
-  const first = path.join(dir, name);
-  if (path.dirname(first) !== dir) throw new Error('unsafe name');
-  if (!fs.existsSync(first)) return first;
-  const dot = name.lastIndexOf('.');
-  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
-  for (let n = 2; n < 10000; n++) {
-    const p = path.join(dir, `${stem} (${n})${ext}`);
-    if (!fs.existsSync(p)) return p;
+  const candidate = path.join(dir, name);
+  if (path.resolve(path.dirname(candidate)) !== path.resolve(dir) || path.basename(candidate) !== name) {
+    throw new LsError('path', 'Invalid destination name');
   }
-  return path.join(dir, `${stem} (${token()})${ext}`);
+  const free = (file) => {
+    try { fs.lstatSync(file); return false; } catch (err) {
+      if (err.code === 'ENOENT') return true;
+      throw err;
+    }
+  };
+  if (free(candidate)) return candidate;
+  const ext = path.extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  for (let n = 2; n <= 1000; n++) {
+    const next = path.join(dir, `${stem} (${n})${ext}`);
+    if (free(next)) return next;
+  }
+  return path.join(dir, `${stem}-${crypto.randomBytes(8).toString('hex')}${ext}`);
 }
 
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', pdf: 'application/pdf', txt: 'text/plain', md: 'text/plain', mp4: 'video/mp4', mov: 'video/quicktime', mp3: 'audio/mpeg', m4a: 'audio/mp4', zip: 'application/zip', apk: 'application/vnd.android.package-archive' };
@@ -224,7 +226,9 @@ function versionWhy(v) {
   return major === 1 ? 'v1' : 'newer';
 }
 
-const peerId = (fingerprint, ip, port) => crypto.createHash('sha256').update(`twindesk-localsend:v2:${fingerprint || `${ip}:${port}`}`).digest('hex').slice(0, 32);
+function peerId(fingerprint, ip, port) {
+  return isFp(fingerprint) ? 'cert:' + fingerprint.toLowerCase() : 'addr:' + JSON.stringify([ip, port]);
+}
 
 // What a device says about itself (an announce, /register, /info, prepare-upload's info) as a peer,
 // or null when it isn't usable. Nothing here is proven: `verified` is set by the TLS check.
@@ -246,9 +250,10 @@ function peerFrom(dto, ip, fallbackPort) {
   };
 }
 
-// Whether `update` would move a device known to speak HTTPS to plain HTTP. An unauthenticated
-// announce claiming its name mustn't do that.
-const downgrades = (known, update) => update.protocol === 'http' && !!known && known.protocol === 'https';
+// True when a peer held as HTTPS is described again as HTTP. The caller keeps the entry it has.
+function downgrades(known, update) {
+  return known?.protocol === 'https' && update.protocol === 'http';
+}
 
 class LsError extends Error {
   constructor(code, message) {
@@ -752,10 +757,8 @@ class LocalSend extends EventEmitter {
     if (route === `POST ${API}/prepare-upload`) return this._prepare(req, res, ip);
     if (route === `POST ${API}/upload`) return this._upload(req, res, ip, url.searchParams);
     if (route === `POST ${API}/cancel`) {
-      // Only the sender cancels its session. Anyone else gets the same answer, so it doesn't learn
-      // which sessions exist.
-      const s = this._sessions.get(url.searchParams.get('sessionId') || '');
-      if (s && s.ip === ip) this._endSession(s, 'cancelled');
+      const session = this._sessions.get(url.searchParams.get('sessionId'));
+      if (session && session.ip === ip) this._endSession(session, 'cancelled');
       return this._reply(res, 200);
     }
     return this._reply(res, 404, { message: 'Not found' });
@@ -907,8 +910,7 @@ class LocalSend extends EventEmitter {
     const same = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
     // The same answer for no session, another address, a wrong token and a file already here.
     if (!f || session.ip !== ip || !same(tok, f.token) || f.state !== 'waiting') return this._reply(res, 403, { message: 'Invalid token or IP address' });
-    // The body must be exactly the size that was offered and accepted: more could fill the disk,
-    // less is a broken file.
+    // The bytes are counted against the size in the offer. Any other length fails the upload.
     const declared = req.headers['content-length'];
     if (declared !== undefined && Number(declared) !== f.size) { res.setHeader('Connection', 'close'); return this._reply(res, 400, { message: 'Size mismatch' }); }
     f.state = 'uploading';

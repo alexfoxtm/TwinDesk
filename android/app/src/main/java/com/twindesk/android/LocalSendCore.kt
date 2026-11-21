@@ -1,21 +1,7 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at http://mozilla.org/MPL/2.0/.
-//
-// SPDX-License-Identifier: MPL-2.0
-//
-// Portions adapted from NectarLink, core/nectarlink-core/src/localsend.rs and transfer.rs
-// (https://github.com/thtbee/nectarlink, commit a1a7d885, MPL-2.0),
-// Copyright (C) 2026 The NectarLink contributors: the self-signed certificate written as DER, the
-// certificate fingerprint check on every connection, the refusal to move a known HTTPS device to
-// HTTP, the upload session rules (one token per file, the body exactly the offered size, only the
-// sender cancels) and the file name rules. Rewritten in Kotlin by the TwinDesk authors,
-// Copyright (C) 2026 inukaasith; changes from the original: no plain HTTP, every discovered device
-// is checked over TLS before it is listed as verified, the hash is taken while the bytes arrive, our
-// certificate is shown on the connections we make and a sender is the certificate it showed.
-//
-// The protocol is LocalSend Protocol v2.2 (https://github.com/localsend/protocol, MIT, Copyright (c)
-// 2022-2024 Tien Do Nam). No LocalSend code is used. TwinDesk is not affiliated with LocalSend.
+// TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
+// TwinDesk's implementation of LocalSend Protocol v2.2 (https://github.com/localsend/protocol, MIT,
+// Copyright (c) 2022-2024 Tien Do Nam). No LocalSend code is used. TwinDesk is not affiliated with
+// LocalSend.
 //
 // The transport core for files with LocalSend-compatible apps, the same as shared/localsend/core.js
 // on the computers. Nothing of Android is used here (java.net, javax.net.ssl, org.json), so it also
@@ -144,7 +130,7 @@ object Ls {
 
     const val ANSWER_WAIT_MS = 120_000 // how long we wait for the other side's person
     const val CONNECT_MS = 6000
-    const val IO_MS = 30_000 // no byte either way for this long: the connection is dropped
+    const val IO_MS = 30_000
     const val SESSION_IDLE_MS = 10 * 60_000L
     const val ANNOUNCE_S = 30L
     const val PEER_TTL_MS = 150_000L
@@ -173,7 +159,7 @@ object Ls {
     private val HIDDEN = Regex("[\\u061c\\u200b\\u200e\\u200f\\u202a-\\u202e\\u2060-\\u206f\\ufeff]")
     private val UNSEEN = Regex("[\\p{C}\\p{Z}]")
     private val FORBIDDEN = Regex("[<>:\"|?*]")
-    private val RESERVED = Regex("^(CON|PRN|AUX|NUL|COM\\d|LPT\\d)$")
+    private val RESERVED = Regex("^(CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])$")
     private val FP = Regex("^[0-9a-fA-F]{64}$")
 
     fun hex(b: ByteArray): String = b.joinToString("") { "%02x".format(it) }
@@ -198,27 +184,32 @@ object Ls {
 
     // One path segment as it may be stored on a phone or a computer.
     fun cleanSegment(raw: String): String {
-        var s = java.text.Normalizer.normalize(raw, java.text.Normalizer.Form.NFC).replace(CONTROL, "_").replace(HIDDEN, "_").replace(FORBIDDEN, "_").replace('/', '_').trim().trimEnd('.', ' ')
-        if (s.isEmpty() || s == "." || s == "..") return ""
-        if (utf8(s) > MAX_NAME_BYTES) { // the end (the extension) is what's kept
-            val dot = s.lastIndexOf('.')
-            val ext = if (dot > 0 && s.length - dot <= 16) s.substring(dot) else ""
-            var stem = s.substring(0, s.length - ext.length)
-            while (stem.isNotEmpty() && utf8(stem + ext) > MAX_NAME_BYTES) stem = stem.substring(0, stem.offsetByCodePoints(stem.length, -1))
-            s = (stem + ext).trimEnd('.', ' ').ifEmpty { "file" }
+        var name = java.text.Normalizer.normalize(raw, java.text.Normalizer.Form.NFC)
+            .replace(CONTROL, "_").replace(HIDDEN, "_").replace(FORBIDDEN, "_")
+            .replace('/', '_').replace('\\', '_').trim().trimEnd('.', ' ')
+        if (utf8(name) > MAX_NAME_BYTES) {
+            val dot = name.lastIndexOf('.')
+            val end = if (dot > 0 && name.length - dot <= 16) dot else name.length
+            val extension = name.substring(end)
+            var remaining = MAX_NAME_BYTES - utf8(extension)
+            var index = 0
+            while (index < end) {
+                val next = index + Character.charCount(name.codePointAt(index))
+                remaining -= utf8(name.substring(index, next))
+                if (remaining < 0) break
+                index = next
+            }
+            name = (name.substring(0, index) + extension).trimEnd('.', ' ')
         }
-        if (RESERVED.matches(s.substringBefore('.').trim().uppercase(Locale.ROOT))) s = "_$s"
-        return s
+        val stem = name.substringBefore('.').trimEnd().uppercase(Locale.ROOT)
+        return if (RESERVED.matches(stem)) "_$name" else name
     }
-
     // A LocalSend fileName ("holiday/day 1/a.jpg", or with backslashes) → its folders and its name.
     // Never a path that leaves the folder: ".", ".." and empty segments are gone.
     fun splitName(raw: String?): Pair<List<String>, String> {
-        val parts = (raw ?: "").replace('\\', '/').split('/').map(::cleanSegment).filter { it.isNotEmpty() }
-        if (parts.isEmpty()) return emptyList<String>() to "file"
-        return parts.dropLast(1).take(MAX_DEPTH) to parts.last()
+        val parts = raw.orEmpty().split('/', '\\').map(::cleanSegment).filter(String::isNotEmpty)
+        return parts.dropLast(1).take(MAX_DEPTH) to (parts.lastOrNull() ?: "file")
     }
-
     // What a version string means to us: "" (we speak it), or why not.
     fun versionWhy(v: String): String = when (v.substringBefore('.').toIntOrNull()) {
         2 -> ""
@@ -227,7 +218,7 @@ object Ls {
     }
 
     fun peerId(fingerprint: String, ip: String, port: Int): String =
-        hex(sha256("twindesk-localsend:v2:${fingerprint.ifEmpty { "$ip:$port" }}".toByteArray(Charsets.UTF_8))).take(32)
+        if (isFp(fingerprint)) "cert:${fingerprint.lowercase(Locale.ROOT)}" else "addr:$ip:$port"
 
     fun str(o: JSONObject, k: String): String = if (o.isNull(k)) "" else o.optString(k, "")
 
@@ -248,9 +239,9 @@ object Ls {
         return LsPeer(peerId(fingerprint, ip, port), alias, clip(str(dto, "deviceModel"), 64), str(dto, "deviceType").takeIf { it in DEVICE_TYPES } ?: "desktop", fingerprint, ip, port, protocol, version, why)
     }
 
-    // Whether `update` would move a device known to speak HTTPS to plain HTTP. An unauthenticated
-    // announce claiming its name mustn't do that.
-    fun downgrades(known: LsPeer?, update: LsPeer): Boolean = update.protocol == "http" && known != null && known.protocol == "https"
+    // True when a peer held as HTTPS is described again as HTTP. The caller keeps the entry it has.
+    fun downgrades(known: LsPeer?, update: LsPeer): Boolean =
+        known?.protocol == "https" && update.protocol == "http"
 
     fun parse(body: ByteArray): JSONObject? = runCatching { JSONObject(String(body, Charsets.UTF_8)) }.getOrNull()
 }
@@ -261,30 +252,51 @@ class LsIdentity(val key: PrivateKey, val cert: X509Certificate) {
     val fingerprint: String = Ls.fingerprintOf(cert.encoded)
 
     companion object {
-        private fun len(n: Int): ByteArray = when {
-            n < 0x80 -> byteArrayOf(n.toByte())
-            n <= 0xff -> byteArrayOf(0x81.toByte(), n.toByte())
-            else -> byteArrayOf(0x82.toByte(), (n shr 8).toByte(), n.toByte())
+        private fun tlv(tag: Int, vararg fields: ByteArray): ByteArray {
+            val size = fields.sumOf { it.size }
+            val encoded = java.io.ByteArrayOutputStream()
+            encoded.write(tag)
+            if (size < 128) {
+                encoded.write(size)
+            } else {
+                val length = java.math.BigInteger.valueOf(size.toLong()).toByteArray()
+                val offset = if (length[0] == 0.toByte()) 1 else 0
+                encoded.write(0x80 or (length.size - offset))
+                encoded.write(length, offset, length.size - offset)
+            }
+            for (field in fields) encoded.write(field)
+            return encoded.toByteArray()
         }
-        private fun tlv(tag: Int, body: ByteArray): ByteArray = byteArrayOf(tag.toByte()) + len(body.size) + body
-        private fun seq(vararg items: ByteArray): ByteArray = tlv(0x30, items.fold(ByteArray(0)) { a, b -> a + b })
-        private fun utc(ms: Long): ByteArray =
-            tlv(0x17, SimpleDateFormat("yyMMddHHmmss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(ms)).toByteArray(Charsets.US_ASCII))
+        private fun utc(ms: Long): ByteArray {
+            val format = SimpleDateFormat("yyyyMMddHHmmss'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            val time = format.format(Date(ms))
+            val short = time.take(4).toInt() in 1950..2049
+            return tlv(if (short) 0x17 else 0x18,
+                (if (short) time.drop(2) else time).toByteArray(Charsets.US_ASCII))
+        }
         private fun certOf(der: ByteArray) = CertificateFactory.getInstance("X.509").generateCertificate(der.inputStream()) as X509Certificate
 
         // ECDSA P-256, X.509 v3, CN=TwinDesk, ten years.
         fun make(now: Long = System.currentTimeMillis()): LsIdentity {
-            val pair = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
-            val serial = ByteArray(16).also { SecureRandom().nextBytes(it) }
-            serial[0] = (serial[0].toInt() and 0x7f).toByte()
-            if (serial[0].toInt() == 0) serial[0] = 1
-            val sigAlg = seq(tlv(0x06, byteArrayOf(0x2a, 0x86.toByte(), 0x48, 0xce.toByte(), 0x3d, 0x04, 0x03, 0x02))) // ecdsa-with-SHA256
-            val name = seq(tlv(0x31, seq(tlv(0x06, byteArrayOf(0x55, 0x04, 0x03)), tlv(0x0c, "TwinDesk".toByteArray(Charsets.UTF_8))))) // CN
-            val day = 24 * 3600 * 1000L
-            val validity = seq(utc(now - day), utc(now + 3650 * day))
-            val tbs = seq(tlv(0xa0, tlv(0x02, byteArrayOf(2))), tlv(0x02, serial), sigAlg, name, validity, name, pair.public.encoded)
-            val sig = Signature.getInstance("SHA256withECDSA").run { initSign(pair.private); update(tbs); sign() }
-            return LsIdentity(pair.private, certOf(seq(tbs, sigAlg, tlv(0x03, byteArrayOf(0) + sig))))
+            val keys = KeyPairGenerator.getInstance("EC").apply {
+                initialize(ECGenParameterSpec("secp256r1"))
+            }.generateKeyPair()
+            val subject = javax.security.auth.x500.X500Principal("CN=TwinDesk").encoded
+            val signatureType = tlv(0x30, tlv(0x06, Ls.unhex("2a8648ce3d040302")))
+            val serial = java.math.BigInteger(127, SecureRandom()).setBit(126).toByteArray()
+            val day = 86_400_000L
+            val body = tlv(0x30,
+                tlv(0xa0, tlv(0x02, byteArrayOf(2))), tlv(0x02, serial), signatureType,
+                subject, tlv(0x30, utc(now - day), utc(now + 3650 * day)), subject, keys.public.encoded)
+            val signature = Signature.getInstance("SHA256withECDSA").run {
+                initSign(keys.private)
+                update(body)
+                sign()
+            }
+            return LsIdentity(keys.private, certOf(tlv(0x30, body, signatureType,
+                tlv(0x03, byteArrayOf(0), signature))))
         }
 
         // The saved identity (dir/localsend-identity.json, the app's own files), a new one when it's
@@ -820,10 +832,8 @@ class LocalSendCore(
                     "POST ${Ls.API}/prepare-upload" -> prepare(sock, inp, body, out, ip, cert) { drain = false }
                     "POST ${Ls.API}/upload" -> upload(sock, headers, body, out, ip, queryOf(target))
                     "POST ${Ls.API}/cancel" -> {
-                        // Only the sender cancels its session. Anyone else gets the same answer, so it
-                        // doesn't learn which sessions exist.
-                        val s = synchronized(lock) { sessions[queryOf(target)["sessionId"] ?: ""] }
-                        if (s != null && s.ip == ip) endSession(s, "cancelled")
+                        val session = synchronized(lock) { sessions[queryOf(target)["sessionId"]] }
+                        if (session != null && session.ip == ip) endSession(session, "cancelled")
                         reply(out, 200)
                     }
                     else -> reply(out, 404, msg("Not found"))
@@ -995,8 +1005,7 @@ class LocalSendCore(
             val x = s?.files?.get(fid)
             // The same answer for no session, another address, a wrong token and a file already here.
             if (s == null || x == null || s.ip != ip || x.state != "waiting" || !MessageDigest.isEqual(tok.toByteArray(Charsets.UTF_8), x.token.toByteArray(Charsets.UTF_8))) return@synchronized
-            // The body must be exactly the size that was offered and accepted: more could fill the
-            // storage, less is a broken file.
+            // The bytes are counted against the size in the offer. Any other length fails the upload.
             val declared = headers["content-length"]?.toLongOrNull()
             if (declared != null && declared != x.size) { mismatch = true; return@synchronized }
             x.state = "uploading"

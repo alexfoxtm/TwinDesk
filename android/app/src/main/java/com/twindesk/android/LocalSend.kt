@@ -1,5 +1,5 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
-// Files with LocalSend-compatible apps on the phone: LocalSendCore.kt (the protocol, MPL-2.0) with
+// Files with LocalSend-compatible apps on the phone: LocalSendCore.kt (the protocol) with
 // what is the phone's own — the switch (off until turned on), Downloads › TwinDesk for what's
 // accepted, the question for every arriving transfer (on the Files page and as a notification with
 // Accept and Decline), the multicast lock while it's on. There is no "always accept".
