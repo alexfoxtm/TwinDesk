@@ -133,8 +133,10 @@ function main() {
   assert.equal(rejected.repo, REPO);
   assert.match(mainJs, /repo: 'alexfoxtm\/TwinDesk'/);
   assert.match(read('mac/mesh/main.js'), /repo: 'alexfoxtm\/TwinDesk'/);
-  assert.doesNotMatch(read('windows/main.js'), /repo: 'alexfoxtm\/TwinDesk'/);
-  assert.doesNotMatch(read('linux/main.js'), /repo: 'alexfoxtm\/TwinDesk'/);
+  // A fork build on Windows or Linux follows the fork's releases too, in both modes.
+  for (const rel of ['windows/main.js', 'windows/mesh/main.js', 'linux/main.js', 'linux/mesh/main.js']) {
+    assert.match(read(rel), /repo: 'alexfoxtm\/TwinDesk'/, rel);
+  }
   assert.equal(LINKS.github, 'https://github.com/InukaAsith/TwinDesk');
   assert.equal(LINKS.releases, 'https://github.com/InukaAsith/TwinDesk/releases');
   for (const rel of ['mac/ipc.js', 'mac/mesh/ipc.js']) {
