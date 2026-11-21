@@ -98,3 +98,206 @@ test('shelf refuses foreign frames, revoked photo and replaced or symlinked loca
     assert.equal(handles.get('file-shelf:read')(ownEvent), null, 'retired contents cannot read shelf');
   } finally { shelf.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+const wire = require('../../shared/localsend/wire.js');
+const TL = require('../../shared/timeline.js');
+const root = path.join(__dirname, '../..');
+const ACTIONS = ['lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal'];
+
+test('completed LocalSend receipts show on the shelf and in activity from history', () => {
+  const dir = tmp();
+  const drop = new EventEmitter();
+  const now = Date.now();
+  const dup = path.join(dir, 'same.txt');
+  const received = path.join(dir, 'from-phone.txt');
+  const second = path.join(dir, 'notes.txt');
+  const folder = path.join(dir, 'album');
+  const older = path.join(dir, 'older.txt');
+  fs.writeFileSync(dup, 'both');
+  fs.writeFileSync(received, 'incoming');
+  fs.writeFileSync(second, 'second');
+  fs.mkdirSync(folder);
+  fs.writeFileSync(older, 'drop');
+  fs.writeFileSync(path.join(dir, 'stray.txt'), 'not a receipt');
+  drop.recent = [
+    { path: dup, ok: true, at: now - 500 },
+    { path: older, ok: true, at: now - 1000 },
+  ];
+  const transfers = [
+    { id: 'in-new', dir: 'in', state: 'done', at: now, saved: [received, second, dup], peer: { alias: 'Pixel', ip: '10.1.1.1', fingerprint: 'fp-secret' } },
+    { id: 'in-folder', dir: 'in', state: 'done', at: now - 50, saved: [folder], peer: { alias: 'Pixel', fingerprint: 'fp-secret' } },
+    { id: 'in-older', dir: 'in', state: 'done', at: now - 1000, saved: [older], peer: { alias: 'Pixel', fingerprint: 'fp-secret' } },
+    { id: 'in-dup', dir: 'in', state: 'done', at: now - 10, saved: [received] },
+    { id: 'out-1', dir: 'out', state: 'done', at: now + 5000, saved: [older], peer: { alias: 'Elsewhere', ip: '10.9.9.9', fingerprint: 'fp-out' } },
+    { id: 'run-1', dir: 'in', state: 'running', at: now + 4000, names: ['busy.bin'], peer: { alias: 'Busy', fingerprint: 'fp-run', ip: '10.4.4.4' } },
+  ];
+  let list = wire.completedIncoming(transfers);
+  const shelf = new FileShelf({ drop, latestPhoto: () => ({ path: dup }), receipts: () => list, t: (s) => s });
+  try {
+    assert.deepEqual(list.map((item) => item.path), [received, second, dup, folder, older]);
+    assert.ok(!JSON.stringify(list).includes('fp-secret') && !JSON.stringify(list).includes('10.1.1.1'));
+    assert.deepEqual(wire.ACTIONS, ACTIONS);
+    shelf.show();
+    const state = read(shelf);
+    assert.deepEqual(state.items.map((item) => item.name), ['same.txt', 'from-phone.txt', 'notes.txt', 'album', 'older.txt']);
+    assert.equal(state.items[0].kind, 'photo');
+    assert.equal(state.items[3].kind, 'folder');
+    assert.ok(state.items.every((item) => !('path' in item) && !JSON.stringify(item).includes(dir)));
+    assert.deepEqual(Object.keys(state.items[1]).sort(), ['extension', 'id', 'kind', 'name', 'size']);
+    const ids = state.items.map((item) => item.id);
+    assert.deepEqual(read(shelf).items.map((item) => item.id), ids, 'refresh keeps shelf focus');
+    shelf.refresh();
+    assert.deepEqual(read(shelf).items.map((item) => item.id), ids);
+    const photoId = ids[0];
+    ipcMain.emit('file-shelf:drag', event(shelf), ids[1]);
+    assert.equal(dragged.at(-1).file, received);
+    ipcMain.emit('file-shelf:reveal', event(shelf), ids[3]);
+    assert.equal(revealed.at(-1), folder);
+    const opened = [];
+    assert.equal(wire.openReceipt(transfers, { id: 'in-new', index: 0, path: folder }, (p) => opened.push(p)), true);
+    assert.equal(wire.openReceipt(transfers, { id: 'in-new', index: 1, path: '/etc/passwd' }, (p) => opened.push(p)), true);
+    assert.deepEqual(opened, [received, second]);
+
+    const shown = TL.build({
+      files: { recent: [{ name: 'older.txt', path: older, at: now - 1000, ok: true }] },
+      localsend: { transfers },
+    });
+    const files = shown.filter((item) => item.kind === 'file');
+    const olderItem = files.find((item) => item.path === older);
+    const incoming = files.find((item) => item.path === received);
+    const notes = files.find((item) => item.path === second);
+    assert.equal(files.filter((item) => item.path === older).length, 1, 'TwinDesk already owns this path');
+    assert.equal(olderItem.meta.ls, undefined);
+    assert.equal(incoming.meta.ls, 'in-new');
+    assert.equal(incoming.peer, 'Pixel');
+    assert.equal(notes.meta.lsIndex, 1);
+    assert.equal(files.filter((item) => item.path === received).length, 1);
+    assert.ok(!files.some((item) => item.title === 'busy.bin'));
+    const blob = JSON.stringify(files);
+    for (const secret of ['fp-secret', 'fp-out', 'fp-run', '10.1.1.1', '10.9.9.9', '10.4.4.4']) assert.ok(!blob.includes(secret), secret);
+    assert.deepEqual(TL.localsendReveal(incoming, transfers), { id: 'in-new' });
+    assert.deepEqual(TL.localsendReveal(notes, transfers), { id: 'in-new', index: 1 });
+    assert.equal('path' in TL.localsendReveal(notes, transfers), false);
+    const owned = TL.build({ localsend: { transfers } }).find((item) => item.path === older);
+    assert.equal(owned.meta.ls, 'in-older', 'clearing TwinDesk recent leaves the LocalSend receipt');
+    assert.equal(TL.localsendReveal(incoming, []), null);
+
+    const many = [];
+    for (let i = 0; i < 12; i++) {
+      const file = path.join(dir, `many-${i}.txt`);
+      fs.writeFileSync(file, 'm' + i);
+      many.push({ path: file, at: now + 10 + i });
+    }
+    list = many;
+    drop.recent = [];
+    const bounded = read(shelf);
+    assert.equal(bounded.items.length, 8);
+    assert.equal(bounded.items[0].id, photoId);
+    assert.deepEqual(bounded.items.slice(1).map((item) => item.name), [11, 10, 9, 8, 7, 6, 5].map((i) => `many-${i}.txt`));
+    const boundedIds = bounded.items.map((item) => item.id);
+    shelf.refresh();
+    assert.deepEqual(read(shelf).items.map((item) => item.id), boundedIds);
+    for (const rel of ['mac/main.js', 'mac/mesh/main.js']) {
+      const src = fs.readFileSync(path.join(root, rel), 'utf8');
+      assert.match(src, /localsend && localsend\.receipts/);
+      assert.match(src, /fileShelf\?\.refresh\(\)/);
+    }
+    for (const rel of ['mac/ui-timeline.js', 'shared/ui-timeline.js']) {
+      const src = fs.readFileSync(path.join(root, rel), 'utf8');
+      assert.match(src, /localsendReveal/);
+      assert.match(src, /if \(m\.ls\)/);
+      assert.doesNotMatch(src, /lsReveal\(\s*it\.path/);
+    }
+    shelf.shutdown();
+  } finally { shelf.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('unfinished, linked, cleared and supplied LocalSend paths are not revealed', () => {
+  const dir = tmp();
+  const drop = new EventEmitter();
+  const now = Date.now();
+  const real = path.join(dir, 'real.txt');
+  const link = path.join(dir, 'link.txt');
+  const dropFile = path.join(dir, 'drop.txt');
+  fs.writeFileSync(real, 'real');
+  fs.writeFileSync(dropFile, 'drop');
+  fs.symlinkSync(real, link);
+  const transfers = [
+    { id: 'in-real', dir: 'in', state: 'done', at: now, saved: [real, link, 'relative.txt'], peer: { alias: 'Pixel', ip: '10.0.0.2', fingerprint: 'fp-secret' } },
+    { id: 'out', dir: 'out', state: 'done', at: now + 5, saved: [dropFile], peer: { alias: 'Elsewhere', fingerprint: 'fp-out', ip: '8.8.8.8' } },
+    { id: 'run', dir: 'in', state: 'running', at: now + 4, saved: [real], peer: { fingerprint: 'fp-run' } },
+    { id: 'stop', dir: 'in', state: 'cancelled', at: now + 3, saved: [dropFile], arrived: 1, peer: { fingerprint: 'fp-stop' } },
+  ];
+  let list = wire.completedIncoming(transfers);
+  let boom = false;
+  drop.recent = [{ path: dropFile, ok: true, at: now - 10 }];
+  const shelf = new FileShelf({
+    drop, latestPhoto: () => null,
+    receipts: () => { if (boom) throw new Error('history'); return list; },
+  });
+  const beforeDrag = dragged.length, beforeReveal = revealed.length;
+  try {
+    assert.deepEqual(list.map((item) => item.path), [real, link]);
+    shelf.show();
+    const state = read(shelf);
+    assert.deepEqual(state.items.map((item) => item.name), ['real.txt', 'drop.txt']);
+    assert.ok(!JSON.stringify(state).includes('fp-secret'));
+    const id = state.items[0].id;
+    const dropId = state.items[1].id;
+    const own = event(shelf);
+    ipcMain.emit('file-shelf:drag', { ...own, senderFrame: {} }, id);
+    ipcMain.emit('file-shelf:reveal', { ...own, sender: { id: -1 } }, id);
+    fs.writeFileSync(real, 'replaced-contents');
+    ipcMain.emit('file-shelf:drag', own, id);
+    ipcMain.emit('file-shelf:reveal', own, id);
+    assert.equal(dragged.length, beforeDrag);
+    assert.equal(revealed.length, beforeReveal);
+    list = [];
+    const left = read(shelf);
+    assert.deepEqual(left.items.map((item) => item.name), ['drop.txt'], 'cleared history is not replaced by a folder scan');
+    assert.equal(left.items[0].id, dropId);
+    ipcMain.emit('file-shelf:drag', own, dropId);
+    assert.equal(dragged.at(-1).file, dropFile);
+    const drags = dragged.length;
+    ipcMain.emit('file-shelf:reveal', own, id);
+    assert.equal(revealed.length, beforeReveal);
+    assert.equal(dragged.length, drags);
+    boom = true;
+    assert.doesNotThrow(() => read(shelf));
+    assert.deepEqual(read(shelf).items.map((item) => item.name), ['drop.txt']);
+
+    const files = TL.build({ localsend: { transfers } }).filter((item) => item.kind === 'file');
+    assert.deepEqual(files.map((item) => item.title), ['real.txt', 'link.txt']);
+    const blob = JSON.stringify(files);
+    for (const secret of ['fp-secret', 'fp-out', 'fp-run', 'fp-stop', '10.0.0.2', '8.8.8.8', 'relative.txt']) assert.ok(!blob.includes(secret), secret);
+    const linkItem = files[1];
+    assert.equal(TL.localsendReveal(files[0], []), null);
+    assert.equal(TL.localsendReveal({ ...files[0], path: dropFile }, transfers), null);
+    assert.equal(TL.localsendReveal({ ...files[0], meta: { ...files[0].meta, lsIndex: 1.5 } }, transfers), null);
+    assert.deepEqual(TL.localsendReveal(linkItem, transfers), { id: 'in-real', index: 1 });
+    const opened = [];
+    assert.equal(wire.openReceipt(transfers, TL.localsendReveal(linkItem, transfers), (p) => opened.push(p)), false);
+    assert.equal(wire.openReceipt(transfers, { id: 'out', path: real }, (p) => opened.push(p)), false);
+    assert.equal(wire.openReceipt(transfers, { id: 'run', path: real }, (p) => opened.push(p)), false);
+    assert.equal(wire.openReceipt(transfers, { id: 'stop', path: '/etc/passwd' }, (p) => opened.push(p)), true);
+    assert.deepEqual(opened, [dropFile], 'a finished partial save still opens its own file');
+    opened.length = 0;
+    assert.equal(wire.openReceipt(transfers, { id: 'missing', path: real }, (p) => opened.push(p)), false);
+    assert.equal(wire.openReceipt(transfers, { id: 'in-real', index: 9, path: real }, (p) => opened.push(p)), false);
+    assert.deepEqual(opened, []);
+    const leaked = [];
+    const service = wire.startLocalSend({
+      dir: path.join(dir, 'data'),
+      settings: () => ({ localsend: { on: false } }),
+      pushState() {}, save() {}, name: () => 'Fixture', receivedDir: () => dir,
+      reveal: (p) => leaked.push(p),
+      core: { host: '127.0.0.1', port: 0, multicast: false },
+    });
+    try {
+      service.actions.lsReveal({ id: 'in-real', index: 0, path: real });
+      assert.deepEqual(leaked, []);
+      assert.deepEqual(service.receipts, []);
+    } finally { service.shutdown(); }
+    shelf.shutdown();
+  } finally { shelf.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

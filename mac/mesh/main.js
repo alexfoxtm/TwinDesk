@@ -557,7 +557,7 @@ function showUpdateWindow() {
 // while nothing is connected.
 function showFileShelf() {
   if (!svc || modulesAtStart.includes('files')) return;
-  fileShelf ||= new (require('../file-shelf').FileShelf)({ drop: svc.drop, t });
+  fileShelf ||= new (require('../file-shelf').FileShelf)({ drop: svc.drop, receipts: () => (localsend && localsend.receipts) || [], t });
   fileShelf.show();
 }
 
@@ -1134,7 +1134,7 @@ app.whenReady().then(() => {
   nativeTheme.on('updated', () => pushState());
   setupWeb();
   localsend = require('../localsend.js').setupLocalSend({
-    settings: () => settings, save: () => store.saveSettings(settings), pushState, t, window: () => win,
+    settings: () => settings, save: () => store.saveSettings(settings), pushState: () => { pushState(); fileShelf?.refresh(); }, t, window: () => win,
     name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),
   });
   svc.onModulesChanged = () => localsend.apply();

@@ -1,5 +1,6 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
-// A small, local-only surface for files already received by TwinDesk.
+// A small, local-only surface for files already received by TwinDesk, including completed
+// LocalSend receipts already kept in memory. This does not list a folder.
 'use strict';
 
 const fs = require('node:fs');
@@ -49,9 +50,10 @@ function wire() {
 }
 
 class FileShelf {
-  constructor({ drop, latestPhoto = () => null, t = (key) => key }) {
+  constructor({ drop, latestPhoto = () => null, receipts = () => [], t = (key) => key }) {
     this.drop = drop;
     this.latestPhoto = latestPhoto;
+    this.receipts = receipts;
     this.t = t;
     this.win = null;
     this.items = new Map();
@@ -64,7 +66,20 @@ class FileShelf {
   _sources() {
     let photo = null;
     try { photo = this.latestPhoto(); } catch { /* A revoked or unreadable backup has no item. */ }
-    const sources = [photo && { ...photo, photo: true }, ...(this.drop?.recent || []).slice(0, 40).filter(item => item.ok)].filter(Boolean);
+    let received = [];
+    try {
+      const list = typeof this.receipts === 'function' ? this.receipts() : [];
+      if (Array.isArray(list)) received = list.slice(0, 40);
+    } catch { /* A broken history has no item. */ }
+    const ranked = [];
+    for (const item of (this.drop?.recent || []).slice(0, 40)) {
+      if (item && item.ok && typeof item.path === 'string') ranked.push({ path: item.path, at: item.at });
+    }
+    for (const item of received) {
+      if (item && typeof item.path === 'string') ranked.push({ path: item.path, at: item.at });
+    }
+    ranked.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+    const sources = [photo && typeof photo.path === 'string' ? { path: photo.path, photo: true } : null, ...ranked].filter(Boolean);
     const seen = new Set(), found = [];
     for (const source of sources) {
       if (found.length >= LIMIT) break;

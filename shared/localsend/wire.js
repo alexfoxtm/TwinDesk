@@ -22,9 +22,72 @@
 'use strict';
 
 const { execFile } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const { LocalSend, PORT } = require('./core.js');
 
 const KEEP = 30; // transfers shown
+const SAVED_CAP = 40; // files of one transfer shown from its saved list
+
+// Completed incoming files already recorded on these transfers. Not a directory listing, and nothing
+// but the path and the transfer's time is returned.
+function completedIncoming(transfers) {
+  const out = [];
+  const seen = new Set();
+  if (!Array.isArray(transfers)) return out;
+  const n = Math.min(transfers.length, KEEP);
+  for (let i = 0; i < n; i++) {
+    const tr = transfers[i];
+    if (!tr || typeof tr !== 'object' || tr.dir !== 'in' || tr.state !== 'done' || !Array.isArray(tr.saved)) continue;
+    const at = typeof tr.at === 'number' && Number.isFinite(tr.at) && tr.at > 0 ? tr.at : 0;
+    const max = Math.min(tr.saved.length, SAVED_CAP);
+    for (let index = 0; index < max; index++) {
+      const file = tr.saved[index];
+      if (typeof file !== 'string' || !path.isAbsolute(file) || seen.has(file)) continue;
+      seen.add(file);
+      out.push({ path: file, at });
+      if (out.length >= SAVED_CAP) return out;
+    }
+  }
+  return out;
+}
+
+// Which saved path a reveal may open. The caller names a transfer id and, for a later file, its
+// index. A path on the argument is ignored: it is not one this history stored.
+function revealSaved(transfers, arg) {
+  const id = typeof arg === 'string' ? arg : (arg && typeof arg === 'object' && typeof arg.id === 'string' ? arg.id : '');
+  let index = 0;
+  if (arg && typeof arg === 'object') {
+    if (arg.index == null) index = 0;
+    else if (Number.isInteger(arg.index)) index = arg.index;
+    else index = -1;
+  }
+  if (!id || index < 0 || index > 999) return '';
+  const tr = (Array.isArray(transfers) ? transfers : []).find((item) => item && item.id === id);
+  if (!tr || tr.dir !== 'in' || tr.state === 'waiting' || tr.state === 'running' || !Array.isArray(tr.saved) || index >= tr.saved.length) return '';
+  const file = tr.saved[index];
+  return typeof file === 'string' ? file : '';
+}
+
+// Still the file or folder that was saved: an absolute path, not a link, and not something that
+// has gone.
+function canShow(file) {
+  try {
+    if (typeof file !== 'string' || !path.isAbsolute(file)) return false;
+    const st = fs.lstatSync(file);
+    if (!st.isFile() && !st.isDirectory()) return false;
+    return fs.realpathSync(file) === file;
+  } catch {
+    return false;
+  }
+}
+
+function openReceipt(transfers, arg, reveal) {
+  const file = revealSaved(transfers, arg);
+  if (!canShow(file) || typeof reveal !== 'function') return false;
+  reveal(file);
+  return true;
+}
 
 // macOS: what arrives is marked as downloaded (com.apple.quarantine), as a browser's downloads and
 // AirDrop's files are, so Gatekeeper checks an app or a script from another device before its first
@@ -86,8 +149,8 @@ function startLocalSend(o) {
       const before = transfers.find((x) => x.id === tr.id);
       record(tr);
       if (o.say && tr.dir === 'in' && before && before.state === 'running' && tr.state !== 'running') {
-        if (tr.state === 'done') o.say(t('Received from {name}', { name: tr.peer.alias }), what(tr), () => o.reveal && tr.saved[0] && o.reveal(tr.saved[0]));
-        else if (tr.arrived) o.say(t('Stopped: {count} of {total} files from {name} arrived', { count: tr.arrived, total: tr.files, name: tr.peer.alias }), '', () => o.reveal && tr.saved[0] && o.reveal(tr.saved[0]));
+        if (tr.state === 'done') o.say(t('Received from {name}', { name: tr.peer.alias }), what(tr), () => openReceipt([tr], tr.id, o.reveal));
+        else if (tr.arrived) o.say(t('Stopped: {count} of {total} files from {name} arrived', { count: tr.arrived, total: tr.files, name: tr.peer.alias }), '', () => openReceipt([tr], tr.id, o.reveal));
       }
       if (o.say && tr.dir === 'out' && tr.state === 'done') o.say(t('Sent to {name}', { name: tr.peer.alias }), what(tr));
       push();
@@ -194,14 +257,16 @@ function startLocalSend(o) {
       }
       push();
     },
-    lsReveal(id) {
-      const tr = transfers.find((x) => x.id === id);
-      if (tr && tr.dir === 'in' && tr.saved && tr.saved[0] && o.reveal) o.reveal(tr.saved[0]);
-    },
+    lsReveal(arg) { openReceipt(transfers, arg, o.reveal); },
   };
 
   apply();
-  return { view, actions, apply, shutdown: () => { if (node) { node.stop(); node = null; } }, get node() { return node; } };
+  return {
+    view, actions, apply,
+    shutdown: () => { if (node) { node.stop(); node = null; } },
+    get node() { return node; },
+    get receipts() { return completedIncoming(transfers); },
+  };
 }
 
-module.exports = { startLocalSend, quarantine, ACTIONS: ['lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal'] };
+module.exports = { startLocalSend, quarantine, completedIncoming, openReceipt, ACTIONS: ['lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal'] };

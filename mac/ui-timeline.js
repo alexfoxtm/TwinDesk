@@ -131,8 +131,16 @@ UI.tab({
       else if (typeof api.copyText === 'function' && text.length < 200) api.copyText(text);
     }
 
-    // Reveal only by index into the drop list the main process already trusts (mac/drop.js).
+    // TwinDesk files: index into the drop list the main process already trusts (mac/drop.js).
+    // LocalSend receipts: that history's transfer id and saved index (lsReveal). A path is never sent.
     function revealItem(it) {
+      const m = it && it.meta || {};
+      if (m.ls) {
+        const transfers = UI.state && UI.state.localsend && UI.state.localsend.transfers;
+        const arg = TL && TL.localsendReveal(it, transfers);
+        if (arg && api && typeof api.lsReveal === 'function') api.lsReveal(arg.index ? { id: arg.id, index: arg.index } : arg.id);
+        return;
+      }
       if (!api || typeof api.revealDrop !== 'function' || !it.path) return;
       const recent = (UI.state && UI.state.files && Array.isArray(UI.state.files.recent) && UI.state.files.recent)
         || (UI.state && UI.state.drop && Array.isArray(UI.state.drop.recent) && UI.state.drop.recent)

@@ -593,7 +593,7 @@ function phoneAdb(b) {
 let trayKey = '';
 function showFileShelf() {
   if (!svc || modulesAtStart.includes('files')) return;
-  fileShelf ||= new (require('./file-shelf').FileShelf)({ drop: svc.drop, latestPhoto: () => photoBackup?.latest(), t });
+  fileShelf ||= new (require('./file-shelf').FileShelf)({ drop: svc.drop, latestPhoto: () => photoBackup?.latest(), receipts: () => (localsend && localsend.receipts) || [], t });
   fileShelf.show();
 }
 
@@ -1236,7 +1236,7 @@ app.whenReady().then(() => {
   try { systemPreferences.subscribeNotification('AppleColorPreferencesChangedNotification', () => pushState()); } catch {}
   setupWeb();
   localsend = require('./localsend.js').setupLocalSend({
-    settings: () => settings, save: () => store.saveSettings(settings), pushState, t, window: () => win,
+    settings: () => settings, save: () => store.saveSettings(settings), pushState: () => { pushState(); fileShelf?.refresh(); }, t, window: () => win,
     name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),
   });
   let silenceModuleOn = Mods.isOn(settings.modules, 'notifications');
