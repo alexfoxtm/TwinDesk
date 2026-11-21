@@ -175,7 +175,6 @@ class Clip {
     ++this.readSequence;
     if (!again) try { clipboard.writeText(m.text); } catch (_) { return; }
     this.images.text();
-    this.lastSync.sent = null;
     this.lastSync.received = m.text;
     this.seen = m.text; // so instant mode doesn't bounce it back
     this._remember('in', m.text);
@@ -211,7 +210,6 @@ class Clip {
     this.images.text();
     if (!this.link.send({ t: P.T.CLIP, text })) return;
     this.lastSync.sent = text;
-    this.lastSync.received = null;
     this.sentAt = Date.now();
     this._remember('out', text);
     this.lastSkip = '';
