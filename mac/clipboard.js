@@ -26,6 +26,7 @@ class Clipboard extends EventEmitter {
     this.lastSent = null;
     this.lastReceived = null;
     this.readSequence = 0;
+    this.readsInFlight = 0;
     this.receiveSequence = 0;
     this.lastAppliedText = 0;
     this.receiving = 0;
@@ -145,6 +146,8 @@ class Clipboard extends EventEmitter {
   async _onClip(msg) {
     const c = this.cfg;
     if (!c.enabled || !c.receive || !P.clipAllowed(msg.text)) return;
+    // The phone bridge can report our last send back while a newer local copy is being read.
+    if (msg.text === this.lastSent && (this.readsInFlight || this.pending)) return;
     ++this.queueEpoch;
     const sequence = ++this.receiveSequence;
     ++this.receiving;
@@ -192,6 +195,17 @@ class Clipboard extends EventEmitter {
     if (defer()) return;
     const sequence = ++this.readSequence;
     const valid = () => sequence === this.readSequence && this.server.current && this.cfg.enabled && this.cfg.send && this.peerAccepts && !defer();
+    ++this.readsInFlight;
+    try {
+      return await this._readAndSend(why, valid);
+    } finally {
+      --this.readsInFlight;
+    }
+  }
+
+  // The read itself, counted by sendIfChanged while it runs.
+  async _readAndSend(why, valid) {
+    const c = this.cfg;
     const text = await readText();
     if (!valid()) return;
     if (require('../shared/otp.js').isQuiet(text)) return; // a code copied by itself (Notifications): kept here only
