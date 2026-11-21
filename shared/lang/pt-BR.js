@@ -2511,4 +2511,13 @@
   "Identity could not be verified": "Não foi possível verificar a identidade do computador",
   "{value} fps": "{value} qps",
   "{value} Mb/s": "{value} Mb/s",
+  "Security": "Segurança",
+  "Lock Mac when the phone disconnects": "Bloquear o Mac quando o celular se desconectar",
+  "If the last connected paired phone drops unexpectedly, you have 15 seconds to cancel before this Mac locks.": "Se o último celular emparelhado conectado perder a conexão inesperadamente, você terá 15 segundos para cancelar antes que este Mac seja bloqueado.",
+  "Phone disconnected": "Celular desconectado",
+  "Mac locks in {seconds} s": "O Mac será bloqueado em {seconds} s",
+  "Lock this computer when the phone disconnects": "Bloquear este computador quando o celular se desconectar",
+  "If the last paired phone disconnects unexpectedly, you have 15 seconds to cancel.": "Se o último celular emparelhado se desconectar inesperadamente, você terá 15 segundos para cancelar.",
+  "Computer locks in {seconds} s": "O computador será bloqueado em {seconds} s",
+  "Automatic screen locking is unavailable on this desktop.": "O bloqueio automático de tela não está disponível neste ambiente gráfico.",
 });

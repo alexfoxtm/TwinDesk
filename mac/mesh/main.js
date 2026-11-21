@@ -71,6 +71,8 @@ const { Mesh } = require('../../shared/mesh.js');
 const LayoutSync = require('./layout-sync'); // the mesh's shared layout (docs/mesh.md)
 const { startServices } = require('./services');
 const { setupIpc, TABS } = require('./ipc');
+const { installProximityLock } = require('../proximity-lock');
+const { isAuthenticatedPhone } = require('../../shared/proximity-lock.js');
 const login = require('../login');
 const { Hud } = require('../hud');
 const { PairSync } = require('../pairsync');
@@ -97,6 +99,7 @@ let startHidden = process.argv.includes('--hidden');
 // server: this Mac's server (many clients); links: the hosts we dial; hub: the mesh (hub.js);
 // peer: the SELECTED device for the one-to-one features; phonePeer: the phone, wherever it is selected.
 let autoJoin, settings, id, server, pairing, discovery, links, hub, mesh, layoutSync, peer, phonePeer, svc, actions, pairSync, updates;
+let proximityLock = null;
 let web = null; // TwinDesk Web (shared/web/webwire.js), beside the mesh as in the one-to-one app
 let localsend = null; // files with LocalSend-compatible apps (mac/localsend.js), off until turned on in Files
 let phoneHub = null; // Calls, Messages and Photos (loadHub); svc.hub is not used: the mesh's hub is `hub`
@@ -641,6 +644,9 @@ app.whenReady().then(() => {
   discovery.start();
   mesh = new Mesh({ selfId: id.macId });
   pairing = new Pairing(server, id);
+  proximityLock = installProximityLock({ server, pairing, settings, i18n, getHelper: () => svc && svc.helper,
+    occupied: (ctx) => server.clients.has(ctx.deviceId) || [...server.clients.values()].some(isAuthenticatedPhone) || svc?.net?.state === 'joining',
+  });
   pairing.on('change', pushState);
   pairing.on('request', showWindow);
   server.on('phoneFree', () => { links.poke(); pushState(); });
@@ -1116,7 +1122,7 @@ app.whenReady().then(() => {
     name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),
   });
   svc.onModulesChanged = () => localsend.apply();
-  actions = setupIpc({ devctl: () => devctl, chats: () => chats, state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link: links, ...svc, hub, layoutSync, autoJoin, phoneHub: loadHub, showFileShelf, login, refreshPermissions, updates });
+  actions = setupIpc({ devctl: () => devctl, chats: () => chats, state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link: links, ...svc, hub, layoutSync, autoJoin, phoneHub: loadHub, showFileShelf, login, refreshPermissions, updates, proximityLock });
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, '..', 'assets', 'trayTemplate.png'))); // "Template": macOS tints it
   hud = new Hud(() => settings);
   svc.kvm.on('where', (mode) => {
@@ -1254,7 +1260,10 @@ function setupNet() {
         await wifi('wifiLocation').catch(() => {}); // macOS shows scans only to apps with Location
         await wifi('wifiJoin', { ssid, password }, 90000);
       },
-      stop: () => wifi('wifiLeave', {}, 30000),
+      stop: () => {
+        if (svc.net.onGroup) proximityLock.reset(); // the still-live session is leaving its Wi-Fi group
+        return wifi('wifiLeave', {}, 30000);
+      },
     },
     // A phone's screen goes through adb: on the phone's hotspot the Mac keeps the internet.
     // 'user': Connect with Wi-Fi Direct; 'hotspot': Connect with hotspot.
@@ -1448,6 +1457,7 @@ app.on('will-quit', () => {
   globalShortcut.unregisterAll();
 });
 app.on('before-quit', () => {
+  proximityLock?.shutdown();
   if (svc && svc.batteryAlerts) svc.batteryAlerts.reset();
   if (web) web.shutdown();
   fileShelf?.shutdown();
