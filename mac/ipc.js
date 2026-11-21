@@ -53,7 +53,7 @@ const SCHEMA = {
   audio: { send: bool, receive: bool, muteLocal: bool, engine: oneOf(['helper', 'system'], 'helper'), volume: clamp(0, 1, 1), phoneMedia: bool, micSend: bool, micReceive: bool, micDevice: devId, micOut: devId }, // mic*: shared/mic.js
   terminal: { allowPc: bool, connectPc: bool },
   files: { acceptDrops: bool, reveal: bool, dragEdge: bool, outboxHours: oneOf([0, 1, 24, 168], 24), clipReceived: bool, plain: bool, shortcuts: bool, copyKeys: accel('Control+Alt+C'), pasteKeys: accel('Control+Alt+V') },
-  notifs: { send: bool, receive: bool, hideText: bool },
+  notifs: { send: bool, receive: bool, hideText: bool, batteryAlerts: bool },
   smb: { connectPc: bool },
   apps: { offer: bool, onVirtual: bool, moveWindows: bool, moveKey: oneOf(['ControlRight', 'ControlLeft', 'ShiftRight', 'ShiftLeft', 'AltRight', 'AltLeft', 'MetaRight', 'MetaLeft'], 'MetaRight') }, // moveWindows: Apps › Move windows (movewin.js)
   receive: { on: bool, fullScreen: bool, input: bool, framegen: bool },
@@ -435,6 +435,7 @@ function setupIpc(ctx) {
       save();
       ctx.notifs.applySettings();
       if (partial && partial.receive === true) void ctx.notifs.nativePermission.request();
+      if (ctx.batteryAlerts) ctx.batteryAlerts.setting(!!settings.notifs.batteryAlerts);
     },
     // Notifications › Silence together (shared/silence.js): this pair's two switches (the phone
     // in the session), each this Mac's own choice.
@@ -808,6 +809,7 @@ function setupIpc(ctx) {
         delete settings.silence.peers[String(deviceId)];
         store.saveSettings(settings);
       }
+      if (ctx.batteryAlerts && deviceId != null && deviceId !== '') ctx.batteryAlerts.forget(String(deviceId));
       if (ctx.link.hosts.some((h) => h.id === String(deviceId))) return ctx.link.forget(String(deviceId));
       ctx.pairing.forget(String(deviceId));
       ctx.terminal.forget(String(deviceId));

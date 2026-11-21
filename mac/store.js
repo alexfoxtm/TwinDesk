@@ -98,7 +98,7 @@ const DEFAULT_SETTINGS = {
     outboxHours: 24, // Keep files to send: hours they wait for the other device (shared/outbox.js), 0 = off
     plain: false, // Encrypt file transfers off: plain HTTP for file bytes where both allow it (shared/fastfile.js fxPlain)
     shortcuts: false, copyKeys: 'Control+Alt+C', pasteKeys: 'Control+Alt+V' }, // Copy/paste files
-  notifs: { send: false, receive: false, hideText: false, muted: [], style: '', otpCopy: false, quiet: { on: false, from: '22:00', to: '07:00' }, phoneApps: {} }, // style…phoneApps: how a phone's show here (shared/notifrules.js)
+  notifs: { send: false, receive: false, hideText: false, muted: [], style: '', otpCopy: false, quiet: { on: false, from: '22:00', to: '07:00' }, phoneApps: {}, batteryAlerts: false }, // style…phoneApps: how a phone's show here (shared/notifrules.js); batteryAlerts: phone battery on this Mac (shared/battery-alerts.js)
   // Notifications › Silence together (shared/silence.js, silence-mac.js): peers {deviceId: {send, follow}},
   // each off until switched on for that phone; on / off / probe: the person's shortcuts {id, name} that set
   // a Focus and read it; dedicated: their word that the Focus is TwinDesk's alone; proof: what the check
