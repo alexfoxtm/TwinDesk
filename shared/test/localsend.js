@@ -691,14 +691,17 @@ async function main() {
   {
     const base = path.join(tmp, 'receipt-real');
     const via = path.join(tmp, 'receipt-link');
+    const nextDir = path.join(tmp, 'next-receipt-folder');
     fs.mkdirSync(base);
+    fs.mkdirSync(nextDir);
     fs.symlinkSync(base, via);
     const revealed = [];
     const clicks = [];
     const cfg = { localsend: { on: true } };
+    let chosenDir = via;
     const service = startLocalSend({
       dir: path.join(tmp, 'receipt-data'), settings: () => cfg, pushState() {}, save() {},
-      name: () => 'Receipt fixture', receivedDir: () => via,
+      name: () => 'Receipt fixture', receivedDir: () => chosenDir,
       say(_title, _body, onClick) { if (onClick) clicks.push(onClick); },
       reveal: (p) => revealed.push(p),
       ask: async () => true,
@@ -707,14 +710,16 @@ async function main() {
     closers.push(() => service.shutdown());
     await until(() => service.view().running, 'receipt listener');
     assert.strictEqual(service.view().folder, via, 'the Files page still shows the chosen folder');
-    const sendOne = async (name, body) => {
+    const sendOne = async (name, body, next = chosenDir) => {
       const file = { id: name, fileName: name, data: Buffer.from(body) };
       const prep = await raw(service.node.port, 'POST', `${API}/prepare-upload`, offerOf([file]));
       assert.strictEqual(prep.status, 200, name);
+      chosenDir = next;
       assert.strictEqual((await up(service.node.port, prep.json.sessionId, name, prep.json.files[name], file.data)).status, 200, name);
       return until(() => service.view().transfers.find((t) => t.dir === 'in' && t.state === 'done' && t.saved && t.saved.some((p) => p.endsWith(name))), name);
     };
-    const first = await sendOne('from-phone.txt', 'phone');
+    const first = await sendOne('from-phone.txt', 'phone', nextDir);
+    assert.strictEqual(service.view().folder, nextDir);
     const linkPath = path.join(via, 'from-phone.txt');
     const canonical = fs.realpathSync(path.join(base, 'from-phone.txt'));
     assert.strictEqual(first.saved[0], linkPath, 'the transfer keeps the path that was written');
@@ -735,6 +740,7 @@ async function main() {
     assert.deepStrictEqual(revealed, [canonical, canonical], 'clearing history revokes the arrival notification');
     assert.deepStrictEqual(service.receipts, []);
     assert.ok(!service.view().transfers.some((t) => t.id === first.id));
+    chosenDir = via;
     const second = await sendOne('second.txt', 'second');
     const secondPath = fs.realpathSync(path.join(base, 'second.txt'));
     assert.strictEqual(service.receipts.map((item) => item.path).join(','), secondPath);

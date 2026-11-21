@@ -274,6 +274,11 @@ test('unfinished, linked, cleared and supplied LocalSend paths are not revealed'
     { id: 'gone', dir: 'in', state: 'done', at: now + 20, saved: missing },
     { id: 'in-real', dir: 'in', state: 'done', at: now, saved: [real] },
   ]).map((item) => item.path), [real], 'missing newest files do not take the receipt places');
+  const large = [{ id: 'large', dir: 'in', state: 'done', at: now, saved: [...missing, real] }];
+  assert.deepEqual(wire.completedIncoming(large).map((item) => item.path), [real]);
+  const unavailable = { receivedDir: path.join(dir, 'unavailable') };
+  assert.deepEqual(wire.completedIncoming(large, unavailable), []);
+  assert.equal(wire.openReceipt(large, { id: 'large', index: 40 }, () => assert.fail(), unavailable), false);
   const before = path.join(dir, 'before.txt');
   fs.writeFileSync(before, 'original');
   const stamped = wire.completedIncoming([{ id: 'before', dir: 'in', state: 'done', at: now + 1, saved: [before] }]);

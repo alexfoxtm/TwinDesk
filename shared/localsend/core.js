@@ -1030,7 +1030,7 @@ class LocalSend extends EventEmitter {
     s.transfer.arrived = files.filter((f) => f.state === 'done').length; // what's kept when it ended early
     if (state === 'done') s.transfer.done = s.transfer.total;
     fs.rm(s.staging, { recursive: true, force: true }, () => {});
-    this.emit('transfer', { ...s.transfer });
+    this.emit('transfer', { ...s.transfer }, s.saveDir);
   }
 
   _sweepIdle() {

@@ -127,7 +127,7 @@ function strictEntry(file) {
 }
 
 function entryNow(file, parent) {
-  return parent ? readUnder(parent, file) : strictEntry(file);
+  return parent === undefined ? strictEntry(file) : readUnder(parent, file);
 }
 
 // The identity taken at completion still names this path: same file, and no link in its container.
@@ -149,7 +149,7 @@ function completedIncoming(transfers, opt) {
   const seen = new Set();
   if (!Array.isArray(transfers)) return out;
   const pins = opt && opt.pins;
-  const parent = pins ? null : chosenParent(opt && opt.receivedDir);
+  const parent = pins || opt?.receivedDir == null ? undefined : chosenParent(opt.receivedDir);
   const n = Math.min(transfers.length, KEEP);
   let looked = 0;
   for (let i = 0; i < n && out.length < SAVED_CAP; i++) {
@@ -158,7 +158,7 @@ function completedIncoming(transfers, opt) {
     const at = typeof tr.at === 'number' && Number.isFinite(tr.at) && tr.at > 0 ? tr.at : 0;
     const pin = pins && pins.get(tr.id);
     if (pins && !pin) continue;
-    const max = Math.min(tr.saved.length, SAVED_CAP);
+    const max = Math.min(tr.saved.length, REVEAL_MAX);
     for (let index = 0; index < max && out.length < SAVED_CAP; index++) {
       if (++looked > SCAN_BUDGET) return out;
       const file = tr.saved[index];
@@ -202,7 +202,8 @@ function openReceipt(transfers, arg, reveal, opt) {
     reveal(row.canonical);
     return true;
   }
-  const live = entryNow(found.file, chosenParent(opt && opt.receivedDir));
+  const parent = opt?.receivedDir == null ? undefined : chosenParent(opt.receivedDir);
+  const live = entryNow(found.file, parent);
   if (!live) return false;
   reveal(live.canonical);
   return true;
@@ -236,22 +237,21 @@ function startLocalSend(o) {
 
   // The chosen folder, canonicalized, and the file or folder that was actually stored. Taken once:
   // a later file at that path is not this receipt.
-  function bind(tr) {
+  function bind(tr, saveDir) {
     if (!tr || typeof tr.id !== 'string' || pins.has(tr.id)) return;
     if (tr.dir !== 'in' || tr.state === 'waiting' || tr.state === 'running') return;
     const saved = Array.isArray(tr.saved) ? tr.saved : [];
-    let parent = null;
-    try { parent = chosenParent(o.receivedDir); } catch { parent = null; }
+    const parent = chosenParent(saveDir);
     const n = Math.min(saved.length, REVEAL_MAX);
     const rows = new Array(n);
-    for (let index = 0; index < n; index++) rows[index] = entryNow(saved[index], parent);
+    for (let index = 0; index < n; index++) rows[index] = readUnder(parent, saved[index]);
     pins.set(tr.id, rows);
   }
 
   const push = () => { try { o.pushState(); } catch { /* no window */ } };
   const what = (tr) => (tr.names.length === 1 && tr.files === 1 ? tr.names[0] : t(tr.files === 1 ? '{count} file' : '{count} files', { count: tr.files }));
 
-  function record(tr) {
+  function record(tr, saveDir) {
     const i = transfers.findIndex((x) => x.id === tr.id);
     if (i >= 0) transfers[i] = tr;
     else transfers.unshift(tr);
@@ -262,7 +262,7 @@ function startLocalSend(o) {
       pins.delete(transfers[old].id);
       transfers.splice(old, 1);
     }
-    if (transfers.some((item) => item.id === tr.id)) bind(tr);
+    if (transfers.some((item) => item.id === tr.id)) bind(tr, saveDir);
   }
 
   function make() {
@@ -281,9 +281,9 @@ function startLocalSend(o) {
       if (ac) ac.abort(); // answered on the page, or it ran out: the question goes away
       push();
     });
-    n.on('transfer', (tr) => {
+    n.on('transfer', (tr, saveDir) => {
       const before = transfers.find((x) => x.id === tr.id);
-      record(tr);
+      record(tr, saveDir);
       if (o.say && tr.dir === 'in' && before && before.state === 'running' && tr.state !== 'running') {
         const reveal = () => openReceipt(transfers, tr.id, o.reveal, { pins });
         if (tr.state === 'done') o.say(t('Received from {name}', { name: tr.peer.alias }), what(tr), reveal);
