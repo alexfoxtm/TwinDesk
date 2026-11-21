@@ -149,8 +149,9 @@ function startLocalSend(o) {
       const before = transfers.find((x) => x.id === tr.id);
       record(tr);
       if (o.say && tr.dir === 'in' && before && before.state === 'running' && tr.state !== 'running') {
-        if (tr.state === 'done') o.say(t('Received from {name}', { name: tr.peer.alias }), what(tr), () => openReceipt([tr], tr.id, o.reveal));
-        else if (tr.arrived) o.say(t('Stopped: {count} of {total} files from {name} arrived', { count: tr.arrived, total: tr.files, name: tr.peer.alias }), '', () => openReceipt([tr], tr.id, o.reveal));
+        const reveal = () => openReceipt(transfers, tr.id, o.reveal);
+        if (tr.state === 'done') o.say(t('Received from {name}', { name: tr.peer.alias }), what(tr), reveal);
+        else if (tr.arrived) o.say(t('Stopped: {count} of {total} files from {name} arrived', { count: tr.arrived, total: tr.files, name: tr.peer.alias }), '', reveal);
       }
       if (o.say && tr.dir === 'out' && tr.state === 'done') o.say(t('Sent to {name}', { name: tr.peer.alias }), what(tr));
       push();
