@@ -42,3 +42,16 @@ internal class ConnectionObservations {
     fun forPair(id: String, fingerprint: String): ConnectionCloseObservation? =
         last?.takeIf { it.id == id && it.fingerprint == fingerprint }
 }
+
+internal fun doctorTransport(core: Core): String {
+    val link = core.link
+    val endpoint = if (link.connected) link.endpoint() else null
+    return when {
+        !link.connected -> tr("Not connected")
+        link.wired -> "USB"
+        link.ble -> tr("Bluetooth")
+        endpoint?.first == "127.0.0.1" && endpoint.second in Relay.ports -> tr("Your own relay")
+        Tailnet.isTailnet(endpoint?.first.orEmpty()) -> "Tailscale"
+        else -> tr(core.net.via)
+    }
+}

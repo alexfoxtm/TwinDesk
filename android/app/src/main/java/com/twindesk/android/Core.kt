@@ -13,7 +13,6 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
-import okhttp3.WebSocket
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -529,7 +528,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         changed()
     }
 
-    override fun onMessage(m: JSONObject, route: Link.TrustedRoute?, source: WebSocket) {
+    override fun onMessage(m: JSONObject, route: Link.TrustedRoute?, source: okhttp3.WebSocket) {
         val t = m.optString("t")
         if (t == Proto.T.TASK_ALERT) {
             val alert = TaskAlertGate.parse(m.opt("id"), m.opt("title"), m.opt("ok"))

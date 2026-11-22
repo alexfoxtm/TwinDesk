@@ -738,15 +738,6 @@ private fun ConnectionDoctorDetails(core: Core, version: Int) {
     val link = core.link
     val selected = if (link.pair == null) link.host?.let { current -> core.hosts().find { it.id == current.id && it.fp == current.fp } } else null
     val close = selected?.let(link::doctorClose)
-    val endpoint = if (link.connected) link.endpoint() else null
-    val transport = when {
-        !link.connected -> tr("Not connected")
-        link.wired -> "USB"
-        link.ble -> tr("Bluetooth")
-        endpoint?.first == "127.0.0.1" && endpoint.second in Relay.ports -> tr("Your own relay")
-        Tailnet.isTailnet(endpoint?.first.orEmpty()) -> "Tailscale"
-        else -> tr(core.net.via)
-    }
     val status = when {
         link.pair != null -> tr("Pairing…")
         link.connected -> tr("Connected")
@@ -770,7 +761,7 @@ private fun ConnectionDoctorDetails(core: Core, version: Int) {
     MacRow(tr("Pairing"), selected?.let { tr("Paired · {name}", "name" to it.name) } ?: tr("No computer selected"))
     MacRow(tr("Connection"), status)
     if (link.connected) {
-        MacRow(tr("Transport"), transport)
+        MacRow(tr("Transport"), doctorTransport(core))
         MacRow(tr("Round-trip time"), link.rttMs?.let { "$it ms" } ?: tr("No reply measured yet"))
     }
     if (selected != null) {
