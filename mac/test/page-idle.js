@@ -48,4 +48,8 @@ test('the window wires that order, and search, go, the tour and the keyboard for
   assert.match(start, /pageQueue\.ensure\([\s\S]{0,500}requestIdleCallback/, 'the shown page is built before the idle queue starts');
   const main = fs.readFileSync(path.join(root, 'mac/main.js'), 'utf8');
   assert.match(main, /tab: \(settings\.ui && settings\.ui\.tab\) \|\| ''/, 'the saved tab is the page built first');
+  const go = main.slice(main.indexOf('function goTab'), main.indexOf("app.on('second-instance'"));
+  assert.match(go, /const hidden = !!\(win && !win\.isDestroyed\(\) && !win\.isVisible\(\)\)/);
+  assert.match(go, /if \(hidden\) win\.webContents\.send\('go', tab\)/);
+  assert.match(go, /if \(!hidden && win && !win\.isDestroyed\(\)\) win\.webContents\.send\('go', tab\)/, 'a hidden window is not sent go twice');
 });

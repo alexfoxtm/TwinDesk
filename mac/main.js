@@ -1812,9 +1812,11 @@ function setupWeb() {
 function goTab(tab) {
   if (TABS.includes(tab)) settings.ui.tab = tab; // a window made now opens there
   // A hidden window already has its page. Move before it is shown, so the previous one does not flash back.
-  if (win && !win.isDestroyed() && !win.isVisible()) win.webContents.send('go', tab);
+  // One send: the second used to repeat it after show.
+  const hidden = !!(win && !win.isDestroyed() && !win.isVisible());
+  if (hidden) win.webContents.send('go', tab);
   showWindow();
-  if (win && !win.isDestroyed()) win.webContents.send('go', tab);
+  if (!hidden && win && !win.isDestroyed()) win.webContents.send('go', tab);
 }
 
 app.on('second-instance', showWindow);
