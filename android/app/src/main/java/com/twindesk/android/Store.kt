@@ -74,28 +74,35 @@ class Store(private val ctx: Context) {
         emptyList()
     }
 
-    fun saveHosts(list: List<Host>, key: String = "hosts") = prefs.edit().putString(key, jsonArray(list.map { it.json() }).toString()).apply()
+    fun saveHosts(list: List<Host>, key: String = "hosts") {
+        if (key == "hosts") {
+            val stored = hosts(key)
+            for (h in list) {
+                if (stored.any { it.id == h.id && it.fp != h.fp }) LockVault(ctx).forget(h.id)
+            }
+        }
+        prefs.edit().putString(key, jsonArray(list.map { it.json() }).toString()).apply()
+    }
 
     fun putHost(h: Host, key: String = "hosts") {
         val old = hosts(key)
-        if (key == "hosts" && old.any { it.id == h.id && it.fp != h.fp }) {
-            LockVault(ctx).forget(h.id)
-            prefs.edit().remove("taskAlerts.${h.id}").apply()
-        }
+        if (key == "hosts" && old.any { it.id == h.id && it.fp != h.fp }) prefs.edit().remove("taskAlerts.${h.id}").apply()
         saveHosts(listOf(h) + old.filter { it.id != h.id }, key)
     }
 
     fun forgetHost(id: String, key: String = "hosts") {
-        if (key == "hosts") {
-            LockVault(ctx).forget(id)
-            prefs.edit().remove("taskAlerts.$id").apply()
-        }
+        if (key == "hosts") prefs.edit().remove("taskAlerts.$id").apply()
         saveHosts(hosts(key).filter { it.id != id }, key)
     }
 
     // Settings: one boolean per switch.
     fun flag(key: String, default: Boolean): Boolean = prefs.getBoolean(key, default)
     fun setFlag(key: String, on: Boolean) = prefs.edit().putBoolean(key, on).apply()
+
+    fun forgetHostClearingCredentials(id: String, key: String = "hosts") {
+        if (key == "hosts") LockVault(ctx).forget(id)
+        forgetHost(id, key)
+    }
 
     fun prefsString(key: String, default: String): String = prefs.getString(key, default) ?: default
     fun setPrefsString(key: String, v: String) = prefs.edit().putString(key, v).apply()

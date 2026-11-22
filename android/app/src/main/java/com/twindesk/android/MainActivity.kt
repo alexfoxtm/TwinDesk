@@ -1917,13 +1917,20 @@ private fun ModulesCard(core: Core) {
         if (off != core.modulesAtStart) MacRow(tr("Restart to apply"), tr("Modules load or unload when TwinDesk starts")) { Primary(tr("Restart")) { Modules.restart(ctx) } }
         if (open) for (t in Tab.entries) {
             val id = t.name.lowercase()
+            if (id == "files" || id == "photos") {
+                SwitchRow(tr(t.title), "", id !in off) {
+                    Modules.set(core.store, id, it)
+                    off = Modules.off(core.store)
+                    if (id == "files") core.localSend.start()
+                    if (id == "photos") core.photos.modulesChanged()
+                }
+                continue
+            }
             if (id in Modules.FIXED) continue
             SwitchRow(tr(t.title), "", id !in off) {
                 Modules.set(core.store, id, it)
                 if (id == "notifications") core.taskAlerts.modulesChanged()
                 off = Modules.off(core.store)
-                if (id == "files") core.localSend.start()
-                if (id == "photos") core.photos.modulesChanged()
             }
         }
     }

@@ -470,7 +470,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         companion.forget(id)
         taskAlerts.forget(id)
         if (link.host?.id == id) link.disconnect()
-        store.forgetHost(id)
+        store.forgetHostClearingCredentials(id)
         changed()
     }
 

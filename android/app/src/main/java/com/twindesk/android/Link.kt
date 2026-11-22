@@ -824,7 +824,7 @@ class Link(
             Proto.E.ASLEEP -> tr("{name} is asleep", "name" to (host?.name ?: tr("The computer")))
             else -> tr("Closed ({code})", "code" to code)
         }
-        if (code == Proto.E.BAD_TOKEN) host?.let { store.forgetHost(it.id, hostsKey) }
+        if (code == Proto.E.BAD_TOKEN) host?.let { store.forgetHostClearingCredentials(it.id, hostsKey) }
     }
 
     private fun pairFailed(error: String) {
