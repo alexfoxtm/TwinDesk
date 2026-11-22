@@ -712,18 +712,17 @@ class Core private constructor(val ctx: Context) : Link.Events {
         }
     }
 
-    private var returnKey: Pair<String, String?>? = null
-    private var returnCached: Host? = null
+    @Volatile private var returnCache: Pair<Pair<String, String?>, Host?>? = null
 
-    @Synchronized private fun returnHost(): Host? {
+    private fun returnHost(): Host? {
         val saved = returnPrefs.getString("host", null) ?: return null
         val key = saved to store.prefsString("hosts", "[]")
-        if (key != returnKey) {
-            val identity = runCatching { JSONObject(saved) }.getOrNull()
-            returnCached = identity?.let { o -> store.hosts().find { it.os in RETURN_OS && it.id == o.optString("id") && it.fp == o.optString("fp") } }
-            returnKey = key
-        }
-        return returnCached?.copy()
+        val cached = returnCache
+        if (cached?.first == key) return cached.second?.copy()
+        val identity = runCatching { JSONObject(saved) }.getOrNull()
+        val host = identity?.let { o -> store.hosts().find { it.os in RETURN_OS && it.id == o.optString("id") && it.fp == o.optString("fp") } }
+        returnCache = key to host
+        return host?.copy()
     }
 
     @Synchronized private fun retryReturnNow() {
