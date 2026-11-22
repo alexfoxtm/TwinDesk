@@ -67,7 +67,8 @@ class BleServe(
     private var server: BluetoothGattServer? = null
     private var ctrl: BluetoothGattCharacteristic? = null
     private var down: BluetoothGattCharacteristic? = null
-    @Volatile private var advertising = false
+    private var advertisingMode: Int? = null
+    private var advertiseCallback: AdvertiseCallback? = null
     // What goes to the PCs, in order; a pipe's bytes (peer set) don't once that pipe is over: the next
     // pipe's session would take them as its own, and its TLS fails ("Unable to parse TLS packet header").
     private class Note(val dev: BluetoothDevice, val c: BluetoothGattCharacteristic, val v: ByteArray, val peer: Peer? = null, val gen: Int = 0)
@@ -89,28 +90,40 @@ class BleServe(
 
     // ---- advertising ----
 
-    private val advCb = object : AdvertiseCallback() {
-        override fun onStartSuccess(s: AdvertiseSettings) { Log.i("TwinDesk", "blp: advertising") }
-        override fun onStartFailure(code: Int) { Log.w("TwinDesk", "blp: advertising failed $code"); advertising = false }
-    }
-
-    // On while a PC may want us (not connected); the server stays up for the PCs already linked.
-    fun advertise(on: Boolean) {
-        if (on == advertising) return
+    // Keep the GATT server and existing peers when only the advertisement cadence changes.
+    @Synchronized fun advertise(on: Boolean, lowPower: Boolean = false) {
+        val mode = if (!on) null else if (lowPower) AdvertiseSettings.ADVERTISE_MODE_LOW_POWER else AdvertiseSettings.ADVERTISE_MODE_BALANCED
+        if (mode == advertisingMode) return
         val adv = runCatching { manager?.adapter?.bluetoothLeAdvertiser }.getOrNull()
-        if (on) {
-            if (!allowed() || adv == null || !openServer()) return
-            val settings = AdvertiseSettings.Builder()
-                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
-                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
-                .setConnectable(true)
-                .setTimeout(0)
-                .build()
-            val data = AdvertiseData.Builder().addServiceUuid(ParcelUuid(PHONE_SERVICE)).setIncludeDeviceName(false).build()
-            runCatching { adv.startAdvertising(settings, data, advCb); advertising = true }.onFailure { Log.w("TwinDesk", "blp: advertise: ${it.message}") }
-        } else {
-            advertising = false
-            runCatching { adv?.stopAdvertising(advCb) }
+        advertiseCallback?.let { cb -> runCatching { adv?.stopAdvertising(cb) } }
+        advertiseCallback = null
+        advertisingMode = null
+        if (mode == null || !allowed() || adv == null || !openServer()) return
+        val settings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(mode)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setConnectable(true)
+            .setTimeout(0)
+            .build()
+        val data = AdvertiseData.Builder().addServiceUuid(ParcelUuid(PHONE_SERVICE)).setIncludeDeviceName(false).build()
+        val cb = object : AdvertiseCallback() {
+            override fun onStartSuccess(s: AdvertiseSettings) { Log.i("TwinDesk", "blp: advertising") }
+            override fun onStartFailure(code: Int) = synchronized(this@BleServe) {
+                Log.w("TwinDesk", "blp: advertising failed $code")
+                if (advertiseCallback === this) {
+                    advertiseCallback = null
+                    advertisingMode = null
+                }
+            }
+        }
+        runCatching {
+            advertiseCallback = cb
+            advertisingMode = mode
+            adv.startAdvertising(settings, data, cb)
+        }.onFailure {
+            advertiseCallback = null
+            advertisingMode = null
+            Log.w("TwinDesk", "blp: advertise failed")
         }
     }
 

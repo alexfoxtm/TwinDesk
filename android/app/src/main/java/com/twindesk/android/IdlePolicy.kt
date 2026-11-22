@@ -24,3 +24,14 @@ internal fun beaconDelay(interactive: Boolean, connected: Boolean, peerOn: Boole
 }
 
 internal fun discoveryMulticastNeeded(running: Boolean, interactive: Boolean): Boolean = running && interactive
+
+internal fun staleDialDelay(away: Boolean, attempts: Int): Long = when {
+    !away -> 5000L
+    attempts == 0 -> 5000L
+    attempts == 1 -> 10_000L
+    attempts == 2 -> 20_000L
+    else -> 60_000L
+}
+
+internal fun lowPowerAdvertisingNeeded(interactive: Boolean, pending: Boolean, networkChanged: Boolean, macSeen: Boolean): Boolean =
+    !interactive && !pending && !networkChanged && !macSeen

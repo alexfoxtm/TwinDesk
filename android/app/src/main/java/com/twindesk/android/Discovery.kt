@@ -16,6 +16,8 @@ import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkRequest
+import android.net.NetworkCapabilities
+import android.os.Build
 import android.net.wifi.WifiManager
 import android.os.PowerManager
 import android.os.SystemClock
@@ -65,7 +67,8 @@ class Discovery(
     // does), and other phones are listed and heard. Off: phones don't see this one at all.
     @Volatile var peerOn = false
     @Volatile var onPeerAsk: ((Found, JSONObject) -> Unit)? = null // another phone's peer.* (Peer.kt)
-    @Volatile var onHost: ((Found) -> Unit)? = null // every computer beacon, including one whose fields did not change
+    @Volatile var onHost: ((Found, Boolean) -> Unit)? = null // every computer beacon, including one whose fields did not change
+    @Volatile var onNetworkChange: (() -> Unit)? = null
     @Volatile var error = ""
     @Volatile private var sock: DatagramSocket? = null
     @Volatile private var running = false
@@ -88,6 +91,7 @@ class Discovery(
     private fun networkChanged() {
         synchronized(targetLock) { cachedTargets = null }
         signalBeacon()
+        onNetworkChange?.invoke()
     }
 
     fun sessionChanged(up: Boolean) {
@@ -143,7 +147,12 @@ class Discovery(
                 if (screenOn) thread(name = "td-wake", isDaemon = true) { probe() }
             }
         }.also { ctx.registerReceiver(it, IntentFilter().apply { addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_SCREEN_OFF) }) }
-        runCatching { connectivity?.registerNetworkCallback(NetworkRequest.Builder().clearCapabilities().build(), networkWatch) }
+        runCatching {
+            val request = NetworkRequest.Builder()
+            if (Build.VERSION.SDK_INT >= 30) request.clearCapabilities()
+            else request.removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            connectivity?.registerNetworkCallback(request.build(), networkWatch)
+        }
         thread(name = "td-discovery", isDaemon = true) { receiveLoop() }
         thread(name = "td-beacon", isDaemon = true) {
             while (running) {
@@ -303,7 +312,7 @@ class Discovery(
             rc = m.optInt("rc") == 1, // missing or any other value: this host cannot be reclaimed
         )
         found[id] = d
-        runCatching { onHost?.invoke(d) }
+        runCatching { onHost?.invoke(d, old == null || old.address != d.address || old.port != d.port || old.fp != d.fp || old.rc != d.rc) }
         if (t == Proto.T.INVITE) onInvite(d)
         if (old == null || old.name != d.name || old.address != d.address || old.invited != d.invited || old.rc != d.rc) onChange()
     }

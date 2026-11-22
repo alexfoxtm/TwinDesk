@@ -42,7 +42,21 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val serve = BleServe(ctx, { JSONObject().put("id", store.deviceId).put("name", store.deviceName).put("os", Proto.OS) }, ::changed, ::onServeOpen)
     init {
         link.bleRx = { maxOf(ble.lastDown, serve.lastRx) }
-        discovery.onHost = { returnTick() }
+        discovery.onHost = { seen, changed ->
+            if (changed && canReturn() && returnHost()?.let { it.id == seen.id && it.fp == seen.fp } == true) {
+                retryReturnNow()
+            } else returnTick()
+        }
+        discovery.onNetworkChange = {
+            link.wake()
+            if (started) {
+                fastAdvertisingUntil = android.os.SystemClock.elapsedRealtime() + 15_000L
+                main.removeCallbacks(advertisingSettled)
+                main.postDelayed(advertisingSettled, 15_000L)
+                requestTimers()
+                timers.execute { retryReturnNow() }
+            }
+        }
     }
 
     // An unpaired computer asked us to pair (shown until acted on).
@@ -55,6 +69,9 @@ class Core private constructor(val ctx: Context) : Link.Events {
     @Volatile private var returnAfter = 0L
     private var returnFailures = 0
     private var returnTailTurn = false
+    @Volatile private var awayAttempts = 0
+    @Volatile private var fastAdvertisingUntil = 0L
+    private val interactive get() = ctx.getSystemService(android.os.PowerManager::class.java)?.isInteractive != false
 
     val sync = PairSync(this)
     val clip = Clip(this)
@@ -140,9 +157,19 @@ class Core private constructor(val ctx: Context) : Link.Events {
     @Volatile private var started = false
     internal val timers = Executors.newScheduledThreadPool(2) { r -> Thread(r, "td-timers").apply { isDaemon = true } }
     private var returnTimer: java.util.concurrent.ScheduledFuture<*>? = null
+    private var returnTimerAt = 0L
     private var bleTimer: java.util.concurrent.ScheduledFuture<*>? = null
     private var bleState: List<Boolean>? = null
     private val refreshTimers = Runnable { updateTimers() }
+    private val advertisingSettled = Runnable { requestTimers() }
+
+    private fun lowPowerAdvertising() = lowPowerAdvertisingNeeded(
+        interactive,
+        link.pair != null || link.state == "connecting",
+        android.os.SystemClock.elapsedRealtime() < fastAdvertisingUntil,
+        discovery.found.values.any { it.os == "mac" } ||
+            ble.found.values.any { it.os == "mac" } || serve.found.values.any { it.os == "mac" },
+    )
 
     private fun requestTimers() {
         if (!started) return
@@ -155,14 +182,29 @@ class Core private constructor(val ctx: Context) : Link.Events {
     private fun updateTimers() {
         peer.updateTicker()
         val returning = canReturn() && returnHost() != null
-        if (returning && returnTimer == null) {
-            returnTimer = timers.scheduleWithFixedDelay({ runCatching { returnTick() }.onFailure { Log.e("TwinDesk", "reconnect", it) } }, 0, 3, TimeUnit.SECONDS)
+        val deadline = returnAfter
+        if (returning && (returnTimer == null || returnTimerAt != deadline)) {
+            returnTimer?.cancel(false)
+            returnTimerAt = deadline
+            returnTimer = timers.schedule({
+                runCatching { returnTick() }.onFailure { Log.e("TwinDesk", "reconnect", it) }
+                main.post {
+                    if (returnTimerAt == deadline) returnTimer = null
+                    requestTimers()
+                }
+            }, (deadline - System.currentTimeMillis()).coerceAtLeast(0L), TimeUnit.MILLISECONDS)
         } else if (!returning) {
             returnTimer?.cancel(false)
             returnTimer = null
         }
+        if (awayAttempts > 0 && bleOn) {
+            val h = returnHost()
+            if (h != null && (ble.get(h.id) != null || serve.get(h.id) != null)) {
+                timers.execute { if (awayAttempts > 0) retryReturnNow() }
+            }
+        }
         val state = listOf(bleOn, ble.radioOn, ble.allowed(), serve.allowed(), link.connected, link.ble,
-            peer.connected, bleWifiOff && net.via == "Wi-Fi", link.hasBluetoothFallback)
+            peer.connected, bleWifiOff && net.via == "Wi-Fi", link.hasBluetoothFallback, lowPowerAdvertising())
         if (state != bleState) {
             bleState = state
             bleTimer?.cancel(false)
@@ -187,7 +229,6 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // something happens, and a message makes the link active at once.
         link.keepPinging = performance
         link.busyReason = {
-            val interactive = ctx.getSystemService(android.os.PowerManager::class.java)?.isInteractive != false
             when {
                 screen.viewing -> "viewer"
                 lockView.active -> "lock-view"
@@ -206,7 +247,10 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 override fun onReceive(c: Context, i: android.content.Intent) {
                     when (i.action) {
                         android.content.Intent.ACTION_SCREEN_OFF -> link.nudge()
-                        android.content.Intent.ACTION_SCREEN_ON, android.content.Intent.ACTION_USER_PRESENT -> link.wake()
+                        android.content.Intent.ACTION_SCREEN_ON, android.content.Intent.ACTION_USER_PRESENT -> {
+                            link.wake()
+                            timers.execute { retryReturnNow() }
+                        }
                     }
                     requestTimers()
                 }
@@ -238,7 +282,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         requestTimers()
         bank.opened() // Banking apps: Restore when TwinDesk opens
         link.wake()
-        if (returnHost() != null) { returnAfter = 0L; returnTick(); return }
+        if (returnHost() != null) { retryReturnNow(); return }
         val h = resumeLater ?: return
         resumeLater = null
         if (link.connected || link.state == "connecting" || link.pair != null || peer.connected) return
@@ -252,7 +296,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     fun near() {
         if (bank.pending) return // a banking app is open: connecting would turn debugging back on under it
         link.wake()
-        if (returnHost() != null) { returnAfter = 0L; returnTick() }
+        retryReturnNow()
     }
     private fun inBackground() = !reconnectBg && !MainActivity.shown
 
@@ -262,7 +306,9 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // on Wi-Fi connections on, Bluetooth goes altogether (its fallback, then its links): the Wi-Fi
     // dropping ends the session, which comes back over Bluetooth (resume). On a group Netlink made,
     // or a USB cable, it stays as the fallback.
-    private fun bleTick() {
+    private val bleReconcile = Any()
+
+    private fun bleTick() = synchronized(bleReconcile) {
         ble.prune()
         if (bleWifiOff && link.connected && net.via == "Wi-Fi") {
             link.dropAlt()
@@ -272,7 +318,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         val want = bleOn && ble.allowed() && ble.radioOn && (!link.connected || link.ble)
         ble.scan(want)
         if (!bleOn && ble.found.isNotEmpty()) ble.stop()
-        serve.advertise(bleOn && serve.allowed() && ble.radioOn && !link.connected && !peer.connected) // a phone holds the session: computers wait
+        serve.advertise(bleOn && serve.allowed() && ble.radioOn && !link.connected && !peer.connected, lowPower = lowPowerAdvertising()) // a phone holds the session: computers wait
         if (!bleOn && serve.found.isNotEmpty()) serve.stop()
         if (link.connected && !link.ble) screen.onWifi()
         if (link.connected && link.ble) link.resume { id -> discovery.found[id]?.let { it.address to it.port } }
@@ -624,7 +670,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
             if (link.state == "failed" || code in setOf("local", "reclaim", "bad_message", Proto.E.VERSION_MISMATCH, Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN)) stopReturn()
             else {
                 returnFailures = (returnFailures + 1).coerceAtMost(5)
-                returnAfter = System.currentTimeMillis() + (1000L shl returnFailures)
+                val failureDeadline = System.currentTimeMillis() + (1000L shl returnFailures)
+                returnAfter = if (awayAttempts > 0) maxOf(returnAfter, failureDeadline) else failureDeadline
             }
             requestTimers()
             return
@@ -645,6 +692,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         returnGeneration++
         returnAfter = 0L
         returnFailures = 0
+        awayAttempts = 0
         returnTailTurn = false
         returnPrefs.edit().remove("host").commit()
         changed()
@@ -655,6 +703,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         returnGeneration++
         returnAfter = 0L
         returnFailures = 0
+        awayAttempts = 0
         returnTailTurn = false
         returnPrefs.edit().remove("host").commit()
         if (h.os in RETURN_OS && link.canReclaim && !link.ble) {
@@ -676,13 +725,30 @@ class Core private constructor(val ctx: Context) : Link.Events {
         return returnCached?.copy()
     }
 
+    @Synchronized private fun retryReturnNow() {
+        awayAttempts = 0
+        returnAfter = 0
+        returnTick()
+        requestTimers()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun hasRoute(address: String): Boolean = runCatching {
+        val ip = android.net.InetAddresses.parseNumericAddress(address)
+        val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java) ?: return true
+        cm.allNetworks.any { network -> cm.getLinkProperties(network)?.routes?.any { it.matches(ip) } != false }
+    }.getOrDefault(true)
+
     @Synchronized private fun returnTick() {
         if (!canReturn()) return
         val h = returnHost() ?: return
         val now = System.currentTimeMillis()
         if (now < returnAfter) return
         val seen = discovery.found[h.id]?.takeIf { it.fp == h.fp }
-        if (seen != null && (seen.os !in RETURN_OS || !seen.rc)) return
+        if (seen != null && (seen.os !in RETURN_OS || !seen.rc)) {
+            returnAfter = now + 3000L
+            return
+        }
         val gen = returnGeneration
         returnAfter = now + 5000L
         // Without a matching LAN beacon, alternate the paired Tailscale address and stored one.
@@ -699,6 +765,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
         val address = dial.address.lowercase().removeSurrounding("[", "]")
         if (Tailnet.isTailnet(address) && !onTailnet) return
         if (dial.port !in 1..65535 || address.isBlank() || address == "localhost" || address == "::1" || address.startsWith("127.") || address.startsWith("::ffff:127.") || address.startsWith("ble:") || address.startsWith("blp:")) return
+        // With any usable route the Mac can come back without a network event. Keep polling it.
+        val away = !interactive && seen == null && !onTailnet &&
+            (!bleOn || (ble.get(h.id) == null && serve.get(h.id) == null)) && !hasRoute(address)
+        returnAfter = now + staleDialDelay(away, awayAttempts)
+        awayAttempts = if (away) (awayAttempts + 1).coerceAtMost(3) else 0
         // Candidate addresses stay transient until Link verifies the pinned welcome.
         link.connect(dial, reclaim = true) {
             val same = gen == returnGeneration && returnHost()?.let { it.id == h.id && it.fp == h.fp } == true
