@@ -547,6 +547,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // ---- Link.Events ----
 
     override fun onChange() {
+        discovery.sessionChanged(link.connected)
         if (link.connected && !link.ble) screen.onWifi()
         screen.doctorLinkChanged()
         runCatching { share.linkChanged() } // the session moved (Bluetooth <-> Wi-Fi): shared folders follow

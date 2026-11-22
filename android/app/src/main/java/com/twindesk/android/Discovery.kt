@@ -12,8 +12,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import org.json.JSONObject
 import java.net.DatagramPacket
@@ -28,7 +33,7 @@ import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 // Screen off: two beacons per DEVICE_STALE_MS, so a computer keeps listing us while we're awake.
-private const val BEACON_SCREEN_OFF_MS = 5000L
+private const val TARGETS_TTL_MS = 30_000L
 // A packet's handling that takes this long is stuck: its stack goes to the log, and a new worker
 // takes the packets after it.
 private const val STUCK_MS = 5000L
@@ -67,6 +72,34 @@ class Discovery(
     private var lock: WifiManager.MulticastLock? = null
     @Volatile private var screenOn = true
     private var screenWatch: BroadcastReceiver? = null
+    private val beaconSignal = Object()
+    private var beaconRevision = 0L
+    @Volatile private var connected = false
+    private val connectivity get() = ctx.getSystemService(ConnectivityManager::class.java)
+    private data class Targets(val addresses: Set<String>, val expires: Long)
+    private val targetLock = Any()
+    private var cachedTargets: Targets? = null
+
+    private val networkWatch = object : ConnectivityManager.NetworkCallback() {
+        override fun onLost(network: Network) = networkChanged()
+        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = networkChanged()
+    }
+
+    private fun networkChanged() {
+        synchronized(targetLock) { cachedTargets = null }
+        signalBeacon()
+    }
+
+    fun sessionChanged(up: Boolean) {
+        if (up == connected) return
+        connected = up
+        signalBeacon()
+    }
+
+    private fun signalBeacon() = synchronized(beaconSignal) {
+        beaconRevision++
+        beaconSignal.notifyAll()
+    }
 
     // Each packet is handled on the worker, never on the thread reading the socket: a handler that
     // blocked (an invite's connect, a lock held elsewhere) stopped the reading, and every beacon,
@@ -106,21 +139,28 @@ class Discovery(
             override fun onReceive(c: Context, i: Intent) {
                 screen(i.action == Intent.ACTION_SCREEN_ON)
                 // Back in every computer's list at once, and theirs in ours (off the main thread).
-                if (screenOn) thread(name = "td-wake", isDaemon = true) { beacon(); probe() }
+                signalBeacon()
+                if (screenOn) thread(name = "td-wake", isDaemon = true) { probe() }
             }
         }.also { ctx.registerReceiver(it, IntentFilter().apply { addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_SCREEN_OFF) }) }
+        runCatching { connectivity?.registerNetworkCallback(NetworkRequest.Builder().clearCapabilities().build(), networkWatch) }
         thread(name = "td-discovery", isDaemon = true) { receiveLoop() }
         thread(name = "td-beacon", isDaemon = true) {
             while (running) {
+                val revision = synchronized(beaconSignal) { beaconRevision }
                 beacon()
                 prune()
-                Thread.sleep(if (screenOn) Proto.BEACON_MS else BEACON_SCREEN_OFF_MS)
+                synchronized(beaconSignal) {
+                    if (running && revision == beaconRevision) beaconSignal.wait(beaconDelay(screenOn, connected, peerOn))
+                }
             }
         }
     }
 
     fun stop() {
         running = false
+        signalBeacon()
+        runCatching { connectivity?.unregisterNetworkCallback(networkWatch) }
         screenWatch?.let { runCatching { ctx.unregisterReceiver(it) } }
         screenWatch = null
         sock?.close()
@@ -143,6 +183,7 @@ class Discovery(
     fun sendTo(m: JSONObject, address: String) = send(m, address)
 
     fun probe(address: String? = null) {
+        if (address == null) synchronized(targetLock) { cachedTargets = null }
         val m = JSONObject().put("t", Proto.T.PROBE).put("v", Proto.VERSION).put("id", self().getString("id"))
         if (address != null) send(m, address) else targets().forEach { send(m, it) }
     }
@@ -156,7 +197,9 @@ class Discovery(
         found[id]?.let { if (it.invited) { found[id] = it.copy(invited = false); onChange() } }
     }
 
-    private fun targets(): Set<String> {
+    private fun targets(): Set<String> = synchronized(targetLock) {
+        val now = SystemClock.elapsedRealtime()
+        cachedTargets?.let { if (now < it.expires) return@synchronized it.addresses }
         val out = mutableSetOf("255.255.255.255")
         runCatching {
             for (ni in NetworkInterface.getNetworkInterfaces()) {
@@ -169,7 +212,8 @@ class Discovery(
         }
         // A computer on this phone's hotspot gets the hotspot's broadcast above. (Not /proc/net/arp:
         // Android 10 and later, all this app runs on, don't let apps read it.)
-        return out
+        cachedTargets = Targets(out, now + TARGETS_TTL_MS)
+        out
     }
 
     private fun send(m: JSONObject, address: String, port: Int = Proto.DISCOVERY_PORT) {

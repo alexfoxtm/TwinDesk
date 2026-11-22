@@ -16,3 +16,9 @@ internal fun peerTimerNeeded(host: Boolean, pairing: Boolean, waiting: Boolean, 
     host || pairing || waiting || temporaryHost
 
 internal fun netTimerNeeded(heldMessages: Boolean, expiringNeeds: Boolean) = heldMessages || expiringNeeds
+
+internal fun beaconDelay(interactive: Boolean, connected: Boolean, peerOn: Boolean): Long = when {
+    !interactive -> 5000L
+    connected && !peerOn -> 4000L
+    else -> Proto.BEACON_MS
+}
