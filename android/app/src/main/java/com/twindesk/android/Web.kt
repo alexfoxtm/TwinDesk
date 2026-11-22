@@ -541,8 +541,7 @@ class Screen(core: Core) : Feature(core) {
         if (host !== h || !viewing || !sharing || !videoPlaying ||
             core.host?.os !in listOf("mac", "win", "linux") ||
             videoGeneration != generation || videoSession != session ||
-            height !in 0..2160 || videoMarker == null || !core.link.connected ||
-            core.link.sessionMarker() !== videoMarker) return
+            height !in 0..2160 || !core.link.ownsVideoSession(videoMarker)) return
         if (core.lockView.locked) return
         core.link.sendFor(videoMarker, msg("rtc.detail", "session" to session, "height" to height))
     }
