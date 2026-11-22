@@ -101,7 +101,8 @@ assert.ok(!sheet.includes('val current = desk.current && display.id == viewingId
 
 assert.ok(viewer.includes('val sheetReady'));
 assert.ok(toolbar.includes('if (sheetReady) onOverview() else onMenu("display")'));
-assert.ok(viewer.includes('!showLogin && !sheetReady && s.remote'));
+assert.ok(viewer.includes('!sheetReady && s.remote'));
+assert.match(read('android/app/src/main/java/com/twindesk/android/ViewerLoginSurface.kt'), /if \(showLogin\) \{[\s\S]*?^        \} else \{[\s\S]*?ViewerChrome\(/m);
 assert.ok(viewer.includes('spaces = s.spaces && s.sharing && s.inputOn'));
 assert.ok(viewer.includes('LaunchedEffect(overview)'));
 assert.ok(viewer.includes('s.refreshDesktops()'));

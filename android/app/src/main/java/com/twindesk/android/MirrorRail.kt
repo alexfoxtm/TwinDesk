@@ -26,6 +26,9 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 class MirrorRail(
     private val activity: Activity,
@@ -49,7 +52,7 @@ class MirrorRail(
             background = GradientDrawable().apply { setColor(0xE6202124.toInt()); cornerRadius = 16 * dp }
             setPadding((6 * dp).toInt(), (8 * dp).toInt(), (6 * dp).toInt(), (8 * dp).toInt())
         }
-        rotateBtn = button("⟳") { setAuto(!auto) }
+        rotateBtn = button("⟳", ::toggleRotation)
         rail.addView(rotateBtn)
         rail.addView(button("◉") { shot() }.also { it.contentDescription = tr("Screenshot (saved in Pictures › TwinDesk)") })
         tab = TextView(activity).apply {
@@ -90,13 +93,14 @@ class MirrorRail(
         if (::overlay.isInitialized) overlay.visibility = if (show) View.VISIBLE else View.GONE
     }
 
-    val autoRotate get() = auto
-    fun toggleRotation() = setAuto(!auto)
+    var autoRotate by mutableStateOf(true)
+        private set
+
+    fun toggleRotation() = setAuto(!autoRotate)
     fun capture() = shot()
 
-    private var auto = true
     private fun setAuto(on: Boolean) {
-        auto = on
+        autoRotate = on
         // Off: locked the way it is now (Android keeps the current orientation).
         // The computer viewer supplies the host rule. Another phone's screen turns with this one.
         val chosen = if (orient != null) orient.invoke(on)
