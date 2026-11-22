@@ -175,7 +175,6 @@ test('a copy held back during a receive is not sent once the mode is no longer i
   assert.equal(c.pending, null);
 });
 
-
 test('a phone echo does not overwrite a local copy waiting on the helper', async () => {
   const { c, helper, copies } = setup();
   text = 'A';
