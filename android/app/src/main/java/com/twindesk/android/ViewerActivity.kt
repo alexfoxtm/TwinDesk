@@ -25,12 +25,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -55,7 +52,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -185,22 +181,10 @@ private fun Viewer(core: Core, host: WebHost, rail: MirrorRail, lockPage: LockPa
         android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
         1f,
     ) == 0f
-    val keyboard = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val keyboard = viewerKeyboardVisible()
     val touchExploration = LocalContext.current.getSystemService(android.view.accessibility.AccessibilityManager::class.java)?.isTouchExplorationEnabled == true
     val s = core.screen
-    var fastLatched by remember(core.host?.id) { mutableStateOf(false) }
-    LaunchedEffect(login, core.lockView.locked, s.videoPlaying, s.videoUnavailable, s.sharing) {
-        if (!login || core.lockView.locked || !s.sharing || s.videoUnavailable) fastLatched = false
-        else if (s.videoPlaying) fastLatched = true
-    }
-    LaunchedEffect(login, core.lockView.locked, fastLatched, s.videoPlaying) {
-        if (login && !core.lockView.locked && fastLatched && !s.videoPlaying) {
-            delay(10000)
-            if (!s.videoPlaying) fastLatched = false
-        }
-    }
-    // A stale RFB crop must stay behind the regular viewer until the next lock reconnects it.
-    val fast = login && !core.lockView.locked && (s.videoPlaying || fastLatched || core.lockView.layoutStale)
+    val fast = viewerLoginBehindVideo(core, login, lockPage)
     val showLogin = login && !fast
     val macViewer = !showLogin && core.host?.os == "mac"
     LaunchedEffect(macViewer) {
@@ -208,7 +192,6 @@ private fun Viewer(core: Core, host: WebHost, rail: MirrorRail, lockPage: LockPa
         menu = ""
     }
     BackHandler(menu.isNotEmpty()) { menu = ""; action++ }
-    LaunchedEffect(login, fast) { if (login) lockPage.present(!fast) }
     LaunchedEffect(bar, showLogin, s.spaceNote, menu, overview, action, keyboard, macViewer, s.sharing, touchExploration) {
         if (bar && !showLogin && menu.isEmpty() && !overview && s.spaceNote.isEmpty() && !keyboard &&
             (!macViewer || (s.sharing && !touchExploration))) {
@@ -232,17 +215,7 @@ private fun Viewer(core: Core, host: WebHost, rail: MirrorRail, lockPage: LockPa
     LaunchedEffect(overview, sheetReady, started, s.previewEpoch) {
         s.previewSheet(overview && sheetReady && started)
     }
-    var offered by remember(core.host?.id) { mutableStateOf(false) }
-    LaunchedEffect(core.lockView.locked, core.lockView.available, login) {
-        if (!core.lockView.locked) offered = false
-        if (login && !core.lockView.available) closeLogin()
-        else if (core.lockView.locked && core.lockView.available && !login && !offered) {
-            offered = true
-            android.util.Log.i("TwinDeskLock", "viewer-auto-open")
-            openLogin()
-            bar = true
-        }
-    }
+    ObserveViewerLogin(core, login, openLogin, closeLogin) { bar = true }
     val name = core.host?.name ?: "Mac"
     // Opened because the computer started sharing: it closes when the computer stops.
     var seenOn by remember { mutableStateOf(false) }
@@ -253,14 +226,7 @@ private fun Viewer(core: Core, host: WebHost, rail: MirrorRail, lockPage: LockPa
 
     Box(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.displayCutout)) {
         AndroidView(factory = { host.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize())
-        // Keep the login fields below the viewer handle and toolbar, including in landscape.
-        if (login) Box(Modifier.fillMaxSize().zIndex(if (fast) -1f else 0f).padding(top = if (bar && !keyboard) 92.dp else 8.dp)) {
-            AndroidView(factory = { lockPage.view.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } }, modifier = Modifier.fillMaxSize())
-            if (showLogin && lockPage.credentialsRequested) AndroidView(
-                factory = { lockPage.authView.also { (it.parent as? android.view.ViewGroup)?.removeView(it) } },
-                modifier = Modifier.align(Alignment.Center).fillMaxHeight().widthIn(max = 480.dp).fillMaxWidth().imePadding(),
-            )
-        }
+        if (login) ViewerLoginSurface(lockPage, fast, bar, keyboard)
         // The handle remains available when the Mac toolbar has faded.
         if (macViewer && !overview && (!bar || !keyboard)) {
             val label = if (bar) tr("Hide viewer controls") else tr("Show viewer controls")
