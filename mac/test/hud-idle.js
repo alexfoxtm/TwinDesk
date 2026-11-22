@@ -37,14 +37,20 @@ function advance(ms) {
 }
 
 const windows = [];
+// When set, loadFile waits until the test resolves the queued load. Null: it resolves now.
+let loadGate = null;
 class BrowserWindow {
   constructor() {
     this.destroyed = false;
     this.visible = false;
-    this.webContents = { send() {} };
+    this.messages = [];
+    this.webContents = { send: (_ch, msg) => this.messages.push(msg) };
     windows.push(this);
   }
-  loadFile() { return Promise.resolve(); }
+  loadFile() {
+    if (loadGate) return new Promise((resolve) => loadGate.push({ win: this, resolve }));
+    return Promise.resolve();
+  }
   isDestroyed() { return this.destroyed; }
   isVisible() { return this.visible; }
   showInactive() { this.visible = true; }
@@ -98,6 +104,65 @@ test('a linked phone does not keep the popup window, and a shown one is dropped 
   advance(30000);
   assert.equal(hud.win, null, 'after idle the renderer is gone even though the phone is still linked');
   assert.equal(windows.at(-1).destroyed, true);
+});
+
+test('a popup asked while the idle timer is pending still shows if that timer would fire during load', async () => {
+  loadGate = [];
+  try {
+    const hud = new Hud(() => ({ app: { hud: true } }));
+    hud.idle();
+    advance(29900);
+    const n = windows.length;
+    const shown = hud.show('home', 'back');
+    advance(200);
+    assert.equal(windows.length, n + 1, 'the pending idle timer does not destroy the window while its page loads');
+    assert.equal(windows[n].destroyed, false);
+    loadGate[0].resolve();
+    await shown;
+    assert.equal(hud.win && hud.win.isVisible(), true);
+    assert.equal(hud.win.destroyed, false);
+  } finally {
+    loadGate = null;
+  }
+});
+
+test('closing the session does not destroy a popup whose page is still loading', async () => {
+  loadGate = [];
+  try {
+    const { peer, hud } = wire();
+    const n = windows.length;
+    const shown = hud.show('home', 'back');
+    peer.current = null;
+    peer.emit('closed');
+    advance(30000);
+    assert.equal(windows.length, n + 1, 'session close does not arm an idle timer');
+    assert.equal(windows[n].destroyed, false);
+    loadGate[0].resolve();
+    await shown;
+    assert.equal(hud.win && hud.win.isVisible(), true);
+  } finally {
+    loadGate = null;
+  }
+});
+
+test('two popups asked together show in order', async () => {
+  loadGate = [];
+  try {
+    const hud = new Hud(() => ({ app: { hud: true } }));
+    const n = windows.length;
+    const first = hud.show('home', 'one');
+    const second = hud.show('away', 'two');
+    assert.equal(loadGate.length, 1);
+    loadGate[0].resolve();
+    await first;
+    await second;
+    assert.equal(windows.length, n + 1);
+    assert.deepEqual(windows[n].messages.map((m) => m.text), ['one', 'two']);
+    assert.equal(windows[n].visible, true);
+    assert.equal(windows[n].destroyed, false);
+  } finally {
+    loadGate = null;
+  }
 });
 
 test('keep() still holds the window when a popup is about to show', async () => {

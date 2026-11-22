@@ -1309,9 +1309,10 @@ app.whenReady().then(() => {
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'assets', 'trayTemplate.png'))); // "Template": macOS tints it
   hud = new Hud(() => settings);
   // Not while a phone is merely linked. The first popup awaits the local hud.html load;
-  // the window then stays IDLE_MS (mac/hud.js) and goes. Calls use the Calls page, not this window.
+  // the window then stays IDLE_MS (mac/hud.js) and goes when it hides. Closing the session
+  // does not arm that timer: a popup asked while it was pending must still show.
+  // Calls use the Calls page, not this window.
   hud.keep = () => false;
-  peer.on('closed', () => !peer.current && hud.idle());
   svc.kvm.on('where', (mode) => {
     svc.pcApps.setDriven(mode === 'driven'); // a moved window's copy shows this Mac's pointer then
     const name = peer.current ? peer.current.name : { key: 'the other computer' };

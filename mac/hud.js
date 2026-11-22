@@ -45,6 +45,8 @@ class Hud {
   }
 
   _ensure() {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
     if (this.win && !this.win.isDestroyed()) return this.ready;
     this.win = new BrowserWindow({
       width: W, height: H, show: false, frame: false, transparent: true, resizable: false, movable: false,
@@ -59,13 +61,49 @@ class Hud {
     return this.ready;
   }
 
+  _forget() {
+    this.win = null;
+    this.ready = null;
+  }
+
   // kind: 'away' (we use the other computer), 'driven' (it uses this Mac), 'home';
   // 'linkOn' / 'linkOff': the big card in the middle of the screen (sharing switched on/off), with `sub`.
   // 'lock': cursor lock on/off.
-  async show(kind, text, sub = '') {
+  show(kind, text, sub = '') {
     const big = kind === 'linkOn' || kind === 'linkOff';
-    if (this.getSettings().app.hud === false && !big && kind !== 'lock') return; // the on/off card and the lock always show
-    await this._ensure();
+    if (this.getSettings().app.hud === false && !big && kind !== 'lock') return Promise.resolve(); // the on/off card and the lock always show
+    // A popup asked while the idle timer is pending must not be destroyed by it, including
+    // one that is still queued behind a popup whose page is loading.
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    // The first of a burst starts now, so its window exists before this returns. A later one
+    // waits until that show has finished, which keeps them in order.
+    const run = () => this._show(kind, text, sub);
+    const next = this._showChain ? this._showChain.then(run, run) : run();
+    const settled = next.then(() => {}, () => {});
+    this._showChain = settled;
+    settled.then(() => { if (this._showChain === settled) this._showChain = null; });
+    return next;
+  }
+
+  async _show(kind, text, sub = '') {
+    const big = kind === 'linkOn' || kind === 'linkOff';
+    if (this.getSettings().app.hud === false && !big && kind !== 'lock') return;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    clearTimeout(this.timer);
+    this.timer = null;
+    try {
+      await this._ensure();
+    } catch {
+      this._forget();
+    }
+    // The page load can outlive the window (it was destroyed while loading). Make another.
+    if (!this.win || this.win.isDestroyed()) {
+      this._forget();
+      try { await this._ensure(); } catch { return; }
+    }
+    if (!this.win || this.win.isDestroyed()) return;
     const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const [w, h] = big ? [BIG_W, BIG_H] : [W, H];
     const y = big ? d.y + (d.height - h) / 2 - d.height * 0.08 : d.y + d.height - h - 72;
