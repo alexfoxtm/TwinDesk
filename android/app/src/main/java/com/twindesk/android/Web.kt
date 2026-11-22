@@ -211,7 +211,6 @@ class Screen(core: Core) : Feature(core) {
     private var videoSession: Int? = null
     private var videoMarker: Any? = null
     @Volatile var videoPlaying = false; private set
-    @Volatile var videoUnavailable = false; private set
     private data class DoctorReading(val marker: Any, val sample: StreamDoctorSample)
     @Volatile private var doctorReading: DoctorReading? = null
     val lastDoctorSample: StreamDoctorSample?
@@ -226,6 +225,8 @@ class Screen(core: Core) : Feature(core) {
     }
 
     private fun clearDoctor() { doctorReading = null }
+
+    @Volatile var videoUnavailable = false; private set
 
     private var wantStart = false // the viewer opened before we knew whether the Mac shares
     private var startedByUs = false // we started the Mac's sharing: stop it when the viewer closes
@@ -383,8 +384,8 @@ class Screen(core: Core) : Feature(core) {
 
     // These controls affect only the currently open viewer, never a replacement host or its display.
     fun setViewScale(h: WebHost, mode: String) {
-        if (core.lockView.locked) return
         if (host !== h || !viewing || core.host?.os != "mac" || mode !in scalePresets) return
+        if (core.lockView.locked) return
         core.store.setPrefsString("screen.viewScale", mode)
         viewScale = mode
         h.post(msg("viewer.scale", "mode" to mode))
@@ -466,21 +467,6 @@ class Screen(core: Core) : Feature(core) {
         }
     }
 
-    fun lockChanged(locked: Boolean) {
-        clearDoctor()
-        host?.post(msg("viewer.input", "on" to pointerInput(locked)))
-        if (locked) endPreviewSession()
-        else {
-            previewEpoch++
-            core.changed()
-        }
-        videoGeneration++
-        videoPlaying = false
-        decodedSize = null
-        val session = videoSession
-        if (viewing && session != null && videoMarker != null && core.link.connected && core.link.sessionMarker() === videoMarker) host?.post(msg("viewer.probe", "session" to session, "viewerGeneration" to videoGeneration, "accept" to !locked))
-    }
-
     fun videoState(h: WebHost, generation: Int, session: Int, playing: Boolean, w: Int, height: Int) {
         if (host !== h || !viewing || videoGeneration != generation || videoSession != session ||
             videoMarker == null || core.link.sessionMarker() !== videoMarker || !core.link.connected ||
@@ -526,12 +512,12 @@ class Screen(core: Core) : Feature(core) {
     }
 
     fun videoDetail(h: WebHost, generation: Int, session: Int, height: Int) {
-        if (core.lockView.locked) return
         if (host !== h || !viewing || !sharing || !videoPlaying ||
             core.host?.os !in listOf("mac", "win", "linux") ||
             videoGeneration != generation || videoSession != session ||
             height !in 0..2160 || videoMarker == null || !core.link.connected ||
             core.link.sessionMarker() !== videoMarker) return
+        if (core.lockView.locked) return
         core.link.sendFor(videoMarker, msg("rtc.detail", "session" to session, "height" to height))
     }
 
@@ -826,6 +812,21 @@ class Screen(core: Core) : Feature(core) {
         else -> tr("Couldn’t change the desktop")
     }
 
+    fun lockChanged(locked: Boolean) {
+        clearDoctor()
+        host?.post(msg("viewer.input", "on" to pointerInput(locked)))
+        if (locked) endPreviewSession()
+        else {
+            previewEpoch++
+            core.changed()
+        }
+        videoGeneration++
+        videoPlaying = false
+        decodedSize = null
+        val session = videoSession
+        if (viewing && session != null && videoMarker != null && core.link.connected && core.link.sessionMarker() === videoMarker) host?.post(msg("viewer.probe", "session" to session, "viewerGeneration" to videoGeneration, "accept" to !locked))
+    }
+
     override fun onClosed() {
         Notify.cancelScreen(core.ctx)
         state = null
@@ -906,7 +907,6 @@ class Screen(core: Core) : Feature(core) {
                     refreshDesktops(followUp = true)
                 }
             }
-            "screen.textFocus" -> if (viewing && inputOn && !core.lockView.presented && core.host?.os == "mac") keyboard(true)
             "stream.info" -> { lastInfo = m; host?.post(m) }
             "stream.stop" -> {
                 resetVideo(keepDoctor = true)
@@ -915,6 +915,7 @@ class Screen(core: Core) : Feature(core) {
                 core.changed()
             }
             "rtc.ice" -> host?.post(m)
+            "screen.textFocus" -> if (viewing && inputOn && !core.lockView.presented && core.host?.os == "mac") keyboard(true)
             else -> return false
         }
         return true
