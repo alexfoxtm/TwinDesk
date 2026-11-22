@@ -1265,7 +1265,7 @@ app.whenReady().then(() => {
   const showShelf = showFileShelf;
   showFileShelf = () => {
     showShelf();
-    if (fileShelf) require('./file-shelf-receipts').attachReceipts(fileShelf, () => (localsend && localsend.receipts) || [], () => photoBackup?.latest());
+    if (fileShelf) require('./file-shelf-receipts').attachReceipts(fileShelf, () => (localsend && localsend.receipts) || [], () => photoBackup?.latest(), (receipt) => photoBackup?.recheckLatest(receipt));
   };
   localsend = require('./localsend.js').setupLocalSend({
     settings: () => settings, save: () => store.saveSettings(settings), pushState: () => { pushState(); fileShelf?.refresh(); }, t, window: () => win,

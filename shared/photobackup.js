@@ -18,6 +18,7 @@ const MAX_BYTES = 80 * 1024 * 1024;
 const SEP = '\u001f';
 const OPEN = 1;
 const WAIT_MS = 30_000;
+const CREDIT_IDLE_MS = 120_000;
 const BODY_MS = 5 * 60_000;
 const RETRY_MS = 60_000;
 const PART = /^\.pb-[0-9a-f]{16}\.part$/;
@@ -98,14 +99,17 @@ function hid() {
   return crypto.randomBytes(8).toString('hex');
 }
 
-function hashFile(file) {
+function hashFile(file, progress) {
   const h = crypto.createHash('sha256');
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   try {
     if (!fs.fstatSync(fd).isFile()) throw new Error('not a file');
     const buf = Buffer.alloc(64 * 1024);
     let n;
-    while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, n));
+    while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) {
+      h.update(buf.subarray(0, n));
+      progress?.();
+    }
   } finally {
     fs.closeSync(fd);
   }
@@ -248,10 +252,10 @@ class Ledger {
     try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   }
 
-  _same(file, size, sha) {
+  _same(file, size, sha, progress) {
     try {
       const st = fs.lstatSync(file);
-      return st.isFile() && st.size === size && hashFile(file) === sha;
+      return st.isFile() && st.size === size && hashFile(file, progress) === sha;
     } catch { return false; }
   }
 
@@ -272,7 +276,7 @@ class Ledger {
   }
 
   // The pending ledger names the exact file before link(), including on a name collision.
-  commitPart({ origin, item, gen, root, part, sha, size, name, ym, afterLink }) {
+  commitPart({ origin, item, gen, root, part, sha, size, name, ym, beforePublish, afterLink, progress }) {
     const dir = archiveDir(root, ym);
     if (!rowPath({ root }, part, true) || path.dirname(part) !== dir) throw new Error('archive part');
     const ext = path.extname(name);
@@ -282,10 +286,12 @@ class Ledger {
     for (let n = 1; n < 500; n++) {
       const dest = path.join(dir, n === 1 ? name : `${base}-${n}${ext}`);
       const present = fs.lstatSync(dest, { throwIfNoEntry: false });
-      if (present && !this._same(dest, size, sha)) continue;
+      if (present && !this._same(dest, size, sha, progress)) continue;
       const pending = { state: 'pending', root, size, sha, dest, part };
       this.set(origin, item, gen, pending);
       this.save();
+      progress?.();
+      beforePublish?.();
       if (!present) {
         try { fs.linkSync(part, dest); } catch (e) {
           if (e.code === 'EEXIST') continue;
@@ -297,6 +303,7 @@ class Ledger {
       if (!st.isFile() || st.size !== size ||
           (!present && (st.dev !== source.dev || st.ino !== source.ino))) throw new Error('archive changed');
       fsyncDir(dir);
+      progress?.();
       this._unlink(part);
       this.set(origin, item, gen, { ...pending, state: 'done', part: '', ino: st.ino, dev: st.dev, mtime: st.mtimeMs });
       try { this.save(); } catch (e) { this.set(origin, item, gen, pending); throw e; }
@@ -304,6 +311,13 @@ class Ledger {
     }
     throw new Error('archive filename is in use');
   }
+}
+
+function validPhoneState(msg) {
+  const { on, rev, since, perm, loc, api } = msg;
+  return typeof on === 'boolean' && Number.isInteger(rev) && rev >= 0 &&
+    typeof since === 'number' && Number.isFinite(since) && since >= 0 &&
+    typeof perm === 'string' && perm.length <= 16 && typeof loc === 'boolean' && Number.isInteger(api);
 }
 
 class Mac {
@@ -442,7 +456,7 @@ class Mac {
   }
 
   _watchFlight(f) {
-    f.idleUntil = Math.min(f.until, this.now() + WAIT_MS);
+    f.idleUntil = Math.min(f.until, this.now() + (f.credit && f.phase === 'body' ? CREDIT_IDLE_MS : WAIT_MS));
     this._deadline(Math.max(1, f.idleUntil - this.now()), () => {
       if (this.flight === f) this.failItem('timeout');
     });
@@ -450,13 +464,8 @@ class Mac {
 
   onState(msg, conn) {
     if (!this.live(conn)) return;
-    if (!Object.prototype.hasOwnProperty.call(msg, 'perm') && !Object.prototype.hasOwnProperty.call(msg, 'api')) return;
-    const rev = msg.rev;
-    const since = msg.since;
-    if (typeof msg.on !== 'boolean' || !Number.isInteger(rev) || rev < 0 || typeof since !== 'number' || !Number.isFinite(since) || since < 0) return;
-    if (typeof msg.perm !== 'string' || msg.perm.length > 16) return;
-    if (typeof msg.loc !== 'boolean') return;
-    if (!Number.isInteger(msg.api)) return;
+    if (!validPhoneState(msg)) return;
+    const { rev, since } = msg;
     const prev = this.remote;
     const next = { on: msg.on, since, rev, perm: msg.perm, loc: msg.loc, api: msg.api, heard: true };
     if (prev.heard && (rev < prev.rev || (rev === prev.rev && (prev.on !== next.on || prev.since !== since)))) return;
@@ -496,6 +505,7 @@ class Mac {
       f.hash = crypto.createHash('sha256');
       f.phase = 'body';
       this._watchFlight(f);
+      this._credit(f);
     } catch { this.failItem('disk'); }
   }
 
@@ -512,7 +522,12 @@ class Mac {
       f.got += buf.length;
       f.seq += 1;
       this._watchFlight(f);
+      this._credit(f);
     } catch { this.failItem('disk'); }
+  }
+
+  _credit(f) {
+    if (f.credit) this._emit({ t: 'backup.credit', req: f.req, seq: f.seq, written: f.got });
   }
 
   onEnd(msg, conn) {
@@ -522,14 +537,22 @@ class Mac {
     if (!this._echo(msg, f)) { this.failItem('echo'); return; }
     const sha = f.hash.digest('hex');
     if (sha !== msg.sha256 || msg.size !== f.size || f.got !== f.size) { this.failItem('checksum'); return; }
+    let lastProgress = -Infinity;
+    const progress = f.credit ? () => {
+      const now = this.now();
+      if (now - lastProgress < 1000) return;
+      lastProgress = now;
+      this._emit({ t: 'backup.progress', req: f.req });
+    } : undefined;
     try {
       fs.fsyncSync(f.fd);
+      progress?.();
       fs.closeSync(f.fd);
       f.fd = null;
       this.ledger.commitPart({
         origin: f.origin, item: f.item, gen: f.gen, root: f.folder,
         part: f.part, sha, size: f.size, name: f.name, ym: f.ym,
-        afterLink: this.hooks.afterLink,
+        beforePublish: this.hooks.beforePublish, afterLink: this.hooks.afterLink, progress,
       });
     } catch {
       // Leave any final file in place. A retry verifies it rather than writing a duplicate.
@@ -605,11 +628,12 @@ class Mac {
         phase: 'take', req, batch, inv: this.inv.req, scan: this.inv.scan,
         item: checked.item, gen: checked.gen, size: checked.size, name: checked.name, ym: checked.ym,
         rev: this.remote.rev, mrev: this.local.mrev, seq: 0, got: 0, part: '', fd: null,
-        origin: this.origin, folder: this.local.folder, until: this.now() + BODY_MS,
+        origin: this.origin, folder: this.local.folder,
+        credit: this.hooks.credit === true, until: this.hooks.credit ? Infinity : this.now() + BODY_MS,
       };
       this._watchFlight(this.flight);
       if (!this._emit({
-        t: 'backup.take', req, inv: this.inv.req, scan: this.inv.scan, batch,
+        t: 'backup.take', ...(this.flight.credit ? { credit: CHUNK } : {}), req, inv: this.inv.req, scan: this.inv.scan, batch,
         item: checked.item, gen: checked.gen, size: checked.size,
         rev: this.remote.rev, mrev: this.local.mrev,
       })) this.failItem('stop');
@@ -689,7 +713,7 @@ class Mac {
   }
 
   _emitState() {
-    this._emit({ t: 'backup.state', on: this.local.on, since: this.local.since, mrev: this.local.mrev });
+    this._emit({ t: 'backup.state', ...(this.hooks.credit ? { photoCredit: 1 } : {}), on: this.local.on, since: this.local.since, mrev: this.local.mrev });
   }
 
   _emit(msg) {
@@ -699,5 +723,5 @@ class Mac {
 }
 
 module.exports = {
-  CHUNK, MAX_BYTES, SEP, gate, itemKey, validItem, safeName, yearMonth, hashFile, Ledger, Mac,
+  CHUNK, MAX_BYTES, CREDIT_IDLE_MS, RETRY_MS, SEP, gate, validPhoneState, itemKey, validItem, safeName, yearMonth, hashFile, Ledger, Mac,
 };

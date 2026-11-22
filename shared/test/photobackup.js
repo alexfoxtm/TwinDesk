@@ -165,7 +165,7 @@ function main() {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
-function failure() {
+async function failure() {
   const root = fs.mkdtempSync(path.join(scratch, 'twindesk-pb-fail-'));
   const box = open(root);
   const folder = path.join(root, 'archive');
@@ -245,20 +245,30 @@ function failure() {
   peer.current = b;
   peer.emit('client', b);
   assert.ok(!sent.some(({ ctx, msg }) => ctx === b && msg.on), 'phone B never inherits an on state');
-  assert.strictEqual(pb.update(picker, { folder, on: true }), false);
+  assert.strictEqual(await pb.update(picker, { folder, on: true }), false);
   assert.strictEqual(pb.view().on, false);
   peer.emit('closed', a);
   assert.strictEqual(pb.view().available, true);
-  pb.update(pb.target(pb.view().generation), { folder, on: true });
-  const phoneState = { t: P.T.BACKUP_STATE, on: true, since: 1010, rev: 1, perm: 'ok', loc: true, api: 30 };
-  const sends = sent.length;
+  assert.strictEqual(await pb.update(pb.target(pb.view().generation), { folder, on: true }), true);
+  const phoneState = { t: P.T.BACKUP_STATE, photoCredit: 1, on: true, since: 1010, rev: 1, perm: 'ok', loc: true, api: 30 };
+  const sends = sent.filter(({ msg }) => msg.t === P.T.BACKUP_SYNC).length;
   peer.emit(`t:${P.T.BACKUP_STATE}`, phoneState, b, null);
-  assert.strictEqual(sent.length, sends, 'missing ingress does not fall back to the current socket');
+  assert.strictEqual(sent.filter(({ msg }) => msg.t === P.T.BACKUP_SYNC).length, sends, 'missing ingress does not fall back to the current socket');
+  const synced = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('backup.sync did not arrive')), 5000);
+    peer.send = (ctx, msg) => {
+      sent.push({ ctx, msg });
+      if (msg.t === P.T.BACKUP_SYNC) { clearTimeout(timeout); resolve(); }
+    };
+  });
   peer.emit(`t:${P.T.BACKUP_STATE}`, phoneState, b, b.ws);
-  assert.ok(sent.slice(sends).some(({ msg }) => msg.t === P.T.BACKUP_SYNC));
+  assert.strictEqual(sent.filter(({ msg }) => msg.t === P.T.BACKUP_SYNC).length, sends,
+    'the socket callback returns before the backup engine runs');
+  await synced;
   const pendingPicker = pb.target(pb.view().generation);
-  pb.update(pendingPicker, { on: false });
-  assert.strictEqual(pb.update(pendingPicker, { on: true, folder }), false, 'turning off expires all open pickers');
+  await pb.update(pendingPicker, { on: false });
+  assert.strictEqual(await pb.update(pendingPicker, { on: true, folder }), false, 'turning off expires all open pickers');
+  pb.close();
 
   // A pre-existing year symlink never causes writes (including a mkdir) outside the archive.
   const outside = path.join(root, 'outside');
@@ -287,5 +297,7 @@ function failure() {
 }
 
 main();
-failure();
-console.log('photobackup: ok');
+failure().then(() => console.log('photobackup: ok'), (error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

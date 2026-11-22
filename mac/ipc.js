@@ -747,11 +747,11 @@ function setupIpc(ctx) {
       if (!target) return;
       const on = arg.do === 'on' ? arg.on === true : undefined;
       const view = pb.view();
-      if (on === false || (on === true && view.folder)) { pb.update(target, { on }); return; }
+      if (on === false || (on === true && view.folder)) { await pb.update(target, { on }); return; }
       if (!view.available) return;
       try {
         const r = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], buttonLabel: t('Choose…') });
-        if (!r.canceled && r.filePaths[0]) pb.update(target, { on, folder: r.filePaths[0] });
+        if (!r.canceled && r.filePaths[0]) await pb.update(target, { on, folder: r.filePaths[0] });
       } finally { ctx.pushState(); }
     },
     // TwinDesk iPhone (shared/iossign.js): one action, and Choose an IPA….

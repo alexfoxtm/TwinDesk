@@ -188,7 +188,7 @@ class Server extends EventEmitter {
       }
       return;
     }
-    this.emit('message', msg, ctx, ws); // peer.js routes by type; lockview also checks the exact IP socket
+    this.emit('message', msg, ctx, ws, data.length); // peer.js routes by type; lockview also checks the exact IP socket
   }
 
   // Pings and silence checks every PING_MS while any socket is open; with none, nothing wakes the app.

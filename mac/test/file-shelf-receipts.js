@@ -39,7 +39,7 @@ const { attachReceipts } = require('../file-shelf-receipts.js');
 class FileShelf extends BaseShelf {
   constructor(options) {
     super(options);
-    attachReceipts(this, options.receipts, options.latestPhoto);
+    attachReceipts(this, options.receipts, options.latestPhoto, options.recheckPhoto);
   }
 }
 Module._load = original;
@@ -378,7 +378,8 @@ test('shelf refuses foreign frames, revoked photo and replaced or symlinked loca
   fs.writeFileSync(file, 'original'); fs.symlinkSync(file, link);
   drop.recent = [{ path: link, ok: true }];
   let photo = { path: file };
-  const shelf = new FileShelf({ drop, receipts: () => [], latestPhoto: () => photo });
+  const invalidated = [];
+  const shelf = new FileShelf({ drop, receipts: () => [], latestPhoto: () => photo, recheckPhoto: (receipt) => invalidated.push(receipt) });
   const oldDrags = dragged.length, oldReveals = revealed.length;
   try {
     shelf.show();
@@ -396,6 +397,13 @@ test('shelf refuses foreign frames, revoked photo and replaced or symlinked loca
     assert.equal(dragged.length, oldDrags);
     assert.equal(revealed.length, oldReveals);
     assert.equal(read(shelf).items.length, 0, 'revoked item leaves the shelf');
+    const st = fs.statSync(file);
+    photo = { path: file, identity: { dev: st.dev, ino: st.ino, birthtimeMs: st.birthtimeMs,
+      size: st.size, mtime: st.mtimeMs, folder: false } };
+    assert.equal(read(shelf).items.length, 1);
+    fs.appendFileSync(file, ' edited in place');
+    assert.equal(read(shelf).items.length, 0);
+    assert.deepEqual(invalidated, [photo], 'edited backup is hidden and asks for the next valid receipt');
     shelf.shutdown();
     assert.equal(handles.get('file-shelf:read')(ownEvent), null, 'retired contents cannot read shelf');
   } finally { shelf.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }

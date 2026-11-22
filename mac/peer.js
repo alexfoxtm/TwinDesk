@@ -73,7 +73,7 @@ class Peer extends EventEmitter {
     });
     server.on('rtt', (ctx) => this.emit('rtt', ctx));
     server.on('transport', (ctx) => this.emit('transport', ctx));
-    server.on('message', (msg, ctx, ws) => (ctx !== server.current || !this.fx.incoming(msg)) && this._deliver(msg, ctx, ws));
+    server.on('message', (msg, ctx, ws, bytes) => (ctx !== server.current || !this.fx.incoming(msg)) && this._deliver(msg, ctx, ws, bytes));
 
     link.on('welcome', (ctx) => {
       this.swapIn = P.newRoleSwapState(ctx.name);
@@ -189,13 +189,13 @@ class Peer extends EventEmitter {
     if (c) this._deliver(msg, c);
   }
 
-  _deliver(msg, ctx, ws = null) {
+  _deliver(msg, ctx, ws = null, bytes) {
     if (this.listenerCount(`t:${msg.t}`) === 0 && !this.unknown.has(msg.t)) {
       this.unknown.add(msg.t);
       console.log(`[peer] no handler for "${msg.t}" (ignored)`);
     }
     if (this.tap) this.tap(msg);
-    this.emit(`t:${msg.t}`, msg, ctx, ws);
+    this.emit(`t:${msg.t}`, msg, ctx, ws, bytes);
     this.emit('message', msg, ctx);
   }
 }

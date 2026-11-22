@@ -3,7 +3,7 @@
 
 const { sameIdentity } = require('../shared/localsend/wire');
 
-function attachReceipts(shelf, receipts, latestPhoto = () => null) {
+function attachReceipts(shelf, receipts, latestPhoto = () => null, recheckPhoto = () => {}) {
   if (shelf.receipts) return;
   shelf.receipts = receipts;
   let photoPath;
@@ -11,6 +11,11 @@ function attachReceipts(shelf, receipts, latestPhoto = () => null) {
   shelf._identify = (source) => {
     const identity = identify(source);
     // Compare the receipt pin to the same snapshot used for drag and reveal.
+    if (source.photo && source.identity && (!sameIdentity(source.identity, identity) ||
+        source.identity.size !== identity.size || source.identity.mtime !== identity.mtime)) {
+      recheckPhoto(source.photo);
+      return null;
+    }
     return source.identity && !sameIdentity(source.identity, identity) ? null : identity;
   };
   shelf._candidates = function () {
@@ -29,7 +34,7 @@ function attachReceipts(shelf, receipts, latestPhoto = () => null) {
     }
     ranked.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
     photoPath = typeof photo?.path === 'string' ? photo.path : null;
-    return photoPath ? [{ path: photoPath }, ...ranked] : ranked;
+    return photoPath ? [{ path: photoPath, identity: photo.identity, photo }, ...ranked] : ranked;
   };
   const sources = shelf._sources.bind(shelf);
   shelf._sources = () => sources().map(source => source.path === photoPath ? { ...source, kind: 'photo' } : source);
