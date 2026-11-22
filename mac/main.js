@@ -551,7 +551,7 @@ function createWindow() {
   win.webContents.on('console-message', (e) => {
     if (e.level === 'warning' || e.level === 'error') console.log(`[window] ${e.level}: ${e.message}`);
   });
-  win.loadFile(path.join(__dirname, 'control.html'), { query: { language: i18n.locale, look: Look.style(settings.ui.style), off: Mods.offQuery({ off: modulesAtStart }) } });
+  win.loadFile(path.join(__dirname, 'control.html'), { query: { language: i18n.locale, look: Look.style(settings.ui.style), off: Mods.offQuery({ off: modulesAtStart }), tab: (settings.ui && settings.ui.tab) || '' } });
   win.once('ready-to-show', showWindow);
   // In the Dock and ⌘-Tab only while the window is open; menu bar only otherwise.
   const w = win;

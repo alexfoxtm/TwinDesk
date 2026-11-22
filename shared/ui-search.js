@@ -52,6 +52,9 @@
 
   let open = null;
   function show() {
+    // Mac builds the other pages while idle. Search reads every row, so it finishes them first.
+    // Windows, Linux and Multi-device never set this, so the call stays a no-op there.
+    if (UI.ensureAllBuilt) UI.ensureAllBuilt();
     if (open) { open.input.focus(); open.input.select(); return; }
     const { el } = UI;
     const all = entries();

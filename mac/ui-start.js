@@ -10,6 +10,10 @@
   const pages = $('pages');
   const views = new Map(); // id -> { def, page, navBtn, stateEl, master, render }
   let current = null;
+  // Shells for every page are created below. Their build() waits: the page about to be shown
+  // runs now, the rest one at a time while idle (mac/page-idle.js). Search, a deep link, the
+  // tour and the keyboard call ensureAllBuilt before they look at a page that may not be built.
+  const pageQueue = window.PageIdle.createQueue((id) => finishPage(id));
 
   // The sidebar's order and groups (the same as the PC's and Linux's): the device and Connection,
   // the phone's own things, screens, input, sharing, media; Multi-device, General and About below a
@@ -50,6 +54,46 @@
   }
   UI.arrangeHold(nav);
 
+  function finishPage(id) {
+    const v = views.get(id);
+    if (!v || v.built) return;
+    v.built = true;
+    try {
+      v.render = v.def.build(v.body, v.page) || (() => {});
+    } catch (e) { // one tab that fails to build doesn't take the rest of the sidebar with it
+      console.error('build ' + id + ':', e);
+      v.render = () => {};
+    }
+    if (UI.state) UI.names(UI.state, v.page); // a page built after the last full pass
+  }
+
+  function ensureAllBuilt() { pageQueue.ensureAll(); }
+  UI.ensureAllBuilt = ensureAllBuilt;
+
+  // The saved tab (the load query) is built before the first paint. Nothing saved: Connection,
+  // which is where an unlinked window opens. The state push may then open a different page; show()
+  // builds that one too.
+  function shownFirst() {
+    let tab = '';
+    try { tab = new URLSearchParams(location.search).get('tab') || ''; } catch (e) { tab = ''; }
+    tab = ALIAS[tab] || tab;
+    if (!views.has(tab)) tab = 'connection';
+    pageQueue.ensure(tab);
+  }
+
+  function scheduleRest() {
+    if (scheduleRest.done) return;
+    scheduleRest.done = true;
+    const later = (step) => {
+      if (window.requestIdleCallback) window.requestIdleCallback(() => step(), { timeout: 800 });
+      else setTimeout(step, 1);
+    };
+    pageQueue.schedule(later);
+  }
+
+  shownFirst();
+  scheduleRest();
+
   function buildPage(def) {
     const page = el('section', { class: 'page', id: `page-${def.id}`, hidden: true, attrs: { role: 'tabpanel' } });
     const h1Text = el('span', { text: tr(def.heading || def.title) });
@@ -81,13 +125,15 @@
     const body = el('div', { class: 'page-body' });
     page.append(body);
     pages.append(page);
-    let render = () => {};
-    try {
-      render = def.build(body, page) || render;
-    } catch (e) { // one tab that fails to build doesn't take the rest of the sidebar with it
-      console.error('build ' + def.id + ':', e);
+    // Not built yet. The first render (or show) builds it, then calls the real render.
+    // ensure() replaces this function, so this does not call itself.
+    function paint(s) {
+      pageQueue.ensure(def.id);
+      const v = views.get(def.id);
+      if (v && v.render !== paint) v.render(s);
     }
-    return { page, body, master, render, wifiNote, art };
+    pageQueue.add(def.id);
+    return { page, body, master, render: paint, wifiNote, art };
   }
 
   // The session is through Bluetooth (pages that need Wi-Fi say so).
@@ -108,6 +154,7 @@
     else if (want && !want.def.web && !UI.WEB_KEEP.includes(want.def.id)) UI.webDev = null; // TwinDesk Web, AirPlay, General, About: both
     let v = views.get(id) || views.get(home(UI.state));
     if (UI.state && v.def.hidden && v.def.hidden(UI.state) && UI.tourPeek !== v.def.id) v = views.get(home(UI.state)) || v; // tourPeek: the tour shows it for now (shared/ui-tour.js)
+    if (v) pageQueue.ensure(v.def.id); // a click, a deep link or the keyboard: this page exists before it is shown
     if (current === v) {
       if (UI.state) { renderSidebar(UI.state); renderPage(v, UI.state); }
       return;
@@ -400,13 +447,18 @@
   $('pair-allow').onclick = () => (bannerMode === 'guest' ? api.confirmGuestCode() : api.pairRespond(true));
   $('pair-deny').onclick = () => (bannerMode === 'guest' ? api.cancelGuestPair() : api.pairRespond(false));
   PairPop.attach($('banner'), $('pair-allow')); // the popup over the window, Allow there presses this one
-  window.addEventListener('macshare-go', (e) => show(e.detail, true));
-  if (api.onGo) api.onGo((tab) => typeof tab === 'string' && views.has(ALIAS[tab] || tab) && show(tab, true));
+  window.addEventListener('macshare-go', (e) => { ensureAllBuilt(); show(e.detail, true); }); // search results and the tour (UI.go)
+  if (api.onGo) api.onGo((tab) => { // menu bar and a notification: the page they name, and the rest, before the jump
+    if (!(typeof tab === 'string' && views.has(ALIAS[tab] || tab))) return;
+    ensureAllBuilt();
+    show(tab, true);
+  });
 
   // ↑/↓ move between tabs while the sidebar has focus.
   nav.addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     e.preventDefault();
+    ensureAllBuilt(); // the next page may still be waiting its idle turn
     const ids = [...views.keys()];
     const i = ids.indexOf(current.def.id) + (e.key === 'ArrowDown' ? 1 : -1);
     const next = ids[(i + ids.length) % ids.length];
