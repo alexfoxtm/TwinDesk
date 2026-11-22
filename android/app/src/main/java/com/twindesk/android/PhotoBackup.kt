@@ -35,7 +35,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     private val jobs = Executors.newSingleThreadExecutor { r -> Thread(r, "td-pb").apply { isDaemon = true } }
     private val main = Handler(Looper.getMainLooper())
     private val files = File(core.ctx.filesDir, "pb-settled.json")
-    private val lock = Any()
+    private val lock = Object()
 
     @Volatile private var epoch = 0
     @Volatile private var marker: Any? = null
@@ -73,6 +73,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         val owner: PbOwner, val epoch: Int, val take: JSONObject, val row: Row,
         val req: String, val inv: String, val scan: String, val batch: String,
         val credit: PbCredit?,
+        var sent: Int = 0,
         var sha: String = "", var ended: Boolean = false,
     )
     private class Window(val rows: MutableList<Row>, val remain: Boolean)
@@ -417,8 +418,13 @@ class PhotoBackup(core: Core) : Feature(core) {
                 refuse(owner, req, why)
                 return
             }
+            val window = PbCredit.window(longField(m.opt("credit")), CHUNK)
+            if (m.has("credit") && (!remoteCredit || window == null)) {
+                refuse(owner, req, "stop")
+                return
+            }
             val f = Flight(owner, epoch, m, row, req, m.optString("inv"), m.optString("scan"), m.optString("batch"),
-                PbCredit.forTake(remoteCredit, m.opt("credit"), CHUNK))
+                window?.let { PbCredit(lock, it, row.size) })
             flight = f
             rememberDead(req)
             f
@@ -443,9 +449,9 @@ class PhotoBackup(core: Core) : Feature(core) {
         synchronized(lock) {
             val f = flight ?: return
             if (f.owner.socket !== owner.socket || !pumpingLocked(f) || m.optString("req") != f.req) return
-            val seq = longField(m.opt("seq")) ?: return
             val written = longField(m.opt("written")) ?: return
-            f.credit?.grant(seq, written)
+            val upTo = longField(m.opt("upTo")) ?: return
+            f.credit?.grant(written, upTo, f.sent)
         }
     }
 
@@ -469,6 +475,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             if (size != f.row.size.toLong() || !SHA.matches(sha) || sha != f.sha || f.sha.isEmpty()) return
             if (!settle(m, true, fromFlight = true)) return
             flight = null
+            lock.notifyAll()
             clearAckLocked()
         }
     }
@@ -499,12 +506,14 @@ class PhotoBackup(core: Core) : Feature(core) {
                     settleRowLocked(f.row, true)
                     refuseEcho(f, "gone")
                     flight = null
+                    lock.notifyAll()
                     return
                 }
                 "permission" -> {
                     hole = true
                     refuseEcho(f, "permission")
                     flight = null
+                    lock.notifyAll()
                     return
                 }
                 "ok" -> Unit
@@ -512,6 +521,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                     settleRowLocked(f.row, true)
                     refuseEcho(f, "version")
                     flight = null
+                    lock.notifyAll()
                     return
                 }
             }
@@ -542,12 +552,25 @@ class PhotoBackup(core: Core) : Feature(core) {
             var got = 0
             var seq = 0
             while (true) {
-                if (!room(f, seq, got)) {
+                val end = minOf(got + CHUNK, f.row.size)
+                val final = got == f.row.size
+                if (f.credit?.await(end, final) { pumpingLocked(f) } == false || !room(f)) {
                     failPump(f, "stop", settle = false)
                     return
                 }
                 val n = try {
-                    input.read(buf)
+                    if (f.credit == null) input.read(buf)
+                    else if (final) {
+                        if (input.read() == -1) -1 else 1
+                    } else {
+                        var filled = 0
+                        while (filled < end - got) {
+                            val count = input.read(buf, filled, end - got - filled)
+                            if (count < 0) break
+                            filled += count
+                        }
+                        if (filled == end - got) filled else -1
+                    }
                 } catch (_: SecurityException) {
                     failPump(f, "permission", settle = false)
                     return
@@ -560,7 +583,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                 }
                 synchronized(lock) {
                     if (!pumpingLocked(f)) return
-                    f.credit?.expect(seq + 1, got + n)
+                    f.sent = got + n
                 }
                 md.update(buf, 0, n)
                 val data = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
@@ -592,21 +615,18 @@ class PhotoBackup(core: Core) : Feature(core) {
         }
     }
 
-    private fun room(f: Flight, seq: Int = -1, written: Int = -1): Boolean {
+    private fun room(f: Flight): Boolean {
         val timeout = if (f.credit == null) Proto.TIMEOUT_MS.toLong() else PB_STALL_MS
         val timer = PbIdle(System.nanoTime(), timeout)
         var previous = Long.MAX_VALUE
-        var wasCredited = false
         while (true) {
             if (!still(f)) return false
             val queued = core.link.queuedFor(f.owner.socket)
             if (queued < 0L) return false
             val now = System.nanoTime()
-            val credited = synchronized(lock) { f.credit?.allows(seq, written) != false }
-            if (f.credit != null && credited && (!wasCredited || queued < previous)) timer.progress(now)
+            if (f.credit != null && queued < previous) timer.progress(now)
             previous = queued
-            wasCredited = credited
-            if (queued <= QUEUE_MAX && credited) return true
+            if (queued <= QUEUE_MAX) return true
             if (timer.expired(now)) return false
             try {
                 Thread.sleep(20)
@@ -626,11 +646,13 @@ class PhotoBackup(core: Core) : Feature(core) {
             if (why == "stop") {
                 val socket = f.owner.socket
                 flight = null
+                lock.notifyAll()
                 clearAckLocked()
                 if (core.link.lockSessionCurrent(socket)) core.link.sendFor(socket, msg(Proto.T.BACKUP_STOP, "req" to f.req))
             } else {
                 refuseEcho(f, why)
                 flight = null
+                lock.notifyAll()
                 clearAckLocked()
             }
         }
@@ -915,6 +937,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         hole = false
         val f = flight
         flight = null
+        lock.notifyAll()
         clearAckLocked()
         if (f != null) rememberDead(f.req)
         if (sendStop && f != null && core.link.lockSessionCurrent(f.owner.socket)) {
@@ -1002,6 +1025,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             val socket = f.owner.socket
             val req = f.req
             flight = null
+            lock.notifyAll()
             ackReq = ""
             rememberDead(req)
             if (core.link.lockSessionCurrent(socket)) socket to req else null

@@ -10,22 +10,45 @@ import org.junit.Test
 
 class PhotoBackupTest {
     @Test
-    fun creditAllowsOnlyTheExactWrittenOffsetAndSequence() {
-        assertNull(PbCredit.forTake(false, null, 32_768))
-        assertNull(PbCredit.forTake(false, 32_768, 32_768))
-        val credit = requireNotNull(PbCredit.forTake(true, 32_768, 32_768))
-        assertTrue(credit.allows(-1, -1)) // accept opens the staging file
-        assertFalse(credit.allows(0, 0))
-        credit.grant(0, 0)
-        assertTrue(credit.allows(0, 0))
-        credit.expect(1, 32_768)
-        credit.grant(0, 0)
-        credit.grant(1, 32_767)
-        assertFalse(credit.allows(1, 32_768))
-        credit.grant(1, 32_768)
-        assertTrue(credit.allows(1, 32_768))
-        credit.expect(2, 32_769)
-        assertFalse(credit.allows(2, 32_769))
+    fun creditWaitWakesOnGrantAndHonorsTheAdvertisedOffset() {
+        val chunk = 32_768
+        val size = 65 * chunk
+        val lock = Object()
+        val window = requireNotNull(PbCredit.window(262_144, chunk))
+        assertNull(PbCredit.window(null, chunk))
+        assertNull(PbCredit.window(1, chunk))
+        val credit = PbCredit(lock, window, size)
+        val ready = java.util.concurrent.Semaphore(0)
+        val started = System.nanoTime()
+        val sender = java.util.concurrent.FutureTask {
+            for (end in 1..65) {
+                var waiting = false
+                check(credit.await(end * chunk, end == 65) {
+                    if (!waiting && (end == 1 || end >= 9)) {
+                        waiting = true
+                        ready.release()
+                    }
+                    true
+                })
+            }
+        }
+        val thread = Thread(sender).apply { isDaemon = true; start() }
+        try {
+            // One granter response per iteration. With 20 ms polling this takes at least 1.16 s.
+            for (end in listOf(1) + (9..65)) {
+                assertTrue(ready.tryAcquire(2, java.util.concurrent.TimeUnit.SECONDS))
+                val offset = when (end) {
+                    1 -> 0
+                    65 -> size
+                    else -> ((end - 8).coerceAtLeast(0)) * chunk
+                }
+                synchronized(lock) { credit.grant(offset.toLong(), minOf(size, offset + window).toLong(), size) }
+            }
+            sender.get(2, java.util.concurrent.TimeUnit.SECONDS)
+            assertTrue(System.nanoTime() - started < 1_000_000_000)
+        } finally {
+            thread.interrupt()
+        }
     }
 
     @Test

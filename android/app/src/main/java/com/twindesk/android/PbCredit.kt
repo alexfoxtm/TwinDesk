@@ -3,29 +3,47 @@ package com.twindesk.android
 
 internal const val PB_STALL_MS = 120_000L
 
-// One chunk per grant. Access is serialized by PhotoBackup's lock.
-internal class PbCredit {
+// Credit and flight ownership share the same monitor.
+internal class PbCredit(
+    private val lock: Object,
+    private val window: Int,
+    private val size: Int,
+) {
+    private var written = -1
+    private var upTo = 0
+
+    fun grant(offset: Long, limit: Long, sent: Int) {
+        if (offset <= written || offset > sent || limit != minOf(size.toLong(), offset + window)) return
+        written = offset.toInt()
+        upTo = limit.toInt()
+        lock.notifyAll()
+    }
+
+    fun await(end: Int, final: Boolean, alive: () -> Boolean): Boolean = synchronized(lock) {
+        var observed = written
+        var deadline = System.nanoTime() + PB_STALL_MS * 1_000_000
+        while (alive()) {
+            if (written >= 0 && (if (final) written >= end else upTo >= end)) return true
+            val now = System.nanoTime()
+            if (written != observed) {
+                observed = written
+                deadline = now + PB_STALL_MS * 1_000_000
+            }
+            val left = deadline - now
+            if (left <= 0) return false
+            try {
+                lock.wait((left + 999_999) / 1_000_000)
+            } catch (_: InterruptedException) {
+                return false
+            }
+        }
+        false
+    }
+
     companion object {
-        fun forTake(macAdvertised: Boolean, window: Any?, chunkSize: Int): PbCredit? =
-            if (macAdvertised && window == chunkSize) PbCredit() else null
+        fun window(value: Long?, chunk: Int): Int? =
+            value?.takeIf { it in chunk.toLong()..Int.MAX_VALUE.toLong() }?.toInt()
     }
-
-    private var nextSeq = 0
-    private var nextOffset = 0
-    private var granted = false
-
-    fun expect(seq: Int, offset: Int) {
-        nextSeq = seq
-        nextOffset = offset
-        granted = false
-    }
-
-    fun grant(seq: Long, offset: Long) {
-        if (seq == nextSeq.toLong() && offset == nextOffset.toLong()) granted = true
-    }
-
-    fun allows(seq: Int, offset: Int): Boolean =
-        seq < 0 || (granted && seq == nextSeq && offset == nextOffset)
 }
 
 internal class PbIdle(start: Long, timeoutMs: Long) {
