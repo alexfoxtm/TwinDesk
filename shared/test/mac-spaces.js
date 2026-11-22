@@ -999,6 +999,9 @@ async function main() {
     assert.strictEqual(seen.length, 0);
     assert.strictEqual(authorize({ id: 'phone', source: host }), null);
     host.released = false;
+    host.alt = { readyState: 1 };
+    session.fromHost({ t: P.T.SCREEN_SPACE, dir: 'next' }, host, host.alt);
+    assert.strictEqual(seen.length, 0, 'a fallback arrival cannot authorize a desktop request');
     session.fromHost({ t: P.T.SCREEN_SPACE, dir: 'next' }, host, host.ws);
     assert.strictEqual(seen.length, 1);
     assert.strictEqual(seen[0].id, 'phone');
