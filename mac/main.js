@@ -1755,8 +1755,8 @@ app.on('before-quit', (event) => {
     return;
   }
   if (svc && svc.mic) svc.mic.shutdown();
-  fileShelf?.shutdown();
   if (svc && svc.rzShelf) svc.rzShelf.shutdown();
+  fileShelf?.shutdown();
   if (svc && svc.rz) svc.rz.shutdown();
   quitting = true;
   if (svc && svc.phoneViews) svc.phoneViews.shutdown();

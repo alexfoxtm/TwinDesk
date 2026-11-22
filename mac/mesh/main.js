@@ -1509,8 +1509,8 @@ app.on('before-quit', () => {
   proximityLock?.shutdown();
   if (web) web.shutdown();
   if (svc && svc.batteryAlerts) svc.batteryAlerts.reset();
-  fileShelf?.shutdown();
   if (svc && svc.mic) svc.mic.shutdown();
+  fileShelf?.shutdown();
   quitting = true;
   if (svc && svc.phone) svc.phone.shutdown();
   if (svc && svc.phoneDrive) svc.phoneDrive.shutdown();
