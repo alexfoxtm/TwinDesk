@@ -152,13 +152,12 @@ function decl(body, prop) {
   assert.equal(decl(ring, 'width'), '13px');
   assert.equal(decl(ring, 'height'), '13px');
   assert.equal(decl(ring, 'background'), 'rgba(48, 185, 77, 0.45)');
-  const cover = ruleBody(calm, '.dot.good::before');
-  assert.equal(decl(cover, 'background'), 'var(--good)');
-  assert.equal(decl(cover, 'z-index'), '1');
-  assert.equal(decl(ring, 'z-index'), '0');
+  assert.equal(decl(ring, 'z-index'), '-1', 'the ring paints behind the dot, which is already green');
+  assert.match(ruleBody(calm, '.dot.good'), /isolation:\s*isolate/);
   const b = frames['td-breathe'].replace(/\s+/g, ' ');
   assert.match(b, /0%, 100% \{ transform: scale\(calc\(7 \/ 13\)\); opacity: 1; \}/);
   assert.match(b, /50% \{ transform: scale\(1\); opacity: 0; \}/);
+  assert.doesNotMatch(calm, /@starting-style/, 'a new dot is green at once; only a class change fades');
 }
 
 // Pulse: a 40px streak. The box starts at -40 and is W+40 wide, so translate 0 to 100%

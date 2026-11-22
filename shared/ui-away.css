@@ -5,7 +5,6 @@
    Below that, the same sheet (loaded only by mac/control.html, after the upstream sheets) draws
    the steady cues with transform and opacity, so a focused window does not repaint them. */
 .td-away .dot.good,
-.td-away .dot.good::before,
 .td-away .dot.good::after,
 .td-away .hero-link,
 .td-away .hero-link:not(.up)::before,
@@ -30,17 +29,13 @@
 /* Steady cues while the window is focused. Upstream still animates box-shadow, background-position
    and left; these rules (later sheet) replace that with transform and opacity. Same timing.
    The halo colour is the breathe shadow's rgba, not --good, so light and dark match upstream.
-   Glass and Simple both use these rules. A covered centre (::before) keeps the 7px dot solid
-   while the 13px disc behind it grows from the dot's size to a 3px ring and fades. */
+   Glass and Simple both use these rules. The disc sits behind the dot's own background, so the
+   7px centre stays solid while the 13px disc grows to a 3px ring and fades. A new dot is green
+   at once. A class change still fades, from .dot's own background-color transition. */
 .dot.good { animation: none; position: relative; isolation: isolate; }
-.dot.good::before {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--good); z-index: 1;
-  pointer-events: none; transition: background-color 0.3s;
-}
-@starting-style { .dot.good::before { background: var(--idle); } }
 .dot.good::after {
   content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
-  border-radius: 50%; background: rgba(48, 185, 77, 0.45); z-index: 0; pointer-events: none;
+  border-radius: 50%; background: rgba(48, 185, 77, 0.45); z-index: -1; pointer-events: none;
   animation: td-breathe 2.8s ease-in-out infinite;
 }
 @keyframes td-breathe {
@@ -67,7 +62,7 @@
 @keyframes td-travel { from { transform: translateX(0); } to { transform: translateX(100%); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .dot.good::before, .dot.good::after, .hero-link:not(.up)::before, .hero-link.up .hero-pulse::before { content: none; }
+  .dot.good::after, .hero-link:not(.up)::before, .hero-link.up .hero-pulse::before { content: none; }
   .hero-link:not(.up) {
     background: repeating-linear-gradient(90deg, var(--idle) 0 6px, transparent 6px 12px);
     background-size: 24px 3px;
