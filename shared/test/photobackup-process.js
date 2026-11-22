@@ -14,12 +14,21 @@ const PB = require('../photobackup');
 const { ReceiptLedger } = require('../../mac/photo-backup-worker');
 const children = [];
 const controls = [];
-const replies = [];
+let holdRecheck = false;
+let heldRecheck;
 const fork = childProcess.fork;
 childProcess.fork = (...args) => {
   const child = fork(...args);
   children.push(child);
-  child.on('message', event => replies.push(event));
+  const emit = child.emit;
+  child.emit = function (name, ...args) {
+    if (holdRecheck && name === 'message' && args[0].rechecked) {
+      holdRecheck = false;
+      heldRecheck = { event: args[0], release: () => emit.call(this, name, ...args) };
+      return true;
+    }
+    return emit.call(this, name, ...args);
+  };
   const send = child.send.bind(child);
   child.send = (event, callback) => {
     controls.push(event);
@@ -182,13 +191,14 @@ async function run() {
     pb.recheckLatest(latest);
     await until(() => pb.latest()?.path === older, 'unbound recheck falls back to the older photo');
 
-    const replyStart = replies.length;
+    holdRecheck = true;
     previewUpdates = [];
     pb.recheckLatest(pb.latest());
+    const stale = await until(() => heldRecheck);
+    assert.equal(stale.event.receipt?.path, older);
     options.settings.photoBackup.peers.phone.folder = other;
     pb.refresh();
-    const stale = await until(() => replies.slice(replyStart).find(event => event.rechecked));
-    assert.equal(stale.receipt?.path, older);
+    stale.release();
     assert.ok(previewUpdates.every(preview => preview === otherPhoto), 'an old recheck cannot replace the new archive tile');
     previewUpdates = null;
     options.settings.photoBackup.peers.phone.folder = folder;
