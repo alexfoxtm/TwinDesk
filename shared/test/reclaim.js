@@ -80,7 +80,7 @@ async function mainPath(dir, tls) {
       if (on) ended.push(id);
       return id;
     };
-    server.on('closed', (...args) => closeEvents.push(args));
+    server.on('closed', (ctx, unexpected = false, ...extra) => closeEvents.push([ctx, unexpected, ...extra]));
     server.on('noreclaim', () => noReclaim++);
     mock.timers.enable({ apis: ['setInterval'] });
     sleepWake({ powerMonitor, server: () => server, discovery: () => ({

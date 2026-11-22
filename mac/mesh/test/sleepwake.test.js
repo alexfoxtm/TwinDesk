@@ -55,7 +55,7 @@ test('suspend closes every guest and wake invites an eligible computer at its di
       guests.push(guest);
     }
     const closed = [];
-    server.on('closed', (...args) => closed.push(args));
+    server.on('closed', (ctx, unexpected = false, ...extra) => closed.push([ctx, unexpected, ...extra]));
     powerMonitor.emit('suspend');
     assert.deepEqual(ended, [P.OS.ANDROID, P.OS.IOS, P.OS.WIN]);
     assert.equal(server.clients.size, 0);

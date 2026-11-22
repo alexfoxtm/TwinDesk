@@ -317,11 +317,11 @@ class Server extends EventEmitter {
   // Mark ctx authenticated. A client with the same device id replaces the older socket of that
   // device only; other devices are untouched.
   authenticate(ctx, who, welcome) {
+    // The files engine (fx2, shared/meshfx.js) starts on demand and its port goes in this welcome:
+    // when it isn't listening yet the welcome waits for it, a few tens of ms, never long.
     if (this.asleep) return this.fail(ctx, P.E.ASLEEP, 'Asleep');
     const { deviceId, name, os } = who;
     ctx.pendingId = deviceId;
-    // The files engine (fx2, shared/meshfx.js) starts on demand and its port goes in this welcome:
-    // when it isn't listening yet the welcome waits for it, a few tens of ms, never long.
     const wait = ctx.fxWanted && ctx.fx2Wanted && !ctx.fx2Waited && this.fx2Wait ? this.fx2Wait(1500) : null;
     if (wait) {
       ctx.fx2Waited = true;
