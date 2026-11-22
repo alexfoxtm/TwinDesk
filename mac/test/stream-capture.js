@@ -23,8 +23,8 @@ Module._load = function (request, parent, isMain) {
 };
 const { Stream } = require('../stream.js');
 const { Stream: MeshStream } = require('../mesh/stream.js');
-Module._load = originalLoad;
 
+Module._load = originalLoad;
 
 test('passes selected display, bounded dimensions and audio to the capture window', async () => {
   for (const Class of [Stream, MeshStream]) {
