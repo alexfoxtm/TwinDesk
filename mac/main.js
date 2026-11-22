@@ -208,6 +208,22 @@ function pushState() {
   pushQueued = true;
   setImmediate(() => {
     pushQueued = false;
+    // No control window: the snapshots below are only sent there. The tray still needs
+    // client, found and where the pointer is. Lock view already ran; screen state and
+    // preview shots run below, as they do when the window is open.
+    if (!(win && !win.isDestroyed())) {
+      if (discovery) state.found = discovery.list();
+      const c = peer && peer.current;
+      state.client = c ? { id: c.deviceId, name: c.name, os: c.os, role: c.role, address: c.address, rttMs: c.rttMs, transport: c.transport || 'ip' } : null;
+      const kvm = svc && svc.kvm;
+      if (kvm) state.input = kvm.view;
+      if (kvm && lockKey) lockKey.sync(kvm.server.current ? settings.keys.lockKeys : '');
+      if (kvm && svc) svc.fileClip.syncConnected(!!kvm.server.current); // the file shortcuts too
+      if (pairSync) pairSync.check();
+      sendScreenState();
+      updateTray();
+      return;
+    }
     // The address the other computer can reach, first (the UI shows only this one):
     // on the peer's network, then real adapters (en*), the default route, VPN tunnels and bridges last.
     const peerNet = String((peer && peer.current && peer.current.address) || '').replace(/^::ffff:/, '').split('.').slice(0, 3).join('.');
