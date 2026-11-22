@@ -129,6 +129,10 @@ for locale in "$RES"/*.lproj; do
     *) rm -rf "$locale" ;;
   esac
 done
+# A renamed or missing folder must stop the build, not ship an app without its languages.
+for locale in en ru tr pt_BR zh_CN; do
+  [ -f "$RES/$locale.lproj/locale.pak" ] || { echo "build-app: Electron locale $locale is missing in $RES" >&2; exit 1; }
+done
 # The packager derives this label from executable-name; keep the fork's visible name.
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName TwinDesk Fork" "$APP/Contents/Info.plist"
 cp -R locales/zh-Hans.lproj locales/ru.lproj locales/tr.lproj locales/pt-BR.lproj "$APP/Contents/Resources/"

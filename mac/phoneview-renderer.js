@@ -109,6 +109,8 @@
   let skipped = false;
   // The capture closed or failed: its message stays, and nothing asks for a keyframe until a new one starts.
   let ended = false;
+  // Decoder errors in a row with no picture in between. Past a few, asking again cannot help.
+  let decodeErrors = 0;
   let heldFrame = null;
   let videoEpoch = 0;
   let codecName = null;
@@ -176,6 +178,7 @@
         }
         if (acceptPts != null && typeof frame.timestamp === 'number' && frame.timestamp >= acceptPts) acceptPts = null;
         releaseHeldFrame();
+        decodeErrors = 0;
         try {
           paintFrame(frame);
           if (vcam) vcam.push(frame, frame.displayWidth, frame.displayHeight);
@@ -193,7 +196,8 @@
         // The GPU's decoder refused this stream (some drivers, a high H.264 level): the window waited
         // for the picture for good (#233), as a closed decoder takes nothing more. Software from then on.
         // The asked keyframe may be the one that failed, inside needKey's throttle: keep asking.
-        const ask = () => { if (!skipMinimized()) { needKey(); if (!ended) armKeyRetry(); } };
+        decodeErrors++;
+        const ask = () => { if (!skipMinimized()) { needKey(); if (!ended && decodeErrors <= 5) armKeyRetry(); else stopKeyRetry(); } };
         if (hwDecode) {
           hwDecode = false;
           console.warn('decoder: trying software decoding');
@@ -212,9 +216,10 @@
 
   api.on('video', (p) => {
     const data = p.data instanceof Uint8Array ? p.data : new Uint8Array(p.data);
+    ended = false; // video is arriving: the capture is live, whatever the last status said
     if (p.config) {
       config = data;
-      ended = false;
+      decodeErrors = 0;
       makeDecoder(codecOf(data));
       waitingKey = true;
       return;

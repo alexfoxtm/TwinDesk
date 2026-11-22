@@ -227,6 +227,7 @@ class SpaceLook {
       return;
     }
     if (!still()) return;
+    if (session !== this.sampledSession) this.retried = false;
     this.sampledSession = session;
     this.sampledView = viewed;
     this.refresh({ view, still, force: invalidated || changed });

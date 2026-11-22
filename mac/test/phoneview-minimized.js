@@ -220,6 +220,24 @@ test('restore keeps asking while the keyframe has not arrived', () => {
   const first = failed.sent.filter((m) => m.t === 'resetVideo').length;
   failed.advance(3000);
   assert.ok(failed.sent.filter((m) => m.t === 'resetVideo').length >= first + 2, 'a decoder that failed keeps asking until a keyframe is in');
+  for (let i = 0; i < 8; i++) {
+    failed.decoders.at(-1).callbacks.error(new Error('refused'));
+    failed.advance(0);
+  }
+  failed.advance(2000);
+  const gaveUp = failed.sent.filter((m) => m.t === 'resetVideo').length;
+  failed.advance(10000);
+  assert.equal(failed.sent.filter((m) => m.t === 'resetVideo').length, gaveUp, 'a stream that keeps failing is not asked forever');
+
+  const prompt = fixture('screen');
+  prompt.config();
+  prompt.recv('status', { error: 'Wake and unlock the phone' });
+  prompt.recv('video', { key: true, data: Uint8Array.from([0, 0, 1, 0x65]) });
+  prompt.recv('opts', { minimized: true });
+  const before = prompt.sent.filter((m) => m.t === 'resetVideo').length;
+  prompt.advance(2000);
+  prompt.recv('opts', { minimized: false });
+  assert.equal(prompt.sent.filter((m) => m.t === 'resetVideo').length, before + 1, 'a capture that went on after a prompt is asked for a keyframe on restore');
 });
 
 test('restore waits for a keyframe only when frames were skipped', () => {
