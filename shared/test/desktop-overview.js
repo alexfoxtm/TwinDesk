@@ -1,5 +1,5 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
-// The Mac viewer still has its old controls, and the new sheet does not pretend to show the desktop.
+// The Mac viewer still has its old controls. The sheet shows a still of a desktop, or says it has none.
 // Run with: node shared/test/desktop-overview.js
 'use strict';
 
@@ -57,8 +57,13 @@ assert.ok(sheet.includes('indication = ripple('));
 assert.ok(!sheet.includes('indication = null, role = Role.Button'));
 assert.ok(!sheet.includes('remember(shot'));
 
+assert.ok(gestures.includes('function reportVideo'));
+assert.ok(gestures.includes('function requireCurrentFrame'));
+assert.ok(gestures.includes('let videoOwner'));
+assert.ok(gestures.includes('viewerGeneration'));
 assert.ok(gestures.includes("g.ids.length === 3 ? 'pan'"));
 assert.ok(gestures.includes('three fingers pan the view'));
+assert.ok(gestures.includes('if (viewGestures && (touches.size > 1 || gesture))'));
 
 assert.ok(web.includes('result.action is DesktopSelect.Action.Space'));
 assert.ok(web.includes('pending = previous'));
@@ -76,7 +81,11 @@ assert.ok(web.includes('if (epoch != refreshEpoch) return true'));
 assert.ok(web.includes('frameFor()'));
 assert.ok(web.includes('if (!on) cancelDesktopWait()'));
 assert.ok(web.includes('if (!inputOn)'));
-const welcome = web.slice(web.indexOf('override fun onWelcome'), web.indexOf('fun videoState(h:'));
+assert.ok(web.includes('!core.link.ownsVideoSession(videoMarker)'));
+assert.ok(web.includes('fun videoState'));
+assert.ok(web.includes('"viewGestures" to (core.host?.os == "mac")'));
+const screenSrc = web.slice(web.indexOf('class Screen'), web.indexOf('class MacSound'));
+const welcome = screenSrc.slice(screenSrc.indexOf('override fun onWelcome'), screenSrc.indexOf('fun videoState'));
 assert.ok(welcome.includes('sessionEpoch++'));
 assert.ok(welcome.includes('cancelDesktopWait()'));
 assert.ok(welcome.includes('endPreviewSession()'));
@@ -100,9 +109,13 @@ assert.ok(sheet.includes('val viewingThis = marked && display.id == viewingId'))
 assert.ok(!sheet.includes('val current = desk.current && display.id == viewingId'));
 
 assert.ok(viewer.includes('val sheetReady'));
+assert.ok(viewer.includes('if (!sheetReady)'));
+assert.ok(viewer.includes('!sheetReady && s.remote && s.displays.size > 1'));
+assert.ok(viewer.includes('spaces = s.spaces && s.sharing && s.inputOn'));
 assert.ok(toolbar.includes('if (sheetReady) onOverview() else onMenu("display")'));
-assert.ok(viewer.includes('!sheetReady && s.remote'));
-assert.match(read('android/app/src/main/java/com/twindesk/android/ViewerLoginSurface.kt'), /if \(showLogin\) \{[\s\S]*?^        \} else \{[\s\S]*?ViewerChrome\(/m);
+assert.ok(!viewer.includes('showLogin'));
+assert.ok(!viewer.includes('lockView'));
+assert.ok(toolbar.includes('if (sheetReady) onOverview() else onMenu("display")'));
 assert.ok(viewer.includes('spaces = s.spaces && s.sharing && s.inputOn'));
 assert.ok(viewer.includes('LaunchedEffect(overview)'));
 assert.ok(viewer.includes('s.refreshDesktops()'));
@@ -129,8 +142,6 @@ assert.ok(web.includes('DesktopPreview.reduce'));
 assert.ok(web.includes('DesktopPreview.retain'));
 assert.ok(viewer.includes('s.previewSheet(overview && sheetReady && started)'));
 assert.ok(viewer.includes('screen.previewSheet(false)'));
-const locked = web.slice(web.indexOf('fun lockChanged'), web.indexOf('fun setOpt', web.indexOf('fun lockChanged')));
-assert.ok(locked.includes('endPreviewSession()'));
 const state = web.slice(web.indexOf('"screen.state"'), web.indexOf('"stream.input"'));
 assert.ok(state.includes('endPreviewSession()'));
 assert.ok(state.includes('DesktopPreview.retain'));

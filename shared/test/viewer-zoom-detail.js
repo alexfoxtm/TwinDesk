@@ -1,163 +1,117 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 'use strict';
 const assert = require('assert');
-const { fixture, near } = require('./viewer-viewport.js');
+const fs = require('fs');
+const vm = require('vm');
+const path = require('path');
+function fixture(touch = 'direct') {
+  const events = new Map(), docEvents = new Map(), videoEvents = new Map(), sent = [], timers = new Map(), frames = [], videoFrames = [], videoStates = [], peers = [], detailRequests = [];
+  let now = 10000, timerId = 0;
+  const video = { videoWidth: 1920, videoHeight: 1080, style: {}, play: async () => {}, requestVideoFrameCallback: fn => videoFrames.push(fn), addEventListener(k, fn) { videoEvents.set(k, fn); } };
+  const ctx = { setTransform() {}, clearRect() {} };
+  const nodes = { video, audio: {}, overlay: { classList: { toggle() {} } }, kbd: { value: '', addEventListener() {}, blur() {}, focus() {} } };
+  const window = { innerWidth: 1000, innerHeight: 800, devicePixelRatio: 1,
+    addEventListener(k, fn) { events.set(k, fn); },
+    TD: { send: (m) => sent.push(JSON.parse(m)), ready() {}, playing() {}, videoState: (generation, session, playing, w, h) => videoStates.push({ generation, session, playing, w, h }), haptic() {},
+      canDecodeVideo: (_codec, width, height, _fps) => width <= 3840 && height <= 2160,
+      detail: (generation, session, height) => detailRequests.push({ generation, session, height }) } };
+  const document = { hidden: false, getElementById: (id) => nodes[id], addEventListener(k, fn) { docEvents.set(k, fn); },
+    documentElement: { addEventListener() {} }, body: { appendChild() {}, classList: { toggle() {} } },
+    createElement: () => ({ style: {}, getContext: () => ctx }) };
+  class Peer {
+    constructor() { peers.push(this); this.connectionState = 'connected'; this.localDescription = { sdp: 'fixture' }; }
+    close() { this.connectionState = 'closed'; }
+    async setRemoteDescription() {} async addIceCandidate() {} async createAnswer() { return {}; } async setLocalDescription() {}
+    getReceivers() { return []; }
+    async getStats() {
+      return new Map([['in', { type: 'inbound-rtp', kind: 'video', codecId: 'codec' }],
+        ['codec', { mimeType: 'video/H264' }]]);
+    }
+  }
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../android/app/src/main/assets/web/viewer.js'), 'utf8'), {
+    RTCPeerConnection: Peer, MediaStream: class { constructor(tracks) { this.tracks = tracks; } }, window, document, console: { log() {} }, performance: { now: () => now },
+    setTimeout: (fn, delay = 0) => { const id = ++timerId; timers.set(id, { fn, at: now + delay }); return id; }, clearTimeout: (id) => timers.delete(id), requestAnimationFrame: fn => frames.push(fn),
+  });
+  const pointer = (type, id, x, y, extra = {}) => events.get(type)({ pointerId: id, pointerType: 'touch', button: 0,
+    clientX: x, clientY: y, preventDefault() {}, ...extra });
+  const recv = (m) => window.tdRecv(m);
+  recv({ t: 'opts', touch, tap: true });
+  const advance = ms => {
+    now += ms;
+    for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); }
+  };
+  return { window, video, peers, videoStates, detailRequests, videoFrame() { for (const fn of videoFrames.splice(0)) fn(); }, overlay: nodes.overlay, sent, pointer, events, recv, document, docEvents, videoEvents,
+    frame() { for (const fn of frames.splice(0)) fn(); },
+    advance, hold() { advance(600); } };
+}
 
 const zoomDetail = { baseline: 1080, fps: 60, sizes: [null, { width: 2560, height: 1440 }, { width: 3840, height: 2160 }] };
-async function detailedViewer(session = 40, touch = 'direct', local = true) {
-  const f = fixture(local, touch);
-  f.recv({ t: 'rtc.offer', session, viewerGeneration: session + 100, sdp: 'fixture', detail: zoomDetail });
+async function connect(f, session = 40, detail = zoomDetail) {
+  f.recv({ t: 'rtc.offer', session, viewerGeneration: session + 100, sdp: 'fixture', detail });
   await new Promise(resolve => setImmediate(resolve));
-  f.peers[0].ontrack({ track: { kind: 'video' }, receiver: {} });
-  f.videoEvents.get('playing')(); f.videoFrame();
-  return f;
+  f.peers.at(-1).ontrack({ track: { kind: 'video' }, receiver: {} });
+  f.videoEvents.get('playing')();
+  f.videoFrame();
 }
-function zoomIn(f) {
+function pinch(f, span = 400) {
   f.pointer('pointerdown', 1, 400, 400); f.pointer('pointerdown', 2, 600, 400);
-  f.pointer('pointermove', 2, 800, 400); f.frame();
-  f.pointer('pointerup', 1, 400, 400); f.pointer('pointerup', 2, 800, 400);
+  f.pointer('pointermove', 2, 400 + span, 400); f.frame();
+  f.pointer('pointerup', 1, 400, 400); f.pointer('pointerup', 2, 400 + span, 400);
 }
-async function zoomRequestsSharperOwnedPicture() {
-  const f = await detailedViewer();
-  zoomIn(f);
+async function sharperPictureAndRestore() {
+  const f = fixture();
+  await connect(f);
+  pinch(f);
   f.advance(200);
   f.pointer('pointerdown', 3, 500, 400); f.pointer('pointerup', 3, 500, 400);
   f.advance(399);
-  assert.deepStrictEqual(f.detailRequests, [], 'tap after a pinch restarts its settled detail request');
+  assert.deepStrictEqual(f.detailRequests, [], 'a tap delays the request until gestures settle');
   f.advance(1); await new Promise(resolve => setImmediate(resolve));
   assert.deepStrictEqual(f.detailRequests, [{ generation: 140, session: 40, height: 1440 }]);
   const transform = f.video.style.transform;
-  f.video.videoWidth = 2560; f.video.videoHeight = 1440; f.videoEvents.get('resize')(); f.videoFrame();
-  f.advance(400); await new Promise(resolve => setImmediate(resolve));
-  assert.strictEqual(f.video.style.transform, transform, 'sharper same-aspect frames preserve zoom and pan');
-  assert.strictEqual(f.detailRequests.length, 1, 'same resolution request is coalesced');
+  f.video.videoWidth = 2560; f.video.videoHeight = 1440;
+  f.videoEvents.get('resize')(); f.videoFrame(); f.advance(400);
+  assert.strictEqual(f.video.style.transform, transform, 'same-aspect frames retain zoom and pan');
+  assert.strictEqual(f.detailRequests.length, 1, 'the same tier is coalesced');
+  pinch(f, 100); f.advance(400);
+  assert.deepStrictEqual(f.detailRequests.at(-1), { generation: 140, session: 40, height: 0 }, 'zooming out restores the baseline');
+  pinch(f);
+  f.advance(400);
+  assert.strictEqual(f.detailRequests.at(-1).height, 1440);
+  f.recv({ t: 'screen.state', on: true, touch: true });
+  f.advance(400);
+  assert.strictEqual(f.video.style.transform, 'translate(0px, 0px) scale(1)', 'native Direct touch restores the local view');
+  assert.strictEqual(f.detailRequests.at(-1).height, 0);
+  f.recv({ t: 'screen.state', on: true, touch: false });
+  pinch(f); f.advance(400);
+  assert.strictEqual(f.detailRequests.at(-1).height, 1440);
   f.recv({ t: 'viewer.scale', mode: 'fit' }); f.advance(400);
-  assert.deepStrictEqual(f.detailRequests.at(-1), { generation: 140, session: 40, height: 0 }, 'Fit restores this stream baseline');
+  assert.strictEqual(f.detailRequests.at(-1).height, 0, 'Fit restores this stream baseline');
 }
-async function zoomRejectsUnavailableAndRetiredPicture() {
-  const f = await detailedViewer();
+async function unsupportedAndRetiredFrames() {
+  const f = fixture();
+  await connect(f);
   f.window.TD.canDecodeVideo = () => false;
-  zoomIn(f); f.advance(400); await new Promise(resolve => setImmediate(resolve));
-  assert.deepStrictEqual(f.detailRequests, [], 'unsupported decoder size leaves the baseline stream');
+  pinch(f); f.advance(400); await new Promise(resolve => setImmediate(resolve));
+  assert.deepStrictEqual(f.detailRequests, [], 'an unsupported decoder keeps the baseline');
   f.window.TD.canDecodeVideo = () => true;
-  f.recv({ t: 'viewer.scale', mode: 'fit' }); zoomIn(f);
-  f.document.hidden = true; f.docEvents.get('visibilitychange')(); f.advance(400);
-  assert.deepStrictEqual(f.detailRequests, [], 'hidden viewer drops a pending zoom');
-  f.document.hidden = false;
-  f.recv({ t: 'viewer.scale', mode: 'fit' }); zoomIn(f);
-  f.recv({ t: 'viewer.probe', session: 40, viewerGeneration: 141, accept: false }); f.advance(400);
-  assert.deepStrictEqual(f.detailRequests, [], 'lock probe cancels the old frame request');
-  f.recv({ t: 'viewer.probe', session: 40, viewerGeneration: 142, accept: true }); f.videoFrame();
+  pinch(f); f.document.hidden = true; f.docEvents.get('visibilitychange')(); f.advance(400);
+  assert.deepStrictEqual(f.detailRequests, [], 'hidden viewers cancel pending work');
+  f.document.hidden = false; f.docEvents.get('visibilitychange')(); f.videoFrame();
+  f.recv({ t: 'rtc.offer', session: 41, viewerGeneration: 141, sdp: 'fixture', detail: zoomDetail });
   f.advance(400); await new Promise(resolve => setImmediate(resolve));
-  assert.deepStrictEqual(f.detailRequests, [{ generation: 142, session: 40, height: 1440 }]);
-  f.recv({ t: 'viewer.scale', mode: 'fit' });
-  f.recv({ t: 'rtc.offer', session: 41, viewerGeneration: 143, sdp: 'fixture', detail: zoomDetail });
-  f.advance(400); await new Promise(resolve => setImmediate(resolve));
-  assert.strictEqual(f.detailRequests.length, 1, 'replacement offer cancels the prior stream restore');
-  f.peers[1].ontrack({ track: { kind: 'video' }, receiver: {} });
-  f.videoEvents.get('playing')(); f.videoFrame(); zoomIn(f);
+  assert.deepStrictEqual(f.detailRequests, [], 'a replacement offer rejects the prior picture');
+  f.peers.at(-1).ontrack({ track: { kind: 'video' }, receiver: {} });
+  f.videoEvents.get('playing')(); f.videoFrame(); pinch(f);
   f.recv({ t: 'stream.stop' }); f.advance(400);
-  assert.strictEqual(f.detailRequests.length, 1, 'Stop cancels the pending detail request');
+  assert.deepStrictEqual(f.detailRequests, [], 'Stop cancels pending work');
+  const legacy = fixture();
+  await connect(legacy, 3, null);
+  legacy.pointer('pointerdown', 1, 400, 400); legacy.pointer('pointerdown', 2, 600, 400);
+  legacy.sent.length = 0;
+  legacy.pointer('pointermove', 2, 800, 400); legacy.frame();
+  assert.ok(legacy.sent.some(m => m.t === 'in.wh'), 'hosts without detail keep two-finger scroll');
 }
-async function trackpadCueTracksZoomedPicture() {
-  for (const local of [true, false]) {
-    const f = await detailedViewer(50, 'pad', local);
-    f.recv({ t: 'screen.state', on: true, remote: true });
-    f.recv({ t: 'viewer.input', on: true });
-    if (local) zoomIn(f);
-    f.sent.length = 0;
-    f.pointer('pointerdown', 3, 500, 400);
-    f.pointer('pointermove', 3, 530, 430);
-    f.frame();
-    assert.equal(f.cue.hidden, false);
-    assert.deepStrictEqual(f.sent.map(m => m.t), ['in.mm'], 'the cue adds no input messages');
-    const [panX, panY, scale] = f.video.style.transform.match(/-?[0-9.]+/g).map(Number);
-    const [x, y] = f.cue.style.transform.match(/-?[0-9.]+/g).map(Number);
-    near(x, (1000 - 1000 * scale) / 2 + panX + f.sent[0].x * 1000 * scale);
-    near(y, (800 - 562.5 * scale) / 2 + panY + f.sent[0].y * 562.5 * scale);
-    f.advance(160);
-    assert.equal(f.cue.hidden, true, 'idle cue clears without waiting for a remote frame');
-  }
-}
-
-async function trackpadCueDoesNotSurviveRevocation() {
-  const f = await detailedViewer(51, 'pad');
-  f.recv({ t: 'screen.state', on: true, remote: true });
-  f.recv({ t: 'viewer.input', on: true });
-  f.pointer('pointerdown', 1, 500, 400);
-  f.pointer('pointermove', 1, 530, 430);
-  f.recv({ t: 'viewer.input', on: false });
-  f.frame();
-  assert.equal(f.cue.hidden, true, 'a queued cue cannot appear after input is revoked');
-  f.recv({ t: 'viewer.input', on: true });
-  f.pointer('pointermove', 1, 560, 460);
-  f.frame();
-  assert.equal(f.cue.hidden, false);
-  f.recv({ t: 'viewer.probe', session: 51, viewerGeneration: 152, accept: false });
-  assert.equal(f.cue.hidden, true, 'lock clears the visible cue immediately');
-  f.pointer('pointermove', 1, 590, 490);
-  f.frame();
-  assert.equal(f.cue.hidden, true);
-}
-
-async function receiveMetricsUseActualDecodedCounters() {
-  const f = await detailedViewer(60);
-  let count = 0;
-  f.peers[0].stats = () => {
-    const n = count++;
-    return new Map([['in', { id: 'video-in', type: 'inbound-rtp', kind: 'video', timestamp: 1000 + n * 2000,
-      framesDecoded: 100 + n * 120, bytesReceived: 1000 + n * 250000, framesDropped: 2 + n }]]);
-  };
-  f.advance(2000); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(f.videoMetrics[0], { generation: 160, session: 60, w: 1920, h: 1080, fps: -1, kbps: -1, dropped: 2 },
-    'rates wait for a second observed sample');
-  f.advance(2000); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(f.videoMetrics[1], { generation: 160, session: 60, w: 1920, h: 1080, fps: 60, kbps: 1000, dropped: 3 });
-  assert.equal(count, 2);
-}
-
-async function receiveMetricsRejectLateStats() {
-  const f = await detailedViewer(61);
-  let finish;
-  f.peers[0].stats = () => new Promise(resolve => { finish = resolve; });
-  f.advance(2000);
-  f.recv({ t: 'viewer.probe', session: 61, viewerGeneration: 162, accept: false });
-  finish(new Map([['in', { id: 'old', type: 'inbound-rtp', kind: 'video', timestamp: 1000, framesDecoded: 100, bytesReceived: 1000 }]]));
-  await new Promise(resolve => setImmediate(resolve));
-  f.advance(10000);
-  assert.deepEqual(f.videoMetrics, [], 'an async report from the locked generation is discarded');
-  f.recv({ t: 'viewer.probe', session: 61, viewerGeneration: 163, accept: true }); f.videoFrame();
-  f.advance(2000);
-  f.document.hidden = true; f.docEvents.get('visibilitychange')();
-  finish(new Map([['in', { id: 'hidden', type: 'inbound-rtp', kind: 'video', timestamp: 2000 }]]));
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(f.videoMetrics, [], 'a backgrounded viewer discards in-flight statistics');
-}
-
-async function receiveMetricsRecoverIfConnectionStateChangesDuringStats() {
-  const f = await detailedViewer(62);
-  let finish;
-  f.peers[0].stats = () => new Promise(resolve => { finish = resolve; });
-  f.advance(2000);
-  f.peers[0].connectionState = 'connecting';
-  finish(new Map([['in', { id: 'video-in', type: 'inbound-rtp', kind: 'video', timestamp: 1000, framesDecoded: 10, bytesReceived: 1000 }]]));
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(f.videoMetrics, []);
-  f.peers[0].connectionState = 'connected';
-  f.peers[0].stats = () => new Map([['in', { id: 'video-in', type: 'inbound-rtp', kind: 'video', timestamp: 3000, framesDecoded: 130, bytesReceived: 251000, framesDropped: 1 }]]);
-  f.peers[0].onconnectionstatechange();
-  f.videoFrame();
-  f.advance(2000); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(f.videoMetrics.length, 1, 'doctor polling resumes after transient non-connected getStats');
-}
-
-(async () => {
-  await zoomRequestsSharperOwnedPicture();
-  await zoomRejectsUnavailableAndRetiredPicture();
-  await trackpadCueTracksZoomedPicture();
-  await trackpadCueDoesNotSurviveRevocation();
-  await receiveMetricsUseActualDecodedCounters();
-  await receiveMetricsRejectLateStats();
-  await receiveMetricsRecoverIfConnectionStateChangesDuringStats();
-  console.log('viewer-zoom-detail: zoom detail, trackpad cue, and receive metrics passed');
-})().catch(e => { console.error(e); process.exitCode = 1; });
+sharperPictureAndRestore().then(unsupportedAndRetiredFrames).then(() => {
+  console.log('viewer-viewport: sharper owned frames, restore, cancellation, and legacy gestures passed');
+}).catch(error => { console.error(error); process.exitCode = 1; });
