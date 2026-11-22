@@ -257,6 +257,7 @@ class SpaceLook {
     }
     const finish = (look) => {
       if (ticket !== this.ticket) return;
+      let retry = false;
       let now = null;
       let stale = typeof still === 'function' && !still();
       if (!stale && fence) {
@@ -275,6 +276,9 @@ class SpaceLook {
         try { if (opts && opts.onStale) opts.onStale(); } catch (_) { /* the session is already gone */ }
       } else {
         this.look = look;
+        // A failed read with nothing else due leaves the phone without a catalog: one more try.
+        retry = !look && !this.retried;
+        this.retried = !look;
         const finger = spaceFinger(look);
         const diff = finger !== this.finger;
         this.finger = finger;
@@ -285,6 +289,13 @@ class SpaceLook {
       const pending = this.pendingDemand;
       this.pendingDemand = null;
       if (pending && pending.still()) this.demand(pending);
+      if (retry && !this.busy) {
+        const t = setTimeout(() => {
+          if (this.busy || this.look || (typeof still === 'function' && !still())) return;
+          this.refresh(Object.assign({}, opts, { force: true }));
+        }, 1000);
+        if (t && t.unref) t.unref();
+      }
     };
     this.helper.request('spacesLook', {}).then((look) => {
       finish(look && typeof look === 'object' ? look : null);

@@ -62,7 +62,10 @@ class Hud {
   }
 
   _forget() {
+    // A page that failed to load leaves a live window behind: close it with the reference.
+    const w = this.win;
     this.win = null;
+    try { if (w && !w.isDestroyed()) w.destroy(); } catch (_) { /* already gone */ }
     this.ready = null;
   }
 

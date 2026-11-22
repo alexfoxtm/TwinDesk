@@ -278,8 +278,8 @@ class Server extends EventEmitter {
     // Bye already won (Disconnect while connecting). Do not commit, and do not evict whoever is current.
     if (ctx.released) return this.fail(ctx, P.E.RELEASED, 'The Mac disconnected');
     // Fast files v2: the files engine starts on demand (shared/fx2.js) and its port goes in this
-    // welcome, so when it isn't listening yet (it usually is: someone nearby, the socket coming in
-    // started it) the welcome waits for it, a few tens of ms. Never long: without it, the fx way.
+    // welcome, so when it isn't listening yet (a session that asked for it is what starts it, see
+    // mac/peer.js) the welcome waits for it, at most 1.5 s. Never longer: without it, the fx way.
     const wait = ctx.fxWanted && ctx.fx2Wanted && this.fxOn && !ctx.fx2Waited && this.fx2Wait ? this.fx2Wait(1500) : null;
     if (wait) {
       ctx.fx2Waited = true;

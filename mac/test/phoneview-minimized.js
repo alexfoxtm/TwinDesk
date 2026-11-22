@@ -197,6 +197,29 @@ test('restore keeps asking while the keyframe has not arrived', () => {
   closed.recv('status', { closed: 'stopped' });
   closed.advance(5000);
   assert.equal(closed.sent.filter((m) => m.t === 'resetVideo').length, 1, 'closed: stop asking');
+
+  const ended = fixture('screen');
+  ended.config();
+  ended.recv('status', { closed: 'stopped' });
+  ended.recv('opts', { minimized: true });
+  const asked = ended.sent.filter((m) => m.t === 'resetVideo').length;
+  const said = ended.statusKeys.length;
+  ended.recv('opts', { minimized: false });
+  ended.advance(5000);
+  assert.equal(ended.sent.filter((m) => m.t === 'resetVideo').length, asked, 'a capture that closed is not asked for a keyframe on restore');
+  assert.equal(ended.statusKeys.length, said, 'and its message stays instead of "Waiting for the picture"');
+  ended.config();
+  ended.recv('opts', { minimized: true });
+  ended.recv('opts', { minimized: false });
+  assert.equal(ended.sent.filter((m) => m.t === 'resetVideo').length, asked + 1, 'a new capture is asked again');
+
+  const failed = fixture('screen');
+  failed.config();
+  failed.decoders.at(-1).callbacks.error(new Error('refused'));
+  failed.advance(0);
+  const first = failed.sent.filter((m) => m.t === 'resetVideo').length;
+  failed.advance(3000);
+  assert.ok(failed.sent.filter((m) => m.t === 'resetVideo').length >= first + 2, 'a decoder that failed keeps asking until a keyframe is in');
 });
 
 test('restore waits for a keyframe only when frames were skipped', () => {

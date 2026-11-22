@@ -107,6 +107,8 @@
   // True once this minimize gap dropped decoder state. Restore waits for a keyframe only then.
   // A camera, and a recording, never set it: their pictures kept coming.
   let skipped = false;
+  // The capture closed or failed: its message stays, and nothing asks for a keyframe until a new one starts.
+  let ended = false;
   let heldFrame = null;
   let videoEpoch = 0;
   let codecName = null;
@@ -190,7 +192,8 @@
         console.warn('decoder', e.message);
         // The GPU's decoder refused this stream (some drivers, a high H.264 level): the window waited
         // for the picture for good (#233), as a closed decoder takes nothing more. Software from then on.
-        const ask = () => { if (!skipMinimized()) needKey(); };
+        // The asked keyframe may be the one that failed, inside needKey's throttle: keep asking.
+        const ask = () => { if (!skipMinimized()) { needKey(); if (!ended) armKeyRetry(); } };
         if (hwDecode) {
           hwDecode = false;
           console.warn('decoder: trying software decoding');
@@ -211,6 +214,7 @@
     const data = p.data instanceof Uint8Array ? p.data : new Uint8Array(p.data);
     if (p.config) {
       config = data;
+      ended = false;
       makeDecoder(codecOf(data));
       waitingKey = true;
       return;
@@ -261,7 +265,8 @@
       I.translate(el);
       el.hidden = false;
     }
-    if (s.closed || s.error) { appFrame = null; releaseHeldFrame(); stopKeyRetry(); }
+    if (s.closed || s.error) { ended = true; appFrame = null; releaseHeldFrame(); stopKeyRetry(); }
+    else if (s.ready) ended = false;
     if (s.closed) videoEpoch++;
     if (s.error) {
       closedStatus = null;
@@ -572,7 +577,7 @@
       }
       if (was && !minimized) {
         stopKeyRetry();
-        if (skipped) {
+        if (skipped && !ended) {
           waitingKey = true;
           if (acceptPts == null) acceptPts = Number.POSITIVE_INFINITY;
           showWaitingPicture();

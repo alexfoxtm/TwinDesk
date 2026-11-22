@@ -48,7 +48,7 @@ class BrowserWindow {
     windows.push(this);
   }
   loadFile() {
-    if (loadGate) return new Promise((resolve) => loadGate.push({ win: this, resolve }));
+    if (loadGate) return new Promise((resolve, reject) => loadGate.push({ win: this, resolve, reject }));
     return Promise.resolve();
   }
   isDestroyed() { return this.destroyed; }
@@ -121,6 +121,25 @@ test('a popup asked while the idle timer is pending still shows if that timer wo
     await shown;
     assert.equal(hud.win && hud.win.isVisible(), true);
     assert.equal(hud.win.destroyed, false);
+  } finally {
+    loadGate = null;
+  }
+});
+
+test('a popup whose page fails to load does not leave its window behind', async () => {
+  loadGate = [];
+  try {
+    const hud = new Hud(() => ({ app: { hud: true } }));
+    const n = windows.length;
+    const shown = hud.show('home', 'back');
+    loadGate[0].reject(new Error('load failed'));
+    await new Promise(setImmediate);
+    assert.equal(windows[n].destroyed, true, 'the window whose page failed is closed, not orphaned');
+    assert.equal(windows.length, n + 2, 'and another one is made for the popup');
+    loadGate[1].resolve();
+    await shown;
+    assert.equal(hud.win, windows[n + 1]);
+    assert.equal(hud.win.isVisible(), true);
   } finally {
     loadGate = null;
   }

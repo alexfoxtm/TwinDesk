@@ -129,6 +129,25 @@ async function check() {
   events.server.current = { ...conn, ws: {} };
   events.flushEvent();
   assert.equal(events.requests.length, 0, 'a queued event is fenced to its session');
+
+  const failed = setup();
+  const realSetTimeout = global.setTimeout;
+  let retry = null;
+  global.setTimeout = (fn, ms) => (ms === 1000 ? (retry = fn, { unref() {} }) : realSetTimeout(fn, ms));
+  try {
+    failed.sendState();
+    await failed.finish(null);
+    assert.equal(failed.requests.length, 0);
+    assert.ok(retry, 'a failed look with nothing else due is tried once more');
+    const again = retry;
+    retry = null;
+    again();
+    assert.equal(failed.requests.length, 1, 'the retry asks the helper');
+    await failed.finish(null);
+    assert.equal(retry, null, 'and only once per failure run');
+  } finally {
+    global.setTimeout = realSetTimeout;
+  }
 }
 
 check().then(() => console.log('space-look demand passed')).catch(err => {

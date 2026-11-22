@@ -543,6 +543,24 @@ final class Capture {
   // MARK: tap callback
 
   private var lastSlowTap: UInt64 = 0
+  static let tick: (UInt64, UInt64) = {
+    var tb = mach_timebase_info_data_t()
+    mach_timebase_info(&tb)
+    return (UInt64(max(tb.numer, 1)), UInt64(max(tb.denom, 1)))
+  }()
+
+  // How long ago the event was made, in nanoseconds. Its timestamp is documented as nanoseconds
+  // since startup, but may come in mach ticks (125/3 ns each on Apple silicon): take the reading
+  // that is a possible age, nil when neither is.
+  static func eventAge(now: UInt64, timestamp: UInt64, tick: (UInt64, UInt64) = Capture.tick) -> UInt64? {
+    guard timestamp > 0 else { return nil }
+    let limit: UInt64 = 10_000_000_000
+    if now >= timestamp, now - timestamp < limit { return now - timestamp }
+    let (n, d) = tick
+    let scaled = timestamp / d * n + timestamp % d * n / d
+    if now >= scaled, now - scaled < limit { return now - scaled }
+    return nil
+  }
 
   func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
     let pass = Unmanaged.passUnretained(event)
@@ -552,11 +570,10 @@ final class Capture {
     }
     if event.getIntegerValueField(.eventSourceUserData) == injectedMark { return pass }
     let arrived = DispatchTime.now().uptimeNanoseconds
-    let timestamp = event.timestamp
-    if timestamp > 0, arrived > timestamp, arrived - timestamp > 50_000_000,
+    if let age = Capture.eventAge(now: arrived, timestamp: event.timestamp), age > 50_000_000,
        lastSlowTap == 0 || arrived - lastSlowTap >= 5_000_000_000 {
       lastSlowTap = arrived
-      let ms = Double(arrived - timestamp) / 1_000_000
+      let ms = Double(age) / 1_000_000
       writerQueue.async { log(String(format: "input tap event age %.1f ms", ms)) }
     }
     if Capture.gestureTypes.contains(type.rawValue) { return onGesture(event) ? nil : pass }
