@@ -32,7 +32,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     private val main = Handler(Looper.getMainLooper())
 
     val discovery = Discovery(ctx, { JSONObject().put("id", store.deviceId).put("name", store.deviceName) }, ::changed, ::onInvite)
-    val link = Link(store, this)
+    val link = Link(store, this, context = ctx)
     // Computers that aren't on this phone's network, through Bluetooth (Ble.kt).
     val ble = Ble(ctx, { JSONObject().put("id", store.deviceId).put("name", store.deviceName).put("os", Proto.OS) },
         { id -> store.hosts().any { it.id == id } }, ::changed, ::onInvite)
@@ -42,6 +42,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val serve = BleServe(ctx, { JSONObject().put("id", store.deviceId).put("name", store.deviceName).put("os", Proto.OS) }, ::changed, ::onServeOpen)
     init {
         link.bleRx = { maxOf(ble.lastDown, serve.lastRx) }
+        discovery.onBeaconCycle = { link.checkBeatDeadline(); peer.link.checkBeatDeadline() }
         discovery.onHost = { seen, changed ->
             if (changed && canReturn() && returnHost()?.let { it.id == seen.id && it.fp == seen.fp } == true) {
                 retryReturnNow()

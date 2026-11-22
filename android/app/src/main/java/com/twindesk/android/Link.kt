@@ -5,7 +5,11 @@
 // reclaim a paired Mac that advertises rc without taking another session).
 package com.twindesk.android
 
+import android.app.AlarmManager
+import android.content.Context
 import android.net.InetAddresses
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import okhttp3.OkHttpClient
@@ -51,6 +55,7 @@ class Link(
     private val events: Events,
     // Where paired hosts are kept: the computers ("hosts"), or another phone (Peer.kt: "peerHosts").
     private val hostsKey: String = "hosts",
+    private val context: Context? = null,
 ) {
     interface Events {
         fun onChange()
@@ -86,6 +91,10 @@ class Link(
     private var lastRx = 0L
     private var lastCode: String? = null
     private var pinger: ScheduledFuture<*>? = null
+    private var quietAlarm: AlarmManager.OnAlarmListener? = null
+    private val alarms by lazy { context?.getSystemService(AlarmManager::class.java) }
+    private val alarmHandler by lazy { Handler(Looper.getMainLooper()) }
+    @Volatile private var beatDue = Long.MAX_VALUE
     // Resume (hello {resume}): the session's other socket, and one being opened.
     private var resumeKey = ""
     private var alt: WebSocket? = null
@@ -799,9 +808,32 @@ class Link(
         events.onWelcome(h)
     }
 
-    private fun scheduleBeat(delay: Long) {
+    private fun cancelBeat() {
+        beatDue = Long.MAX_VALUE
         pinger?.cancel(false)
+        pinger = null
+        quietAlarm?.let { alarms?.cancel(it) }
+        quietAlarm = null
+    }
+
+    private fun scheduleBeat(delay: Long) {
+        cancelBeat()
+        val due = SystemClock.elapsedRealtime() + delay
+        if (delay > Proto.PING_MS) {
+            beatDue = due
+            val alarm = AlarmManager.OnAlarmListener { checkBeatDeadline() }
+            runCatching {
+                alarms?.setExact(AlarmManager.ELAPSED_REALTIME, due, "TwinDesk:quiet", alarm, alarmHandler)
+                quietAlarm = alarm
+            }
+        }
         pinger = exec.schedule({ beat() }, delay, TimeUnit.MILLISECONDS)
+    }
+
+    // Discovery already runs while the process is awake. It also covers alarm deferral by Android.
+    internal fun checkBeatDeadline() {
+        if (SystemClock.elapsedRealtime() < beatDue) return
+        run { if (SystemClock.elapsedRealtime() >= beatDue) beat() }
     }
 
     // Each of the session's sockets on its own: a quiet fallback goes, the session lives on.
@@ -898,8 +930,7 @@ class Link(
     private fun onClose(failure: String?) {
         Log.i("TwinDesk", "link closed: mode=$mode state=$state ble=$ble failure=$failure code=$lastCode")
         val wasReclaim = reclaimHello
-        pinger?.cancel(false)
-        pinger = null
+        cancelBeat()
         quietSince = 0L
         helloTimer?.cancel(false)
         reclaimHello = false
@@ -934,7 +965,7 @@ class Link(
     }
 
     private fun closeSocket() {
-        pinger?.cancel(false)
+        cancelBeat()
         helloTimer?.cancel(false)
         reclaimHello = false
         dialAdmit = null

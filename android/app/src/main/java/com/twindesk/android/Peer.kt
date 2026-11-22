@@ -53,7 +53,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
     private val store = core.store
     private val main = Handler(Looper.getMainLooper())
     val server = PeerServer(this)
-    val link = Link(store, this, HOSTS)
+    val link = Link(store, this, HOSTS, ctx)
     private val work = Executors.newFixedThreadPool(2) { r -> Thread(r, "td-peer").apply { isDaemon = true } }
     private val xfer = Executors.newCachedThreadPool { r -> Thread(r, "td-peer-x").apply { isDaemon = true } }
 

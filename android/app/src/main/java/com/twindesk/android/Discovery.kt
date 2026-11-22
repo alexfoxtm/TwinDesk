@@ -68,6 +68,7 @@ class Discovery(
     @Volatile var peerOn = false
     @Volatile var onPeerAsk: ((Found, JSONObject) -> Unit)? = null // another phone's peer.* (Peer.kt)
     @Volatile var onHost: ((Found, Boolean) -> Unit)? = null // every computer beacon, including one whose fields did not change
+    @Volatile var onBeaconCycle: (() -> Unit)? = null
     @Volatile var onNetworkChange: (() -> Unit)? = null
     @Volatile var error = ""
     @Volatile private var sock: DatagramSocket? = null
@@ -190,6 +191,7 @@ class Discovery(
         thread(name = "td-beacon", isDaemon = true) {
             while (running) {
                 val revision = synchronized(beaconSignal) { beaconRevision }
+                onBeaconCycle?.invoke()
                 beacon()
                 prune()
                 synchronized(beaconSignal) {
