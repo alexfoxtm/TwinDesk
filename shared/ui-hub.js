@@ -10,18 +10,28 @@
   const handlers = new Map(); // type -> [fn]
   let listening = false;
 
+  // Pages register inside build. On the Mac that build waits for an idle turn, so listen
+  // now and, on the Mac only, build before dispatch. ensureAllBuilt is unset on Windows,
+  // Linux and Multi-device, which already build before a message can arrive.
+  function dispatch(m) {
+    if (typeof UI.ensureAllBuilt === 'function') UI.ensureAllBuilt();
+    for (const f of handlers.get(m && m.t) || []) {
+      try { f(m); } catch (e) { console.error(`hub ${m && m.t}:`, e); }
+    }
+  }
+  function listen() {
+    if (listening || !UI.api || !UI.api.onHub) return;
+    listening = true;
+    UI.api.onHub(dispatch);
+  }
+
   // fn(msg) for each answer of this type from the phone.
   UI.hubOn = (t, fn) => {
     if (!handlers.has(t)) handlers.set(t, []);
     handlers.get(t).push(fn);
-    if (listening || !UI.api.onHub) return;
-    listening = true;
-    UI.api.onHub((m) => {
-      for (const f of handlers.get(m && m.t) || []) {
-        try { f(m); } catch (e) { console.error(`hub ${m.t}:`, e); }
-      }
-    });
+    listen();
   };
+  listen();
 
   // Ask the phone (only while that page's switch is on: phonehub.js checks).
   UI.hubAsk = (msg) => UI.api.hub({ do: 'send', msg });
