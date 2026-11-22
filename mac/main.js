@@ -602,11 +602,6 @@ function noteControlVisible(visible) {
   if (controlWatch.note(win, visible)) pushState();
 }
 
-require('electron').ipcMain.on('control-visible', (e, visible) => {
-  if (!win || win.isDestroyed() || e.sender !== win.webContents) return;
-  noteControlVisible(visible === true);
-});
-
 // Round trip is the 1 Hz push. Skip it while the window is not on screen; the
 // fields it carries are in the one push sent as the window becomes visible.
 function pushWatched() {
@@ -622,6 +617,13 @@ function dockIcon() {
     app.dock.hide();
   }
 }
+
+// After dockIcon on purpose. quit-no-revive evals createWindow up to dockIcon
+// in a vm with no require, so this registration cannot sit in that span.
+require('electron').ipcMain.on('control-visible', (e, visible) => {
+  if (!win || win.isDestroyed() || e.sender !== win.webContents) return;
+  noteControlVisible(visible === true);
+});
 
 function showWindow() {
   if (quitting) return;
