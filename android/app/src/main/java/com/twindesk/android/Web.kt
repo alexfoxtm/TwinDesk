@@ -199,6 +199,11 @@ class Screen(core: Core) : Feature(core) {
     private var decodedCapture: Long? = null
     private val pendingTimer = Handler(Looper.getMainLooper())
     private val pendingTick = Runnable { onPendingClock() }
+    private fun Link.ownsVideoSession(marker: Any?): Boolean =
+        marker != null && currentTrustedRoute()?.marker === marker
+
+    @Volatile var videoUnavailable = false; private set
+
     @Volatile var viewing = false; private set
     @Volatile var size: Pair<Int, Int>? = null; private set
     @Volatile var decodedSize: Pair<Int, Int>? = null; private set
@@ -229,11 +234,6 @@ class Screen(core: Core) : Feature(core) {
     }
 
     private fun clearDoctor() { doctorReading = null }
-
-    private fun Link.ownsVideoSession(marker: Any?): Boolean =
-        marker != null && currentTrustedRoute()?.marker === marker
-
-    @Volatile var videoUnavailable = false; private set
 
     private var wantStart = false // the viewer opened before we knew whether the Mac shares
     private var startedByUs = false // we started the Mac's sharing: stop it when the viewer closes
@@ -824,21 +824,6 @@ class Screen(core: Core) : Feature(core) {
         else -> tr("Couldn’t change the desktop")
     }
 
-    fun lockChanged(locked: Boolean) {
-        clearDoctor()
-        host?.post(msg("viewer.input", "on" to pointerInput(locked)))
-        if (locked) endPreviewSession()
-        else {
-            previewEpoch++
-            core.changed()
-        }
-        videoGeneration++
-        videoPlaying = false
-        decodedSize = null
-        val session = videoSession
-        if (viewing && session != null && videoMarker != null && core.link.connected && core.link.sessionMarker() === videoMarker) host?.post(msg("viewer.probe", "session" to session, "viewerGeneration" to videoGeneration, "accept" to !locked))
-    }
-
     override fun onClosed() {
         Notify.cancelScreen(core.ctx)
         state = null
@@ -854,6 +839,10 @@ class Screen(core: Core) : Feature(core) {
     }
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
+        if (t == "screen.textFocus") {
+            if (viewing && inputOn && !core.lockView.presented && core.host?.os == "mac") keyboard(true)
+            return true
+        }
         when (t) {
             "screen.state" -> {
                 val was = state
@@ -928,7 +917,6 @@ class Screen(core: Core) : Feature(core) {
                 core.changed()
             }
             "rtc.ice" -> host?.post(m)
-            "screen.textFocus" -> if (viewing && inputOn && !core.lockView.presented && core.host?.os == "mac") keyboard(true)
             else -> return false
         }
         return true
@@ -946,6 +934,21 @@ class Screen(core: Core) : Feature(core) {
         val capture = if (m.has("capture")) m.optLong("capture") else -1L
         val viewGen = if (m.has("viewGen")) m.optLong("viewGen") else -1L
         return DesktopPreview.Incoming(false, unavailable, m.optString("displayId"), m.optString("spaceId"), capture, viewGen, m.optInt("width"), m.optInt("height"), jpeg)
+    }
+
+    fun lockChanged(locked: Boolean) {
+        clearDoctor()
+        host?.post(msg("viewer.input", "on" to pointerInput(locked)))
+        if (locked) endPreviewSession()
+        else {
+            previewEpoch++
+            core.changed()
+        }
+        videoGeneration++
+        videoPlaying = false
+        decodedSize = null
+        val session = videoSession
+        if (viewing && session != null && videoMarker != null && core.link.connected && core.link.sessionMarker() === videoMarker) host?.post(msg("viewer.probe", "session" to session, "viewerGeneration" to videoGeneration, "accept" to !locked))
     }
 }
 
