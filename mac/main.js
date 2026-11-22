@@ -125,6 +125,7 @@ let hud = null;
 let photoBackup = null; // new camera photos from a paired Android phone (mac/photobackup.js)
 let quitting = false;
 app.on('before-quit', () => { quitting = true; });
+let idleCtl = null; // a close that is still leaving full screen
 let startHidden = process.argv.includes('--hidden');
 let settings, id, server, pairing, discovery, link, peer, svc, actions, pairSync, updates;
 let proximityLock = null;
@@ -589,7 +590,7 @@ function createWindow() {
   });
   // The close button hides the window. Bounds stay with it. After five minutes idle,
   // destroy() runs this same closed path, and the next open is a new 1060×720 window.
-  attachIdle(w, {
+  idleCtl = attachIdle(w, {
     quitting: () => quitting,
     onDead(dead) {
       if (!dead.isDestroyed()) dead.destroy();
@@ -624,6 +625,7 @@ function showWindow() {
   if (quitting) return;
   if (!win || win.isDestroyed()) createWindow();
   else {
+    if (idleCtl) idleCtl.hold(); // still leaving full screen: do not hide when that finishes
     win.show();
     win.focus();
   }

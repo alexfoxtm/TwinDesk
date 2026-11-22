@@ -32,16 +32,20 @@ function advance(ms) {
   now = end;
 }
 
-const { attach, IDLE_MS } = require('../win-idle.js');
+const { attach, IDLE_MS, LEAVE_FULLSCREEN_MS } = require('../win-idle.js');
 
 class Win extends EventEmitter {
   constructor() {
     super();
     this.destroyed = false;
     this.visible = true;
+    this.full = false;
+    this.fullAsked = null; // setFullScreen does not clear this.full: the timeout must see a stuck full screen
   }
   isDestroyed() { return this.destroyed; }
   isVisible() { return this.visible && !this.destroyed; }
+  isFullScreen() { return this.full === true; }
+  setFullScreen(v) { this.fullAsked = v; }
   hide() { this.visible = false; this.emit('hide'); }
   show() { this.visible = true; this.emit('show'); }
   focus() {}
@@ -100,4 +104,114 @@ test('main keeps a hidden settings window and destroys it from the idle helper',
   assert.match(main, /if \(!win \|\| win\.isDestroyed\(\)\) createWindow\(\)/, 'opening again reuses the hidden window');
   assert.match(main, /w\.on\('hide', \(\) => \{ dockIcon\(\); controlWatch\.unsee\(\); \}\)/);
   assert.doesNotMatch(main, /w\.on\('hide'[\s\S]{0,120}win = null/, 'hide leaves the window to be shown again');
+  const show = main.slice(main.indexOf('function showWindow'), main.indexOf('function showUpdateWindow'));
+  const holdAt = show.indexOf('idleCtl.hold()');
+  assert.ok(holdAt >= 0 && holdAt < show.indexOf('win.show()'), 'opening again cancels a close that is still leaving full screen');
+});
+
+function attached() {
+  const dead = [];
+  let quitting = false;
+  const win = new Win();
+  const ctl = attach(win, { quitting: () => quitting, onDead: (w) => { dead.push(w); w.destroy(); } });
+  return { dead, win, ctl, setQuitting(v) { quitting = v; } };
+}
+
+test('close in full screen leaves full screen before it hides, and the reopen is not full screen', () => {
+  const { dead, win } = attached();
+  win.full = true; // this Space, or a full-screen window on another Space: isFullScreen is still true
+  assert.equal(close(win), true);
+  assert.equal(win.fullAsked, false, 'close asks to leave full screen');
+  assert.equal(win.isVisible(), true, 'it stays up until full screen has finished');
+  assert.equal(win.destroyed, false);
+  advance(LEAVE_FULLSCREEN_MS - 1);
+  assert.equal(dead.length, 0, 'the five minutes have not started, and the bound has not run');
+  assert.equal(win.isVisible(), true);
+  win.full = false; // the OS finished leaving
+  win.emit('leave-full-screen');
+  assert.equal(win.isFullScreen(), false, 'it comes back not in full screen');
+  assert.equal(win.isVisible(), false);
+  assert.equal(win.destroyed, false);
+  advance(IDLE_MS - 1);
+  assert.equal(win.destroyed, false);
+  advance(1);
+  assert.deepEqual(dead, [win]);
+});
+
+test('a missing leave-full-screen destroys a window that is still full screen', () => {
+  const { dead, win } = attached();
+  win.full = true;
+  close(win);
+  advance(LEAVE_FULLSCREEN_MS - 1);
+  assert.equal(win.destroyed, false, 'the bound has not run');
+  assert.equal(win.isVisible(), true);
+  advance(1);
+  assert.deepEqual(dead, [win], 'still full screen: destroy it, which releases the Space');
+  assert.equal(win.fullAsked, false);
+});
+
+test('a leave that finished without the event still hides, and the five minutes start then', () => {
+  const { dead, win } = attached();
+  win.full = true;
+  close(win);
+  win.full = false; // left full screen, the event never arrived
+  advance(LEAVE_FULLSCREEN_MS);
+  assert.equal(win.isVisible(), false);
+  assert.equal(win.destroyed, false, 'it did leave, so the window is kept');
+  advance(IDLE_MS - 1);
+  assert.equal(dead.length, 0);
+  advance(1);
+  assert.deepEqual(dead, [win]);
+});
+
+test('showing the window while it is leaving full screen does not hide it afterwards', () => {
+  const { dead, win, ctl } = attached();
+  win.full = true;
+  close(win);
+  ctl.hold(); // menu bar, while the window is still on screen: show() may not emit show
+  win.full = false;
+  win.emit('leave-full-screen');
+  assert.equal(win.isVisible(), true);
+  assert.equal(win.destroyed, false);
+  advance(IDLE_MS);
+  assert.equal(dead.length, 0);
+
+  const again = attached();
+  again.win.full = true;
+  close(again.win);
+  again.win.show();
+  again.win.full = false;
+  again.win.emit('leave-full-screen');
+  assert.equal(again.win.isVisible(), true);
+  advance(IDLE_MS);
+  assert.equal(again.dead.length, 0);
+});
+
+test('minimized, or on another Space that is not full screen, still hides at once', () => {
+  const mini = attached();
+  mini.win.visible = false; // minimized: not full screen
+  assert.equal(close(mini.win), true);
+  assert.equal(mini.win.fullAsked, null, 'minimized does not leave full screen');
+  assert.equal(mini.win.destroyed, false);
+  advance(IDLE_MS);
+  assert.deepEqual(mini.dead, [mini.win]);
+
+  const space = attached();
+  space.win.full = false;
+  space.win.visible = true;
+  assert.equal(close(space.win), true);
+  assert.equal(space.win.isVisible(), false, 'another Space that is not full screen hides now');
+  assert.equal(space.win.destroyed, false);
+});
+
+test('quit while leaving full screen is not cancelled and does not hide later', () => {
+  const { win, setQuitting } = attached();
+  win.full = true;
+  assert.equal(close(win), true);
+  setQuitting(true);
+  assert.equal(close(win), false, 'Quit is not cancelled');
+  win.full = false;
+  win.emit('leave-full-screen');
+  assert.equal(win.isVisible(), true, 'the late leave does not hide a window Quit is closing');
+  assert.equal(win.destroyed, false);
 });
