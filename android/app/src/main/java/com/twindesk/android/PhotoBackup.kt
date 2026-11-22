@@ -44,6 +44,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     @Volatile private var remoteSince = 0L
     @Volatile private var remoteMrev = 0
     @Volatile private var heard = false
+    private var remoteCredit = false
     private var permSnap: String? = null
     private var scanJob = false
 
@@ -71,6 +72,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     private class Flight(
         val owner: PbOwner, val epoch: Int, val take: JSONObject, val row: Row,
         val req: String, val inv: String, val scan: String, val batch: String,
+        val credit: PbCredit?,
         var sha: String = "", var ended: Boolean = false,
     )
     private class Window(val rows: MutableList<Row>, val remain: Boolean)
@@ -237,6 +239,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             boundMac = if (next != null) id else ""
             if (!same) {
                 heard = false
+                remoteCredit = false
                 remoteOn = false
                 remoteSince = 0L
                 remoteMrev = 0
@@ -254,6 +257,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                 marker = null
                 boundMac = ""
                 heard = false
+                remoteCredit = false
                 unwatchLocked()
                 return
             }
@@ -263,6 +267,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             marker = socket
             boundMac = if (token(host.id)) host.id else ""
             heard = false
+            remoteCredit = false
             remoteOn = false
             remoteSince = 0L
             remoteMrev = 0
@@ -279,6 +284,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             marker = null
             boundMac = ""
             heard = false
+            remoteCredit = false
             remoteOn = false
             remoteSince = 0L
             remoteMrev = 0
@@ -302,6 +308,8 @@ class PhotoBackup(core: Core) : Feature(core) {
             Proto.T.BACKUP_SYNC -> dispatch(owner, m, ::onSync)
             Proto.T.BACKUP_TAKE -> onTake(owner, m)
             Proto.T.BACKUP_HAVE -> onHave(owner, m)
+            "backup.credit" -> onCredit(owner, m)
+            "backup.progress" -> onProgress(owner, m)
             Proto.T.BACKUP_DONE -> onDone(owner, m)
             Proto.T.BACKUP_REFUSE -> onMacRefuse(owner, m)
         }
@@ -339,6 +347,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             remoteOn = on
             remoteSince = since
             remoteMrev = mrev
+            remoteCredit = m.opt("photoCredit") == 1
             heard = true
             if (mrevChanged) resetCursorLocked()
             // Same on/since/mrev again (the Mac's state, delivered twice) is not a new flight's stop.
@@ -408,7 +417,8 @@ class PhotoBackup(core: Core) : Feature(core) {
                 refuse(owner, req, why)
                 return
             }
-            val f = Flight(owner, epoch, m, row, req, m.optString("inv"), m.optString("scan"), m.optString("batch"))
+            val f = Flight(owner, epoch, m, row, req, m.optString("inv"), m.optString("scan"), m.optString("batch"),
+                PbCredit.forTake(remoteCredit, m.opt("credit"), CHUNK))
             flight = f
             rememberDead(req)
             f
@@ -426,6 +436,25 @@ class PhotoBackup(core: Core) : Feature(core) {
             if (!live(owner) || blocked().isNotEmpty() || !sameRevision(m, owner)) return
             if (!SHA.matches(m.optString("sha256")) || !token(m.optString("req")) || !token(m.optString("batch"))) return
             settle(m, true, fromFlight = false)
+        }
+    }
+
+    private fun onCredit(owner: PbOwner, m: JSONObject) {
+        synchronized(lock) {
+            val f = flight ?: return
+            if (f.owner.socket !== owner.socket || !pumpingLocked(f) || m.optString("req") != f.req) return
+            val seq = longField(m.opt("seq")) ?: return
+            val written = longField(m.opt("written")) ?: return
+            f.credit?.grant(seq, written)
+        }
+    }
+
+    private fun onProgress(owner: PbOwner, m: JSONObject) {
+        synchronized(lock) {
+            val f = flight ?: return
+            if (!f.ended || f.credit == null || f.owner.socket !== owner.socket ||
+                !pumpingLocked(f) || m.optString("req") != f.req) return
+            armAckLocked(f)
         }
     }
 
@@ -513,7 +542,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             var got = 0
             var seq = 0
             while (true) {
-                if (!room(f)) {
+                if (!room(f, seq, got)) {
                     failPump(f, "stop", settle = false)
                     return
                 }
@@ -528,6 +557,10 @@ class PhotoBackup(core: Core) : Feature(core) {
                 if (got + n > f.row.size) {
                     failPump(f, "checksum", settle = false)
                     return
+                }
+                synchronized(lock) {
+                    if (!pumpingLocked(f)) return
+                    f.credit?.expect(seq + 1, got + n)
                 }
                 md.update(buf, 0, n)
                 val data = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
@@ -559,14 +592,22 @@ class PhotoBackup(core: Core) : Feature(core) {
         }
     }
 
-    private fun room(f: Flight): Boolean {
-        val deadline = System.nanoTime() + Proto.TIMEOUT_MS * 1_000_000L
+    private fun room(f: Flight, seq: Int = -1, written: Int = -1): Boolean {
+        val timeout = if (f.credit == null) Proto.TIMEOUT_MS.toLong() else PB_STALL_MS
+        val timer = PbIdle(System.nanoTime(), timeout)
+        var previous = Long.MAX_VALUE
+        var wasCredited = false
         while (true) {
             if (!still(f)) return false
             val queued = core.link.queuedFor(f.owner.socket)
             if (queued < 0L) return false
-            if (queued <= QUEUE_MAX) return true
-            if (System.nanoTime() >= deadline) return false
+            val now = System.nanoTime()
+            val credited = synchronized(lock) { f.credit?.allows(seq, written) != false }
+            if (f.credit != null && credited && (!wasCredited || queued < previous)) timer.progress(now)
+            previous = queued
+            wasCredited = credited
+            if (queued <= QUEUE_MAX && credited) return true
+            if (timer.expired(now)) return false
             try {
                 Thread.sleep(20)
             } catch (_: InterruptedException) {
@@ -843,7 +884,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         val (mark, id) = sent
         core.link.sendFor(mark, msg(Proto.T.BACKUP_STATE,
             "on" to allowed(id), "since" to sinceOf(id), "rev" to revOf(id),
-            "perm" to (if (moduleOn()) photoPerm() else "none"), "loc" to locGranted(), "api" to Build.VERSION.SDK_INT,
+            "photoCredit" to 1, "perm" to (if (moduleOn()) photoPerm() else "none"), "loc" to locGranted(), "api" to Build.VERSION.SDK_INT,
         ))
     }
 
@@ -971,7 +1012,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     private fun armAckLocked(f: Flight) {
         ackReq = f.req
         main.removeCallbacks(ack)
-        main.postDelayed(ack, ACK_MS)
+        main.postDelayed(ack, if (f.credit == null) ACK_MS else PB_STALL_MS)
     }
 
     private fun clearAckLocked() {

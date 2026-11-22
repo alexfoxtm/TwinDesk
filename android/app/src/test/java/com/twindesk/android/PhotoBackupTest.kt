@@ -10,6 +10,34 @@ import org.junit.Test
 
 class PhotoBackupTest {
     @Test
+    fun creditAllowsOnlyTheExactWrittenOffsetAndSequence() {
+        assertNull(PbCredit.forTake(false, null, 32_768))
+        assertNull(PbCredit.forTake(false, 32_768, 32_768))
+        val credit = requireNotNull(PbCredit.forTake(true, 32_768, 32_768))
+        assertTrue(credit.allows(-1, -1)) // accept opens the staging file
+        assertFalse(credit.allows(0, 0))
+        credit.grant(0, 0)
+        assertTrue(credit.allows(0, 0))
+        credit.expect(1, 32_768)
+        credit.grant(0, 0)
+        credit.grant(1, 32_767)
+        assertFalse(credit.allows(1, 32_768))
+        credit.grant(1, 32_768)
+        assertTrue(credit.allows(1, 32_768))
+        credit.expect(2, 32_769)
+        assertFalse(credit.allows(2, 32_769))
+    }
+
+    @Test
+    fun queueProgressRenewsTheIdleDeadline() {
+        val timer = PbIdle(0, PB_STALL_MS)
+        val almost = (PB_STALL_MS - 1) * 1_000_000
+        timer.progress(almost)
+        assertFalse(timer.expired(2 * almost))
+        assertTrue(timer.expired(almost + PB_STALL_MS * 1_000_000))
+    }
+
+    @Test
     fun backupRequestsPhotoAndLocationPermissionsTogether() {
         val loc = Manifest.permission.ACCESS_MEDIA_LOCATION
         val images = Manifest.permission.READ_MEDIA_IMAGES
