@@ -173,8 +173,6 @@
 
   api.on('status', (s) => {
     if (kind === 'app' && typeof s.appFrame === 'string') appFrame = s.appFrame;
-    if (s.closed || s.error) { appFrame = null; releaseHeldFrame(); }
-    if (s.closed) videoEpoch++;
     if (s.via) {
       const el = document.getElementById('via');
       I.literal(el, s.via === 'usb' ? 'USB' : 'Wi-Fi');
@@ -183,6 +181,8 @@
       I.translate(el);
       el.hidden = false;
     }
+    if (s.closed || s.error) { appFrame = null; releaseHeldFrame(); }
+    if (s.closed) videoEpoch++;
     if (s.error) {
       closedStatus = null;
       if (s.errorKey) setStatus(s.errorKey, s.errorVars);

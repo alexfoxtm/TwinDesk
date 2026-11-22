@@ -291,6 +291,7 @@ class PhoneViews extends EventEmitter {
   }
 
   _showApp(view) {
+    if (view.win.isMinimized()) view.win.restore();
     view.win.show();
     view.win.focus();
   }
@@ -300,7 +301,6 @@ class PhoneViews extends EventEmitter {
     if (open) {
       const dark = this.getSettings().phone?.keepPanelOff === true;
       if (!open.session?.closed && open.keepPanelOff === dark && !(open.started && !open.session?.videoStarted)) {
-        if (open.win.isMinimized()) open.win.restore();
         this._showApp(open);
         if (dark) this._resumeDarkApp(open);
         return;
