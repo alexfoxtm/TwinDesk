@@ -383,7 +383,8 @@ class Screen(core: Core) : Feature(core) {
 
     // These controls affect only the currently open viewer, never a replacement host or its display.
     fun setViewScale(h: WebHost, mode: String) {
-        if (host !== h || !viewing || core.host?.os != "mac" || core.lockView.locked || mode !in scalePresets) return
+        if (core.lockView.locked) return
+        if (host !== h || !viewing || core.host?.os != "mac" || mode !in scalePresets) return
         core.store.setPrefsString("screen.viewScale", mode)
         viewScale = mode
         h.post(msg("viewer.scale", "mode" to mode))
@@ -414,7 +415,8 @@ class Screen(core: Core) : Feature(core) {
     // ignored after the sheet opens again. Stop, lock, revoke, and a new link forget
     // that epoch and clear the pictures.
     fun previewSheet(open: Boolean) {
-        val allowed = open && viewing && sharing && inputOn && remote && core.link.connected && !core.lockView.locked
+        val requested = open && !core.lockView.locked
+        val allowed = requested && viewing && sharing && inputOn && remote && core.link.connected
         if (allowed == ask.wanted) return
         if (allowed) {
             previewSealed = false
@@ -509,7 +511,8 @@ class Screen(core: Core) : Feature(core) {
 
     fun videoMetrics(h: WebHost, generation: Int, session: Int, width: Int, height: Int, fps: Int, kbps: Int, dropped: Long) {
         val marker = videoMarker ?: return
-        if (host !== h || !viewing || !sharing || !videoPlaying || core.lockView.locked ||
+        if (core.lockView.locked) return
+        if (host !== h || !viewing || !sharing || !videoPlaying ||
             videoGeneration != generation || videoSession != session || !core.link.connected ||
             core.link.sessionMarker() !== marker ||
             width !in 1..16384 || height !in 1..16384) return
@@ -523,9 +526,10 @@ class Screen(core: Core) : Feature(core) {
     }
 
     fun videoDetail(h: WebHost, generation: Int, session: Int, height: Int) {
+        if (core.lockView.locked) return
         if (host !== h || !viewing || !sharing || !videoPlaying ||
             core.host?.os !in listOf("mac", "win", "linux") ||
-            core.lockView.locked || videoGeneration != generation || videoSession != session ||
+            videoGeneration != generation || videoSession != session ||
             height !in 0..2160 || videoMarker == null || !core.link.connected ||
             core.link.sessionMarker() !== videoMarker) return
         core.link.sendFor(videoMarker, msg("rtc.detail", "session" to session, "height" to height))
@@ -904,7 +908,12 @@ class Screen(core: Core) : Feature(core) {
             }
             "screen.textFocus" -> if (viewing && inputOn && !core.lockView.presented && core.host?.os == "mac") keyboard(true)
             "stream.info" -> { lastInfo = m; host?.post(m) }
-            "stream.stop" -> { resetVideo(keepDoctor = true); videoUnavailable = m.optString("reason") == "capture-unavailable"; host?.post(m); core.changed() }
+            "stream.stop" -> {
+                resetVideo(keepDoctor = true)
+                videoUnavailable = m.optString("reason") == "capture-unavailable"
+                host?.post(m)
+                core.changed()
+            }
             "rtc.ice" -> host?.post(m)
             else -> return false
         }
