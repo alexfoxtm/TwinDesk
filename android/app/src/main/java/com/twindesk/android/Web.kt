@@ -214,17 +214,24 @@ class Screen(core: Core) : Feature(core) {
     private data class DoctorReading(val marker: Any, val sample: StreamDoctorSample)
     @Volatile private var doctorReading: DoctorReading? = null
     val lastDoctorSample: StreamDoctorSample?
-        get() = doctorReading?.takeIf { core.link.connected &&
-            core.link.sessionMarker() === it.marker && !core.lockView.locked }?.sample
+        get() {
+            if (core.lockView.locked) return null
+            return ownedDoctorSample()
+        }
+
+    private fun ownedDoctorSample() = doctorReading?.takeIf { core.link.ownsVideoSession(it.marker) }?.sample
 
     val doctorSummary: String? get() = lastDoctorSample?.summary()
 
     fun doctorLinkChanged() {
         val reading = doctorReading ?: return
-        if (!core.link.connected || core.link.sessionMarker() !== reading.marker) clearDoctor()
+        if (!core.link.ownsVideoSession(reading.marker)) clearDoctor()
     }
 
     private fun clearDoctor() { doctorReading = null }
+
+    private fun Link.ownsVideoSession(marker: Any?): Boolean =
+        marker != null && currentTrustedRoute()?.marker === marker
 
     @Volatile var videoUnavailable = false; private set
 
@@ -413,11 +420,12 @@ class Screen(core: Core) : Feature(core) {
     // this stays true. Each open has its own epoch, sent on screen.preview.want and
     // required on every screen.preview. Closing the sheet or leaving the foreground
     // asks it to stop and keeps the last-seen pictures. A reply from an older open is
-    // ignored after the sheet opens again. Stop, lock, revoke, and a new link forget
-    // that epoch and clear the pictures.
+    // ignored after the sheet opens again. Stop, revoke, and a new link forget that
+    // epoch and clear the pictures. A locked or unknown Mac console is refused on the
+    // Mac before a shot, and the clear that follows drops what this open stored.
     fun previewSheet(open: Boolean) {
         val requested = open && !core.lockView.locked
-        val allowed = requested && viewing && sharing && inputOn && remote && core.link.connected
+        val allowed = previewAllowed(requested)
         if (allowed == ask.wanted) return
         if (allowed) {
             previewSealed = false
@@ -430,6 +438,9 @@ class Screen(core: Core) : Feature(core) {
         }
         core.changed()
     }
+
+    private fun previewAllowed(open: Boolean): Boolean =
+        open && viewing && sharing && inputOn && remote && core.link.connected
 
     private fun endPreviewSession() {
         val cancel = ask.wanted
@@ -469,8 +480,8 @@ class Screen(core: Core) : Feature(core) {
 
     fun videoState(h: WebHost, generation: Int, session: Int, playing: Boolean, w: Int, height: Int) {
         if (host !== h || !viewing || videoGeneration != generation || videoSession != session ||
-            videoMarker == null || core.link.sessionMarker() !== videoMarker || !core.link.connected ||
-            (playing && core.lockView.locked)) return
+            !core.link.ownsVideoSession(videoMarker)) return
+        if (playing && core.lockView.locked) return
         if (playing) decodedCapture = session.toLong() else if (decodedCapture == session.toLong()) decodedCapture = null
         val nextSize = if (playing && w > 0 && height > 0) w to height else null
         if (videoPlaying != playing || decodedSize != nextSize) {
@@ -497,11 +508,10 @@ class Screen(core: Core) : Feature(core) {
 
     fun videoMetrics(h: WebHost, generation: Int, session: Int, width: Int, height: Int, fps: Int, kbps: Int, dropped: Long) {
         val marker = videoMarker ?: return
-        if (core.lockView.locked) return
         if (host !== h || !viewing || !sharing || !videoPlaying ||
-            videoGeneration != generation || videoSession != session || !core.link.connected ||
-            core.link.sessionMarker() !== marker ||
+            videoGeneration != generation || videoSession != session || !core.link.ownsVideoSession(marker) ||
             width !in 1..16384 || height !in 1..16384) return
+        if (core.lockView.locked) return
         val sample = StreamDoctorSample(width, height, fps.takeIf { it in 0..240 },
             kbps.takeIf { it in 0..1_000_000 }, dropped.takeIf { it in 0..1_000_000_000 })
         val previous = doctorReading
