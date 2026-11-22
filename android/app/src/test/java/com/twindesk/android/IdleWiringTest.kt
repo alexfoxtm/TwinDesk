@@ -1,7 +1,12 @@
 package com.twindesk.android
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.LinkAddress
+import android.net.LinkProperties
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
+import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import okhttp3.WebSocket
@@ -13,6 +18,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowNetwork
+import org.robolectric.shadows.ShadowNetworkCapabilities
+import java.time.Duration
 import java.lang.reflect.Proxy
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
@@ -126,8 +134,47 @@ class IdleWiringTest {
 
     @Test fun discoveryNotificationWakesLink() {
         val core = core()
-        core.discovery.onNetworkChange!!.invoke()
-        assertTrue((core.link.read("wokeAt") as Long) > 0)
+        val discovery = core.discovery
+        discovery.write("running", true)
+        val callback = discovery.read("networkWatch") as ConnectivityManager.NetworkCallback
+        val lan = ShadowNetwork.newInstance(1)
+        val cellular = ShadowNetwork.newInstance(2)
+        val vpn = ShadowNetwork.newInstance(3)
+        fun caps(vararg transports: Int) = ShadowNetworkCapabilities.newInstance().also { caps ->
+            transports.forEach { shadowOf(caps).addTransportType(it) }
+        }
+        fun properties(name: String, ip: String) = LinkProperties().apply {
+            interfaceName = name
+            val address = LinkAddress::class.java.getConstructor(String::class.java).newInstance(ip)
+            LinkProperties::class.java.getMethod("addLinkAddress", LinkAddress::class.java).invoke(this, address)
+        }
+        try {
+            callback.onCapabilitiesChanged(cellular, caps(NetworkCapabilities.TRANSPORT_CELLULAR))
+            callback.onLinkPropertiesChanged(cellular, properties("mobile", "192.0.2.1/24"))
+            callback.onLost(cellular)
+            callback.onCapabilitiesChanged(vpn, caps(NetworkCapabilities.TRANSPORT_VPN, NetworkCapabilities.TRANSPORT_WIFI))
+            callback.onLinkPropertiesChanged(vpn, properties("vpn", "192.0.2.1/24"))
+            assertEquals(0L, core.link.read("wokeAt"))
+
+            callback.onCapabilitiesChanged(lan, caps(NetworkCapabilities.TRANSPORT_WIFI))
+            val firstPath = properties("wifi", "192.0.2.2/24")
+            callback.onLinkPropertiesChanged(lan, firstPath)
+            assertTrue((core.link.read("wokeAt") as Long) > 0)
+            core.link.write("wokeAt", 0L)
+            callback.onLinkPropertiesChanged(lan, firstPath)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertEquals(0L, core.link.read("wokeAt"))
+
+            callback.onLinkPropertiesChanged(lan, properties("wifi", "192.0.2.3/24"))
+            assertTrue((core.link.read("wokeAt") as Long) > 0)
+            core.link.write("wokeAt", 0L)
+            callback.onLinkPropertiesChanged(lan, properties("wifi", "192.0.2.4/24"))
+            assertEquals(0L, core.link.read("wokeAt"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertTrue((core.link.read("wokeAt") as Long) > 0)
+        } finally {
+            discovery.stop()
+        }
     }
 
     @Test fun coreReconciliationArmsAndCancelsTimers() {
