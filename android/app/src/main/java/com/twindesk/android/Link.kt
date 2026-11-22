@@ -89,7 +89,8 @@ class Link(
     // Resume (hello {resume}): the session's other socket, and one being opened.
     private var resumeKey = ""
     private var alt: WebSocket? = null
-    private var altBle = false
+    @Volatile private var altBle = false
+    val hasBluetoothFallback get() = alt != null && altBle
     private var movedAt = 0L // when the session moved onto the network (dropAlt)
     private var pending: WebSocket? = null
     private data class LanOffer(val addresses: List<String>, val port: Int)

@@ -137,19 +137,51 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // Not after Exit (the notification's): Android brings the process back for the notification
     // listener or the Accessibility service, and nothing should start or show then. wake() (TwinService.start:
     // the app opened, the phone restarted, a cable) starts it again.
-    private var started = false
+    @Volatile private var started = false
+    internal val timers = Executors.newScheduledThreadPool(2) { r -> Thread(r, "td-timers").apply { isDaemon = true } }
+    private var returnTimer: java.util.concurrent.ScheduledFuture<*>? = null
+    private var bleTimer: java.util.concurrent.ScheduledFuture<*>? = null
+    private var bleState: List<Boolean>? = null
+    private val refreshTimers = Runnable { updateTimers() }
+
+    private fun requestTimers() {
+        if (!started) return
+        main.removeCallbacks(refreshTimers)
+        main.post(refreshTimers)
+    }
+
+    private fun canReturn() = returnTimerNeeded(inBackground(), link.connected, link.state == "connecting", link.pair != null, peer.connected)
+
+    private fun updateTimers() {
+        peer.updateTicker()
+        val returning = canReturn() && returnHost() != null
+        if (returning && returnTimer == null) {
+            returnTimer = timers.scheduleWithFixedDelay({ runCatching { returnTick() }.onFailure { Log.e("TwinDesk", "reconnect", it) } }, 0, 3, TimeUnit.SECONDS)
+        } else if (!returning) {
+            returnTimer?.cancel(false)
+            returnTimer = null
+        }
+        val state = listOf(bleOn, ble.radioOn, ble.allowed(), serve.allowed(), link.connected, link.ble,
+            peer.connected, bleWifiOff && net.via == "Wi-Fi", link.hasBluetoothFallback)
+        if (state != bleState) {
+            bleState = state
+            bleTimer?.cancel(false)
+            val job = Runnable { runCatching { bleTick() }.onFailure { Log.e("TwinDesk", "ble", it) } }
+            bleTimer = if (bleTimerNeeded(bleOn, ble.radioOn, ble.allowed() || serve.allowed(), link.connected, link.ble) || (link.connected && bleWifiOff && net.via == "Wi-Fi" && link.hasBluetoothFallback)) {
+                timers.scheduleWithFixedDelay(job, 0, 2, TimeUnit.SECONDS)
+            } else { timers.execute(job); null }
+        }
+    }
     private fun start() {
         if (started || store.flag("exited", false)) return
         started = true
         discovery.start()
-        bg.scheduleWithFixedDelay({ runCatching { returnTick() }.onFailure { Log.e("TwinDesk", "reconnect", it) } }, 3, 3, TimeUnit.SECONDS)
         runCatching { peer.start() }.onFailure { Log.e("TwinDesk", "peer", it) }
         Notify.channels(ctx)
         runCatching { localSend.start() }.onFailure { Log.e("TwinDesk", "localsend", it) }
         updates.start()
         if (store.flag("remote.btpad", false)) btPad.start()
         runCatching { bank.start() }.onFailure { Log.e("TwinDesk", "bank", it) }
-        bg.scheduleWithFixedDelay({ runCatching { bleTick() }.onFailure { Log.e("TwinDesk", "ble", it) } }, 2, 2, TimeUnit.SECONDS)
         // Quiet links (Link.kt, shared/quiet.js, #143): what keeps the session pinging every second.
         // Clipboard, notifications and cursor sharing switched on don't: their messages go when
         // something happens, and a message makes the link active at once.
@@ -171,9 +203,16 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // within seconds instead of at the next quiet ping).
         runCatching {
             ctx.registerReceiver(object : android.content.BroadcastReceiver() {
-                override fun onReceive(c: Context, i: android.content.Intent) { if (i.action == android.content.Intent.ACTION_SCREEN_OFF) link.nudge() else link.wake() }
-            }, android.content.IntentFilter().apply { addAction(android.content.Intent.ACTION_SCREEN_ON); addAction(android.content.Intent.ACTION_SCREEN_OFF); addAction(android.content.Intent.ACTION_USER_PRESENT) })
+                override fun onReceive(c: Context, i: android.content.Intent) {
+                    when (i.action) {
+                        android.content.Intent.ACTION_SCREEN_OFF -> link.nudge()
+                        android.content.Intent.ACTION_SCREEN_ON, android.content.Intent.ACTION_USER_PRESENT -> link.wake()
+                    }
+                    requestTimers()
+                }
+            }, android.content.IntentFilter().apply { addAction(android.content.Intent.ACTION_SCREEN_ON); addAction(android.content.Intent.ACTION_SCREEN_OFF); addAction(android.content.Intent.ACTION_USER_PRESENT); addAction(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED) })
         }
+        requestTimers()
     }
 
     // General › Connections › Prioritize performance over battery life (off): on, the session pings
@@ -196,6 +235,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // MainActivity on screen: a session put off by Reconnect in the background, and a look at the
     // current one.
     fun foreground() {
+        requestTimers()
         bank.opened() // Banking apps: Restore when TwinDesk opens
         link.wake()
         if (returnHost() != null) { returnAfter = 0L; returnTick(); return }
@@ -206,7 +246,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         Log.i("TwinDesk", "opened: reconnecting to ${known.name}")
         bg.execute { connect(known) }
     }
-    fun background() { if (inBackground() && returnHost() != null) link.pauseConnecting() }
+    fun background() { if (inBackground() && returnHost() != null) link.pauseConnecting(); requestTimers() }
     // A linked computer came near (CompanionLink): the return to it starts now rather than at the next
     // tick. Only a return (a Mac this phone was in a session with, never taking over): nothing else.
     fun near() {
@@ -277,6 +317,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         )
         runCatching { wifiFast.hold(pcFast || peerFast) }
         runCatching { link.nudge() } // a hold started or ended: the computer hears within a tick
+        requestTimers()
         version.value++
         main.post { TwinService.refresh(ctx); if (started) bank.checkSoon() }
     }
@@ -506,6 +547,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // ---- Link.Events ----
 
     override fun onChange() {
+        if (link.connected && !link.ble) screen.onWifi()
         screen.doctorLinkChanged()
         runCatching { share.linkChanged() } // the session moved (Bluetooth <-> Wi-Fi): shared folders follow
         lockView.linkChanged()
@@ -583,6 +625,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 returnFailures = (returnFailures + 1).coerceAtMost(5)
                 returnAfter = System.currentTimeMillis() + (1000L shl returnFailures)
             }
+            requestTimers()
             return
         }
         // Legacy peers retain the existing thirty-second retry behavior.
@@ -618,15 +661,23 @@ class Core private constructor(val ctx: Context) : Link.Events {
         }
     }
 
-    private fun returnHost(): Host? {
+    private var returnKey: Pair<String, String?>? = null
+    private var returnCached: Host? = null
+
+    @Synchronized private fun returnHost(): Host? {
         val saved = returnPrefs.getString("host", null) ?: return null
-        val o = runCatching { JSONObject(saved) }.getOrNull() ?: return null
-        return store.hosts().find { it.os in RETURN_OS && it.id == o.optString("id") && it.fp == o.optString("fp") }
+        val key = saved to store.prefsString("hosts", "[]")
+        if (key != returnKey) {
+            val identity = runCatching { JSONObject(saved) }.getOrNull()
+            returnCached = identity?.let { o -> store.hosts().find { it.os in RETURN_OS && it.id == o.optString("id") && it.fp == o.optString("fp") } }
+            returnKey = key
+        }
+        return returnCached?.copy()
     }
 
     @Synchronized private fun returnTick() {
+        if (!canReturn()) return
         val h = returnHost() ?: return
-        if (inBackground() || link.connected || link.state == "connecting" || link.pair != null || peer.connected) return
         val now = System.currentTimeMillis()
         if (now < returnAfter) return
         val seen = discovery.found[h.id]?.takeIf { it.fp == h.fp }

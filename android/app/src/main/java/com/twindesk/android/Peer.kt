@@ -154,7 +154,6 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         }
         val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         ctx.mainExecutor.execute { cm.addPrimaryClipChangedListener { clipNow() } }
-        core.bg.scheduleWithFixedDelay({ runCatching { tick() }.onFailure { Log.e("TwinDesk", "peer", it) } }, 1, 1, TimeUnit.SECONDS)
         hosting()
     }
 
@@ -169,6 +168,18 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         if (core.discovery.peerPort != port) {
             core.discovery.peerPort = port
             core.bg.execute { runCatching { core.discovery.beacon() } }
+        }
+    }
+
+    private var ticker: java.util.concurrent.ScheduledFuture<*>? = null
+
+    @Synchronized internal fun updateTicker() {
+        val needed = peerTimerNeeded(hostWs != null, pairing != null, waitingFor.isNotEmpty(), tempUntil > 0)
+        if (needed && ticker == null) {
+            ticker = core.timers.scheduleWithFixedDelay({ runCatching { tick() }.onFailure { Log.e("TwinDesk", "peer", it) } }, 1, 1, TimeUnit.SECONDS)
+        } else if (!needed) {
+            ticker?.cancel(false)
+            ticker = null
         }
     }
 
@@ -189,7 +200,11 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
             if (f != null && f.port > 0) { waitingFor = ""; main.post { connect(f) } }
             else if (now > waitUntil) { waitingFor = ""; message = tr("{name} didn’t answer. Open TwinDesk on it, or turn on Host for other phones there.", "name" to (f?.name ?: tr("That phone"))); core.changed() }
         }
-        if (ticks % 5 == 0) hosting()
+        if (ticks % 5 == 0) {
+            if (tempUntil in 1..now) tempUntil = 0
+            hosting()
+        }
+        updateTicker()
     }
 
     // ---- as the guest ----
@@ -484,6 +499,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
     private fun allowHost(f: Found) {
         tempUntil = System.currentTimeMillis() + 120_000
         hosting()
+        updateTicker()
         val port = server.port
         if (port > 0) core.bg.execute { core.discovery.sendTo(msg("peer.hosting", "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "port" to port), f.address) }
     }

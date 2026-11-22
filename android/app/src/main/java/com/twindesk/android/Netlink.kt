@@ -157,7 +157,6 @@ class Netlink(core: Core) : Feature(core) {
         synchronized(this) {
             peerCaps = null
             swapped = false
-            if (ticker == null) ticker = core.bg.scheduleWithFixedDelay({ tick() }, 1, 1, TimeUnit.SECONDS)
         }
         if (!onBle) return
         core.link.send(msg(Proto.T.NET_CAPS, "host" to direct.can(), "join" to direct.can(), "hotspot" to true))
@@ -249,6 +248,7 @@ class Netlink(core: Core) : Feature(core) {
             if (t !in HOLD && !(held.isNotEmpty() && t.startsWith("file."))) return false
             if (!onBle || plan() == null) return false
             held.add(m)
+            updateTicker()
             if (held.size > 1) return true
         }
         need("files", FILES_IDLE_MS)
@@ -261,6 +261,7 @@ class Netlink(core: Core) : Feature(core) {
         synchronized(this) {
             fresh = !needs.containsKey(why)
             needs[why] = idleMs
+            updateTicker()
             lastUse[why] = System.currentTimeMillis()
             linger?.cancel(false)
         }
@@ -270,7 +271,7 @@ class Netlink(core: Core) : Feature(core) {
     fun wanted(why: String) = synchronized(this) { needs.containsKey(why) }
 
     fun release(why: String) {
-        synchronized(this) { if (needs.remove(why) == null) return }
+        synchronized(this) { if (needs.remove(why) == null) return; updateTicker() }
         core.link.send(msg(Proto.T.NET_RELEASE, "why" to why))
         maybeDown()
     }
@@ -386,8 +387,20 @@ class Netlink(core: Core) : Feature(core) {
         for (m in list) core.link.send(m)
     }
 
+    private fun updateTicker() {
+        if (netTimerNeeded(held.isNotEmpty(), needs.values.any { it > 0 })) {
+            if (ticker == null) ticker = core.timers.scheduleWithFixedDelay({ tick() }, 1, 1, TimeUnit.SECONDS)
+        } else {
+            ticker?.cancel(false)
+            ticker = null
+        }
+    }
+
     private fun tick() {
-        if (held.isNotEmpty() && !onBle && core.link.connected) { deadline?.cancel(false); flush() }
+        synchronized(this) {
+            if (held.isNotEmpty() && !onBle && core.link.connected) { deadline?.cancel(false); flushLocked() }
+            updateTicker()
+        }
         val now = System.currentTimeMillis()
         val idle = synchronized(this) { needs.filter { (w, ms) -> ms > 0 && now - (lastUse[w] ?: now) > ms }.keys.toList() }
         for (w in idle) release(w)
