@@ -118,11 +118,11 @@ let win = null;
 let tray = null;
 let lockKey = null; // the cursor lock key at home (shared/cursorlock.js)
 let hud = null;
+let photoBackup = null; // new camera photos from a paired Android phone (mac/photobackup.js)
 let quitting = false;
 let startHidden = process.argv.includes('--hidden');
 let settings, id, server, pairing, discovery, link, peer, svc, actions, pairSync, updates;
 let proximityLock = null;
-let photoBackup = null; // new camera photos from a paired Android phone (mac/photobackup.js)
 let web = null; // TwinDesk Web: this Mac as a page for iPhones and browsers (setupWeb)
 let localsend = null; // files with LocalSend-compatible apps (mac/localsend.js), off until turned on in Files
 let phoneHub = null; // Calls, Messages and Photos (loadHub); svc.hub is the Mac's sound capture (audiohub.js)
@@ -1277,9 +1277,9 @@ app.whenReady().then(() => {
     hub: loadHub,
     showFileShelf,
     login,
+    refreshPermissions,
     get silence() { return svc.silence; },
     photoBackup,
-    refreshPermissions,
     updates,
     applyRelay,
     proximityLock,
@@ -1748,6 +1748,7 @@ app.on('will-quit', () => {
 let focusReleasePending = false;
 let focusReleased = false;
 app.on('before-quit', (event) => {
+  if (!focusReleasePending && !focusReleased) photoBackup?.close();
   if (focusReleased || (!focusReleasePending && !svc?.silence)) return;
   event.preventDefault();
   if (focusReleasePending) return;
@@ -1762,9 +1763,8 @@ app.on('before-quit', (event) => {
 });
 
 app.on('before-quit', () => {
-  proximityLock?.shutdown();
   if (focusReleasePending) return;
-  if (photoBackup) photoBackup.close();
+  proximityLock?.shutdown();
   if (svc && svc.mic) svc.mic.shutdown();
   if (svc && svc.batteryAlerts) svc.batteryAlerts.reset();
   if (svc && svc.rzShelf) svc.rzShelf.shutdown();

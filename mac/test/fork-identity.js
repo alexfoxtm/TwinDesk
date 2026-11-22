@@ -45,7 +45,9 @@ function main() {
   assert.match(build, /<string>io\.github\.alexfoxtm\.twindesk\.camera<\/string>/);
   assert.match(build, /<string>alexfoxtm-twindesk<\/string>/);
   assert.doesNotMatch(build, /<string>macshare<\/string>/);
-  assert.match(files['mac/main.js'], /app\.getPath\('appData'\), 'io\.github\.alexfoxtm\.twindesk'\)/);
+  assert.match(files['mac/main.js'], /app\.setPath\('userData', require\('\.\/store'\)\.profilePath\(app\.getPath\('appData'\)\)\)/);
+  const store = fs.readFileSync(path.join(root, 'mac/store.js'), 'utf8');
+  assert.match(store, /profileName = 'io\.github\.alexfoxtm\.twindesk'/);
   assert.match(files['mac/main.js'], /setAsDefaultProtocolClient\('alexfoxtm-twindesk'\)/);
   assert.match(files['mac/mesh/main.js'], /setAsDefaultProtocolClient\('alexfoxtm-twindesk'\)/);
   assert.match(files['mac/login.js'], /LABEL = 'io\.github\.alexfoxtm\.twindesk'/);

@@ -96,7 +96,7 @@ test('a one-session host stops inviting its old guest once anyone holds the sess
   });
   powerMonitor.emit('suspend');
   // The session sleep ended is still closing: its guest is invited.
-  server.current = { deviceId: 'pc-a', ws: ws(2), expectedClose: true };
+  server.current = { deviceId: 'pc-a', ws: ws(1), expectedClose: true };
   powerMonitor.emit('resume');
   t.mock.timers.tick(2000);
   assert.deepEqual(invites, ['192.0.2.7']);

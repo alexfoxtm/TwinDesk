@@ -98,3 +98,30 @@ test('shelf refuses foreign frames, revoked photo and replaced or symlinked loca
     assert.equal(handles.get('file-shelf:read')(ownEvent), null, 'retired contents cannot read shelf');
   } finally { shelf.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a received drop stops matching when its file birth time changes', (t) => {
+  const dir = tmp();
+  const file = path.join(dir, 'drop.txt');
+  fs.writeFileSync(file, 'a drop');
+  const drop = new EventEmitter();
+  drop.recent = [{ path: file, ok: true }];
+  const shelf = new FileShelf({ drop });
+  const counts = [dragged.length, revealed.length];
+  const stat = fs.lstatSync;
+  try {
+    shelf.show();
+    const { id } = read(shelf).items[0];
+    t.mock.method(fs, 'lstatSync', (p, ...args) => {
+      const result = stat(p, ...args);
+      if (p === file) result.birthtimeMs += 1000;
+      return result;
+    });
+    ipcMain.emit('file-shelf:drag', event(shelf), id);
+    ipcMain.emit('file-shelf:reveal', event(shelf), id);
+    assert.deepEqual([dragged.length, revealed.length], counts);
+  } finally {
+    t.mock.restoreAll();
+    shelf.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
