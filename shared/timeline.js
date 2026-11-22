@@ -275,7 +275,6 @@
     if (i >= 0) api.revealDrop(i);
   }
 
-
   const API = { KINDS, PREVIEW, BODY, COPY, fromState, build, dedupeSort, filter, counts, matchQuery, atOf, str, baseName, revealItem };
   if (typeof module === 'object' && module.exports) module.exports = API;
   else window.TDTimeline = API;
