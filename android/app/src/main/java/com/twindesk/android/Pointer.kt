@@ -64,28 +64,18 @@ class Pointer(core: Core) : Feature(core) {
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT,
             ).apply {
-                this.x = x + 1
-                this.y = y + 1
                 gravity = Gravity.TOP or Gravity.START
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
                 title = "TwinDesk pointer"
             }
             val m = want.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            runCatching { m.addView(arrowView, p) }.onFailure { return }
+            if (!placePointer(p, x, y, initial = true) { m.addView(arrowView, p) }) return
             lp = p; host = want; wm = m
             view = arrowView
             return
         }
         val p = lp ?: return
-        if (p.x == x + 1 && p.y == y + 1) return
-        val oldX = p.x
-        val oldY = p.y
-        p.x = x + 1
-        p.y = y + 1
-        runCatching { wm?.updateViewLayout(v, p) }.onFailure {
-            p.x = oldX
-            p.y = oldY
-        }
+        placePointer(p, x, y, initial = false) { wm?.updateViewLayout(v, p) }
     }
 
     fun hide() {
@@ -96,6 +86,26 @@ class Pointer(core: Core) : Feature(core) {
         view?.let { v -> runCatching { wm?.removeView(v) } }
         view = null; lp = null; host = null; wm = null
     }
+}
+
+internal fun placePointer(
+    params: WindowManager.LayoutParams,
+    x: Int,
+    y: Int,
+    initial: Boolean,
+    apply: () -> Unit,
+): Boolean {
+    val nextX = x + 1
+    val nextY = y + 1
+    val oldX = params.x
+    val oldY = params.y
+    if (!initial && oldX == nextX && oldY == nextY) return true
+    params.x = nextX
+    params.y = nextY
+    return runCatching(apply).onFailure {
+        params.x = oldX
+        params.y = oldY
+    }.isSuccess
 }
 
 // The computer's shared folder in the phone's Files app (smb.offer). Comes with the drive work.
