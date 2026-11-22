@@ -65,6 +65,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -143,7 +145,7 @@ class MainActivity : ComponentActivity() {
 private fun grad(a: Long, b: Long) = listOf(Color(a), Color(b))
 
 // The pages, with the Mac's tile colours and groups.
-private enum class Tab(val title: String, val icon: ImageVector, val colors: List<Color>, val group: String) {
+internal enum class Tab(val title: String, val icon: ImageVector, val colors: List<Color>, val group: String) {
     // Overview: the computer itself, only while connected; Connection: pairing, Nearby, the link.
     Overview("Overview", Ico.overview, grad(0xFF8E8E93, 0xFF636366), ""),
     Connection("Connection", Ico.link, grad(0xFF5AC8FA, 0xFF0A84FF), ""),
@@ -239,18 +241,54 @@ private fun them(core: Core) = core.host?.name ?: core.hosts().firstOrNull()?.na
 // is on Bluetooth, saying so, with Connect with Wi-Fi Direct (WifiGate).
 private fun wifiOnly(core: Core, t: Tab) = (t == Tab.Sound || t == Tab.Photos) && core.host != null && core.link.ble
 
+internal data class AppShell(
+    val connected: Boolean,
+    val peerMode: Boolean,
+    val tabs: List<Tab>,
+    val adbOff: Boolean,
+    val ble: Boolean,
+    val debugHost: String,
+    val ringing: Boolean,
+    val hostName: String?,
+    val invite: Found?,
+    val pair: PairState?,
+    val listener: Boolean,
+    val accessibility: Boolean,
+)
+
+internal fun appShellState(version: androidx.compose.runtime.State<Int>, read: () -> AppShell) =
+    derivedStateOf(structuralEqualityPolicy()) {
+        version.value
+        read()
+    }
+
+@Composable
+private fun CoreUpdates(core: Core, content: @Composable (Int) -> Unit) {
+    val version by core.version.collectAsState()
+    content(version)
+}
+
 @Composable
 fun App(core: Core, resumed: Int) {
-    val v by core.version.collectAsState()
-    @Suppress("UNUSED_EXPRESSION") v; @Suppress("UNUSED_EXPRESSION") resumed // re-read Core on every bump
+    val version = core.version.collectAsState()
+    val shell by remember(core, version) {
+        appShellState(version) {
+            AppShell(
+                core.host != null || core.peer.connected, peerMode(core), Tab.entries.filter { shown(core, it) },
+                core.adb.off, core.link.ble, if (core.adb.off) them(core) else "",
+                core.dev.ringing, core.host?.name, core.invite, core.link.pair,
+                NotifListener.running != null, InputService.running != null,
+            )
+        }
+    }
     var tab by rememberSaveable { mutableStateOf(Tab.Connection) }
     // Connected (to a computer or a phone): its Overview (from Connection); not connected: Connection in its place.
-    val connected = core.host != null || core.peer.connected
+    val connected = shell.connected
     var wasConnected by rememberSaveable { mutableStateOf(false) }
     if (connected && !wasConnected && tab == Tab.Connection) tab = Tab.Overview
     wasConnected = connected
     if (!connected && tab == Tab.Overview) tab = Tab.Connection
-    if (!shown(core, tab)) tab = if (connected) Tab.Overview else Tab.Connection // a page the other device can't do
+    if (tab !in shell.tabs) tab = if (connected) Tab.Overview else Tab.Connection // a page the other device can't do
     @Suppress("UNUSED_EXPRESSION") NavOrder.version.intValue // redraw when arranged
     val BOTTOM = bottom(core).filter { core.moduleOn(it.name.lowercase()) } // General › Modules
     var more by rememberSaveable { mutableStateOf(false) }
@@ -261,9 +299,9 @@ fun App(core: Core, resumed: Int) {
     val wide = LocalConfiguration.current.screenWidthDp >= 600
     // Wireless debugging went off (MIUI / HyperOS): ask once per time it happens.
     var adbAsked by rememberSaveable { mutableStateOf(false) }
-    if (!core.adb.off) adbAsked = false
-    if (core.adb.off && !adbAsked && !core.link.ble) { // over Bluetooth it can't be used anyway
-        val name = them(core)
+    if (!shell.adbOff) adbAsked = false
+    if (shell.adbOff && !adbAsked && !shell.ble) { // over Bluetooth it can't be used anyway
+        val name = shell.debugHost
         AlertDialog(
             onDismissRequest = { adbAsked = true },
             containerColor = pal.card,
@@ -283,8 +321,8 @@ fun App(core: Core, resumed: Int) {
 
     // Another device rang this phone (its Overview › Ring): Stop over whatever page is open, not
     // only on the notification and the Connection page.
-    if (core.dev.ringing) {
-        val who = core.host?.name ?: tr("Your computer")
+    if (shell.ringing) {
+        val who = shell.hostName ?: tr("Your computer")
         AlertDialog(
             onDismissRequest = {},
             containerColor = pal.card,
@@ -296,7 +334,7 @@ fun App(core: Core, resumed: Int) {
 
     // A computer wants to pair, or its code is up: over whatever page is open, not only the
     // notification and the Overview.
-    core.invite?.let { inv ->
+    shell.invite?.let { inv ->
         AlertDialog(
             onDismissRequest = {},
             containerColor = pal.card,
@@ -306,7 +344,7 @@ fun App(core: Core, resumed: Int) {
             dismissButton = { TextButton(onClick = { core.dismissInvite() }) { Text(tr("Not now"), color = pal.muted) } },
         )
     }
-    core.link.pair?.takeIf { it.phase == "code" && !it.wired && !it.qr }?.let { p ->
+    shell.pair?.takeIf { it.phase == "code" && !it.wired && !it.qr }?.let { p ->
         AlertDialog(
             onDismissRequest = {},
             containerColor = pal.card,
@@ -322,14 +360,25 @@ fun App(core: Core, resumed: Int) {
         )
     }
 
-    PeerDialogs(core, v) // another phone (Connect with Android): asks to connect, or its pairing code
+    CoreUpdates(core) { PeerDialogs(core, it) } // another phone (Connect with Android): asks to connect, or its pairing code
 
     // Setup first while something needed isn't allowed (Skip for now remembers what was skipped).
     val ctx = LocalContext.current
     var setupDone by rememberSaveable { mutableStateOf(false) }
-    if (!setupDone && SetupCheck.shouldShow(ctx, core)) return SetupScreen(core, ctx, v + resumed) { setupDone = true }
+    if (!setupDone) {
+        var permissionResult by remember { mutableStateOf(0) }
+        val debuggingChanges = setupDebuggingChanges(ctx)
+        val permissionInputs = SetupPermissionInputs(resumed, permissionResult, shell.listener, shell.accessibility, debuggingChanges, I18n.lang)
+        val items = remember(ctx, permissionInputs) {
+            SetupCheck.items(ctx, core)
+        }
+        if (SetupCheck.shouldShow(core, items)) {
+            SetupScreen(core, ctx, items, { permissionResult++ }) { setupDone = true }
+            return
+        }
+    }
     // The wireless debugging guide when opened from General › Setup / Cursor (Overview has it as a card).
-    if (Guide.open.value) return WirelessGuide(core, ctx, v + resumed)
+    if (Guide.open.value) return CoreUpdates(core) { WirelessGuide(core, ctx, it + resumed) }
 
     if (NavOrder.open.value) {
         val items = ordered(core).filter { it.group != "bottom" && core.moduleOn(it.name.lowercase()) }
@@ -337,7 +386,7 @@ fun App(core: Core, resumed: Int) {
         ArrangeDialog(core.store, items, NavOrder.load(core.store)?.bar ?: BOTTOM.size) { NavOrder.open.value = false }
     }
     // A history's own view (History.kt): from its page or an Overview shortcut.
-    History.view.value?.let { what -> return HistoryScreen(core, v, what) }
+    History.view.value?.let { what -> return CoreUpdates(core) { HistoryScreen(core, it, what) } }
     // Search (Search.kt): over everything; a result opens its page.
     if (Search.open.value) return SearchScreen(Tab.entries.filter { shown(core, it) }.map { it.name to it.title }) { name ->
         Tab.entries.firstOrNull { it.name == name }?.takeIf { shown(core, it) }?.let { tab = it; more = false }
@@ -346,10 +395,10 @@ fun App(core: Core, resumed: Int) {
     Box(Modifier.fillMaxSize().background(pal.content)) {
         if (wide) {
             Row(Modifier.safeDrawingPadding()) {
-                Sidebar(core, v, tab) { tab = it }
+                CoreUpdates(core) { Sidebar(core, it, tab) { tab = it } }
                 // the page in a rounded sheet beside the sidebar, as the phone's under its branding
                 Box(Modifier.weight(1f).fillMaxHeight().padding(top = 10.dp, end = 10.dp, bottom = 10.dp).clip(RoundedCornerShape(28.dp)).background(pal.sheet)) {
-                    Page(core, v, resumed, tab, Modifier.fillMaxSize())
+                    Page(core, resumed, tab, Modifier.fillMaxSize())
                 }
             }
         } else {
@@ -369,19 +418,20 @@ fun App(core: Core, resumed: Int) {
                 if (shown(core, back.first)) { tab = back.first; more = back.second }
             }
             Column(Modifier.safeDrawingPadding()) {
-                if (!more && tab == BOTTOM.first()) TopIdentity(core, v) // TwinDesk on the main page only
+                if (!more && tab == BOTTOM.first()) CoreUpdates(core) { TopIdentity(core, it) } // TwinDesk on the main page only
                 else Spacer(Modifier.height(10.dp))
                 // The page in a big rounded sheet under the branding; the bar floats at its bottom.
                 Column(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)).background(pal.sheet)) {
-                if (more) MoreList(core, v, BOTTOM, Modifier.weight(1f)) { go(it, false) }
-                else Page(core, v, resumed, tab, Modifier.weight(1f))
+                if (more) CoreUpdates(core) { version -> MoreList(core, version, BOTTOM, Modifier.weight(1f)) { go(it, false) } }
+                else Page(core, resumed, tab, Modifier.weight(1f))
                 // Line icons, the selected one on a pill of the accent colour, a label under each.
                 // The bar floats off the edges, rounded (the tablet keeps the sidebar). Search is the
                 // round button at the right (Search.kt). Holding the bar opens Arrange.
+                val active by remember(core, version) { derivedStateOf(structuralEqualityPolicy()) { version.value; Tab.entries.filter { isOn(core, it) }.toSet() } }
                 PhoneBottomChrome(buildList {
                     for (t in BOTTOM) add(BottomDest(
                         if (t == Tab.Connection) tr("Connect") else tr(t.title),
-                        t.icon, !more && tab == t, isOn(core, t),
+                        t.icon, !more && tab == t, t in active,
                     ) { go(t, false) })
                     add(BottomDest(tr("More"), Ico.more, more || tab !in BOTTOM, false) { go(tab, true) })
                 }, search = if (NavOrder.searchButton(core.store)) {
@@ -524,8 +574,8 @@ private fun MoreList(core: Core, v: Int, BOTTOM: List<Tab>, modifier: Modifier, 
 }
 
 @Composable
-private fun Page(core: Core, v: Int, resumed: Int, tab: Tab, modifier: Modifier) {
-    @Suppress("UNUSED_EXPRESSION") v // redraw on every Core change (Compose skips unread parameters)
+private fun Page(core: Core, resumed: Int, tab: Tab, modifier: Modifier) {
+    val v by core.version.collectAsState()
     Column(modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 20.dp)) {
         Column(Modifier.widthIn(max = 820.dp)) {
             if (peerMode(core) && tab != Tab.Connection && tab != Tab.General && tab != Tab.About) PeerPage(core, v, tab.name)

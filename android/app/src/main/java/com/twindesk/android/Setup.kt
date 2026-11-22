@@ -8,9 +8,12 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,6 +35,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -40,6 +46,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+internal data class SetupPermissionInputs(
+    val resumes: Int,
+    val results: Int,
+    val listenerConnected: Boolean,
+    val accessibilityConnected: Boolean,
+    val debuggingChanges: Int,
+    val language: String,
+)
 
 object SetupCheck {
     class Item(val id: String, val title: String, val hint: String, val icon: ImageVector, val colors: List<Color>, val required: Boolean, val done: Boolean)
@@ -64,8 +79,8 @@ object SetupCheck {
     // What is missing now, as a key: the screen shows unless that exact set was skipped.
     fun missingKey(items: List<Item>) = items.filter { it.required && !it.done }.joinToString(",") { it.id }
 
-    fun shouldShow(ctx: Context, core: Core): Boolean {
-        val key = missingKey(items(ctx, core))
+    fun shouldShow(core: Core, items: List<Item>): Boolean {
+        val key = missingKey(items)
         return key.isNotEmpty() && key != core.store.prefsString("setup.skipped", "")
     }
 
@@ -88,10 +103,23 @@ object SetupCheck {
 }
 
 @Composable
-fun SetupScreen(core: Core, ctx: Context, v: Int, done: () -> Unit) {
-    @Suppress("UNUSED_EXPRESSION") v
-    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { core.changed() }
-    val items = SetupCheck.items(ctx, core)
+internal fun setupDebuggingChanges(ctx: Context): Int {
+    val revision = remember(ctx) { mutableStateOf(0) }
+    DisposableEffect(ctx) {
+        val resolver = ctx.contentResolver
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) { revision.value++ }
+        }
+        resolver.registerContentObserver(Settings.Global.getUriFor(Settings.Global.ADB_ENABLED), false, observer)
+        resolver.registerContentObserver(Settings.Global.getUriFor("adb_wifi_enabled"), false, observer)
+        onDispose { resolver.unregisterContentObserver(observer) }
+    }
+    return revision.value
+}
+
+@Composable
+fun SetupScreen(core: Core, ctx: Context, items: List<SetupCheck.Item>, permissionResult: () -> Unit, done: () -> Unit) {
+    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { permissionResult(); core.changed() }
     val ready = items.none { it.required && !it.done }
     Box(Modifier.fillMaxSize().background(pal.content).safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
         Column(
@@ -125,7 +153,7 @@ fun SetupScreen(core: Core, ctx: Context, v: Int, done: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
             Button(
-                onClick = { if (ready) done() else SetupCheck.skip(ctx, core) },
+                onClick = { if (ready) done() else { SetupCheck.skip(ctx, core); permissionResult() } },
                 modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White),
             ) { Text(if (ready) tr("Continue") else tr("Skip for now"), modifier = Modifier.padding(vertical = 4.dp)) }
