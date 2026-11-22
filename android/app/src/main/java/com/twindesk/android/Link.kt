@@ -625,6 +625,17 @@ class Link(
         val m = runCatching { JSONObject(text) }.getOrNull() ?: return
         val t = m.optString("t")
         lastRx = System.currentTimeMillis()
+        // Other frames still arrive on the fallback socket. Backup frames do not: the socket they
+        // came in on used to be discarded before Core.post, so a retired path could stop the new one.
+        if (t.startsWith("backup.")) {
+            val hook = backupIngress
+            if (hook != null) {
+                if (ingress === ws && !ble && state == "connected" && !parting) {
+                    runCatching { hook(ingress, m) }.onFailure { Log.w("TwinDesk", "photo backup", it) }
+                }
+                return
+            }
+        }
         when (t) {
             Proto.T.PAIR_NONCE -> return onNonce(m)
             Proto.T.PAIR_OK -> return onPairOk(m)
@@ -638,17 +649,6 @@ class Link(
             Proto.T.PING -> { if (state == "connected") raw(msg(Proto.T.PONG, "ts" to m.opt("ts"))); return }
             Proto.T.PONG -> { if (m.has("ts")) rttMs = maxOf(0, System.currentTimeMillis() - m.optLong("ts")); return }
             QUIET_IDLE -> { if (state == "connected") { val was = peerIdle; peerIdle = m.optBoolean("on"); if (was != peerIdle) nudge() }; return }
-        }
-        // Other frames still arrive on the fallback socket. Backup frames do not: the socket they
-        // came in on used to be discarded before Core.post, so a retired path could stop the new one.
-        if (t.startsWith("backup.")) {
-            val hook = backupIngress
-            if (hook != null) {
-                if (ingress === ws && !ble && state == "connected" && !parting) {
-                    runCatching { hook(ingress, m) }.onFailure { Log.w("TwinDesk", "photo backup", it) }
-                }
-                return
-            }
         }
         if (state == "connected") events.onMessage(m, trustedRoute(ingress), ingress)
     }
