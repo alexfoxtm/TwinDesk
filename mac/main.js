@@ -116,6 +116,8 @@ const { aboutInfo } = require('../shared/about.js');
 
 let win = null;
 let tray = null;
+// Settings window: send state only while the user can see it (mac/win-watch.js).
+const controlWatch = require('./win-watch').createWatch();
 let lockKey = null; // the cursor lock key at home (shared/cursorlock.js)
 let hud = null;
 let photoBackup = null; // new camera photos from a paired Android phone (mac/photobackup.js)
@@ -327,7 +329,11 @@ function pushState() {
     state.localsend = localsend ? localsend.view() : { cfg: { on: !!(settings.localsend && settings.localsend.on) }, peers: [], offers: [], transfers: [] }; // Files › LocalSend-compatible devices
     if (pairSync) pairSync.check();
     sendScreenState();
-    if (win && !win.isDestroyed()) win.webContents.send('state', state);
+    // Covered, minimized or hidden: the tray and the screen message above still run.
+    // The window is sent nothing until it is on screen again (one push on that edge).
+    const sendState = controlWatch.watching(win);
+    controlWatch.mark(win);
+    if (sendState && win && !win.isDestroyed()) win.webContents.send('state', state);
     updateTray();
   });
 }
@@ -549,13 +555,33 @@ function createWindow() {
   win.once('ready-to-show', showWindow);
   // In the Dock and ⌘-Tab only while the window is open; menu bar only otherwise.
   const w = win;
-  w.on('show', dockIcon);
-  w.on('hide', dockIcon);
+  w.on('show', () => { dockIcon(); noteControlVisible(null); });
+  w.on('hide', () => { dockIcon(); controlWatch.unsee(); });
+  w.on('minimize', () => controlWatch.unsee());
+  w.on('restore', () => noteControlVisible(null));
   w.on('focus', refreshPermissions);
   w.on('closed', () => {
     if (win === w) win = null;
+    controlWatch.reset();
     dockIcon();
   });
+}
+
+// visible: true/false from the page, or null when the window was just shown or
+// restored and the page has not reported. One push on the edge, none while it stays.
+function noteControlVisible(visible) {
+  if (controlWatch.note(win, visible)) pushState();
+}
+
+require('electron').ipcMain.on('control-visible', (e, visible) => {
+  if (!win || win.isDestroyed() || e.sender !== win.webContents) return;
+  noteControlVisible(visible === true);
+});
+
+// Round trip is the 1 Hz push. Skip it while the window is not on screen; the
+// fields it carries are in the one push sent as the window becomes visible.
+function pushWatched() {
+  if (controlWatch.watching(win)) pushState();
 }
 
 function dockIcon() {
@@ -721,7 +747,7 @@ app.whenReady().then(() => {
   });
   server.on('rtt', (ctx) => {
     if (process.env.MACSHARE_DEBUG_STATS) console.log(`[server] rtt ${ctx.rttMs} ms`);
-    pushState();
+    pushWatched();
   });
 
   discovery = new Discovery(id, server.port, { rc: true }); // Android may reclaim after the grace window (#192)
@@ -777,7 +803,7 @@ app.whenReady().then(() => {
     if (previewShots) previewShots.cancel('session');
     pushState();
   });
-  peer.on('rtt', pushState);
+  peer.on('rtt', pushWatched);
 
   svc = startServices({ server: peer, getSettings: () => settings, pushState, onHelperReady: refreshPermissions,
     clipboardPair: (ctx) => !ctx ? null : ctx.role === 'host'
@@ -1423,15 +1449,13 @@ app.whenReady().then(() => {
   refreshPermissions();
   if (process.env.MACSHARE_DEV_TEST) require('./dev/m2m')({ role: process.env.MACSHARE_DEV_TEST, svc, actions, link, pairing, peer });
   readDefaultIf();
-  // Addresses change when the network does. With the window open: every 5 s as always (it shows
-  // them, and the link's round trip). Without it: only when an address changed (one getifaddrs, no
-  // process), and the default route is read again then.
+  // Addresses change when an interface's address changes (one getifaddrs). The default route
+  // is read then, and only then: nothing spawns /sbin/route or pushes while the list is the same.
   let addrKey = '';
   setInterval(() => {
     const key = interfaces().map((i) => `${i.name}=${i.address}`).join(',');
-    const changed = key !== addrKey;
+    if (key === addrKey) return;
     addrKey = key;
-    if (!changed && !(win && !win.isDestroyed() && win.isVisible())) return;
     readDefaultIf();
     pushState();
   }, 5000).unref();

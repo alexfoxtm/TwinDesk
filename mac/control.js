@@ -42,6 +42,7 @@ const ICONS = {
   fullkvm: 'M1.5 8.5h11v8h-11z M4 11.3h1 M7 11.3h1 M10 11.3h0 M5 13.9h4 M14 5h4.5v4.5H14z M15.1 5V3.9a1.15 1.15 0 0 1 2.3 0V5', // a keyboard and a padlock: Full KVM (the lock screen, admin prompts)
 };
 
+let namesSig = ''; // UI.names skips a whole-document pass when the peer text has not changed
 const UI = {
   api: window.macshare,
   P: window.MacShareProtocol,
@@ -294,17 +295,24 @@ const UI = {
       soon || role ? UI.el('span', { class: 'dir-role', text: soon ? I18n.t('Coming in phase {phase}', { phase: soon }) : I18n.t(role) }) : null,
     ]);
     const card = UI.el('div', { class: `card dir-card${soon ? ' soon-card' : ''}` }, [head, ...rows]);
-    UI.names(UI.state);
+    UI.names(UI.state, card); // this card only: a later page must not wait for a full pass
     return card;
   },
 
   // Fill every peer-dependent name: [data-side] chips and [data-peer] text templates.
-  names(s) {
+  // A root limits the pass to that subtree (a page just built). With no root, an unchanged
+  // peer — a 1 Hz round trip is not part of UI.peer — does not walk the document again.
+  names(s, root) {
     const p = UI.peer(s);
-    for (const e of document.querySelectorAll('[data-side]')) e.textContent = p[e.dataset.side];
-    for (const e of document.querySelectorAll('[data-os]')) e.className = `os-ico ${UI.osClass(p.os)}`;
-    for (const e of document.querySelectorAll('.route')) e.setAttribute('aria-label', I18n.t('From {from} to {to}', { from: e.firstChild.textContent, to: e.lastChild.textContent }));
-    for (const e of document.querySelectorAll('[data-peer]')) {
+    const sig = JSON.stringify(p);
+    const scope = root && root.querySelectorAll ? root : null;
+    if (!scope && sig === namesSig) return p;
+    if (!scope) namesSig = sig;
+    const q = (sel) => (scope || document).querySelectorAll(sel);
+    for (const e of q('[data-side]')) e.textContent = p[e.dataset.side];
+    for (const e of q('[data-os]')) e.className = `os-ico ${UI.osClass(p.os)}`;
+    for (const e of q('.route')) e.setAttribute('aria-label', I18n.t('From {from} to {to}', { from: e.firstChild.textContent, to: e.lastChild.textContent }));
+    for (const e of q('[data-peer]')) {
       if (e.closest('[data-literal]')) continue;
       e.textContent = e.dataset.peer.replace(/\{(\w+)\}/g, (m, k) => (k in p ? p[k] : m));
     }

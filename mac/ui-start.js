@@ -121,6 +121,7 @@
     if (UI.state) renderSidebar(UI.state); // in or out of a web device's pages
     if (current !== v) return; // it sent us elsewhere (this page is hidden for the device now): that page is shown
     v.page.hidden = false;
+    if (UI.state) UI.names(UI.state, v.page); // a page built after the last full pass
     v.navBtn.classList.add('active');
     v.navBtn.setAttribute('aria-selected', 'true');
     $('content').scrollTop = 0;
@@ -157,16 +158,21 @@
     }
   }
 
+  function setText(el, text) { if (el && el.textContent !== text) el.textContent = text; }
+  function setClass(el, cls) { if (el && el.className !== cls) el.className = cls; }
+
   function renderSidebar(s) {
     const c = s.client;
-    $('peer-dot').className = `dot ${c ? 'good' : s.pairing ? 'warn' : ''}`;
     const gs = s.guest && s.guest.status && s.guest.status.state;
-    $('peer-text').textContent = c ? `${c.name}${UI.via(s) !== 'Wi-Fi' ? ` · ${UI.via(s)}` : ''}${c.rttMs != null ? ` · ${c.rttMs} ms` : ''}`
+    let dotCls = `dot ${c ? 'good' : s.pairing ? 'warn' : ''}`;
+    let peerText = c ? `${c.name}${UI.via(s) !== 'Wi-Fi' ? ` · ${UI.via(s)}` : ''}${c.rttMs != null ? ` · ${c.rttMs} ms` : ''}`
       : s.pairing || (s.guest && s.guest.pairing) ? tr('Pairing…') : gs === 'connecting' || gs === 'reconnecting' ? tr('Connecting…') : tr('Not connected');
     if (UI.webDev && !UI.webDevOf(s)) UI.webDev = null; // forgotten meanwhile
     // A web device's pages: the line under TwinDesk is that device (shared/ui-web.js).
     const wl = UI.webPeerLine && UI.webPeerLine(s);
-    if (wl) { $('peer-text').textContent = wl.text; $('peer-dot').className = `dot ${wl.dot}`; }
+    if (wl) { peerText = wl.text; dotCls = `dot ${wl.dot}`; }
+    setClass($('peer-dot'), dotCls);
+    setText($('peer-text'), peerText);
     renderPhones(s);
     renderPcs(s);
     UI.webTiles($('webdevs'), s, (devId) => {
@@ -178,19 +184,27 @@
     for (const v of views.values()) {
       const hide = UI.webDev ? !v.def.web && !UI.WEB_KEEP.includes(v.def.id)
         : !!v.def.web || (!!(v.def.hidden && v.def.hidden(s)) && UI.tourPeek !== v.def.id);
-      if (v.navBtn.parentElement) v.navBtn.parentElement.hidden = hide;
+      if (v.navBtn.parentElement && v.navBtn.parentElement.hidden !== hide) v.navBtn.parentElement.hidden = hide;
       // Hidden for the device now in session: its version of this page (shared/ui-kinds.js), else the start.
       if (hide && current === v) { const twin = UI.webDev ? v.def.id : UI.pick(v.def.id, s); show(twin !== v.def.id ? twin : home(s), false); }
     }
     // A group with every tab hidden takes its gap with it.
-    for (const v of views.values()) if (v.gap) v.gap.hidden = [...views.values()].every((x) => x.gap !== v.gap || !x.navBtn.parentElement || x.navBtn.parentElement.hidden);
+    for (const v of views.values()) if (v.gap) {
+      const gapHide = [...views.values()].every((x) => x.gap !== v.gap || !x.navBtn.parentElement || x.navBtn.parentElement.hidden);
+      if (v.gap.hidden !== gapHide) v.gap.hidden = gapHide;
+    }
     const wdFirst = views.get('wd-overview'); // a web device's pages start the list: no gap above them
-    if (wdFirst && wdFirst.gap) wdFirst.gap.hidden = wdFirst.gap.hidden || !!UI.webDev;
+    if (wdFirst && wdFirst.gap) {
+      const gapHide = wdFirst.gap.hidden || !!UI.webDev;
+      if (wdFirst.gap.hidden !== gapHide) wdFirst.gap.hidden = gapHide;
+    }
     for (const v of views.values()) {
       let b = v.def.badge ? v.def.badge(s) : v.def.phase ? `P${v.def.phase}` : '';
       if (b === 'on' && !linked(s) && !FeatureArt.FREE.includes(v.def.id)) b = 'warn'; // on, but nothing connected: it waits (yellow), it isn't working
-      v.stateEl.className = `state${b === 'on' ? ' on' : b === 'warn' ? ' warn' : ''}`;
-      v.stateEl.textContent = b === 'on' || b === 'warn' ? '' : tr(b || '');
+      const cls = `state${b === 'on' ? ' on' : b === 'warn' ? ' warn' : ''}`;
+      const text = b === 'on' || b === 'warn' ? '' : tr(b || '');
+      setClass(v.stateEl, cls);
+      setText(v.stateEl, text);
     }
   }
 
@@ -210,9 +224,11 @@
       seen.add(x.id);
       const connected = !!(c && c.id === x.id);
       if (!connected && !near.has(x.id)) continue;
-      list.push({ id: x.id, name: x.name, os: x.os, connected, sub: connected ? (c.rttMs != null ? tr('{value} ms', { value: c.rttMs }) : tr('Connected')) : tr('Nearby · Click to connect'), go: () => api.pairWith(x.id) });
+      list.push({ id: x.id, name: x.name, os: x.os, connected, sub: connected ? tr('Connected') : tr('Nearby · Click to connect'), go: () => api.pairWith(x.id) });
     }
     UI.renderPcs($('pcs'), list, { open: () => show('overview', true), active: !UI.webDev });
+    // The ping changes every second. Patch the text so the tile (and its dot) is not rebuilt.
+    if (c && c.rttMs != null) setText($('pcs').querySelector('.phone-tile.connected .phone-sub'), tr('{value} ms', { value: c.rttMs }));
   }
 
   function renderPhones(s) {
@@ -228,17 +244,26 @@
     }
     const info = ph.info || {};
     const colors = info.colors && info.colors.length ? info.colors : null;
-    const key = JSON.stringify([UI.webDev, ph.nearby, ph.connecting, ph.connected && ph.connected.rttMs, ph.held, info.battery, info.charging, colors, UI.phoneWall ? UI.phoneWall.length : 0, current && current.def.id]);
-    if (key === phonesKey) return;
+    const phoneSub = (d) => {
+      const connecting = ph.connecting && ph.connecting.id === d.id;
+      return d.connected
+        ? `${ph.connected && ph.connected.rttMs != null ? `${ph.connected.rttMs} ms` : tr('Connected')}${info.battery != null ? ` · ${info.battery}%${info.charging ? ' ⚡' : ''}` : ''}`
+        : connecting ? tr('Connecting…') : tr('Nearby · Click to connect');
+    };
+    // rtt is not in the key: rebuilding the tile every second restarts the connected dot.
+    const key = JSON.stringify([UI.webDev, ph.nearby, ph.connecting, ph.connected && ph.connected.id, ph.held, info.battery, info.charging, colors, UI.phoneWall ? UI.phoneWall.length : 0, current && current.def.id]);
+    if (key === phonesKey) {
+      const sub = $('phones').querySelector('.phone-tile.connected .phone-sub');
+      const d = (ph.nearby || []).find((x) => x.connected);
+      if (sub && d) setText(sub, phoneSub(d));
+      return;
+    }
     phonesKey = key;
     $('phones').replaceChildren(...ph.nearby.map((d) => {
       const wall = el('span', { class: 'phone-wall' }, [UI.icon('phone')]);
       if (d.connected && UI.phoneWall) wall.style.backgroundImage = UI.phoneWall;
       else if (d.connected && colors) wall.style.backgroundImage = `linear-gradient(160deg, ${colors.join(', ')}${colors.length === 1 ? `, ${colors[0]}` : ''})`;
-      const connecting = ph.connecting && ph.connecting.id === d.id;
-      const sub = d.connected
-        ? `${ph.connected.rttMs != null ? `${ph.connected.rttMs} ms` : tr('Connected')}${info.battery != null ? ` · ${info.battery}%${info.charging ? ' ⚡' : ''}` : ''}`
-        : connecting ? tr('Connecting…') : tr('Nearby · Click to connect');
+      const sub = phoneSub(d);
       const b = el('button', { class: `phone-tile${d.connected ? ' connected' : ''}`, title: d.connected ? `${d.name}` : tr('Connect to {name}', { name: d.name }) }, [
         wall,
         el('span', { class: 'phone-text' }, [el('span', { class: 'phone-name', text: d.name, attrs: { 'data-literal': '' } }), el('span', { class: 'phone-sub', text: sub, attrs: { 'data-literal': '' } })]),
@@ -343,6 +368,9 @@
   let wasLinked = null;
   function render(s) {
     UI.state = s;
+    // A covered or hidden window keeps the latest state and paints it when it is shown.
+    // The main process already stops sending while the page reports hidden.
+    if (document.visibilityState === 'hidden') return;
     UI.look(s.look); // the accent colour (shared/ui-look.js)
     // Something just connected while Connection is open: its Overview.
     const now = linked(s);
@@ -358,6 +386,15 @@
     renderBanner(s);
     renderNet(s);
     if (current) renderPage(current, s);
+  }
+
+  if (api.pageVisible) {
+    const reportVis = () => {
+      api.pageVisible(document.visibilityState !== 'hidden');
+      if (document.visibilityState !== 'hidden' && UI.state) render(UI.state);
+    };
+    document.addEventListener('visibilitychange', reportVis);
+    reportVis();
   }
 
   $('pair-allow').onclick = () => (bannerMode === 'guest' ? api.confirmGuestCode() : api.pairRespond(true));
@@ -378,7 +415,7 @@
   });
 
   // Relative times ("2 min ago") age without a state push.
-  setInterval(() => UI.state && current && renderPage(current, UI.state), 15000);
+  setInterval(() => UI.state && current && document.visibilityState !== 'hidden' && renderPage(current, UI.state), 15000);
 
   api.onState(render);
   api.getState().then((s) => {
