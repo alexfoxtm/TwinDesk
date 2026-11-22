@@ -137,6 +137,7 @@ function setupIpc(ctx) {
     link.startPairing({ address: plan.address, port: plan.port || P.PORT, name: plan.name });
   }
 
+  const fork = ctx.fork || {};
   const actions = {
     async connectAddress(text) {
       const address = String(text || '').trim();
@@ -453,13 +454,13 @@ function setupIpc(ctx) {
     setSilence(arg) {
       if (!require('../shared/modules.js').isOn(settings.modules, 'notifications')) return;
       const c = ctx.server.current;
-      if (!ctx.silence || !c || !c.deviceId || c.os !== P.OS.ANDROID) return;
+      if (!fork.silence || !c || !c.deviceId || c.os !== P.OS.ANDROID) return;
       const cur = { send: false, follow: false, ...(settings.silence.peers[c.deviceId] || {}) };
       for (const k of ['send', 'follow']) if (arg && typeof arg[k] === 'boolean') cur[k] = arg[k];
       settings.silence.peers[c.deviceId] = { send: cur.send === true, follow: cur.follow === true };
       save();
-      if ((cur.send === true || cur.follow === true) && !ctx.silence.mac.list) ctx.silence.mac.loadShortcuts(); // switched on: the shortcuts to pick from
-      ctx.silence.refresh();
+      if ((cur.send === true || cur.follow === true) && !fork.silence.mac.list) fork.silence.mac.loadShortcuts(); // switched on: the shortcuts to pick from
+      fork.silence.refresh();
     },
     // … and this Mac's setup, each on a click (silence-mac.js): the list of shortcuts, the three
     // picked, the person's word that the two that set a Focus are TwinDesk's alone, and the check
@@ -467,13 +468,13 @@ function setupIpc(ctx) {
     silenceDo(arg) {
       if (!require('../shared/modules.js').isOn(settings.modules, 'notifications')) return;
       const a = arg || {};
-      const mac = ctx.silence && ctx.silence.mac;
+      const mac = fork.silence && fork.silence.mac;
       if (!mac) return;
-      if (a.do === 'shortcuts') mac.loadShortcuts().then(() => ctx.silence.refresh());
+      if (a.do === 'shortcuts') mac.loadShortcuts().then(() => fork.silence.refresh());
       else if (a.do === 'openShortcuts') shell.openExternal('shortcuts://');
-      else if (a.do === 'pick' && ['on', 'off', 'probe'].includes(a.which)) { mac.pick(a.which, typeof a.id === 'string' ? a.id.slice(0, 40) : ''); ctx.silence.refresh(); }
-      else if (a.do === 'dedicated') { mac.setDedicated(a.on === true); ctx.silence.refresh(); }
-      else if (a.do === 'check') mac.check().then(() => ctx.silence.refresh());
+      else if (a.do === 'pick' && ['on', 'off', 'probe'].includes(a.which)) { mac.pick(a.which, typeof a.id === 'string' ? a.id.slice(0, 40) : ''); fork.silence.refresh(); }
+      else if (a.do === 'dedicated') { mac.setDedicated(a.on === true); fork.silence.refresh(); }
+      else if (a.do === 'check') mac.check().then(() => fork.silence.refresh());
     },
     async allowNativeNotifications() {
       const permission = await ctx.notifs.nativePermission.request();
@@ -740,7 +741,7 @@ function setupIpc(ctx) {
     },
     // Photos: back up new camera photos into a folder on this Mac (mac/photobackup.js).
     async photoBackup(arg) {
-      const pb = ctx.photoBackup;
+      const pb = fork.photoBackup;
       if (!pb || !arg || (arg.do !== 'folder' && arg.do !== 'on')) return;
       const target = pb.target(arg.generation);
       if (!target) return;
@@ -876,19 +877,19 @@ function setupIpc(ctx) {
   };
   const disconnectPhone = actions.disconnectPhone;
   actions.disconnectPhone = () => {
-    if (ctx.silence) ctx.silence.stop(); // a Focus turned on for the phone ends with the session
+    if (fork.silence) fork.silence.stop(); // a Focus turned on for the phone ends with the session
     return disconnectPhone();
   };
   const disconnect = actions.disconnect;
   actions.disconnect = () => {
-    if (ctx.silence) ctx.silence.stop();
+    if (fork.silence) fork.silence.stop();
     return disconnect();
   };
   const forget = actions.forget;
   actions.forget = (deviceId) => {
-    if (ctx.photoBackup) ctx.photoBackup.forget(String(deviceId)); // consent for this phone; archived photos stay
-    if (ctx.silence) { // Silence together: its lease and its switches go with the pairing
-      ctx.silence.forget(String(deviceId));
+    if (fork.photoBackup) fork.photoBackup.forget(String(deviceId)); // consent for this phone; archived photos stay
+    if (fork.silence) { // Silence together: its lease and its switches go with the pairing
+      fork.silence.forget(String(deviceId));
       delete settings.silence.peers[String(deviceId)];
       store.saveSettings(settings);
     }

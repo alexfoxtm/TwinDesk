@@ -1261,16 +1261,15 @@ app.whenReady().then(() => {
     if (on) loadSilence().start();
     else if (svc.silence) svc.silence.stop();
   };
-  const setupForkIpc = (context) => setupIpc({
-    ...context,
-    get silence() { return svc.silence; },
-    photoBackup,
-  });
   setupWeb();
-  actions = setupForkIpc({
+  actions = setupIpc({
     state,
     settings,
     pushState,
+    fork: {
+      get silence() { return svc.silence; },
+      photoBackup,
+    },
     onLanguage: changeLanguage,
     onLook: applyLook,
     t,

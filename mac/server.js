@@ -41,6 +41,8 @@ class Server extends EventEmitter {
     this.wss.on('error', () => {}); // ws repeats the server's errors here; listenError below reports them
     this.https.on('error', (err) => this.emit('listenError', err));
     this.port = LISTEN_PORT;
+    // Cancel the fork's lock-view lease before the remaining Forget listeners or socket closure.
+    this.prependListener('forget', (deviceId) => this.emit('deviceClosed', deviceId));
     if (!opts.hold) this.listen();
     this.tick = null; // the liveness timer: only while there are sockets (_arm), none on an idle tray
     this.unquiet = Quiet.onChange(() => { if (this.tick) this._liveness(); }); // a hold reaches the other end at once
@@ -401,7 +403,6 @@ class Server extends EventEmitter {
 
   // Close every socket that belongs to a device id (used by Forget).
   closeDevice(deviceId, code, message) {
-    this.emit('deviceClosed', deviceId);
     this.emit('forget', deviceId);
     for (const ctx of this.sockets) if (ctx.deviceId === deviceId) this.fail(ctx, code, message);
   }
