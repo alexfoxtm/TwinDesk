@@ -75,9 +75,9 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
     spaceLook,
     reply: (ctx, msg) => meshHub.bus.send(ctx.id, msg),
   });
+
   const guestPair = (id) => meshHub.pairing?.paired.find((pair) => pair.id === id);
   const hostPair = (id) => meshHub.links.get(id)?.pairing;
-
   const clipboard = new Clip({
     bus: meshHub.bus, mesh, getSettings: s, helper, session: (id) => meshHub.sessions.get(id),
     activePair: (id) => meshHub.sessions.get(id)?.linkUp ? hostPair(id) : guestPair(id),

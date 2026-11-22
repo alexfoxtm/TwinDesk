@@ -262,7 +262,7 @@ function setupIpc(ctx) {
       if (typeof text !== 'string' || !text || text.length > 256 * 1024 || !clipboard) return;
       clipboard.writeText(text);
     },
-    // Request access before guiding the user to macOS Settings.
+    // Ask first (that puts TwinDesk in the System Settings list), then open the pane.
     async allowPermission(kind) {
       if (!SETTINGS_URLS[kind]) return;
       let granted = false;

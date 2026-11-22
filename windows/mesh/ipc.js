@@ -110,8 +110,8 @@ function setupIpc(ctx) {
     if (typeof id !== 'string') return;
     const deviceId = id.slice(0, 64);
     ctx.batteryAlerts.forget(deviceId);
-    ctx.proximityLock?.forget(deviceId);
     // Drop the pairing before removing it from the layout.
+    ctx.proximityLock?.forget(deviceId);
     hub.forgetPeer(deviceId);
     kvm.forgetDevice(deviceId);
   });

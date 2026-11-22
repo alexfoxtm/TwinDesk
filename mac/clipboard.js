@@ -148,8 +148,8 @@ class Clipboard extends EventEmitter {
     if (msg.text === this.lastSent && (this.readsInFlight || this.pending)) return;
     const c = this.cfg;
     if (!c.enabled || !c.receive || !P.clipAllowed(msg.text)) return;
-
     ++this.queueEpoch;
+
     const sequence = ++this.receiveSequence;
     ++this.receiving;
     try {
