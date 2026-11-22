@@ -95,6 +95,11 @@
       // screen sharing
       STREAM_INFO: 'stream.info',
       STREAM_STOP: 'stream.stop',
+      STREAM_INPUT: 'stream.input', // Mac -> Windows: {on} whether the Mac accepts in.* ("Receive input")
+      RTC_OFFER: 'rtc.offer',
+      RTC_ANSWER: 'rtc.answer',
+      RTC_ICE: 'rtc.ice',
+      RTC_DETAIL: 'rtc.detail', // Android -> desktop: {session, height}; an advertised offer tier, or 0 for the baseline
       LOCK_STATE: 'lock.state', // host->Android {locked,can,continuing?,layoutStale?}: single-session Mac viewer state
       LOCK_OPEN: 'lock.open', // Android->host {request:32 lowercase hex}: explicit user action
       LOCK_READY: 'lock.ready', // Android->host {request}: Screen Sharing authentication completed
@@ -102,11 +107,6 @@
       LOCK_TICKET: 'lock.ticket', // host->Android {request,ticket,path,expiresIn,account?,primaryView?}; session-bound, never logged or persisted
       LOCK_END: 'lock.end', // Android {request}; host {request?,reason:unavailable|ended|unlocked|session-ended|timeout|display-changed}
       // screen.state input (optional) reports whether the sharer currently accepts screen input.
-      STREAM_INPUT: 'stream.input', // Mac -> Windows: {on} whether the Mac accepts in.* ("Receive input")
-      RTC_OFFER: 'rtc.offer',
-      RTC_ANSWER: 'rtc.answer',
-      RTC_ICE: 'rtc.ice',
-      RTC_DETAIL: 'rtc.detail', // Android -> Mac: {session, height}; an advertised offer tier, or 0 to restore its baseline
       // input inside the Monitor 2 window (absolute, normalized), Windows -> Mac. From a phone's
       // stylus, in.mm/md/mu carry `pen` (P.penOf): the helpers inject a tablet pen; without it, a mouse
       IN_MOVE: 'in.mm',
