@@ -582,7 +582,7 @@ function createWindow() {
   w.on('hide', () => { dockIcon(); controlWatch.unsee(); });
   w.on('minimize', () => controlWatch.unsee());
   w.on('restore', () => noteControlVisible(null));
-  w.on('focus', refreshPermissions);
+  w.on('focus', () => { refreshPermissions(); noteControlVisible(true); }); // a click clears a visibility flag stuck on hidden
   w.on('closed', () => {
     if (win === w) win = null;
     controlWatch.reset();
