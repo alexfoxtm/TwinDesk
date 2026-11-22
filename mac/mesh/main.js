@@ -560,7 +560,6 @@ function showFileShelf() {
   if (!svc || modulesAtStart.includes('files')) return;
   fileShelf ||= new (require('../file-shelf').FileShelf)({ drop: svc.drop, t });
   fileShelf.show();
-  require('../file-shelf-receipts').attachReceipts(fileShelf, () => (localsend && localsend.receipts) || []);
 }
 
 function updateTray() {
@@ -1140,6 +1139,11 @@ app.whenReady().then(() => {
   updates.start();
   Look.applyTheme(nativeTheme, settings.ui.theme);
   nativeTheme.on('updated', () => pushState());
+  const showShelf = showFileShelf;
+  showFileShelf = () => {
+    showShelf();
+    if (fileShelf) require('../file-shelf-receipts').attachReceipts(fileShelf, () => (localsend && localsend.receipts) || []);
+  };
   localsend = require('../localsend.js').setupLocalSend({
     settings: () => settings, save: () => store.saveSettings(settings), pushState: () => { pushState(); fileShelf?.refresh(); }, t, window: () => win,
     name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),

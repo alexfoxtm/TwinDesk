@@ -38,7 +38,7 @@ function sleepWake({ powerMonitor, server, discovery, canInvite = () => true }) 
       // One session at a time: an invite makes a computer take the session over, so once anyone
       // holds it nobody is invited. Multi-device: only the guests that aren't back yet.
       if (host && !host.clients) waiting = live(host.current) ? [] : waiting;
-      else waiting = waiting.filter((id) => !live(host?.clients.get(id)));
+      else waiting = waiting.filter((id) => !live(host?.clients?.get(id)));
       if (!waiting.length || Date.now() > until) return clearInterval(timer);
       const disc = discovery();
       for (const id of waiting) {

@@ -81,5 +81,5 @@
 
   const activity = { ...TL, fromState: withReceipts, build: state => TL.dedupeSort(withReceipts(state)), revealItem: reveal, localsendReveal };
   if (typeof module === 'object' && module.exports) module.exports = activity;
-  else window.TDTimeline = activity;
+  else Object.assign(TL, activity);
 })();

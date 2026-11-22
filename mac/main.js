@@ -53,6 +53,10 @@ const path = require('path');
 const { app, BrowserWindow, Tray, Menu, nativeImage, nativeTheme, systemPreferences, Notification, dialog, globalShortcut } = require('electron');
 const Look = require('../shared/look.js');
 
+// Electron names its macOS Keychain item "<app name> Safe Storage" and its logs ~/Library/Logs/<app name>.
+// This points the fork at its own service and log folder without migrating upstream data.
+app.setName('AlexfoxtmTwinDesk');
+app.setAppLogsPath(path.join(require('os').homedir(), 'Library', 'Logs', 'AlexfoxtmTwinDesk'));
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 // The hidden capture window plays system audio into WebRTC without any user gesture.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -61,11 +65,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // (jitterBufferTarget). FlexFEC repairs lost packets without waiting a round trip for a resend; it
 // costs bandwidth only while packets are being lost.
 app.commandLine.appendSwitch('force-fieldtrials', 'WebRTC-ForceSendPlayoutDelay/min_ms:0,max_ms:0/WebRTC-FlexFEC-03/Enabled/WebRTC-FlexFEC-03-Advertised/Enabled/');
-// Electron names its macOS Keychain item "<app name> Safe Storage" and its logs ~/Library/Logs/<app name>.
-// This points the fork at its own service and log folder without migrating upstream data.
-app.setName('AlexfoxtmTwinDesk');
-app.setAppLogsPath(path.join(require('os').homedir(), 'Library', 'Logs', 'AlexfoxtmTwinDesk'));
-// Fork profile. Upstream keeps ~/Library/Application Support/MacShare; this app does not read or write it.
+// Renamed to TwinDesk: settings, pairing and the identity stay in the old folder.
 app.setPath('userData', require('./store').profilePath(app.getPath('appData'))); // PROFILE: a second dev copy
 require('../shared/applog.js').start(app); // console.* and crashes into the log folder, both apps
 // Screen share codec (shared/screencodec.js): H.265 available in WebRTC, so the
@@ -596,7 +596,6 @@ function showFileShelf() {
   if (!svc || modulesAtStart.includes('files')) return;
   fileShelf ||= new (require('./file-shelf').FileShelf)({ drop: svc.drop, t });
   fileShelf.show();
-  require('./file-shelf-receipts').attachReceipts(fileShelf, () => (localsend && localsend.receipts) || [], () => photoBackup?.latest());
 }
 
 function updateTray() {
@@ -1243,6 +1242,11 @@ app.whenReady().then(() => {
   nativeTheme.on('updated', () => pushState());
   // The system accent colour changed (General › Appearance › System follows it).
   try { systemPreferences.subscribeNotification('AppleColorPreferencesChangedNotification', () => pushState()); } catch {}
+  const showShelf = showFileShelf;
+  showFileShelf = () => {
+    showShelf();
+    if (fileShelf) require('./file-shelf-receipts').attachReceipts(fileShelf, () => (localsend && localsend.receipts) || [], () => photoBackup?.latest());
+  };
   localsend = require('./localsend.js').setupLocalSend({
     settings: () => settings, save: () => store.saveSettings(settings), pushState: () => { pushState(); fileShelf?.refresh(); }, t, window: () => win,
     name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),
