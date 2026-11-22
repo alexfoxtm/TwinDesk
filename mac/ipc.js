@@ -821,6 +821,7 @@ function setupIpc(ctx) {
       ctx.pairing.respond(!!allow);
     },
     forget(deviceId) {
+      if (ctx.batteryAlerts && deviceId != null && deviceId !== '') ctx.batteryAlerts.forget(String(deviceId));
       // The device can be a saved host or a paired client.
       if (ctx.photoBackup) ctx.photoBackup.forget(String(deviceId)); // consent for this phone; archived photos stay
       if (ctx.silence) { // Silence together: its lease and its switches go with the pairing
@@ -828,7 +829,6 @@ function setupIpc(ctx) {
         delete settings.silence.peers[String(deviceId)];
         store.saveSettings(settings);
       }
-      if (ctx.batteryAlerts && deviceId != null && deviceId !== '') ctx.batteryAlerts.forget(String(deviceId));
       ctx.proximityLock?.forget(String(deviceId));
       if (ctx.link.hosts.some((h) => h.id === String(deviceId))) return ctx.link.forget(String(deviceId));
       ctx.pairing.forget(String(deviceId));

@@ -1716,9 +1716,9 @@ function loadMic() {
 }
 
 app.on('before-quit', () => {
-  batteryAlerts.reset();
   proximityLock?.shutdown();
   if (localApi) localApi.stop();
+  batteryAlerts.reset();
   if (web) web.shutdown();
   if (mic) mic.shutdown();
   quitting = true;

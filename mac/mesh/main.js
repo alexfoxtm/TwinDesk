@@ -1508,8 +1508,8 @@ app.on('will-quit', () => {
 });
 app.on('before-quit', () => {
   proximityLock?.shutdown();
-  if (svc && svc.batteryAlerts) svc.batteryAlerts.reset();
   if (web) web.shutdown();
+  if (svc && svc.batteryAlerts) svc.batteryAlerts.reset();
   fileShelf?.shutdown();
   if (svc && svc.mic) svc.mic.shutdown();
   quitting = true;

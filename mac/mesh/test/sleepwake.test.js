@@ -18,6 +18,7 @@ test('suspend closes every guest and wake invites an eligible computer at its di
   const invites = [];
   const found = new Map();
   const ended = [];
+  assert.equal(typeof server.sleep, 'function', 'Multi-device server handles suspend and resume');
   const sleep = server.sleep.bind(server);
   server.sleep = (on) => {
     const ids = sleep(on);

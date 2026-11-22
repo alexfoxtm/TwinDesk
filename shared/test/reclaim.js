@@ -74,6 +74,7 @@ async function mainPath(dir, tls) {
     const ended = [];
     const closeEvents = [];
     let noReclaim = 0;
+    assert.strictEqual(typeof server.sleep, 'function', 'Mac server handles suspend and resume');
     const sleep = server.sleep.bind(server);
     server.sleep = (on) => {
       const id = sleep(on);
