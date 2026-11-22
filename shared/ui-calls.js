@@ -187,9 +187,9 @@ UI.tab({
     const which = UI.select([], (id) => id && api.hub({ do: 'opt', btDevice: id }));
     which.el.setAttribute('aria-label', tr('Which phone'));
     const statusRow = UI.row(tr('Bluetooth'), '', [which.el, retryBtn], { literal: true });
-    // What plays here: paused while a call rings or is under way, played again after (shared/callpause.js).
-    const pauseSw = UI.switch((v) => api.hub({ do: 'opt', callPause: v }), { label: tr('Pause what plays here during calls') });
-    const pauseRow = UI.row(tr('Pause what plays here during calls'), tr('Music and videos on {me} pause when a call comes in and play again when it ends'), [pauseSw]);
+    const pauseLabel = tr('Pause media during calls');
+    const pauseSw = UI.switch((v) => api.hub({ do: 'opt', callPause: v }), { label: pauseLabel });
+    const pauseRow = UI.row(pauseLabel, tr('Playback on this computer can resume when the call ends.'), [pauseSw]);
     const soundCard = UI.card(tr('Sound'), [audioRow, statusRow, pauseRow]);
 
     // Setting it up: the person pairs the two in the systems' own Bluetooth settings, over classic
