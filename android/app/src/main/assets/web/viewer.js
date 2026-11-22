@@ -22,6 +22,11 @@
   const overlay = document.getElementById('overlay');
   const pointerCue = document.getElementById('pointer-cue');
   const kbd = document.getElementById('kbd');
+  document.addEventListener('visibilitychange', () => { if (document.hidden) hidePointerCue(); });
+  window.addEventListener('blur', hidePointerCue);
+  window.addEventListener('resize', hidePointerCue);
+  video.addEventListener('resize', hidePointerCue);
+  for (const event of ['waiting', 'stalled', 'emptied', 'ended']) video.addEventListener(event, hidePointerCue);
   // The app's language (I18n.kt through TD.tr): {name} parts filled from vars, English without the app.
   const t = (text, vars = {}) => (typeof TD.tr === 'function' ? TD.tr(text, JSON.stringify(vars))
     : text.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)));
@@ -289,6 +294,7 @@
     pending = null;
     video.srcObject = null;
     audio.srcObject = null;
+    hidePointerCue();
   }
 
   function applyAudio() {
@@ -297,6 +303,7 @@
   }
 
   async function onOffer(msg) {
+    if (viewGestures) cancelInput();
     closePc();
     captureUnavailable = false;
     // On a USB cable the computer sends its relay (msg.ice): the picture goes through adb.
@@ -316,6 +323,7 @@
         applyAudio();
         return;
       }
+      hidePointerCue();
       pace(e.receiver);
       const stream = new MediaStream([e.track]);
       videoOwner = { pc: my, stream, generation: viewerGeneration, session: msg.session };
