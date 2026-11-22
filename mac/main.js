@@ -1753,23 +1753,36 @@ app.on('will-quit', () => {
 });
 let focusReleasePending = false;
 let focusReleased = false;
+let focusReleaseTimer;
+const FOCUS_QUIT_TIMEOUT_MS = 6000; // give the off shortcut and its probe a chance before Quit
+
+function finishFocusRelease() {
+  clearTimeout(focusReleaseTimer);
+  focusReleased = true;
+  focusReleasePending = false;
+}
 app.on('before-quit', (event) => {
   if (!focusReleasePending && !focusReleased) photoBackup?.close();
   if (focusReleased || (!focusReleasePending && !svc?.silence)) return;
+  if (focusReleasePending) {
+    finishFocusRelease(); // another Quit goes ahead now
+    return;
+  }
   event.preventDefault();
-  if (focusReleasePending) return;
   focusReleasePending = true;
   proximityLock?.shutdown();
   svc.batteryAlerts?.reset();
   // The shortcut must finish before its dependencies close.
+  const resumeQuit = () => {
+    if (!focusReleasePending) return;
+    finishFocusRelease();
+    app.quit();
+  };
+  focusReleaseTimer = setTimeout(resumeQuit, FOCUS_QUIT_TIMEOUT_MS);
   Promise.resolve().then(() => {
     svc.silence.stop();
     return svc.silence.mac.close();
-  }).catch(() => {}).finally(() => {
-    focusReleased = true;
-    focusReleasePending = false;
-    app.quit();
-  });
+  }).then(resumeQuit, resumeQuit);
 });
 
 app.on('before-quit', () => {
