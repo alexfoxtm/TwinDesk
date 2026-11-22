@@ -525,7 +525,8 @@ class Screen(core: Core) : Feature(core) {
     }
 
     fun videoDetail(h: WebHost, generation: Int, session: Int, height: Int) {
-        if (host !== h || !viewing || !sharing || !videoPlaying || core.host?.os != "mac" ||
+        if (host !== h || !viewing || !sharing || !videoPlaying ||
+            core.host?.os !in listOf("mac", "win", "linux") ||
             core.lockView.locked || videoGeneration != generation || videoSession != session ||
             height !in 0..2160 || videoMarker == null || !core.link.connected ||
             core.link.sessionMarker() !== videoMarker) return

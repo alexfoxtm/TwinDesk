@@ -52,7 +52,8 @@
   let zoom = 1, panX = 0, panY = 0;
   const PRESETS = ['fit', 'fill', 'actual'];
   let scalePreset = 'fit', scaleMode = 'fit';
-  let viewGestures = false; // Android explicitly opts into local Mac-view gestures
+  let viewGestures = false; // Mac controls or a desktop detail offer enable local gestures.
+  let macViewGestures = false;
   let detail = null;
   let detailTimer = null;
   let detailRevision = 0;
@@ -129,7 +130,7 @@
   function reportScale(mode) {
     if (scaleMode === mode) return;
     scaleMode = mode;
-    if (viewGestures && typeof TD.event === 'function') TD.event('viewer.scale.' + mode);
+    if (macViewGestures && typeof TD.event === 'function') TD.event('viewer.scale.' + mode);
   }
 
   function selectScale(mode) {
@@ -247,8 +248,15 @@
   function closePc() {
     reportVideo(false);
     videoOwner = null;
+    if (detail && !macViewGestures) {
+      cancelInput();
+      reportScale('fit');
+      panX = panY = 0;
+      applyViewport();
+    }
     detail = null;
     detailHeight = 0;
+    viewGestures = macViewGestures;
     if (pc) pc.close();
     pc = null;
     session = null;
@@ -269,6 +277,7 @@
     const my = (pc = new RTCPeerConnection(msg.ice || { iceServers: [] }));
     session = msg.session;
     detail = readDetail(msg.detail);
+    viewGestures = macViewGestures || !!detail;
     viewerGeneration = msg.viewerGeneration || 0;
     frameAllowed = true;
     const queue = (pending = []);
@@ -385,7 +394,8 @@
       case 'opts': {
         inputAllowsCue = msg.inputOn === true;
         if (!inputAllowsCue) hidePointerCue();
-        const gestures = msg.viewGestures === true;
+        macViewGestures = msg.viewGestures === true;
+        const gestures = macViewGestures || !!detail;
         if (viewGestures !== gestures) {
           cancelInput();
           viewGestures = gestures;
@@ -394,7 +404,7 @@
           panX = panY = 0;
           applyViewport();
         }
-        if (viewGestures && msg.viewScale !== scalePreset) selectScale(msg.viewScale);
+        if (macViewGestures && msg.viewScale !== scalePreset) selectScale(msg.viewScale);
         if (msg.name) name = msg.name;
         sound = msg.sound !== false;
         pacing = ['smooth', 'steady'].includes(msg.pacing) ? msg.pacing : 'fast';
