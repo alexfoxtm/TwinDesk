@@ -83,14 +83,45 @@ class Discovery(
     private val targetLock = Any()
     private var cachedTargets: Targets? = null
 
+    private data class LanPath(val iface: String?, val addresses: Set<String>, val routes: Set<String>)
+    private val networkLock = Any()
+    private val lanPaths = mutableMapOf<Network, LanPath>()
+    private var announcedPaths = emptySet<LanPath>()
+    private var lastNetworkChange = -1000L
+    private val networkHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    private val announceNetwork = Runnable { synchronized(networkLock) { announceLanChange() } }
+
     private val networkWatch = object : ConnectivityManager.NetworkCallback() {
-        override fun onLost(network: Network) = networkChanged()
-        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = networkChanged()
+        override fun onLost(network: Network) = networkChanged(network, null)
+        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) =
+            networkChanged(network, LanPath(properties.interfaceName,
+                properties.linkAddresses.map { it.toString() }.toSet(),
+                properties.routes.map { it.toString() }.toSet()))
     }
 
-    private fun networkChanged() {
+    private fun networkChanged(network: Network, path: LanPath?) {
         synchronized(targetLock) { cachedTargets = null }
         signalBeacon()
+        synchronized(networkLock) {
+            if (!running) return
+            if (path == null) lanPaths.remove(network) else lanPaths[network] = path
+            announceLanChange()
+        }
+    }
+
+    private fun announceLanChange() {
+        if (!running) return
+        val paths = lanPaths.values.toSet()
+        networkHandler.removeCallbacks(announceNetwork)
+        if (paths == announcedPaths) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val remaining = lastNetworkChange + 1000L - now
+        if (remaining > 0) {
+            networkHandler.postDelayed(announceNetwork, remaining)
+            return
+        }
+        announcedPaths = paths
+        lastNetworkChange = now
         onNetworkChange?.invoke()
     }
 
@@ -149,8 +180,10 @@ class Discovery(
         }.also { ctx.registerReceiver(it, IntentFilter().apply { addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_SCREEN_OFF) }) }
         runCatching {
             val request = NetworkRequest.Builder()
-            if (Build.VERSION.SDK_INT >= 30) request.clearCapabilities()
-            else request.removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            if (Build.VERSION.SDK_INT >= 31) request.addTransportType(NetworkCapabilities.TRANSPORT_USB)
             connectivity?.registerNetworkCallback(request.build(), networkWatch)
         }
         thread(name = "td-discovery", isDaemon = true) { receiveLoop() }
@@ -170,6 +203,12 @@ class Discovery(
         running = false
         signalBeacon()
         runCatching { connectivity?.unregisterNetworkCallback(networkWatch) }
+        synchronized(networkLock) {
+            networkHandler.removeCallbacks(announceNetwork)
+            lanPaths.clear()
+            announcedPaths = emptySet()
+            lastNetworkChange = -1000L
+        }
         screenWatch?.let { runCatching { ctx.unregisterReceiver(it) } }
         screenWatch = null
         sock?.close()
