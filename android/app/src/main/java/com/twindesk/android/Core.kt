@@ -752,7 +752,10 @@ class Core private constructor(val ctx: Context) : Link.Events {
         cm.allNetworks.any { network -> cm.getLinkProperties(network)?.routes?.any { it.matches(ip) } != false }
     }.getOrDefault(true)
 
-    @Synchronized private fun returnTick() {
+    @Synchronized internal fun returnTick(
+        routeAvailable: (String) -> Boolean = ::hasRoute,
+        connect: (Host, () -> Boolean) -> Unit = { host, admit -> link.connect(host, reclaim = true) { admit() } },
+    ) {
         if (!canReturn()) return
         val h = returnHost() ?: return
         val now = System.currentTimeMillis()
@@ -780,11 +783,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (dial.port !in 1..65535 || address.isBlank() || address == "localhost" || address == "::1" || address.startsWith("127.") || address.startsWith("::ffff:127.") || address.startsWith("ble:") || address.startsWith("blp:")) return
         // With any usable route the Mac can come back without a network event. Keep polling it.
         val away = !interactive && seen == null && !onTailnet &&
-            (!bleOn || (ble.get(h.id) == null && serve.get(h.id) == null)) && !hasRoute(address)
+            (!bleOn || (ble.get(h.id) == null && serve.get(h.id) == null)) && !routeAvailable(address)
         returnAfter = now + staleDialDelay(away, awayAttempts)
         awayAttempts = if (away) (awayAttempts + 1).coerceAtMost(3) else 0
         // Candidate addresses stay transient until Link verifies the pinned welcome.
-        link.connect(dial, reclaim = true) {
+        connect(dial) {
             val same = gen == returnGeneration && returnHost()?.let { it.id == h.id && it.fp == h.fp } == true
             val paused = same && inBackground()
             link.denyCode = if (paused) "paused" else "local"
