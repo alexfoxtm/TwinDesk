@@ -1,6 +1,26 @@
 package com.twindesk.android
 
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.robolectric.shadows.ShadowSettings
+import android.app.AlarmManager
 import android.content.Context
+import android.net.RouteInfo
+import android.net.IpPrefix
+import java.net.InetAddress
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import org.robolectric.shadows.ShadowLog
 import android.net.ConnectivityManager
 import android.net.LinkAddress
 import android.net.LinkProperties
@@ -9,6 +29,7 @@ import android.net.wifi.WifiManager
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.view.View
 import okhttp3.WebSocket
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -63,6 +84,8 @@ class IdleWiringTest {
             link.write("lastRx", now - 100)
             Link::class.java.getDeclaredMethod("beat").apply { isAccessible = true }.invoke(link)
             assertTrue((link.read("pinger") as ScheduledFuture<*>).getDelay(TimeUnit.SECONDS) > 250)
+            val alarms = shadowOf(context.getSystemService(AlarmManager::class.java))
+            assertEquals(AlarmManager.ELAPSED_REALTIME, alarms.scheduledAlarms.single().getType())
             link.write("beatDue", SystemClock.elapsedRealtime() - 1)
             link.write("quietSince", now - 300_001)
             core.discovery.onBeaconCycle!!.invoke()
@@ -77,6 +100,7 @@ class IdleWiringTest {
             link.wake()
             executor.submit {}.get(3, TimeUnit.SECONDS)
             assertFalse(link.quiet)
+            assertTrue(alarms.scheduledAlarms.isEmpty())
         } finally {
             Link::class.java.getDeclaredMethod("cancelBeat").apply { isAccessible = true }.invoke(link)
             executor.shutdownNow()
@@ -208,6 +232,252 @@ class IdleWiringTest {
             assertNull(core.read("bleTimer"))
         } finally {
             core.timers.shutdownNow()
+        }
+    }
+
+    private fun awaitCondition(condition: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+        while (!condition() && System.nanoTime() < deadline) Thread.sleep(5)
+        assertTrue(condition())
+    }
+
+    @Test fun changedReconcilesAgainOnTheTimerExecutor() {
+        val core = core()
+        core.timers.shutdownNow()
+        val timers = Executors.newSingleThreadScheduledExecutor()
+        core.write("timers", timers)
+        core.write("started", true)
+        core.store.setFlag("ble", false)
+        try {
+            core.peer.write("tempUntil", System.currentTimeMillis() + 30_000)
+            core.changed()
+            timers.submit {}.get(3, TimeUnit.SECONDS)
+            val ticker = core.peer.read("ticker") as? ScheduledFuture<*>
+            assertNotNull(ticker)
+            // Prevent Peer's own tick from reconciling before the second assertion.
+            ticker!!.cancel(false)
+            core.peer.write("tempUntil", 0L)
+            core.changed()
+            timers.submit {}.get(3, TimeUnit.SECONDS)
+            assertNull(core.peer.read("ticker"))
+        } finally {
+            timers.shutdownNow()
+        }
+    }
+
+    @Test fun returnTimerRearmsAfterItFires() {
+        val core = core()
+        core.write("started", true)
+        core.store.setFlag("ble", false)
+        val host = rememberHost(core)
+        // An older Mac suppresses real socket IO but still consumes and reschedules a return tick.
+        core.discovery.found[host.id] = Found(host.id, "Mac", "mac", host.address, host.port, host.fp, 0, false)
+        try {
+            core.changed()
+            awaitCondition { (core.read("returnTimer") as? ScheduledFuture<*>)?.getDelay(TimeUnit.MILLISECONDS)?.let { it > 1_000 } == true }
+        } finally {
+            core.timers.shutdownNow()
+        }
+    }
+
+    @Test fun lanChangeRunsReturnImmediatelyDespiteExistingBackoff() {
+        val core = core()
+        core.write("started", true)
+        core.store.setFlag("ble", false)
+        val host = rememberHost(core)
+        core.discovery.found[host.id] = Found(host.id, "Mac", "mac", host.address, host.port, host.fp, 0, false)
+        val backedOff = System.currentTimeMillis() + 60_000
+        core.write("returnAfter", backedOff)
+        try {
+            core.discovery.onNetworkChange!!.invoke()
+            awaitCondition { (core.read("returnAfter") as Long) in 1 until backedOff }
+        } finally {
+            core.timers.shutdownNow()
+        }
+    }
+
+    @Test fun mobileAndVpnOnlyResetReturnOnRouteRestoration() {
+        val core = core()
+        val discovery = core.discovery
+        discovery.write("running", true)
+        val callback = discovery.read("networkWatch") as ConnectivityManager.NetworkCallback
+        val properties = LinkProperties().apply {
+            val prefix = IpPrefix::class.java.getConstructor(String::class.java).newInstance("0.0.0.0/0")
+            val route = RouteInfo::class.java.getConstructor(IpPrefix::class.java, InetAddress::class.java, String::class.java)
+                .newInstance(prefix, InetAddress.getByName("192.0.2.1"), null)
+            addRoute(route)
+        }
+        core.store.setFlag("ble", false)
+        val host = rememberHost(core)
+        core.discovery.found[host.id] = Found(host.id, "Mac", "mac", host.address, host.port, host.fp, 0, false)
+        core.write("started", true)
+        val revision = discovery.read("beaconRevision")
+        val mobile = ShadowNetwork.newInstance(1)
+        val vpn = ShadowNetwork.newInstance(2)
+        val backedOff = System.currentTimeMillis() + 60_000
+        try {
+            core.write("returnAfter", backedOff)
+            callback.onLinkPropertiesChanged(mobile, properties)
+            awaitCondition { (core.read("returnAfter") as Long) in 1 until backedOff }
+
+            core.write("returnAfter", backedOff)
+            callback.onLinkPropertiesChanged(vpn, properties)
+            callback.onLost(mobile)
+            core.timers.submit {}.get(3, TimeUnit.SECONDS)
+            assertEquals(backedOff, core.read("returnAfter"))
+
+            callback.onLost(vpn)
+            callback.onLinkPropertiesChanged(vpn, properties)
+            awaitCondition { (core.read("returnAfter") as Long) in 1 until backedOff }
+            assertEquals(0L, core.link.read("wokeAt"))
+            assertEquals(revision, discovery.read("beaconRevision"))
+        } finally {
+            core.timers.shutdownNow()
+        }
+    }
+
+    @Test fun wiredLanTransportsWakeTheLink() {
+        for (transport in listOf(NetworkCapabilities.TRANSPORT_ETHERNET, NetworkCapabilities.TRANSPORT_USB)) {
+            val core = core()
+            val discovery = core.discovery
+            discovery.write("running", true)
+            val callback = discovery.read("networkWatch") as ConnectivityManager.NetworkCallback
+            val network = ShadowNetwork.newInstance(transport)
+            val caps = ShadowNetworkCapabilities.newInstance()
+            shadowOf(caps).addTransportType(transport)
+            callback.onCapabilitiesChanged(network, caps)
+            callback.onLinkPropertiesChanged(network, LinkProperties().apply { interfaceName = "wired" })
+            assertTrue("LAN transport $transport should wake Link", (core.link.read("wokeAt") as Long) > 0)
+        }
+    }
+
+    @Test fun losingNetworkInvalidatesPrimedTargets() {
+        val discovery = core().discovery
+        discovery.write("running", true)
+        Discovery::class.java.getDeclaredMethod("targets").apply { isAccessible = true }.invoke(discovery)
+        assertNotNull(discovery.read("cachedTargets"))
+        val callback = discovery.read("networkWatch") as ConnectivityManager.NetworkCallback
+        callback.onLost(ShadowNetwork.newInstance(1))
+        assertNull(discovery.read("cachedTargets"))
+    }
+
+    @Test fun failedHeartbeatRearmsAndRecovers() {
+        val link = core().link
+        val executor = link.read("exec") as ScheduledExecutorService
+        val beat = Link::class.java.getDeclaredMethod("beat").apply { isAccessible = true }
+        var failing = true
+        val socket = Proxy.newProxyInstance(WebSocket::class.java.classLoader, arrayOf(WebSocket::class.java)) { self, method, args ->
+            when (method.name) {
+                "hashCode" -> System.identityHashCode(self)
+                "equals" -> self === args[0]
+                "send" -> { check(!failing) { "socket send failed" }; true }
+                else -> error(method.name)
+            }
+        } as WebSocket
+        try {
+            link.write("ws", socket)
+            link.write("state", "connected")
+            link.write("lastRx", System.currentTimeMillis())
+            beat.invoke(link)
+            val retry = link.read("pinger") as? ScheduledFuture<*>
+            assertNotNull(retry)
+            beat.invoke(link)
+            assertTrue((link.read("pinger") as ScheduledFuture<*>).getDelay(TimeUnit.MILLISECONDS) > Proto.PING_MS)
+            assertEquals(1, ShadowLog.getLogsForTag("TwinDesk").count { it.msg == "link heartbeat" })
+            failing = false
+            beat.invoke(link)
+            assertEquals(0, link.read("beatFailures"))
+            assertTrue((link.read("pinger") as ScheduledFuture<*>).getDelay(TimeUnit.MILLISECONDS) <= Proto.PING_MS)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test fun fastFileHoldNudgesTheConnectedLink() {
+        val core = core()
+        val link = core.link
+        val executor = link.read("exec") as ScheduledExecutorService
+        val awake = core.files.read("awake") as Awake
+        try {
+            link.write("state", "connected")
+            link.busyHere = { core.files.moving }
+            awake.touch()
+            executor.submit {}.get(3, TimeUnit.SECONDS)
+            assertEquals("feature", link.read("lastQuietReason"))
+        } finally {
+            awake.release()
+            (awake.read("timer") as ScheduledExecutorService).shutdownNow()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test fun wantedHostingArmsRetryWithNoOtherPeerWork() {
+        val core = core()
+        try {
+            core.store.setFlag("peer.on", true)
+            core.store.setFlag("peer.host", true)
+            core.peer.updateTicker()
+            assertNotNull(core.peer.read("ticker"))
+        } finally {
+            core.timers.shutdownNow()
+        }
+    }
+
+    @Test fun deviceControlArmsDeadlineAndClearsPendingOnClose() {
+        val core = core()
+        val builds = core.dev.read("stateBuilds") as DeviceStateBuilds<*>
+        val worker = mutableListOf<Runnable>()
+        builds.write("executor", Executor { worker.add(it) })
+        core.link.write("state", "connected")
+        core.link.write("ws", Proxy.newProxyInstance(WebSocket::class.java.classLoader, arrayOf(WebSocket::class.java)) { _, _, _ -> error("unexpected socket operation") })
+        builds.request(false)
+        assertEquals(1, worker.size)
+        val main = shadowOf(Looper.getMainLooper())
+        main.idleFor(Duration.ofSeconds(20))
+        assertTrue(ShadowLog.getLogsForTag("TwinDesk").any { it.msg == "Device state build timed out" })
+        builds.request(true)
+        assertEquals(true, builds.read("pending"))
+        core.dev.onClosed()
+        main.idle()
+        assertNull(builds.read("pending"))
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun setupTickerStopsWhenActivityStops() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val owner = object : LifecycleOwner {
+                override val lifecycle = LifecycleRegistry(this)
+            }
+            owner.lifecycle.currentState = Lifecycle.State.RESUMED
+            var ticks = 0
+            backgroundScope.launch { refreshSetupWhileResumed(owner.lifecycle) { ticks++ } }
+            advanceTimeBy(1501)
+            assertEquals(1, ticks)
+            owner.lifecycle.currentState = Lifecycle.State.CREATED
+            advanceTimeBy(4500)
+            assertEquals(1, ticks)
+            owner.lifecycle.currentState = Lifecycle.State.RESUMED
+            advanceTimeBy(1501)
+            assertEquals(2, ticks)
+            owner.lifecycle.currentState = Lifecycle.State.DESTROYED
+            runCurrent()
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test fun firstPointerMessageAddsAnOverlayAtDefaultWindowCoordinates() {
+        val pointer = core().pointer
+        ShadowSettings.setCanDrawOverlays(true)
+        try {
+            assertTrue(pointer.onMessage(Proto.T.PHONE_POINTER, JSONObject().put("x", -1).put("y", -1)))
+            val view = pointer.read("view") as View
+            assertNotNull(view.parent)
+        } finally {
+            pointer.hide()
+            shadowOf(Looper.getMainLooper()).idle()
+            ShadowSettings.setCanDrawOverlays(false)
         }
     }
 }

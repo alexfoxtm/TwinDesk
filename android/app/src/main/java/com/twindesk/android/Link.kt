@@ -816,10 +816,10 @@ class Link(
         quietAlarm = null
     }
 
-    private fun scheduleBeat(delay: Long) {
+    private fun scheduleBeat(delay: Long, quiet: Boolean = delay > Proto.PING_MS) {
         cancelBeat()
         val due = SystemClock.elapsedRealtime() + delay
-        if (delay > Proto.PING_MS) {
+        if (quiet) {
             beatDue = due
             val alarm = AlarmManager.OnAlarmListener { checkBeatDeadline() }
             runCatching {
@@ -837,15 +837,27 @@ class Link(
     }
 
     // Each of the session's sockets on its own: a quiet fallback goes, the session lives on.
+    private var beatFailures = 0
+    private var lastBeatError = -60_000L
+
     private fun beat() {
         if (state != "connected") return
         var delay = Proto.PING_MS
+        var failed = false
         try {
             delay = beatConnected()
+            beatFailures = 0
         } catch (e: Exception) {
-            Log.e("TwinDesk", "link heartbeat", e)
+            failed = true
+            delay = (Proto.PING_MS shl beatFailures).coerceAtMost(30_000L)
+            beatFailures = (beatFailures + 1).coerceAtMost(5)
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastBeatError >= 60_000L) {
+                lastBeatError = now
+                Log.e("TwinDesk", "link heartbeat", e)
+            }
         } finally {
-            if (state == "connected") scheduleBeat(delay.coerceAtLeast(1L))
+            if (state == "connected") scheduleBeat(delay.coerceAtLeast(1L), !failed && delay > Proto.PING_MS)
         }
     }
 

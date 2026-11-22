@@ -48,6 +48,9 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 retryReturnNow()
             } else returnTick()
         }
+        discovery.onRouteAvailable = {
+            if (started) timers.execute { retryReturnNow() }
+        }
         discovery.onNetworkChange = {
             link.wake()
             if (started) {
@@ -289,7 +292,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         requestTimers()
         bank.opened() // Banking apps: Restore when TwinDesk opens
         link.wake()
-        if (returnHost() != null) { retryReturnNow(); return }
+        if (returnHost() != null) { timers.execute { retryReturnNow() }; return }
         val h = resumeLater ?: return
         resumeLater = null
         if (link.connected || link.state == "connecting" || link.pair != null || peer.connected) return

@@ -72,12 +72,12 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
             message = ""
             core.discovery.phones.clear()
         }
-        hosting()
+        hosting(reset = true)
         core.bg.execute { runCatching { core.discovery.beacon() } }
         core.changed()
     }
     val hostOn get() = store.flag("peer.host", false)
-    fun setHostOn(v: Boolean) { store.setFlag("peer.host", v); hosting(); core.changed() }
+    fun setHostOn(v: Boolean) { store.setFlag("peer.host", v); hosting(reset = true); core.changed() }
     val clipOn get() = store.flag("peer.clip", true)
     fun setClipOn(v: Boolean) { store.setFlag("peer.clip", v); core.changed() }
     val notifsOn get() = store.flag("peer.notifs", true)
@@ -158,11 +158,25 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
     }
 
     // The server runs while it's wanted: the setting, an ask, a session, a pairing.
+    private var hostRetryAt = 0L
+    private var hostRetryDelay = 5_000L
+
     @Synchronized
-    private fun hosting() {
+    private fun hosting(reset: Boolean = false) {
         val now = System.currentTimeMillis()
         val want = wantsHosting(now)
-        if (want && !server.running) server.start()
+        val elapsed = android.os.SystemClock.elapsedRealtime()
+        if (reset || !want || server.running) {
+            hostRetryAt = 0L
+            hostRetryDelay = 5_000L
+        }
+        if (want && !server.running && elapsed >= hostRetryAt) {
+            runCatching { server.start() }.onFailure { Log.e("TwinDesk", "peer: hosting failed", it) }
+            if (!server.running) {
+                hostRetryAt = elapsed + hostRetryDelay
+                hostRetryDelay = (hostRetryDelay * 2).coerceAtMost(30_000L)
+            }
+        }
         if (!want && server.running) server.stop()
         val port = if (server.running) server.port else 0
         if (core.discovery.peerPort != port) {

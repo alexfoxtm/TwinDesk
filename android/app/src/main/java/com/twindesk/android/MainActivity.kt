@@ -5,6 +5,9 @@
 // tabs along the bottom (the rest under More). The building blocks are in Ui.kt.
 package com.twindesk.android
 
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -386,12 +389,7 @@ internal fun App(core: Core, resumed: Int, focusGains: State<Int>) {
         val showSetup = SetupCheck.shouldShow(core, items)
         SideEffect { setupVisible = showSetup }
         if (showSetup) {
-            LaunchedEffect(Unit) {
-                while (true) {
-                    kotlinx.coroutines.delay(1500)
-                    tick++
-                }
-            }
+            SetupRefreshEffect { tick++ }
             SetupScreen(core, ctx, items, { permissionResult++ }) { setupDone = true }
             return
         }
@@ -2370,4 +2368,21 @@ private fun AboutPage(core: Core, v: Int) {
     }
     Text(tr("Crafted with ☕ and ❤️ in Sri Lanka 🇱🇰"), color = pal.muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp))
+}
+
+
+@Composable
+internal fun SetupRefreshEffect(refresh: () -> Unit) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val currentRefresh by androidx.compose.runtime.rememberUpdatedState(refresh)
+    LaunchedEffect(lifecycle) { refreshSetupWhileResumed(lifecycle) { currentRefresh() } }
+}
+
+internal suspend fun refreshSetupWhileResumed(lifecycle: Lifecycle, refresh: () -> Unit) {
+    lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+        while (true) {
+            kotlinx.coroutines.delay(1500)
+            refresh()
+        }
+    }
 }

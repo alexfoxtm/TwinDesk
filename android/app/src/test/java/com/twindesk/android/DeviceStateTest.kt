@@ -5,6 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@org.junit.runner.RunWith(org.robolectric.RobolectricTestRunner::class)
+@org.robolectric.annotation.Config(sdk = [34], manifest = org.robolectric.annotation.Config.NONE)
 class DeviceStateTest {
     @Test fun currentSnapshotSendsOnlyChangesOrAsks() {
         val session = Any()
@@ -56,7 +58,19 @@ class DeviceStateTest {
         assertEquals(listOf(marker to "2:true"), sends)
     }
 
+    @Test fun failedCaptureLeavesTheNextRequestFreeToBuild() = with(Fixture()) {
+        failCapture = true
+        builds.request(false)
+        assertTrue(worker.isEmpty())
+        assertTrue(deadline.isEmpty())
+        failCapture = false
+        builds.request(true)
+        finish()
+        assertEquals(listOf(marker to "1:true"), sends)
+    }
+
     private class Fixture {
+        var failCapture = false
         var marker = Any()
         var timeouts = 0
         var afterMarkerRead: (() -> Unit)? = null
@@ -78,6 +92,7 @@ class DeviceStateTest {
                 owner
             },
             capture = { ask ->
+                check(!failCapture) { "capture unavailable" }
                 val key = (++sequence).toString()
                 val build = { key to "$key:$ask" }
                 build

@@ -82,6 +82,7 @@ dependencies {
     // Scan QR code (pairing): Google's scanner, no camera permission. Not in the F-Droid build (proprietary).
     "standardImplementation"("com.google.android.gms:play-services-code-scanner:16.1.0")
     "fullImplementation"("com.google.android.gms:play-services-code-scanner:16.1.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20231013")
     testImplementation("org.robolectric:robolectric:4.16.1")

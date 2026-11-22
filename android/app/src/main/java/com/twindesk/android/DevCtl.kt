@@ -456,8 +456,13 @@ internal class DeviceStateBuilds<T>(
             pending = ask || pending == true
             return
         }
+        val build = try {
+            capture(ask)
+        } catch (e: Exception) {
+            android.util.Log.e("TwinDesk", "Device state capture failed", e)
+            return
+        }
         building = true
-        val build = capture(ask)
         var expired = false
         // A blocked Android system call may ignore cancellation. Keep its slot until it
         // returns, so timeouts cannot accumulate workers or reorder state messages.

@@ -69,6 +69,7 @@ class Discovery(
     @Volatile var onPeerAsk: ((Found, JSONObject) -> Unit)? = null // another phone's peer.* (Peer.kt)
     @Volatile var onHost: ((Found, Boolean) -> Unit)? = null // every computer beacon, including one whose fields did not change
     @Volatile var onBeaconCycle: (() -> Unit)? = null
+    @Volatile var onRouteAvailable: (() -> Unit)? = null
     @Volatile var onNetworkChange: (() -> Unit)? = null
     @Volatile var error = ""
     @Volatile private var sock: DatagramSocket? = null
@@ -80,7 +81,7 @@ class Discovery(
     private var beaconRevision = 0L
     @Volatile private var connected = false
     private val connectivity get() = ctx.getSystemService(ConnectivityManager::class.java)
-    private data class Targets(val addresses: Set<String>, val expires: Long)
+    private data class Targets(val addresses: Set<String>, val sampledAt: Long)
     private val targetLock = Any()
     private var cachedTargets: Targets? = null
 
@@ -88,6 +89,7 @@ class Discovery(
     private val networkLock = Any()
     private val lanNetworks = mutableSetOf<Network>()
     private val networkPaths = mutableMapOf<Network, LanPath>()
+    private val defaultRoutes = mutableSetOf<Network>()
     private var announcedPaths = emptySet<LanPath>()
     private var lastNetworkChange = -1000L
     private val networkHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
@@ -107,17 +109,22 @@ class Discovery(
         }
 
         override fun onLost(network: Network) {
-            invalidateTargets()
             synchronized(networkLock) {
+                invalidateTargets()
+                defaultRoutes.remove(network)
                 networkPaths.remove(network)
                 if (lanNetworks.remove(network)) announceLanChange()
             }
         }
 
         override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
-            invalidateTargets()
             synchronized(networkLock) {
                 if (!running) return
+                invalidateTargets()
+                val hadRoute = defaultRoutes.isNotEmpty()
+                if (properties.routes.any { it.isDefaultRoute }) defaultRoutes.add(network)
+                else defaultRoutes.remove(network)
+                if (!hadRoute && defaultRoutes.isNotEmpty() && network !in lanNetworks) onRouteAvailable?.invoke()
                 networkPaths[network] = LanPath(properties.interfaceName,
                     properties.linkAddresses.map { it.toString() }.toSet(),
                     properties.routes.map { it.toString() }.toSet())
@@ -128,7 +135,6 @@ class Discovery(
 
     private fun invalidateTargets() {
         synchronized(targetLock) { cachedTargets = null }
-        signalBeacon()
     }
 
     private fun announceLanChange() {
@@ -144,6 +150,7 @@ class Discovery(
         }
         announcedPaths = paths
         lastNetworkChange = now
+        signalBeacon()
         onNetworkChange?.invoke()
     }
 
@@ -228,6 +235,7 @@ class Discovery(
             networkHandler.removeCallbacks(announceNetwork)
             lanNetworks.clear()
             networkPaths.clear()
+            defaultRoutes.clear()
             announcedPaths = emptySet()
             lastNetworkChange = -1000L
         }
@@ -276,7 +284,9 @@ class Discovery(
 
     private fun targets(): Set<String> = synchronized(targetLock) {
         val now = SystemClock.elapsedRealtime()
-        cachedTargets?.let { if (now < it.expires) return@synchronized it.addresses }
+        // Hotspot interfaces may appear without a ConnectivityManager callback.
+        val ttl = if (connected) TARGETS_TTL_MS else 5_000L
+        cachedTargets?.let { if (now - it.sampledAt < ttl) return@synchronized it.addresses }
         val out = mutableSetOf("255.255.255.255")
         runCatching {
             for (ni in NetworkInterface.getNetworkInterfaces()) {
@@ -289,7 +299,7 @@ class Discovery(
         }
         // A computer on this phone's hotspot gets the hotspot's broadcast above. (Not /proc/net/arp:
         // Android 10 and later, all this app runs on, don't let apps read it.)
-        cachedTargets = Targets(out, now + TARGETS_TTL_MS)
+        cachedTargets = Targets(out, now)
         out
     }
 
