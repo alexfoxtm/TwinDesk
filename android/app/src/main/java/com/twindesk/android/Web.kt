@@ -950,8 +950,6 @@ class Screen(core: Core) : Feature(core) {
         val viewGen = if (m.has("viewGen")) m.optLong("viewGen") else -1L
         return DesktopPreview.Incoming(false, unavailable, m.optString("displayId"), m.optString("spaceId"), capture, viewGen, m.optInt("width"), m.optInt("height"), jpeg)
     }
-
-
 }
 
 // The Mac's sound here (audio m2w): a page in a WebView with no window answers its offers.
