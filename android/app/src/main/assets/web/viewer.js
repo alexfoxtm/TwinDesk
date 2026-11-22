@@ -315,9 +315,10 @@
     };
     my.onconnectionstatechange = () => {
       if (my !== pc) return;
-      if (my.connectionState === 'connected') requireCurrentFrame();
-      else if (my.connectionState === 'failed') { reportVideo(false); setOverlay(t('Reconnecting…')); }
-      else if (my.connectionState === 'disconnected') { reportVideo(false); setOverlay(t('The video connection was interrupted…')); }
+      const connection = my.connectionState;
+      if (connection === 'connected') requireCurrentFrame();
+      else if (connection === 'failed') { reportVideo(false); setOverlay(t('Reconnecting…')); }
+      else if (connection === 'disconnected') { reportVideo(false); setOverlay(t('The video connection was interrupted…')); }
     };
     try {
       await my.setRemoteDescription({ type: 'offer', sdp: steadySdp(msg.sdp) });

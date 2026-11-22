@@ -434,7 +434,15 @@ function start() {
   loadCamera(); // only while it's on
   loadReZume(); // only while it's on
   if (settings.drive.on) loadDrive();
-  const ipc = setupIpc({ batteryAlerts, takePhoto: () => !!phonePhoto && phonePhoto.take(), scanDocument: () => !!phonePhoto && phonePhoto.scan(), loadDrive, getDrive: () => drive, history: (r) => historyKeeper && historyKeeper.act(r), get fileRecv() { return fileRecv; }, clearFiles: () => { fileDrop.last = null; if (fileDrop && fileDrop.sent) fileDrop.sent.length = 0; if (fileRecv) { fileRecv.last = null; if (fileRecv.clearRecent) fileRecv.clearRecent(); } if (kvm && kvm.dragRecv) kvm.dragRecv.last = null; pushState(); }, // Files › Recent › Clear: only the list
+  const ipc = setupIpc({
+    batteryAlerts,
+    takePhoto: () => !!phonePhoto && phonePhoto.take(),
+    scanDocument: () => !!phonePhoto && phonePhoto.scan(),
+    loadDrive,
+    getDrive: () => drive,
+    history: (r) => historyKeeper && historyKeeper.act(r),
+    get fileRecv() { return fileRecv; },
+    clearFiles: () => { fileDrop.last = null; if (fileDrop && fileDrop.sent) fileDrop.sent.length = 0; if (fileRecv) { fileRecv.last = null; if (fileRecv.clearRecent) fileRecv.clearRecent(); } if (kvm && kvm.dragRecv) kvm.dragRecv.last = null; pushState(); }, // Files › Recent › Clear: only the list
     devctl: () => devctl, chats: () => chats, qrPair: qrPairView, adbQr: adbQrDo, hub, link, discovery, screen, clip, kvm, layoutSync, fileDrop, smb, fileClip, vdd, sound, pcScreen, notifs, wake, terminal, sshd, apps, pcApps, peerApps, updates, settings, save: saveSettings, push: pushState, buildState,
     get phone() { return phone; }, get phoneViews() { return phone ? phone.views : null; }, get camShare() { return camShare; }, iosSign: () => iosSign, deck: () => loadDeck(), get phoneRemote() { return phoneRemote && phoneRemote.loaded ? phoneRemote : null; }, loadRemote, get rezume() { return rezume; }, loadReZume, rezumeWith: (id) => rzSolo && rzSolo.choose(id), get vcam() { return vcam; }, setCamera, get phoneDrive() { return phoneDrive; }, get nowPlaying() { return nowPlaying; }, get btAudio() { return btAudio; }, loadNowPlaying: () => nowPlaying, loadBtAudio, connectPhoneDev, cancelPhoneInvite, phoneHub: loadHub, loadMic,
     applyMesh: () => autoJoin && autoJoin.schedule(),

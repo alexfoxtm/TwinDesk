@@ -397,7 +397,8 @@ function sendScreenState() {
   const spaceHold = Spaces.spaceHold(look);
   if (spaceHold) msg.spaceHold = spaceHold;
   if (scoped && socket) screenInputOwner = { peer: scoped, socket };
-  const key = JSON.stringify([c.deviceId, msg]);
+  const keyed = [c.deviceId, msg];
+  const key = JSON.stringify(keyed);
   if (key === screenStateKey) {
     if (previewShots) previewShots.kick();
     return;
@@ -1144,7 +1145,30 @@ app.whenReady().then(() => {
     name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),
   });
   svc.onModulesChanged = () => localsend.apply();
-  actions = setupIpc({ devctl: () => devctl, chats: () => chats, state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link: links, ...svc, hub, layoutSync, autoJoin, phoneHub: loadHub, showFileShelf, login, refreshPermissions, updates, proximityLock });
+  actions = setupIpc({
+    devctl: () => devctl,
+    chats: () => chats,
+    state,
+    settings,
+    pushState,
+    onLanguage: changeLanguage,
+    onLook: applyLook,
+    t,
+    server: peer,
+    pairing,
+    discovery,
+    link: links,
+    ...svc,
+    hub,
+    layoutSync,
+    autoJoin,
+    phoneHub: loadHub,
+    showFileShelf,
+    login,
+    refreshPermissions,
+    updates,
+    proximityLock,
+  });
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, '..', 'assets', 'trayTemplate.png'))); // "Template": macOS tints it
   hud = new Hud(() => settings);
   svc.kvm.on('where', (mode) => {

@@ -821,6 +821,7 @@ function setupIpc(ctx) {
       ctx.pairing.respond(!!allow);
     },
     forget(deviceId) {
+      // The device can be a saved host or a paired client.
       if (ctx.photoBackup) ctx.photoBackup.forget(String(deviceId)); // consent for this phone; archived photos stay
       if (ctx.silence) { // Silence together: its lease and its switches go with the pairing
         ctx.silence.forget(String(deviceId));

@@ -828,6 +828,7 @@ function setupIpc(ctx) {
       ctx.pairing.respond(!!allow);
     },
     forget(deviceId) {
+      // The device can be a saved host or a paired client.
       if (ctx.batteryAlerts && deviceId != null && deviceId !== '') ctx.batteryAlerts.forget(String(deviceId));
       ctx.proximityLock?.forget(String(deviceId));
       if (ctx.link.hosts.some((h) => h.id === String(deviceId))) return ctx.link.forget(String(deviceId));

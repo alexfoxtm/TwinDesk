@@ -390,7 +390,8 @@ function sendScreenState() {
   if (desktops) msg.desktops = desktops;
   const spaceHold = Spaces.spaceHold(look);
   if (spaceHold) msg.spaceHold = spaceHold;
-  const key = JSON.stringify([c.deviceId, msg]);
+  const keyed = [c.deviceId, msg];
+  const key = JSON.stringify(keyed);
   if (key === screenStateKey) {
     if (previewShots) previewShots.kick();
     return;
@@ -780,6 +781,7 @@ app.whenReady().then(() => {
   require('electron').powerMonitor.on('lock-screen', () => {
     if (previewShots) previewShots.cancel('session');
   });
+
   svc.kvm.laneReady.then(laneGo);
   // Camera › Take a photo with the phone (shared/phonephoto.js): its photo onto the clipboard.
   {
@@ -1255,7 +1257,28 @@ app.whenReady().then(() => {
     if (on) loadSilence().start();
     else if (svc.silence) svc.silence.stop();
   };
-  actions = setupIpc({ state, settings, pushState, onLanguage: changeLanguage, onLook: applyLook, t, server: peer, pairing, discovery, link, ...svc, get silence() { return svc.silence; }, hub: loadHub, photoBackup, showFileShelf, login, refreshPermissions, updates, applyRelay, proximityLock });
+  actions = setupIpc({
+    state,
+    settings,
+    pushState,
+    onLanguage: changeLanguage,
+    onLook: applyLook,
+    t,
+    server: peer,
+    pairing,
+    discovery,
+    link,
+    ...svc,
+    get silence() { return svc.silence; },
+    hub: loadHub,
+    photoBackup,
+    showFileShelf,
+    login,
+    refreshPermissions,
+    updates,
+    applyRelay,
+    proximityLock,
+  });
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'assets', 'trayTemplate.png'))); // "Template": macOS tints it
   hud = new Hud(() => settings);
   hud.keep = () => !!peer.current; // the popup's window lives while a session is on (mac/hud.js)

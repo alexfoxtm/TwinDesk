@@ -290,14 +290,18 @@ class PhoneViews extends EventEmitter {
     return { on: !!v, facing: v ? v.facing : null, error: v ? v.error || '' : '', virtual: !!(this.vcam && this.vcam.ready) };
   }
 
+  _showApp(view) {
+    view.win.show();
+    view.win.focus();
+  }
+
   openApp(pkg, name) {
     const open = [...this.views.values()].find((v) => v.kind === 'app' && v.app === pkg);
     if (open) {
       const dark = this.getSettings().phone?.keepPanelOff === true;
       if (!open.session?.closed && open.keepPanelOff === dark && !(open.started && !open.session?.videoStarted)) {
         if (open.win.isMinimized()) open.win.restore();
-        open.win.show();
-        open.win.focus();
+        this._showApp(open);
         if (dark) this._resumeDarkApp(open);
         return;
       }

@@ -44,7 +44,7 @@ class Hub extends EventEmitter {
     this.selectedId = null;
     this.sessions = new Sessions({ links });
     this.bus = this._makeBus();
-    this._busHandlers = new Map(); // type -> [fn(msg, fromId, ingress, source)]
+    this._busHandlers = new Map(); // type -> [fn(msg, fromId, source, ingress)]
     this._peerHandlers = new Map(); // 'welcome' | 'closed' -> [fn(peerId, info)]
     this.forgotten = new Set(); // forgetPeer(): not listed as "via" until it connects again
     this.routes = [];
@@ -302,7 +302,7 @@ class Hub extends EventEmitter {
       const ingress = s.inbound();
       // Spaces handlers require the authenticated primary connection.
       if (ingress || (msg.t !== P.T.SCREEN_SPACE && msg.t !== P.T.SCREEN_DESKTOPS)) {
-        for (const fn of fns) fn(msg, s.id, ingress, source);
+        for (const fn of fns) fn(msg, s.id, source, ingress);
       }
     }
     for (const r of this.routes) {

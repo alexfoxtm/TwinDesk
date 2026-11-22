@@ -52,7 +52,7 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
   // The bus hears every device; a phone that is not the selected computer can still switch
   // the desktop on the display it is being shown.
   const spaces = new SpaceSwitch({
-    listen: (fn) => meshHub.bus.on(P.T.SCREEN_SPACE, (msg, id, source) => fn(msg, { id, source })),
+    listen: (fn) => meshHub.bus.on(P.T.SCREEN_SPACE, (msg, id, _socket, source) => fn(msg, { id, source })),
     helper,
     enabled: () => s().streamInput !== false && (!kvm || kvm.mode === 'home'),
     authorize: (ctx) => Spaces.meshGate(() => meshHub.sessions.get(ctx && ctx.id), ctx && ctx.source),
@@ -66,7 +66,7 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
   });
   const spaceLook = new SpaceLook(helper, pushState);
   const desktopRefresh = new DesktopRefresh({
-    listen: (fn) => meshHub.bus.on(P.T.SCREEN_DESKTOPS, (msg, id, source) => fn(msg, { id, source })),
+    listen: (fn) => meshHub.bus.on(P.T.SCREEN_DESKTOPS, (msg, id, _socket, source) => fn(msg, { id, source })),
     authorize: (ctx) => Spaces.meshGate(() => meshHub.sessions.get(ctx && ctx.id), ctx && ctx.source),
     viewFor: (ctx) => {
       const st = ctx && stream.byId.get(ctx.id);
@@ -77,6 +77,7 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
   });
   const guestPair = (id) => meshHub.pairing?.paired.find((pair) => pair.id === id);
   const hostPair = (id) => meshHub.links.get(id)?.pairing;
+
   const clipboard = new Clip({
     bus: meshHub.bus, mesh, getSettings: s, helper, session: (id) => meshHub.sessions.get(id),
     activePair: (id) => meshHub.sessions.get(id)?.linkUp ? hostPair(id) : guestPair(id),

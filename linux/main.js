@@ -450,7 +450,16 @@ function start() {
   // TwinDesk Web (web.js): an iPhone's (or any browser's) own pages here, beside the one session.
   web = require('./web').setupWeb({ deck: (bus) => (loadDeck() ? deck.web(bus) : null), settings: () => settings, save: saveSettings, pushState, t, device: () => device, helper, smb, notifs, fileClip, vdd, pcScreen,
     kvm: () => kvm, devctl: () => devctl, loadVcam });
-  const ipc = setupIpc({ batteryAlerts, takePhoto: () => !!phonePhoto && phonePhoto.take(), scanDocument: () => !!phonePhoto && phonePhoto.scan(), loadDrive, getDrive: () => drive, history: (r) => historyKeeper && historyKeeper.act(r), deck: () => loadDeck(), get fileRecv() { return fileRecv; }, clearFiles: () => { fileDrop.last = null; if (fileDrop && fileDrop.sent) fileDrop.sent.length = 0; if (fileRecv) { fileRecv.last = null; if (fileRecv.clearRecent) fileRecv.clearRecent(); } if (kvm && kvm.dragRecv) kvm.dragRecv.last = null; pushState(); }, // Files › Recent › Clear: only the list
+  const ipc = setupIpc({
+    batteryAlerts,
+    takePhoto: () => !!phonePhoto && phonePhoto.take(),
+    scanDocument: () => !!phonePhoto && phonePhoto.scan(),
+    loadDrive,
+    getDrive: () => drive,
+    history: (r) => historyKeeper && historyKeeper.act(r),
+    deck: () => loadDeck(),
+    get fileRecv() { return fileRecv; },
+    clearFiles: () => { fileDrop.last = null; if (fileDrop && fileDrop.sent) fileDrop.sent.length = 0; if (fileRecv) { fileRecv.last = null; if (fileRecv.clearRecent) fileRecv.clearRecent(); } if (kvm && kvm.dragRecv) kvm.dragRecv.last = null; pushState(); }, // Files › Recent › Clear: only the list
     iosSign: () => iosSign, devctl: () => devctl, chats: () => chats, qrPair: qrPairView, adbQr: adbQrDo, link, discovery, screen, clip, kvm, fileDrop, smb, fileClip, vdd, sound, pcScreen, notifs, wake, sshd, apps, pcApps, peerApps, updates, settings, save: saveSettings, push: pushState, buildState,
     get rezume() { return rezume; }, loadReZume,
     get phone() { return phone; }, get phoneViews() { return phoneViews; }, get camShare() { return camShare; }, get vcam() { return vcam; }, get phoneRemote() { return phoneRemote; }, get nowPlaying() { return nowPlaying; }, get btAudio() { return btAudio; }, get phoneDrive() { return phoneDrive; }, get terminal() { return terminal; }, loadRemote, setCamera, loadNowPlaying, loadBtAudio, loadMic, loadTerminal, connectPhoneDev, cancelPhoneInvite, hub: loadHub,

@@ -91,12 +91,12 @@ class Clip extends EventEmitter {
     });
     const bus = this.bus;
     bus.on(P.T.CLIP, (m, from) => this._onClip(m, from));
-    bus.on(P.T.CLIP_QUEUE, (m, from, source, ws = source) => {
+    bus.on(P.T.CLIP_QUEUE, (m, from, ws) => {
       if (ws && ws === sess(from)?.outbound()) return this.away.receive(m, from);
     });
     bus.on(P.T.CLIP_IMAGE, (m, from) => this.images.header(m, from));
     bus.on(P.T.CLIP_IMAGE_PART, (m, from) => this.images.part(m, from));
-    bus.on(P.T.CLIP_POLICY, (m, from, source, ws = source) => {
+    bus.on(P.T.CLIP_POLICY, (m, from, ws) => {
       const e = this.mesh.get(from);
       if (e) e.pool = m.accept !== false;
       this.images.policy(m, from);

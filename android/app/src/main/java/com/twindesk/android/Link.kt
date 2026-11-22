@@ -297,7 +297,10 @@ class Link(
     }
 
     // The socket welcome authenticated, with the pair it authenticated. A later socket is a new one.
-    class TrustedRoute(val marker: Any, val id: String, val fp: String)
+    class TrustedRoute(val marker: Any, val id: String, val fp: String) {
+        internal fun matches(socket: Any, id: String, fp: String): Boolean =
+            marker === socket && this.id == id && this.fp == fp && id.isNotEmpty() && fp.isNotEmpty()
+    }
 
     private fun trustedRoute(w: WebSocket): TrustedRoute? {
         if (w !== ws) return null
@@ -322,7 +325,7 @@ class Link(
         if (parting || route == null) return null
         val w = ws ?: return null
         val h = host ?: return null
-        if (w !== route.marker || state != "connected" || h.id != route.id || h.fp != route.fp || h.id.isEmpty() || h.fp.isEmpty()) return null
+        if (state != "connected" || !route.matches(w, h.id, h.fp)) return null
         return w
     }
 
@@ -647,13 +650,7 @@ class Link(
                 return
             }
         }
-        if (state == "connected") {
-            val route = when (t) {
-                Proto.T.CLIP_POLICY, Proto.T.CLIP_QUEUE, Proto.T.TETHER, "rtc.offer", Proto.T.TASK_ALERT -> trustedRoute(ingress)
-                else -> null
-            }
-            events.onMessage(m, route, ingress)
-        }
+        if (state == "connected") events.onMessage(m, trustedRoute(ingress), ingress)
     }
 
     private fun onNonce(m: JSONObject) {

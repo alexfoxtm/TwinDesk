@@ -63,6 +63,7 @@ function startServices({ server, getSettings, pushState, onHelperReady, clipboar
     spaceLook,
     reply: (ctx, msg) => server.send(ctx, msg),
   });
+
   const clipboard = new Clipboard(server, helper, s, clipboardPair);
   const drop = new Drop({ server, helper, displays, getSettings: s });
   const fileSend = new FileSend(server, s, { outboxFile: require('path').join(require('electron').app.getPath('userData'), 'outbox.json') });
