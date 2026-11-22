@@ -495,7 +495,10 @@ function displayMode() {
 
 function refreshPermissions() {
   if (svc && svc.notifs) void svc.notifs.nativePermission.refresh();
+  const prevScreen = state.permissions.screen;
   state.permissions.screen = systemPreferences.getMediaAccessStatus('screen');
+  // A capture that was failing for Screen Recording tries again the moment it is allowed.
+  if (prevScreen !== 'granted' && state.permissions.screen === 'granted' && svc && svc.stream && typeof svc.stream.nudge === 'function') svc.stream.nudge('permission granted');
   state.permissions.accessibility = systemPreferences.isTrustedAccessibilityClient(false);
   if (svc && svc.helper.running) {
     svc.helper.request('permissions').then((r) => {

@@ -11,7 +11,7 @@ const path = require('path');
 const ScreenCodec = require('../shared/screencodec.js');
 const { loopback } = require('./audiohub.js');
 const util = require('util');
-const { BrowserWindow, ipcMain, session, desktopCapturer, systemPreferences } = require('electron');
+const { BrowserWindow, ipcMain, session, desktopCapturer, systemPreferences, powerMonitor } = require('electron');
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 
@@ -32,6 +32,7 @@ class Stream extends EventEmitter {
     this.session = 0;
     this.active = null; // {session, displayId, width, height} while a session runs
     this.retryTimer = null;
+    this._retryN = 0; // failed starts so far; the wait doubles up to 30s, then a success or a new request clears it
     this.viewer = null; // the peer's screen.policy accept; null = never said (older app: always watching)
     this.view = { status: 'off', display: null, width: 0, height: 0, fps: 0, mbps: 0, encoder: '', codec: '' };
 
@@ -129,6 +130,13 @@ class Stream extends EventEmitter {
       this._setStatus(s.status);
       if (s.status === 'failed' || s.status.startsWith('error')) this._scheduleRetry();
     });
+    // Tests stub electron without powerMonitor. A real one retries at once after sleep or
+    // unlock, and only while a retry is already waiting (a live capture is left alone).
+    if (powerMonitor && typeof powerMonitor.on === 'function') {
+      const wake = () => this.nudge('wake');
+      powerMonitor.on('resume', wake);
+      powerMonitor.on('unlock-screen', wake);
+    }
   }
 
   _releaseAudio() {
@@ -178,7 +186,11 @@ class Stream extends EventEmitter {
   }
 
   _toWindow(channel, msg) {
-    if (this.win && !this.win.isDestroyed()) this.win.webContents.send(channel, msg);
+    if (this.win && !this.win.isDestroyed()) {
+      this.win.webContents.send(channel, msg);
+      return true;
+    }
+    return false;
   }
 
   _setStatus(status) {
@@ -189,14 +201,30 @@ class Stream extends EventEmitter {
     this.emit('change');
   }
 
+  // 2s, 4s, 8s, 16s, then 30s. The timer does not keep the process up.
   _scheduleRetry() {
     clearTimeout(this.retryTimer);
-    this.retryTimer = setTimeout(() => this.restart('retry'), RETRY_MS);
+    const n = this._retryN || 0;
+    const delay = Math.min(30000, RETRY_MS * 2 ** n);
+    this._retryN = Math.min(n + 1, 4);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.restart('retry');
+    }, delay);
+    if (this.retryTimer.unref) this.retryTimer.unref();
+  }
+
+  // Permission granted, or wake: try again now when a retry is what we're waiting on.
+  nudge(reason) {
+    if (!this._retryN && !this.retryTimer) return;
+    return this.restart(reason);
   }
 
   // Start a fresh WebRTC session (or stop, if sharing is off or no PC is connected).
   async restart(reason) {
     clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    if (reason !== 'retry') this._retryN = 0; // the user asked, the display changed, or the Mac woke
     if (!this.getSettings().sharing.on) return this.stop('off');
     if (!this.server.current) return this._stopWindow('nothing connected');
     if (this.viewer === false || this.waitingPolicy) return this._stopWindow('no viewer');
@@ -237,7 +265,7 @@ class Stream extends EventEmitter {
       const src = await this._source(target);
       if (!this.active || this.active.session !== s || this.displays.target()?.id !== target.id) return;
       const set = this.getSettings();
-      this._toWindow('start', {
+      if (this._toWindow('start', {
         session: s, bitrateMbps: set.bitrateMbps, // Share screen › Quality, for phones too
         sourceId: src.id, width, height, audio,
         detailSource: detailOwner ? { width: target.pixelWidth, height: target.pixelHeight } : null,
@@ -245,7 +273,7 @@ class Stream extends EventEmitter {
         fps: ScreenCodec.fps(target.hz, set.sharing && set.sharing.fps), // Share screen › Frame rate
         steady: !!(set.sharing && set.sharing.pace === 'steady'), // Playback › Steady (shared/screencodec.js)
         codec: ScreenCodec.mode(set.sharing && set.sharing.codec), // Share screen › Encoder
-      });
+      })) this._retryN = 0; // it started: the next failure waits 2s again
     } catch (e) {
       if (!this.active || this.active.session !== s) return;
       if (e.code === 'NO_DISPLAY') { this.displays.uncapturable?.(target.id); return this._waitDisplay(); }
@@ -324,6 +352,7 @@ class Stream extends EventEmitter {
     this.awaitingDisplay = false;
     if (!waiting) this.displays.captureWanted?.(this, false);
     clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this._releaseAudio();
     this.audio.on = false;
     this.active = null;
