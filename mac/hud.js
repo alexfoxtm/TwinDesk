@@ -2,8 +2,8 @@
 // The popup that says where the mouse and keyboard are: a small pill at
 // the bottom of the screen under the pointer, like the volume HUD. Click-through, on every Space,
 // never captured into a screen stream (content protection), off with General › "Show a popup".
-// Its window lives while a session is on (made when it starts, so the first popup is instant) and
-// goes IDLE_MS after the last popup once there's none: no renderer kept for an idle menu bar.
+// The window is created on the first popup (that show waits for loadFile) and goes IDLE_MS after
+// it hides, unless keep() says one is about to show. A linked session does not keep it.
 'use strict';
 
 const path = require('path');
@@ -21,17 +21,17 @@ class Hud {
     this.ready = null;
     this.timer = null;
     this.idleTimer = null;
-    this.keep = () => false; // main: true while a session is on
+    this.keep = () => false; // main leaves this false: a session is not a popup
   }
 
-  // A session started: the window now, so the first popup shows at once.
+  // A popup is about to show: the window now, so that show does not wait for loadFile.
   warm() {
     if (this.getSettings().app.hud === false) return;
     clearTimeout(this.idleTimer);
     this._ensure();
   }
 
-  // The window goes when nothing needs it: no session, nothing showing, for IDLE_MS.
+  // The window goes when nothing needs it: keep() is false, nothing showing, for IDLE_MS.
   idle() {
     clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
