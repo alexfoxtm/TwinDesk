@@ -441,7 +441,15 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
       return legacy ? findLatest(legacy.ledger, archive.origin, archive.folder) : latest;
     },
     recheckLatest(receipt) {
-      if (receipt !== latest || closed || !worker || retiring || rechecking) return;
+      if (receipt !== latest || closed || retiring || rechecking) return;
+      if (!worker) {
+        if (!archive || legacy) return;
+        ledger ??= new ReceiptLedger(file, { readOnly: true });
+        latest = ledger.broken ? null : findLatest(ledger, archive.origin, archive.folder);
+        // The file shelf can call this while building its current snapshot.
+        queueMicrotask(() => { if (!closed) pushState(); });
+        return;
+      }
       rechecking = true;
       post(null, 'recheck');
     },

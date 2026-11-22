@@ -7,11 +7,29 @@ const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const childProcess = require('node:child_process');
+const { execFileSync } = childProcess;
 const { setTimeout: delay } = require('node:timers/promises');
 const PB = require('../photobackup');
 const { ReceiptLedger } = require('../../mac/photo-backup-worker');
+const children = [];
+const controls = [];
+const replies = [];
+const fork = childProcess.fork;
+childProcess.fork = (...args) => {
+  const child = fork(...args);
+  children.push(child);
+  child.on('message', event => replies.push(event));
+  const send = child.send.bind(child);
+  child.send = (event, callback) => {
+    controls.push(event);
+    return send(event, callback);
+  };
+  return child;
+};
 const { attach } = require('../../mac/photobackup');
+childProcess.fork = fork;
+PB.RETRY_MS = 25;
 
 async function run() {
   const scratch = path.join(os.homedir(), 'orca', 'tmp');
@@ -47,9 +65,10 @@ async function run() {
   const peer = Object.assign(new EventEmitter(), {
     current: ctx, outbound: () => ws, send: (_, msg) => messages.push(msg),
   });
+  let previewUpdates = null;
   const options = { store: { filePath: (name) => path.join(root, name) },
     settings: { photoBackup: { peers: { phone: { pair, folder, on: true, rev: 1, since: state.since } } } },
-    peer, pushState() {}, save() {},
+    peer, pushState() { previewUpdates?.push(pb.latest()?.path); }, save() {},
   };
   const other = fs.mkdtempSync(path.join(folder, 'other-'));
   const seed = (dir, added, name) => {
@@ -136,6 +155,8 @@ async function run() {
     for (const [label, invalid] of [
       ['ingress window', take => { for (let i = 0; i < 17; i++) body(take, i); }],
       ['early End', take => send({ ...take, t: 'backup.end', sha256: '0'.repeat(64) })],
+      ['extra encoded data', take => send({ ...take, t: 'backup.chunk', seq: 0, data: chunk.toString('base64').replace(/=$/, 'AAAA=') })],
+      ['encoded padding', take => send({ ...take, t: 'backup.chunk', seq: 0, data: chunk.toString('base64').replace(/=$/, 'A') })],
       ['encoded length', take => send({ ...take, t: 'backup.chunk', seq: 0, data: 'YWI=' })],
     ]) {
       const rejected = await begin();
@@ -161,8 +182,15 @@ async function run() {
     pb.recheckLatest(latest);
     await until(() => pb.latest()?.path === older, 'unbound recheck falls back to the older photo');
 
+    const replyStart = replies.length;
+    previewUpdates = [];
+    pb.recheckLatest(pb.latest());
     options.settings.photoBackup.peers.phone.folder = other;
     pb.refresh();
+    const stale = await until(() => replies.slice(replyStart).find(event => event.rechecked));
+    assert.equal(stale.receipt?.path, older);
+    assert.ok(previewUpdates.every(preview => preview === otherPhoto), 'an old recheck cannot replace the new archive tile');
+    previewUpdates = null;
     options.settings.photoBackup.peers.phone.folder = folder;
     pb.refresh();
     reconnect();
@@ -185,6 +213,14 @@ async function run() {
     ctx.transport = 'ble';
     peer.emit('transport', ctx);
     assert.equal(pb.latest()?.path, newest.path, 'BLE alone keeps the last receipt visible');
+    fs.renameSync(newest.path, newest.path + '.removed');
+    previewUpdates = [];
+    pb.recheckLatest(pb.latest());
+    assert.deepEqual(previewUpdates, [], 'cold BLE recheck does not reenter the shelf snapshot');
+    await Promise.resolve();
+    assert.deepEqual(previewUpdates, [older], 'cold BLE recheck publishes the older preview');
+    previewUpdates = null;
+    fs.renameSync(newest.path + '.removed', newest.path);
     fs.appendFileSync(newest.path, 'edited');
     const empty = fs.mkdtempSync(path.join(folder, 'empty-'));
     options.settings.photoBackup.peers.phone.folder = empty;
@@ -202,10 +238,17 @@ async function run() {
     await until(() => fs.existsSync(marker));
     for (let i = 0; i < 64; i++) send(state);
     assert.ok(!messages.some(m => m.req === stalled.req && m.t === 'backup.refuse'));
-    send({ ...stalled, t: 'backup.stop' });
-    assert.equal(messages.find(m => m.req === stalled.req)?.why, 'disk',
-      'control overflow aborts the stalled worker and fences Stop');
-
+    const child = children.at(-1);
+    const controlStart = controls.length;
+    send(state);
+    assert.equal(messages.find(m => m.req === stalled.req)?.why, 'disk', 'control overflow refuses the flight');
+    assert.ok(controls.slice(controlStart).some(event => event.kind === 'fence' && event.cancelled),
+      'control overflow fences queued work');
+    assert.equal(child.killed, true, 'control overflow retires the blocked process');
+    const count = children.length;
+    await until(() => children.length > count, 'the overflowed worker restarts');
+    assert.equal(controls.at(-1)?.msg?.t, 'backup.state', 'the replacement worker accepts control frames');
+    await receive('sync');
 
     pb.close();
 
