@@ -29,6 +29,7 @@ crashed.need('test', true);
 child.emit('exit', 0); // Even a zero exit is unexpected while the app is running.
 assert.equal(crashed.state, 'in-process');
 assert.equal(warnings.length, 1);
+assert.equal(app.listenerCount('will-quit'), 0, 'a child that is gone leaves no listener on the app');
 crashed.close();
 
 const quitting = new Fx2();
@@ -37,4 +38,5 @@ app.emit('will-quit');
 if (quitting.child) child.emit('exit', 0);
 assert.equal(warnings.length, 1);
 assert.equal(quitting.engine, undefined);
+assert.equal(app.listenerCount('will-quit'), 0);
 console.log('fx2-quit ok');
