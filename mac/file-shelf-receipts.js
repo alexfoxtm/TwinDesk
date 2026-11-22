@@ -10,9 +10,7 @@ function attachReceipts(shelf, receipts, latestPhoto = () => null, recheckPhoto 
   const identify = shelf._identify.bind(shelf);
   shelf._identify = (source) => {
     const identity = identify(source);
-    // Compare the receipt pin to the same snapshot used for drag and reveal.
-    if (source.photo && source.identity && (!sameIdentity(source.identity, identity) ||
-        source.identity.size !== identity.size || source.identity.mtime !== identity.mtime)) {
+    if (source.photo && source.identity && !sameIdentity(source.identity, identity)) {
       recheckPhoto(source.photo);
       return null;
     }

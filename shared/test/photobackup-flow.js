@@ -12,6 +12,7 @@ const { Worker } = require('node:worker_threads');
 const cp = require('node:child_process');
 const { run } = require('../../mac/photo-backup-process');
 const PB = require('../photobackup');
+const { ReceiptLedger } = require('../../mac/photo-backup-worker');
 const { Server } = require('../../mac/server');
 
 const workers = [];
@@ -32,12 +33,14 @@ function simulatedDisk() {
   let collisionReads = 0;
   let chunks = 0;
   let doneFd;
+  let partFd;
   function hold(slot) {
     parentPort.postMessage({ barrier: slot });
     if (Atomics.wait(barrier, slot, 0, 10_000) === 'timed-out') throw new Error('test barrier timed out');
   }
   fs.writeFileSync = (fd, data, ...rest) => {
     if (Buffer.isBuffer(data)) {
+      partFd = fd;
       if (++chunks === stallAt) hold(0);
       // 32 KiB takes 320 ms at 100 KiB/s. The harness advances the same virtual clock.
     } else if (holdDone && JSON.parse(data)?.row?.state === 'done') doneFd = fd;
@@ -51,6 +54,7 @@ function simulatedDisk() {
     return read(fd, data, ...rest);
   };
   fs.fsyncSync = (fd) => {
+    if (fd === partFd) parentPort.postMessage({ flushedAfter: chunks });
     if (fd === doneFd) { doneFd = undefined; hold(1); }
     return sync(fd);
   };
@@ -63,7 +67,7 @@ cp.fork = (_filename, [file]) => {
   const port = new EventEmitter();
   child.send = (event) => port.emit('message', event);
   port.send = (event) => {
-    if ('barrier' in event || 'collision' in event) wire(event);
+    if ('barrier' in event || 'collision' in event || 'flushedAfter' in event) wire(event);
     else child.emit('message', event);
   };
   run(port, file, (filename, { workerData }) => {
@@ -144,9 +148,9 @@ async function main() {
   async function begin(id, size) {
     inv(await receive('sync'), id, size);
     const take = await receive('take');
-    assert.equal(take.credit, PB.CHUNK);
+    assert.equal(take.credit, 16 * PB.CHUNK);
     send({ ...take, t: 'backup.accept' });
-    assert.deepEqual(await receive('credit'), { t: 'backup.credit', req: take.req, seq: 0, written: 0 });
+    assert.deepEqual(await receive('credit'), { t: 'backup.credit', req: take.req, written: 0, upTo: Math.min(size, take.credit) });
     return take;
   }
   function heartbeat(ms) {
@@ -201,8 +205,9 @@ async function main() {
         release(0);
       }
       const credit = await receive('credit');
+      if (seq === 255) await read((m) => m.flushedAfter === 256);
       assert.equal(credit.req, take.req);
-      assert.equal(credit.seq, seq + 1);
+      assert.equal(credit.upTo, Math.min(size, (seq + 1) * PB.CHUNK + take.credit));
       assert.equal(credit.written, (seq + 1) * PB.CHUNK);
       outstanding -= PB.CHUNK;
     }
@@ -228,13 +233,13 @@ async function main() {
     assert.equal((await receive('refuse')).why, 'checksum');
 
     // Crash during one flight. Recovery starts a fresh inventory and can finish the same item.
-    const restartSession = () => {
+    const restartSession = (credited = true) => {
       peer.current = { ...ctx, ws: { ...ws } };
       const next = peer.current;
       peer.emit('client', next);
       peer.current = ctx;
       peer.emit('client', ctx);
-      send({ ...state, photoCredit: 1 });
+      if (credited) send({ ...state, photoCredit: 1 });
     };
     restartSession();
     const interrupted = await begin(3, 1);
@@ -275,8 +280,20 @@ async function main() {
     heartbeat(PB.RETRY_MS - 1);
     assert.equal(workers.length, workersBeforeBackoff, 'stuck storage retries after the backoff');
     advance(1);
-    await receive('sync');
+    const resumed = await receive('sync');
     assert.equal(workers.length, workersBeforeBackoff + 1);
+
+    // An accepted phone can go quiet with no worker work outstanding.
+    inv(resumed, 6, PB.CHUNK);
+    const quiet = await receive('take');
+    send({ ...quiet, t: 'backup.accept' });
+    await receive('credit');
+    const workersBeforeQuiet = workers.length;
+    heartbeat(PB.CREDIT_IDLE_MS);
+    assert.equal((await receive('refuse')).req, quiet.req);
+    assert.equal(pb.view().why, 'wait');
+    assert.equal(workers.length, workersBeforeQuiet);
+    assert.equal(workers.at(-1).threadId > 0, true, 'a silent phone leaves the helper alive');
 
     // The old sender has no capability. It gets a synchronous take and streams without grants.
     restartSession();
@@ -293,6 +310,15 @@ async function main() {
     send({ ...legacy, t: 'backup.end', sha256: oneHash });
     assert.ok(messages.some((m) => m.req === legacy.req && m.t === 'backup.done'));
     assert.ok(!messages.some((m) => m.req === legacy.req && m.t === 'backup.credit'));
+    const loads = mock.method(ReceiptLedger.prototype, '_load');
+    try {
+      restartSession(false);
+      send(state);
+      await receive('sync');
+      assert.equal(loads.mock.callCount(), 0, 'legacy reconnect reuses the loaded ledger');
+    } finally {
+      loads.mock.restore();
+    }
     assert.equal(closed, 0);
     assert.equal(pauses, 0);
   } finally {

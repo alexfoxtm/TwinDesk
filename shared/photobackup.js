@@ -14,6 +14,8 @@ const fs = require('fs');
 const path = require('path');
 
 const CHUNK = 32 * 1024;
+const CREDIT_WINDOW = 16 * CHUNK;
+const CREDIT_FLUSH = 8 * 1024 * 1024;
 const MAX_BYTES = 80 * 1024 * 1024;
 const SEP = '\u001f';
 const OPEN = 1;
@@ -155,12 +157,13 @@ function b64(s) {
 }
 
 class Ledger {
-  constructor(file) {
+  constructor(file, { readOnly = false } = {}) {
+    this.readOnly = readOnly;
     this.file = file;
     this.data = { v: 1, peers: {} };
     this.broken = false;
     this._load();
-    if (!this.broken) {
+    if (!readOnly && !this.broken) {
       try { this.recover(); } catch { this.broken = true; }
     }
   }
@@ -521,13 +524,17 @@ class Mac {
       f.hash.update(buf);
       f.got += buf.length;
       f.seq += 1;
+      if (f.credit && f.got - (f.flushed || 0) >= CREDIT_FLUSH) {
+        fs.fsyncSync(f.fd);
+        f.flushed = f.got;
+      }
       this._watchFlight(f);
       this._credit(f);
     } catch { this.failItem('disk'); }
   }
 
   _credit(f) {
-    if (f.credit) this._emit({ t: 'backup.credit', req: f.req, seq: f.seq, written: f.got });
+    if (f.credit) this._emit({ t: 'backup.credit', req: f.req, written: f.got, upTo: Math.min(f.size, f.got + CREDIT_WINDOW) });
   }
 
   onEnd(msg, conn) {
@@ -633,7 +640,7 @@ class Mac {
       };
       this._watchFlight(this.flight);
       if (!this._emit({
-        t: 'backup.take', ...(this.flight.credit ? { credit: CHUNK } : {}), req, inv: this.inv.req, scan: this.inv.scan, batch,
+        t: 'backup.take', ...(this.flight.credit ? { credit: CREDIT_WINDOW } : {}), req, inv: this.inv.req, scan: this.inv.scan, batch,
         item: checked.item, gen: checked.gen, size: checked.size,
         rev: this.remote.rev, mrev: this.local.mrev,
       })) this.failItem('stop');
@@ -723,5 +730,5 @@ class Mac {
 }
 
 module.exports = {
-  CHUNK, MAX_BYTES, CREDIT_IDLE_MS, RETRY_MS, SEP, gate, validPhoneState, itemKey, validItem, safeName, yearMonth, hashFile, Ledger, Mac,
+  CHUNK, CREDIT_WINDOW, rowPath, MAX_BYTES, CREDIT_IDLE_MS, RETRY_MS, SEP, gate, validPhoneState, itemKey, validItem, safeName, yearMonth, hashFile, Ledger, Mac,
 };

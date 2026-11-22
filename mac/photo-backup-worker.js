@@ -26,7 +26,7 @@ class ReceiptLedger extends PB.Ledger {
       catch (e) { if (e.code === 'ENOENT') return; throw e; }
       for (const name of names) {
         if (/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.tmp$/.test(name)) {
-          try { fs.unlinkSync(path.join(this.receipts, name)); } catch { /* retry at next startup */ }
+          (this.orphans ??= []).push(name);
           continue;
         }
         if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
@@ -38,6 +38,14 @@ class ReceiptLedger extends PB.Ledger {
     } catch {
       this.broken = true;
     }
+  }
+
+  recover() {
+    for (const name of this.orphans || []) {
+      try { fs.unlinkSync(path.join(this.receipts, name)); } catch { /* retry at next startup */ }
+    }
+    this.orphans = null;
+    super.recover();
   }
 
   set(origin, item, gen, row) {
@@ -91,12 +99,11 @@ function latest(ledger, origin, root) {
   candidates.sort((a, b) => b.mtime - a.mtime);
   try {
     for (const row of candidates) {
-      if (ledger.hasArchived(row, root, row.size)) {
-        const st = fs.lstatSync(row.dest);
-        if (st.dev !== row.dev || st.ino !== row.ino || st.mtimeMs !== row.mtime || st.size !== row.size) continue;
-        return { path: row.dest, name: path.basename(row.dest), size: row.size, at: row.mtime,
-          identity: { dev: row.dev, ino: row.ino, birthtimeMs: st.birthtimeMs, folder: false, size: st.size, mtime: st.mtimeMs } };
-      }
+      if (!PB.rowPath(row, row.dest)) continue;
+      const st = fs.lstatSync(row.dest, { throwIfNoEntry: false });
+      if (!st?.isFile() || st.dev !== row.dev || st.ino !== row.ino) continue;
+      return { path: row.dest, name: path.basename(row.dest), size: st.size, at: row.mtime,
+        identity: { dev: st.dev, ino: st.ino, birthtimeMs: st.birthtimeMs, folder: false } };
     }
   } catch { /* archive is unavailable */ }
   return null;
@@ -113,8 +120,8 @@ if (parentPort) {
   let receipt = null;
   let archive;
   const current = () => generation === Atomics.load(epoch, 0);
-  const publishState = () => {
-    if (current()) parentPort.postMessage({ generation, why: engine.why() || engine.problem, receipt });
+  const publishState = (rechecked = false) => {
+    if (current()) parentPort.postMessage({ generation, why: engine.why() || engine.problem, receipt, rechecked });
   };
   const updateReceipt = () => {
     receipt = archive && !ledger.broken ? latest(ledger, archive.origin, archive.folder) : null;
@@ -144,7 +151,10 @@ if (parentPort) {
 
   parentPort.on('message', ({ kind, gen, args, msg, archive: target }) => {
     try {
-      if (kind === 'bind' || kind === 'local' || kind === 'unbind') archive = target;
+      if (kind === 'bind' || kind === 'local' || kind === 'unbind') {
+        if (archive?.origin !== target?.origin || archive?.folder !== target?.folder) receipt = null;
+        archive = target;
+      }
       switch (kind) {
         case 'bind':
           engine.unbind();
@@ -172,7 +182,7 @@ if (parentPort) {
           if (gen === generation && current()) updateReceipt();
           break;
         case 'invalid':
-          if (gen === generation && current()) engine.failItem('checksum');
+          if (gen === generation && current()) engine.failItem(msg || 'checksum');
           break;
         case 'receive':
           if (gen !== generation || !current()) break;
@@ -183,7 +193,7 @@ if (parentPort) {
           if (msg.t === 'backup.chunk') return;
           break;
       }
-      publishState();
+      publishState(kind === 'recheck');
     } finally {
       if (kind === 'recheck') parentPort.postMessage({ drained: kind });
     }

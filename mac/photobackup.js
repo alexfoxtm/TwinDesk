@@ -22,6 +22,7 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
   let worker = null;
   let retiring = false;
   let legacy = null;
+  let ledger = null;
   let bound = null;
   let closed = false;
   let generation = 0;
@@ -63,7 +64,16 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
   function watch() {
     clearTimeout(watchdog);
     watchdog = setTimeout(() => {
+      const waitingForDisk = flight.accepted &&
+        (flight.written === null || flight.got > flight.written || flight.ended);
       refuse('timeout');
+      if (!waitingForDisk) {
+        fence(true);
+        post('timeout', 'invalid');
+        status = 'wait';
+        pushState();
+        return;
+      }
       command('unbind');
       lastFailure = Date.now();
       retire();
@@ -87,7 +97,6 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
     fence(false);
     clearFlight();
     status = 'wait';
-    latest = null;
     dispatch({ kind, gen: epoch, args, archive });
   }
 
@@ -104,7 +113,7 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
       retiring = false;
       if (closed) return;
       if (!expected) refuse('disk');
-      latest = null;
+      ledger = null;
       status = 'disk';
       pushState();
       if (bound?.mode !== 'credit') { activate(); return; }
@@ -131,14 +140,14 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
         if (msg.t === 'backup.state') return;
         if (msg.t === 'backup.take') {
           fence(false);
-          flight = { take: msg, seq: 0, written: null, accepted: false };
+          flight = { take: msg, seq: 0, got: 0, written: null, upTo: 0, accepted: false, ended: false };
           watch();
         } else if (msg.t === 'backup.progress') {
           if (flight?.take.req !== msg.req || cancelled) return;
           watch();
         } else if (msg.t === 'backup.credit') {
           if (flight?.take.req !== msg.req || cancelled) return;
-          flight.seq = msg.seq;
+          flight.upTo = msg.upTo;
           flight.written = msg.written;
           watch();
         } else if (msg.t === 'backup.done' || msg.t === 'backup.stop' ||
@@ -149,7 +158,7 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
         send(msg);
       } else {
         status = event.why;
-        latest = event.receipt;
+        if (event.receipt || event.rechecked) latest = event.receipt;
         pushState();
       }
     });
@@ -166,11 +175,18 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
     if (!bound?.state || closed) return;
     if (bound.mode === 'legacy') {
       if (worker) { retire(); return; }
-      legacy = new PB.Mac(new ReceiptLedger(file), { send, changed: pushState });
+      ledger ??= new ReceiptLedger(file);
+      if (ledger.readOnly) {
+        ledger.readOnly = false;
+        if (!ledger.broken) {
+          try { ledger.recover(); } catch { ledger.broken = true; }
+        }
+      }
+      legacy = new PB.Mac(ledger, { send, changed: pushState });
       legacy.bind(bound.ws, ...args());
       legacy.receive(bound.state, bound.ws);
     } else if (!retiring && !restart) {
-      if (!worker) startWorker();
+      if (!worker) { ledger = null; startWorker(); }
       command('bind', args());
       post(bound.state);
     }
@@ -213,7 +229,14 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
     const ws = socket(ctx);
     const p = control(ctx) && row(ctx);
     const nextArchive = p?.on && p.folder ? { origin: `${ctx.deviceId}:${ctx.photoBackupPair}`, folder: p.folder } : null;
-    archive = nextArchive;
+    if (archive?.origin !== nextArchive?.origin || archive?.folder !== nextArchive?.folder) {
+      archive = nextArchive;
+      latest = null;
+      if (archive) {
+        ledger ??= new ReceiptLedger(file, { readOnly: true });
+        if (!ledger.broken) latest = findLatest(ledger, archive.origin, archive.folder);
+      }
+    }
     const next = ws ? local(ctx) : null;
     if (bound && bound.ctx === ctx && bound.ws === ws) {
       if (Object.keys(next).some((key) => next[key] !== bound.local[key])) {
@@ -228,7 +251,11 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
       return;
     }
     if (!bound && !ws) return;
-    if (legacy) { legacy.unbind(); legacy = null; }
+    if (legacy) {
+      if (archive && !ledger.broken) latest = findLatest(ledger, archive.origin, archive.folder);
+      legacy.unbind();
+      legacy = null;
+    }
     command('unbind');
     bound = ws ? { ctx, ws, local: next } : null;
     if (bound) announce();
@@ -289,13 +316,26 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
       if (type === 'backup.accept' || type === 'backup.chunk' || type === 'backup.end') {
         if (!flight || flight.take.req !== msg.req || cancelled) return;
         if (type === 'backup.accept' && !flight.accepted) flight.accepted = true;
-        else if (type === 'backup.chunk' && flight.written !== null && msg.seq === flight.seq) flight.written = null;
-        else if (type === 'backup.end' && flight.written === flight.take.size) flight.written = null;
-        else {
+        else if (type === 'backup.chunk' && !flight.ended && msg.seq === flight.seq) {
+          const length = Math.min(PB.CHUNK, flight.take.size - flight.got);
+          // Full chunks (except the tail) bound mailbox messages as well as bytes.
+          const padding = length % 3 ? 3 - length % 3 : 0;
+          if (!length || flight.got + length > flight.upTo ||
+              typeof msg.data !== 'string' || msg.data.length !== Math.ceil(length / 3) * 4 ||
+              (msg.data.slice(-3).match(/=*$/)[0].length !== padding)) {
+            rejectFlight();
+            return;
+          }
+          if (flight.got === flight.written) watch();
+          flight.seq++;
+          flight.got += length;
+        } else if (type === 'backup.end' && !flight.ended && flight.written === flight.take.size) {
+          flight.ended = true;
+        } else {
           rejectFlight();
           return;
         }
-        watch();
+        if (type !== 'backup.chunk') watch();
       } else if (flight && flight.take.req === msg.req && (type === 'backup.stop' || type === 'backup.refuse')) {
         fence(true);
       }
