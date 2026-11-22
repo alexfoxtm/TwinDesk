@@ -10,7 +10,7 @@ const ACTIONS = [
   'pairRespond', 'forget', 'openSettings', 'relaunch', 'setModules', 'setMulti', 'setProximityLock',
   'keepPcAppInDock', 'sendFiles', 'chooseSendFiles', 'setNotifs', 'muteNotifApp', 'allowFullDisk', 'allowNativeNotifications',
   'connectAddress', 'pairWith', 'selectPeer', 'forgetPeer', 'confirmGuestCode', 'cancelGuestPair', 'forgetHost',
-  'refreshDiscovery', 'copyText', 'copyLiteral', 'allowPermission', 'skipSetup', 'connectPhone', 'disconnectPhone', 'setPhone',
+  'refreshDiscovery', 'copyText', 'allowPermission', 'skipSetup', 'connectPhone', 'disconnectPhone', 'setPhone',
   'phonePair', 'phoneScreen', 'phoneCamera', 'takePhoto', 'scanDocument', 'phoneOpenApp', 'phoneCloseView', 'phoneScreenAct', 'phoneRetry', 'phoneInstallFull', 'phoneInstallApps', 'phoneMount',
   'phoneUnmount', 'setMount', 'phoneAppMenu', 'deviceDo', 'setOverview', 'setChats', 'notifReply', 'adbQr', 'setUpdates', 'skipUpdate', 'unskipUpdate', 'checkUpdates', 'openUpdate',
   'showFileShelf',
@@ -18,6 +18,7 @@ const ACTIONS = [
   'netCancel', 'netWifi', 'hub',
   // TwinDesk Web (shared/web/webwire.js)
   'webSet', 'webNewCode', 'webAllow', 'webChooseFolder', 'webForget', 'webDisconnect', 'webRename', 'webSendText', 'webSendFiles', 'webChooseFiles',
+  'copyLiteral',
   'webDeleteItem', 'webClearChat', 'webStopScreen', 'webStopCam', 'webOpenItem', 'webSaveItem', 'webCopy', 'webShareSet', 'webShareFolder',
   'lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal', // Files › LocalSend-compatible devices (shared/localsend/wire.js)
 ];
