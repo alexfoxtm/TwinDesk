@@ -747,11 +747,8 @@ app.whenReady().then(() => {
     pushState: () => { pushState(); fileShelf?.refresh(); },
   });
   peer.setPlain(settings.files.plain === true); // Files › Encrypt file transfers
-  // The files engine (shared/fx2.js) stays up while another TwinDesk computer is on the network: a
-  // session with it then starts without waiting for it. Alone, it isn't running at all.
-  const fx2Nearby = () => { if (peer.fx2) peer.fx2.need('nearby', discovery.found.size > 0); };
-  discovery.on('change', fx2Nearby);
-  fx2Nearby();
+  // A computer only seen on the network does not keep the files engine up. The welcome starts
+  // it when that peer asks (server.js waits up to 1.5s); peer.js holds it once the port was promised.
   peer.on('client', (ctx) => {
     console.log(`[peer] session with ${ctx.name} (${ctx.os}, ${ctx.role === 'host' ? 'we are its guest' : 'it is our guest'})`);
     peer.send(ctx, { t: P.T.STREAM_INPUT, on: settings.streamInput !== false });

@@ -25,8 +25,9 @@ class Peer extends EventEmitter {
     // … and v2 (shared/fx2.js): through the files engine, a utility process with its own server.
     this.fx2 = fx2Off() ? null : new Fx2({ tls: server.tls });
     if (this.fx2) {
-      // The engine starts on demand: a session, another computer nearby (main.js), a socket coming
-      // in or a hello going out; the welcome waits for its port when it isn't up yet (server.js).
+      // The engine starts on demand: a socket coming in, a hello going out, or the welcome
+      // waiting for a peer that asked. It is held for the session only once that welcome
+      // included the port — an incoming transfer connects there, with no later notice (server.js).
       server.fx2Port = () => this.fx2.port;
       server.fx2Wait = (ms) => this.fx2.whenReady(ms);
       server.https.on('secureConnection', () => this.fx2.warm());
@@ -55,7 +56,9 @@ class Peer extends EventEmitter {
     server.on('client', (ctx) => {
       if (!ctx.os) ctx.os = P.OS.WIN;
       ctx.role = 'guest';
-      if (this.fx2) this.fx2.need('host', true);
+      // ctx.fx2 is the port the welcome just promised. Zero: this client did not ask (a phone
+      // on the cable), so the process is not held for the session.
+      if (this.fx2) this.fx2.need('host', !!ctx.fx2);
       this.fx.reset();
       if (this.il && !ctx.ilOn) this.il.stop();
       this.emit('client', ctx);
