@@ -296,7 +296,7 @@ class IdleWiringTest {
         }
     }
 
-    @Test fun mobileAndVpnOnlyResetReturnOnRouteRestoration() {
+    @Test fun mobileReturnCutsAwayBackoffWithFullTunnelVpnPresent() {
         val core = core()
         val discovery = core.discovery
         discovery.write("running", true)
@@ -316,24 +316,69 @@ class IdleWiringTest {
         val vpn = ShadowNetwork.newInstance(2)
         val backedOff = System.currentTimeMillis() + 60_000
         try {
+            fun caps(transport: Int, internet: Boolean) = ShadowNetworkCapabilities.newInstance().also {
+                shadowOf(it).addTransportType(transport)
+                if (internet) shadowOf(it).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            }
+            val ims = ShadowNetwork.newInstance(3)
+            val mobileCaps = caps(NetworkCapabilities.TRANSPORT_CELLULAR, true)
+            core.write("awayAttempts", 3)
             core.write("returnAfter", backedOff)
-            callback.onLinkPropertiesChanged(mobile, properties)
-            awaitCondition { (core.read("returnAfter") as Long) in 1 until backedOff }
-
-            core.write("returnAfter", backedOff)
+            callback.onCapabilitiesChanged(vpn, caps(NetworkCapabilities.TRANSPORT_VPN, true))
             callback.onLinkPropertiesChanged(vpn, properties)
-            callback.onLost(mobile)
+            callback.onCapabilitiesChanged(ims, caps(NetworkCapabilities.TRANSPORT_CELLULAR, false))
+            callback.onLinkPropertiesChanged(ims, properties)
             core.timers.submit {}.get(3, TimeUnit.SECONDS)
             assertEquals(backedOff, core.read("returnAfter"))
 
-            callback.onLost(vpn)
-            callback.onLinkPropertiesChanged(vpn, properties)
+            callback.onLinkPropertiesChanged(mobile, properties)
+            callback.onCapabilitiesChanged(mobile, mobileCaps)
             awaitCondition { (core.read("returnAfter") as Long) in 1 until backedOff }
+
             assertEquals(0L, core.link.read("wokeAt"))
             assertEquals(revision, discovery.read("beaconRevision"))
         } finally {
             core.timers.shutdownNow()
         }
+    }
+
+    @Test fun firstMobileReturnDialsImmediatelyAfterAwayBackoff() {
+        val core = core()
+        rememberHost(core)
+        core.write("awayAttempts", 3)
+        core.write("returnAfter", System.currentTimeMillis() + 60_000)
+        var dials = 0
+        core.retryRouteReturn { core.returnTick({ true }) { _, _ -> dials++ } }
+        assertEquals(1, dials)
+    }
+
+    @Test fun mobileFlapsRespectCooldownAndFailureBackoff() {
+        val core = core()
+        core.store.setFlag("ble", false)
+        val host = rememberHost(core)
+        var dials = 0
+        fun restore() {
+            core.retryRouteReturn { core.returnTick({ true }) { _, _ -> dials++ } }
+        }
+        core.write("awayAttempts", 3)
+        val awayDeadline = System.currentTimeMillis() + 60_000
+        core.write("returnAfter", awayDeadline)
+        restore()
+        assertEquals(1, dials)
+
+        core.write("awayAttempts", 3)
+        core.write("returnAfter", awayDeadline)
+        repeat(10) { restore() }
+        assertEquals(1, dials)
+        assertEquals(awayDeadline, core.read("returnAfter"))
+
+        core.onClosed(host, null)
+        val failureDeadline = core.read("returnFailureDeadline") as Long
+        assertTrue(failureDeadline > System.currentTimeMillis())
+        core.write("lastRouteReturn", SystemClock.elapsedRealtime() - 5000)
+        restore()
+        assertEquals(1, dials)
+        assertEquals(failureDeadline, core.read("returnAfter"))
     }
 
     @Test fun wiredLanTransportsWakeTheLink() {

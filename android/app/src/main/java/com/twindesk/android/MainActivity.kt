@@ -375,24 +375,21 @@ internal fun App(core: Core, resumed: Int, focusGains: State<Int>) {
     if (!setupDone) {
         var permissionResult by remember { mutableStateOf(0) }
         val debuggingChanges = setupDebuggingChanges(ctx)
-        var setupVisible by remember { mutableStateOf(true) }
-        var tick by remember { mutableStateOf(0) }
-        val permissionInputs = setupPermissionInputs(
-            resumed, permissionResult,
-            if (setupVisible) NotifListener.running != null else shell.listener,
-            if (setupVisible) InputService.running != null else shell.accessibility,
-            debuggingChanges, I18n.lang, focusGains.value, tick, version, setupVisible,
-        )
-        val items = remember(ctx, permissionInputs) {
-            SetupCheck.items(ctx, core)
-        }
-        val showSetup = SetupCheck.shouldShow(core, items)
-        SideEffect { setupVisible = showSetup }
-        if (showSetup) {
-            SetupRefreshEffect { tick++ }
+        if (SetupGate(
+            focusGains = focusGains,
+            inputs = { visible, tick, focus ->
+                setupPermissionInputs(
+                    resumed, permissionResult,
+                    if (visible) NotifListener.running != null else shell.listener,
+                    if (visible) InputService.running != null else shell.accessibility,
+                    debuggingChanges, I18n.lang, focus, tick, version, visible,
+                )
+            },
+            readItems = { SetupCheck.items(ctx, core) },
+            shouldShow = { SetupCheck.shouldShow(core, it) },
+        ) { items ->
             SetupScreen(core, ctx, items, { permissionResult++ }) { setupDone = true }
-            return
-        }
+        }) return
     }
     // The wireless debugging guide when opened from General › Setup / Cursor (Overview has it as a card).
     if (Guide.open.value) return CoreUpdates(core) { WirelessGuide(core, ctx, it + resumed) }
@@ -2370,6 +2367,28 @@ private fun AboutPage(core: Core, v: Int) {
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp))
 }
 
+
+@Composable
+internal fun <T> SetupGate(
+    focusGains: State<Int>,
+    inputs: (Boolean, Int, Int) -> Any,
+    readItems: () -> T,
+    shouldShow: (T) -> Boolean,
+    content: @Composable (T) -> Unit,
+): Boolean {
+    val ctx = LocalContext.current
+    var visible by remember { mutableStateOf(true) }
+    var tick by remember { mutableStateOf(0) }
+    val permissionInputs = inputs(visible, tick, focusGains.value)
+    val items = remember(ctx, permissionInputs) { readItems() }
+    val showSetup = shouldShow(items)
+    SideEffect { visible = showSetup }
+    if (showSetup) {
+        SetupRefreshEffect { tick++ }
+        content(items)
+    }
+    return showSetup
+}
 
 @Composable
 internal fun SetupRefreshEffect(refresh: () -> Unit) {

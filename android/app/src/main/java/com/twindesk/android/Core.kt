@@ -49,7 +49,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
             } else returnTick()
         }
         discovery.onRouteAvailable = {
-            if (started) timers.execute { retryReturnNow() }
+            if (started) timers.execute { retryRouteReturn() }
         }
         discovery.onNetworkChange = {
             link.wake()
@@ -72,6 +72,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
     @Volatile private var returnGeneration = 0
     @Volatile private var returnAfter = 0L
     private var returnFailures = 0
+    private var returnFailureDeadline = 0L
+    private var lastRouteReturn = -ROUTE_RETURN_COOLDOWN_MS
     private var returnTailTurn = false
     @Volatile private var awayAttempts = 0
     @Volatile private var fastAdvertisingUntil = 0L
@@ -678,10 +680,10 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (link.ble && returnHost()?.id == host.id) stopReturn()
         if (returnHost()?.id == host.id) {
             if (link.state == "failed" || code in setOf("local", "reclaim", "bad_message", Proto.E.VERSION_MISMATCH, Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN)) stopReturn()
-            else {
+            else synchronized(this) {
                 returnFailures = (returnFailures + 1).coerceAtMost(5)
-                val failureDeadline = System.currentTimeMillis() + (1000L shl returnFailures)
-                returnAfter = if (awayAttempts > 0) maxOf(returnAfter, failureDeadline) else failureDeadline
+                returnFailureDeadline = System.currentTimeMillis() + (1000L shl returnFailures)
+                returnAfter = if (awayAttempts > 0) maxOf(returnAfter, returnFailureDeadline) else returnFailureDeadline
             }
             requestTimers()
             return
@@ -702,6 +704,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
         returnGeneration++
         returnAfter = 0L
         returnFailures = 0
+        returnFailureDeadline = 0L
+        lastRouteReturn = -ROUTE_RETURN_COOLDOWN_MS
         awayAttempts = 0
         returnTailTurn = false
         returnPrefs.edit().remove("host").commit()
@@ -713,6 +717,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
         returnGeneration++
         returnAfter = 0L
         returnFailures = 0
+        returnFailureDeadline = 0L
+        lastRouteReturn = -ROUTE_RETURN_COOLDOWN_MS
         awayAttempts = 0
         returnTailTurn = false
         returnPrefs.edit().remove("host").commit()
@@ -741,6 +747,19 @@ class Core private constructor(val ctx: Context) : Link.Events {
         requestTimers()
     }
 
+    @Synchronized internal fun retryRouteReturn(tick: () -> Unit = { returnTick() }) {
+        if (awayAttempts == 0) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastRouteReturn < ROUTE_RETURN_COOLDOWN_MS || !canReturn() || returnHost() == null) return
+        // Only an admitted retry consumes the cooldown. The first restoration can run immediately.
+        lastRouteReturn = now
+        awayAttempts = 0
+        // Drop the away deadline and keep any outstanding failure deadline.
+        returnAfter = returnFailureDeadline.takeIf { it > System.currentTimeMillis() } ?: 0L
+        if (returnAfter == 0L) tick()
+        requestTimers()
+    }
+
     @Suppress("DEPRECATION")
     private fun hasRoute(address: String): Boolean = runCatching {
         val ip = android.net.InetAddresses.parseNumericAddress(address)
@@ -752,7 +771,10 @@ class Core private constructor(val ctx: Context) : Link.Events {
             }
         }) return true
         val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java) ?: return true
-        cm.allNetworks.any { network -> cm.getLinkProperties(network)?.routes?.any { it.matches(ip) } != false }
+        cm.allNetworks.any { network ->
+            cm.getNetworkCapabilities(network)?.isUnderlyingInternet() == true &&
+                cm.getLinkProperties(network)?.routes?.any { it.matches(ip) } == true
+        }
     }.getOrDefault(true)
 
     @Synchronized internal fun returnTick(
@@ -814,6 +836,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     companion object {
+        private const val ROUTE_RETURN_COOLDOWN_MS = 5000L
         // Computers that take a paired phone back by itself after a long drop (hello rc:1,
         // #192/#266). Each still has to advertise rc, so an older computer is never dialed this way.
         val RETURN_OS = setOf("mac", "win", "linux")

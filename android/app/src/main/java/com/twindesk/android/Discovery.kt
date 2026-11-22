@@ -89,6 +89,8 @@ class Discovery(
     private val networkLock = Any()
     private val lanNetworks = mutableSetOf<Network>()
     private val networkPaths = mutableMapOf<Network, LanPath>()
+    private val internetNetworks = mutableSetOf<Network>()
+    private val networksWithDefaultRoute = mutableSetOf<Network>()
     private val defaultRoutes = mutableSetOf<Network>()
     private var announcedPaths = emptySet<LanPath>()
     private var lastNetworkChange = -1000L
@@ -105,12 +107,17 @@ class Discovery(
                 if (!running) return
                 val changed = if (lan) lanNetworks.add(network) else lanNetworks.remove(network)
                 if (changed) announceLanChange()
+                if (caps.isUnderlyingInternet()) internetNetworks.add(network)
+                else internetNetworks.remove(network)
+                updateDefaultRoute(network)
             }
         }
 
         override fun onLost(network: Network) {
             synchronized(networkLock) {
                 invalidateTargets()
+                internetNetworks.remove(network)
+                networksWithDefaultRoute.remove(network)
                 defaultRoutes.remove(network)
                 networkPaths.remove(network)
                 if (lanNetworks.remove(network)) announceLanChange()
@@ -121,16 +128,22 @@ class Discovery(
             synchronized(networkLock) {
                 if (!running) return
                 invalidateTargets()
-                val hadRoute = defaultRoutes.isNotEmpty()
-                if (properties.routes.any { it.isDefaultRoute }) defaultRoutes.add(network)
-                else defaultRoutes.remove(network)
-                if (!hadRoute && defaultRoutes.isNotEmpty() && network !in lanNetworks) onRouteAvailable?.invoke()
+                if (properties.routes.any { it.isDefaultRoute }) networksWithDefaultRoute.add(network)
+                else networksWithDefaultRoute.remove(network)
+                updateDefaultRoute(network)
                 networkPaths[network] = LanPath(properties.interfaceName,
                     properties.linkAddresses.map { it.toString() }.toSet(),
                     properties.routes.map { it.toString() }.toSet())
                 if (network in lanNetworks) announceLanChange()
             }
         }
+    }
+
+    private fun updateDefaultRoute(network: Network) {
+        val hadRoute = defaultRoutes.isNotEmpty()
+        if (network in internetNetworks && network in networksWithDefaultRoute) defaultRoutes.add(network)
+        else defaultRoutes.remove(network)
+        if (!hadRoute && defaultRoutes.isNotEmpty() && network !in lanNetworks) onRouteAvailable?.invoke()
     }
 
     private fun invalidateTargets() {
@@ -214,15 +227,17 @@ class Discovery(
             connectivity?.registerNetworkCallback(request.build(), networkWatch)
         }
         thread(name = "td-discovery", isDaemon = true) { receiveLoop() }
-        thread(name = "td-beacon", isDaemon = true) {
-            while (running) {
-                val revision = synchronized(beaconSignal) { beaconRevision }
-                onBeaconCycle?.invoke()
-                beacon()
-                prune()
-                synchronized(beaconSignal) {
-                    if (running && revision == beaconRevision) beaconSignal.wait(beaconDelay(screenOn, connected, peerOn))
-                }
+        thread(name = "td-beacon", isDaemon = true) { runBeaconLoop() }
+    }
+
+    internal fun runBeaconLoop(wait: (Long) -> Unit = { beaconSignal.wait(it) }) {
+        while (running) {
+            val revision = synchronized(beaconSignal) { beaconRevision }
+            onBeaconCycle?.invoke()
+            beacon()
+            prune()
+            synchronized(beaconSignal) {
+                if (running && revision == beaconRevision) wait(beaconDelay(screenOn, connected, peerOn))
             }
         }
     }
@@ -235,6 +250,8 @@ class Discovery(
             networkHandler.removeCallbacks(announceNetwork)
             lanNetworks.clear()
             networkPaths.clear()
+            internetNetworks.clear()
+            networksWithDefaultRoute.clear()
             defaultRoutes.clear()
             announcedPaths = emptySet()
             lastNetworkChange = -1000L
@@ -396,3 +413,7 @@ class Discovery(
         if (changed) onChange()
     }
 }
+
+internal fun NetworkCapabilities.isUnderlyingInternet(): Boolean =
+    hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        !hasTransport(NetworkCapabilities.TRANSPORT_VPN)
