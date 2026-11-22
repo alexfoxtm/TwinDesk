@@ -1,0 +1,22 @@
+/* TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE. */
+/* The control window while it isn't the focused one (shared/ui-away.js): the ambient animations
+   stop where they are. Each endless animation of the window's stylesheets is either here or named
+   as work in progress in shared/test/ui-away.js. */
+.td-away .dot.good,
+.td-away .hero-link,
+.td-away .hero-pulse,
+.td-away .feature-art .fa-dash,
+.td-away .ios-hero .ring,
+.td-away .ios-hero .app,
+.td-away .ios-hero .tick,
+.td-away .dv-tiles.editing .dv-tile,
+.td-away .tour-ring,
+.td-away .tour-hero .tour-icon,
+.td-away .tour-bar span,
+.td-away .tour-screen .tour-icon,
+.td-away .tour-tick,
+.td-away .tour-code,
+.td-away .tour-link span,
+.td-away .wt-caret,
+.td-away .mg-mirror,
+.td-away .mg-finger { animation-play-state: paused !important; }
