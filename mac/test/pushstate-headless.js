@@ -29,6 +29,7 @@ function bag() {
 function run({ win }) {
   const calls = [];
   let windowBuilds = 0;
+  const slot = { win };
   const touch = (name) => {
     windowBuilds += 1;
     calls.push(name);
@@ -59,7 +60,7 @@ function run({ win }) {
   const box = {
     server: { lockviewRefresh() { calls.push('lockview'); } },
     setImmediate(fn) { fn(); },
-    win,
+    get win() { return slot.win; },
     peer: { current: { deviceId: 'phone', name: 'Phone', os: 'android', role: 'guest', address: '10.0.0.8', rttMs: 12, transport: 'ip' }, il: null, lane() { return null; }, fx: null, fx2: null },
     state,
     interfaces() { return [{ name: 'en0', address: '10.0.0.2' }]; },
@@ -93,7 +94,10 @@ function run({ win }) {
     updateTray() { calls.push('tray'); },
     require: (id) => require(path.join(__dirname, '..', id)),
   };
-  if (win) win.webContents = { send(ch, body) { sent.push([ch, body]); } };
+  const attach = (w) => {
+    if (w && !w.webContents) w.webContents = { send(ch, body) { sent.push([ch, body]); } };
+  };
+  attach(slot.win);
   const sandbox = new Proxy(box, {
     has() { return true; },
     get(target, key) {
@@ -104,7 +108,11 @@ function run({ win }) {
   });
   vm.runInNewContext(source, sandbox);
   box.pushState();
-  return { calls, windowBuilds, state, sent };
+  return {
+    calls, get windowBuilds() { return windowBuilds; }, state, sent,
+    setWindow(w) { attach(w); slot.win = w; },
+    push() { box.pushState(); },
+  };
 }
 
 test('no control window skips the window snapshots and still runs the side effects', () => {
@@ -125,4 +133,22 @@ test('no control window skips the window snapshots and still runs the side effec
   assert.equal(open.sent.length, 1);
   assert.equal(open.sent[0][0], 'state');
   assert.ok(open.calls.includes('screen') && open.calls.includes('tray') && open.calls.includes('lockview'));
+});
+
+test('a window opened after a headless push gets a full state', () => {
+  const live = run({ win: null });
+  assert.equal(live.windowBuilds, 0);
+  assert.equal(live.sent.length, 0);
+  assert.equal(live.state.notifs.stale, true);
+  assert.equal(live.state.addresses, undefined, 'the headless push did not build the window fields');
+  live.setWindow({ isDestroyed: () => false });
+  live.push();
+  assert.ok(live.windowBuilds > 0, 'the next push builds the window snapshots');
+  assert.equal(live.sent.length, 1);
+  assert.equal(live.sent[0][0], 'state');
+  assert.equal(live.sent[0][1], live.state);
+  assert.equal(live.state.client.name, 'Phone');
+  assert.ok(Array.isArray(live.state.addresses) && live.state.addresses.includes('10.0.0.2'));
+  assert.equal(live.state.notifs.stale, undefined, 'the stale headless snapshot is not what the window is sent');
+  assert.ok(live.state.chats && live.state.history && live.state.photoBackup);
 });
