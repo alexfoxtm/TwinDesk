@@ -144,11 +144,11 @@ class Clipboard extends EventEmitter {
   }
 
   async _onClip(msg) {
+    // The phone bridge can report our last send back while a newer local copy is being read.
+    if (msg.text === this.lastSent && (this.readsInFlight || this.pending)) return;
     const c = this.cfg;
     if (!c.enabled || !c.receive || !P.clipAllowed(msg.text)) return;
 
-    // The phone bridge can report our last send back while a newer local copy is being read.
-    if (msg.text === this.lastSent && (this.readsInFlight || this.pending)) return;
     ++this.queueEpoch;
     const sequence = ++this.receiveSequence;
     ++this.receiving;
