@@ -56,12 +56,23 @@ class DevCtl(core: Core) : Feature(core) {
     private var ringtone: Ringtone? = null
     private var alarmBefore = -1
     private var last = ""
+    private var building = false
+    private var pendingState = false
+    private var pendingAsk = false
 
     // The computer's own controls, for the Computer page (null: it hasn't said: an older TwinDesk).
     @Volatile var computer: JSONObject? = null; private set
     var onComputer: (() -> Unit)? = null
 
     override fun onWelcome(host: Host) {
+        val marker = core.link.sessionMarker()
+        main.post {
+            if (marker == null || core.link.sessionMarker() !== marker) return@post
+            welcomed()
+        }
+    }
+
+    private fun welcomed() {
         computer = null
         last = ""
         watch(true)
@@ -79,15 +90,17 @@ class DevCtl(core: Core) : Feature(core) {
         override fun run() {
             if (!core.link.connected || computer != null || askTries >= 6) return
             askTries++
-            last = ""
-            asking = true
-            try { sendState() } finally { asking = false }
+            sendState(ask = true)
             main.postDelayed(this, 1500L * (askTries + 1))
         }
     }
 
     override fun onClosed() {
         main.removeCallbacks(askAgain)
+        main.post {
+            pendingState = false
+            pendingAsk = false
+        }
         watch(false)
         ring(false)
         computer = null
@@ -249,8 +262,42 @@ class DevCtl(core: Core) : Feature(core) {
 
     private fun granted(p: String) = ContextCompat.checkSelfPermission(ctx, p) == PackageManager.PERMISSION_GRANTED
 
-    private fun sendState() {
+    private fun sendState(ask: Boolean = false) {
         if (!core.link.connected) return
+        val marker = core.link.sessionMarker() ?: return
+        if (building) {
+            pendingState = true
+            pendingAsk = pendingAsk || ask
+            return
+        }
+        building = true
+        val torch = torchOn
+        val ringing = ringing
+        val lock = InputService.running != null && Build.VERSION.SDK_INT >= 28
+        core.bg.execute {
+            val built = runCatching {
+                val message = buildState(torch, ringing, lock)
+                val key = message.toString()
+                if (ask) message.put("ask", true)
+                key to message
+            }
+            main.post {
+                building = false
+                built.getOrNull()?.let { (key, message) ->
+                    if (shouldSendDeviceState(marker, core.link.sessionMarker(), last, key, ask) &&
+                        core.link.sendFor(marker, message)) last = key
+                }
+                if (pendingState) {
+                    val askAgain = pendingAsk
+                    pendingState = false
+                    pendingAsk = false
+                    sendState(askAgain)
+                }
+            }
+        }
+    }
+
+    private fun buildState(torch: Boolean, ringing: Boolean, lock: Boolean): JSONObject {
         val qs = JSONObject()
         val detail = JSONObject()
         val panel = JSONObject()
@@ -271,7 +318,7 @@ class DevCtl(core: Core) : Feature(core) {
             val m = w?.javaClass?.getMethod("isWifiApEnabled")
             if (m != null) qs.put("hotspot", m.invoke(w) == true)
         }
-        if (ctx.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_FLASH)) qs.put("torch", torchOn)
+        if (ctx.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_FLASH)) qs.put("torch", torch)
         runCatching { qs.put("dnd", ctx.getSystemService(NotificationManager::class.java).currentInterruptionFilter > NotificationManager.INTERRUPTION_FILTER_ALL) }
         runCatching { qs.put("rotate", Settings.System.getInt(ctx.contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0) == 1) }
         runCatching { qs.put("saver", ctx.getSystemService(PowerManager::class.java).isPowerSaveMode) }
@@ -286,17 +333,12 @@ class DevCtl(core: Core) : Feature(core) {
             qs.put("ringer", when (a.ringerMode) { AudioManager.RINGER_MODE_SILENT -> "silent"; AudioManager.RINGER_MODE_VIBRATE -> "vibrate"; else -> "ring" })
         }
         val can = JSONObject().put("ring", true).put("qs", true).put("ringer", true).put("volume", true)
-        if (InputService.running != null && Build.VERSION.SDK_INT >= 28) can.put("lock", true)
-        val m = msg(STATE, "can" to can, "ringing" to (ringtone != null), "qs" to qs, "info" to info())
+        if (lock) can.put("lock", true)
+        val m = msg(STATE, "can" to can, "ringing" to ringing, "qs" to qs, "info" to info())
         m.put("app", JSONObject().put("v", BuildConfig.VERSION_NAME)) // which TwinDesk (shared/appinfo.js): the computer warns when it's older
         top()?.let { m.put("top", jsonArray(it)) }
-        val k = m.toString()
-        if (k == last) return
-        last = k
-        if (asking) m.put("ask", true) // the computer answers with its own (shared/devctl.js)
-        core.send(m)
+        return m
     }
-    private var asking = false
 
     // For the computer's Overview card: storage, the network, the signal.
     private fun info(): JSONObject {
@@ -396,3 +438,6 @@ class DevCtl(core: Core) : Feature(core) {
         }
     }
 }
+
+internal fun shouldSendDeviceState(owner: Any, current: Any?, previous: String, next: String, ask: Boolean): Boolean =
+    owner === current && (ask || previous != next)
