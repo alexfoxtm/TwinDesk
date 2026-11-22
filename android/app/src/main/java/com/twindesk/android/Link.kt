@@ -839,50 +839,58 @@ class Link(
     // Each of the session's sockets on its own: a quiet fallback goes, the session lives on.
     private fun beat() {
         if (state != "connected") return
+        var delay = Proto.PING_MS
+        try {
+            delay = beatConnected()
+        } catch (e: Exception) {
+            Log.e("TwinDesk", "link heartbeat", e)
+        } finally {
+            if (state == "connected") scheduleBeat(delay.coerceAtLeast(1L))
+        }
+    }
+
+    private fun beatConnected(): Long {
         val now = System.currentTimeMillis()
         // Quiet (both ends idle): only the network socket's own rule changes; Bluetooth as before.
         val mine = sayIdle(now)
         val quietNow = quietLink(mine, peerIdle, ble)
         if (quietNow && quietSince == 0L) { quietSince = now; Log.i("TwinDesk", "link quiet: pings every ${QUIET_PING_MS / 60000} min") }
         if (!quietNow && quietSince != 0L) { quietSince = 0L; quietEnd = now; probeAt = 0L; probed = false; Log.i("TwinDesk", "link active: pings every second") }
-        run {
-            for (w in listOfNotNull(ws, alt)) {
-                val onBle = if (w === ws) ble else altBle
-                val limit = if (onBle) Proto.BLE_TIMEOUT_MS else Proto.TIMEOUT_MS
-                val rx = maxOf(lastRxOf[w] ?: lastRx, if (onBle) bleRx() else 0L, if (onBle) 0L else quietEnd)
-                if (!onBle && quietNow) {
-                    if (w === ws && probeAt != 0L) { // something went out while quiet: is anyone there?
-                        if (rx >= probeAt) { probeAt = 0L; probed = false }
-                        else if (!probed) { probed = true; quietPing = now; w.send(msg(Proto.T.PING, "ts" to now).toString()); continue }
-                        else if (now - probeAt > Proto.TIMEOUT_MS) {
-                            Log.i("TwinDesk", "no answer on a quiet link, closing")
-                            if (alt == null) message = tr("Not responding")
-                            w.cancel()
-                            continue
-                        } else continue
-                    }
-                    if (now - rx > QUIET_TIMEOUT_MS) {
-                        Log.i("TwinDesk", "network socket silent for ${now - rx} ms on a quiet link, closing")
-                        if (w === ws && alt == null) message = tr("Not responding")
+        for (w in listOfNotNull(ws, alt)) {
+            val onBle = if (w === ws) ble else altBle
+            val limit = if (onBle) Proto.BLE_TIMEOUT_MS else Proto.TIMEOUT_MS
+            val rx = maxOf(lastRxOf[w] ?: lastRx, if (onBle) bleRx() else 0L, if (onBle) 0L else quietEnd)
+            if (!onBle && quietNow) {
+                if (w === ws && probeAt != 0L) { // something went out while quiet: is anyone there?
+                    if (rx >= probeAt) { probeAt = 0L; probed = false }
+                    else if (!probed) { probed = true; quietPing = now; w.send(msg(Proto.T.PING, "ts" to now).toString()); continue }
+                    else if (now - probeAt > Proto.TIMEOUT_MS) {
+                        Log.i("TwinDesk", "no answer on a quiet link, closing")
+                        if (alt == null) message = tr("Not responding")
                         w.cancel()
-                    } else if (now - maxOf(quietPing, quietSince) >= QUIET_PING_MS) {
-                        quietPing = now
-                        w.send(msg(Proto.T.PING, "ts" to now).toString())
-                    }
-                    continue
+                        continue
+                    } else continue
                 }
-                if (now - rx > limit) {
-                    Log.i("TwinDesk", "${if (onBle) "Bluetooth" else "network"} socket silent for ${now - rx} ms, closing")
+                if (now - rx > QUIET_TIMEOUT_MS) {
+                    Log.i("TwinDesk", "network socket silent for ${now - rx} ms on a quiet link, closing")
                     if (w === ws && alt == null) message = tr("Not responding")
                     w.cancel()
-                } else w.send(msg(Proto.T.PING, "ts" to now).toString())
+                } else if (now - maxOf(quietPing, quietSince) >= QUIET_PING_MS) {
+                    quietPing = now
+                    w.send(msg(Proto.T.PING, "ts" to now).toString())
+                }
+                continue
             }
+            if (now - rx > limit) {
+                Log.i("TwinDesk", "${if (onBle) "Bluetooth" else "network"} socket silent for ${now - rx} ms, closing")
+                if (w === ws && alt == null) message = tr("Not responding")
+                w.cancel()
+            } else w.send(msg(Proto.T.PING, "ts" to now).toString())
         }
-        val delay = if (quietNow && alt == null && probeAt == 0L) {
+        return if (quietNow && alt == null && probeAt == 0L) {
             val rx = ws?.let { lastRxOf[it] } ?: lastRx
             quietBeatDelay(maxOf(quietPing, quietSince) + QUIET_PING_MS, maxOf(rx, quietEnd) + QUIET_TIMEOUT_MS + 1, now)
         } else Proto.PING_MS
-        if (state == "connected") scheduleBeat(delay.coerceAtLeast(1L))
     }
 
     private val pairErrors get() = mapOf(
