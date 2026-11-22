@@ -194,8 +194,6 @@ data class StreamDoctorSample(val width: Int, val height: Int, val fps: Int?, va
 // the viewer page while ViewerActivity is open (screen.policy tells the Mac to stream).
 class Screen(core: Core) : Feature(core) {
     @Volatile var state: JSONObject? = null; private set // the Mac's screen.state
-    private fun Link.ownsVideoSession(marker: Any?): Boolean =
-        marker != null && currentTrustedRoute()?.marker === marker
 
     @Volatile var videoUnavailable = false; private set
 

@@ -336,13 +336,6 @@ class Link(
         return w.send(m.toString())
     }
 
-    // An asynchronous producer must never send an old session's data on a replacement socket.
-    internal fun sendFor(marker: Any?, m: JSONObject): Boolean {
-        val w = ws ?: return false
-        if (marker == null || w !== marker || state != "connected" || parting) return false
-        if (quietSince != 0L && probeAt == 0L) probeAt = System.currentTimeMillis()
-        return w.send(m.toString())
-    }
     internal fun photoRoute(source: WebSocket): Boolean =
         !parting && connected && !ble && ws === source && host?.os == "mac"
 
@@ -406,6 +399,17 @@ class Link(
 
     // The session's socket now: its address and port (127.0.0.1 through the cable or Bluetooth).
     fun endpoint(): Pair<String, Int>? = ws?.let { endOf[it] }
+
+    // A deferred viewer request belongs to the socket that delivered its offer.
+    internal fun sendFor(marker: Any?, m: JSONObject): Boolean {
+        val socket = ws ?: return false
+        if (marker == null || socket !== marker || state != "connected" || parting) return false
+        if (quietSince != 0L && probeAt == 0L) probeAt = System.currentTimeMillis()
+        return socket.send(m.toString())
+    }
+
+    internal fun ownsVideoSession(marker: Any?): Boolean =
+        !parting && connected && marker != null && ws === marker
 
     internal fun sessionMarker(): Any? = ws
     // Called synchronously before Core removes durable return intent. An already queued welcome
