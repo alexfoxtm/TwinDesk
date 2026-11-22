@@ -128,7 +128,7 @@ class Discovery(
         }
     }
 
-    fun start() {
+    @Synchronized fun start() {
         if (running) return
         running = true
         // Some phones drop broadcast packets for apps without this (held only while the screen is on).
@@ -157,7 +157,7 @@ class Discovery(
         }
     }
 
-    fun stop() {
+    @Synchronized fun stop() {
         running = false
         signalBeacon()
         runCatching { connectivity?.unregisterNetworkCallback(networkWatch) }
@@ -165,12 +165,19 @@ class Discovery(
         screenWatch = null
         sock?.close()
         sock = null
-        runCatching { lock?.release() }
+        screen(false)
+        lock = null
     }
 
     @Synchronized private fun screen(on: Boolean) {
         screenOn = on
-        runCatching { if (on) lock?.acquire() else lock?.release() }
+        runCatching {
+            lock?.let {
+                val want = discoveryMulticastNeeded(running, on)
+                if (want && !it.isHeld) it.acquire()
+                if (!want && it.isHeld) it.release()
+            }
+        }
     }
 
     fun list(): List<Found> = found.values.sortedWith(compareByDescending<Found> { it.invited }.thenBy { it.name })

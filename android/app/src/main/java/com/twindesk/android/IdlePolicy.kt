@@ -22,3 +22,5 @@ internal fun beaconDelay(interactive: Boolean, connected: Boolean, peerOn: Boole
     connected && !peerOn -> 4000L
     else -> Proto.BEACON_MS
 }
+
+internal fun discoveryMulticastNeeded(running: Boolean, interactive: Boolean): Boolean = running && interactive

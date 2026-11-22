@@ -97,6 +97,9 @@ class LocalSend(private val core: Core) : LsEvents {
             } catch (e: Exception) {
                 Log.d("TwinDesk", "localsend: $e")
                 failed = e.message ?: e.javaClass.simpleName
+                val failedNode = node
+                node = null
+                runCatching { failedNode?.stop() }
                 runCatching { multicast?.release() }
                 multicast = null
             }
