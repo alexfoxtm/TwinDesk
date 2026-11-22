@@ -397,3 +397,17 @@ test('a mesh device copying the text last sent is a copy, also during a read', a
   assert.deepEqual(texts(), ['A']);
   assert.equal(clip.readsInFlight, 0);
 });
+
+test('a live mesh clip that overtakes a queued paste wins', async () => {
+  const { clip, clipboard } = setup();
+  let release;
+  clip._readText = () => new Promise(resolve => { release = resolve; });
+  const pending = clip.away.applyLatest('queued', () => true);
+  await tick();
+  clip._readText = async () => clipboard.text;
+  await clip._onClip({ t: P.T.CLIP, text: 'live' }, 'peer');
+  release('');
+  await pending;
+  assert.deepEqual(clipboard.writes, ['live']);
+  assert.equal(clip.lastSync.received, 'live');
+});

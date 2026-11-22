@@ -233,7 +233,7 @@ test('outgoing reads release their count after an early return or rejection', as
   assert.equal(c.readsInFlight, 0, 'failed read');
 });
 
-// Fork: the away queue's paste (clip.queue) takes part in the same fence.
+// Queued and live pastes share the same receive fence.
 function queueSetup() {
   const s = setup();
   const ws = { readyState: 1 };
@@ -311,4 +311,33 @@ test('a live clip that overtakes a queued paste wins', async () => {
   assert.equal(c.lastReceived, 'live');
   assert.deepEqual(copies(), []);
   assert.equal(c.receiving, 0);
+});
+
+test('a queued paste that overtakes a live clip wins', async () => {
+  const { c, paste } = queueSetup();
+  let release;
+  read = () => new Promise(resolve => { release = resolve; });
+  const incoming = c._onClip({ text: 'live' });
+  await tick();
+  read = async () => text;
+  await paste();
+  release('');
+  await incoming;
+  assert.equal(text, 'queued');
+  assert.equal(c.lastReceived, 'queued');
+});
+
+test('a live picture that overtakes a queued paste wins', async () => {
+  const { c, paste } = queueSetup();
+  text = 'before';
+  let release;
+  read = () => new Promise(resolve => { release = resolve; });
+  const pending = paste();
+  await tick();
+  const png = Buffer.from('89504e470d0a1a0a' + '00'.repeat(24), 'hex');
+  c.images.header({ t: P.T.CLIP_IMAGE, id: 'pic', w: 4, h: 4, png: png.toString('base64') });
+  await tick();
+  release('before');
+  await pending;
+  assert.equal(text, '', 'the picture remains on the clipboard');
 });
