@@ -275,7 +275,10 @@
     }
     UI.renderPcs($('pcs'), list, { open: () => show('overview', true), active: !UI.webDev });
     // The ping changes every second. Patch the text so the tile (and its dot) is not rebuilt.
-    if (c && c.rttMs != null) setText($('pcs').querySelector('.phone-tile.connected .phone-sub'), tr('{value} ms', { value: c.rttMs }));
+    // A ping that comes back null has to clear the old number. The phones tile already says Connected.
+    const sub = $('pcs').querySelector('.phone-tile.connected .phone-sub');
+    if (c && c.rttMs != null) setText(sub, tr('{value} ms', { value: c.rttMs }));
+    else if (c) setText(sub, tr('Connected'));
   }
 
   function renderPhones(s) {
