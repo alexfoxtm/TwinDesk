@@ -118,6 +118,8 @@ let win = null;
 let tray = null;
 // Settings window: send state only while the user can see it (mac/win-watch.js).
 const controlWatch = require('./win-watch').createWatch();
+// Close hides it. It is destroyed five minutes after that, unless it was opened again (mac/win-idle.js).
+const { attach: attachIdle } = require('./win-idle');
 let lockKey = null; // the cursor lock key at home (shared/cursorlock.js)
 let hud = null;
 let photoBackup = null; // new camera photos from a paired Android phone (mac/photobackup.js)
@@ -564,6 +566,14 @@ function createWindow() {
     if (win === w) win = null;
     controlWatch.reset();
     dockIcon();
+  });
+  // The close button hides the window. Bounds stay with it. After five minutes idle,
+  // destroy() runs this same closed path, and the next open is a new 1060×720 window.
+  attachIdle(w, {
+    quitting: () => quitting,
+    onDead(dead) {
+      if (!dead.isDestroyed()) dead.destroy();
+    },
   });
 }
 
@@ -1783,6 +1793,8 @@ function setupWeb() {
 
 function goTab(tab) {
   if (TABS.includes(tab)) settings.ui.tab = tab; // a window made now opens there
+  // A hidden window already has its page. Move before it is shown, so the previous one does not flash back.
+  if (win && !win.isDestroyed() && !win.isVisible()) win.webContents.send('go', tab);
   showWindow();
   if (win && !win.isDestroyed()) win.webContents.send('go', tab);
 }
