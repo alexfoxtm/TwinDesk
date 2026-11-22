@@ -1586,17 +1586,6 @@ private fun NotificationsPage(core: Core, v: Int) {
     val hideText = core.store.flag("notifs.hideText", false)
     val paired = core.adb.paired
     val inOn = core.sync.get("notifs", "in")
-    val shown = core.notifs.shown
-    val taskRoute = core.link.currentTrustedRoute()
-    val taskOn = core.taskAlerts.enabled
-    val taskCanNotify = core.taskAlerts.canNotify
-    val taskHint = if (taskCanNotify)
-        tr("Receive completion alerts for tasks you start on {name}.", "name" to name)
-    else tr("Allow notifications in Android settings to receive task alerts.")
-    val askTaskNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        core.taskAlerts.linkChanged()
-        core.changed()
-    }
     val companion = core.companion
     val companionState = companion.state
     val companionBusy = companion.busy
@@ -1633,6 +1622,17 @@ private fun NotificationsPage(core: Core, v: Int) {
         else -> tr("Approving {name} lets TwinDesk send that Mac the original notification text, including security codes. Until then, Android is not supposed to give an untrusted listener that text. TwinDesk cannot check what was removed. This approval does not apply to a phone. App filters and hidden text still apply.", "name" to name)
     }
     val silence = core.silence.view()
+    val shown = core.notifs.shown
+    val taskRoute = core.link.currentTrustedRoute()
+    val taskOn = core.taskAlerts.enabled
+    val taskCanNotify = core.taskAlerts.canNotify
+    val taskHint = if (taskCanNotify)
+        tr("Receive completion alerts for tasks you start on {name}.", "name" to name)
+    else tr("Allow notifications in Android settings to receive task alerts.")
+    val askTaskNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        core.taskAlerts.linkChanged()
+        core.changed()
+    }
     if (!supported) Note(
         tr("This version of TwinDesk can’t read notifications, as Play Protect restricts downloaded apps. ") +
             tr("Once wireless debugging is set up, install the full version from the Phone page on {name}. Your settings and pairings are kept.", "name" to name),
@@ -1685,9 +1685,9 @@ private fun NotificationsPage(core: Core, v: Int) {
             }
         }
     }
-    if (silence.peer) SilenceCard(core, silence, name)
     // Each app on its own (#102): every app on the phone, as a block list or an allow list (AppCards.kt).
     if (core.notifs.supported) NotifAppsCard(core, name)
+    if (silence.peer) SilenceCard(core, silence, name)
     HistoryCard(core, "notifs") // History.kt
     // The computer's notifications shown here, newest first (all of them: History's own view).
     val recent = core.history.notifs().take(8)
