@@ -61,6 +61,8 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -94,12 +96,13 @@ import androidx.compose.ui.unit.sp
 
 class MainActivity : ComponentActivity() {
     private var resumed = mutableStateOf(0)
+    private val focusGains = mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         TwinService.start(this)
-        setContent { Theme { App(Core.get(this), resumed.value) } }
+        setContent { Theme { App(Core.get(this), resumed.value, focusGains) } }
         openTab.value = intent?.getStringExtra("tab")
         if (intent?.getBooleanExtra("update", false) == true) Core.get(this).updates.installNow() // the update notification
     }
@@ -132,6 +135,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) focusGains.value++
         // In front: Android lets us read the clipboard now.
         if (hasFocus) Core.get(this).let { if (it.sync.get("clipboard", "out")) it.clip.sendCurrent(false); it.peer.clipNow() }
     }
@@ -256,7 +260,7 @@ internal data class AppShell(
     val accessibility: Boolean,
 )
 
-internal fun appShellState(version: androidx.compose.runtime.State<Int>, read: () -> AppShell) =
+internal fun appShellState(version: State<Int>, read: () -> AppShell) =
     derivedStateOf(structuralEqualityPolicy()) {
         version.value
         read()
@@ -269,7 +273,7 @@ private fun CoreUpdates(core: Core, content: @Composable (Int) -> Unit) {
 }
 
 @Composable
-fun App(core: Core, resumed: Int) {
+internal fun App(core: Core, resumed: Int, focusGains: State<Int>) {
     val version = core.version.collectAsState()
     val shell by remember(core, version) {
         appShellState(version) {
@@ -368,11 +372,26 @@ fun App(core: Core, resumed: Int) {
     if (!setupDone) {
         var permissionResult by remember { mutableStateOf(0) }
         val debuggingChanges = setupDebuggingChanges(ctx)
-        val permissionInputs = SetupPermissionInputs(resumed, permissionResult, shell.listener, shell.accessibility, debuggingChanges, I18n.lang)
+        var setupVisible by remember { mutableStateOf(true) }
+        var tick by remember { mutableStateOf(0) }
+        val permissionInputs = setupPermissionInputs(
+            resumed, permissionResult,
+            if (setupVisible) NotifListener.running != null else shell.listener,
+            if (setupVisible) InputService.running != null else shell.accessibility,
+            debuggingChanges, I18n.lang, focusGains.value, tick, version, setupVisible,
+        )
         val items = remember(ctx, permissionInputs) {
             SetupCheck.items(ctx, core)
         }
-        if (SetupCheck.shouldShow(core, items)) {
+        val showSetup = SetupCheck.shouldShow(core, items)
+        SideEffect { setupVisible = showSetup }
+        if (showSetup) {
+            LaunchedEffect(Unit) {
+                while (true) {
+                    kotlinx.coroutines.delay(1500)
+                    tick++
+                }
+            }
             SetupScreen(core, ctx, items, { permissionResult++ }) { setupDone = true }
             return
         }

@@ -34,6 +34,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
+import androidx.compose.runtime.State
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
@@ -54,6 +55,25 @@ internal data class SetupPermissionInputs(
     val accessibilityConnected: Boolean,
     val debuggingChanges: Int,
     val language: String,
+    val focusGains: Int,
+    val tick: Int,
+    val revision: Int?,
+)
+
+internal fun setupPermissionInputs(
+    resumes: Int,
+    results: Int,
+    listenerConnected: Boolean,
+    accessibilityConnected: Boolean,
+    debuggingChanges: Int,
+    language: String,
+    focusGains: Int,
+    tick: Int,
+    version: State<Int>,
+    visible: Boolean,
+) = SetupPermissionInputs(
+    resumes, results, listenerConnected, accessibilityConnected, debuggingChanges, language,
+    focusGains, tick, if (visible) version.value else null,
 )
 
 object SetupCheck {

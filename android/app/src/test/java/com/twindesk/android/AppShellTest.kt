@@ -21,12 +21,27 @@ class AppShellTest {
         assertEquals(source, shell.value)
     }
 
-    @Test fun returningFromSettingsAndReceivingPermissionResultsInvalidateSetup() {
-        val before = SetupPermissionInputs(0, 0, false, false, 0, "en")
-        assertNotEquals(before, before.copy(resumes = 1))
-        assertNotEquals(before, before.copy(results = 1))
-        assertNotEquals(before, before.copy(listenerConnected = true))
-        assertNotEquals(before, before.copy(accessibilityConnected = true))
-        assertNotEquals(before, before.copy(debuggingChanges = 1))
+    @Test fun setupInputsTrackPermissionRefreshSources() {
+        val revision = mutableStateOf(0)
+        fun inputs(
+            resumes: Int = 0, results: Int = 0, listener: Boolean = false,
+            accessibility: Boolean = false, debugging: Int = 0, language: String = "en",
+            focus: Int = 0, tick: Int = 0, visible: Boolean = true,
+        ) = setupPermissionInputs(
+            resumes, results, listener, accessibility, debugging, language, focus, tick, revision, visible,
+        )
+        val before = inputs()
+        assertNotEquals("resume", before, inputs(resumes = 1))
+        assertNotEquals("permission result", before, inputs(results = 1))
+        assertNotEquals(before, inputs(listener = true))
+        assertNotEquals(before, inputs(accessibility = true))
+        assertNotEquals(before, inputs(debugging = 1))
+        assertNotEquals(before, inputs(language = "fr"))
+        assertNotEquals(before, inputs(focus = 1))
+        assertNotEquals(before, inputs(tick = 1))
+        val hidden = inputs(visible = false)
+        revision.value++
+        assertNotEquals(before, inputs())
+        assertEquals(hidden, inputs(visible = false))
     }
 }
