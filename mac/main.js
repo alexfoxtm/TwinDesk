@@ -594,8 +594,9 @@ function phoneAdb(b) {
 let trayKey = '';
 function showFileShelf() {
   if (!svc || modulesAtStart.includes('files')) return;
-  fileShelf ||= new (require('./file-shelf').FileShelf)({ drop: svc.drop, latestPhoto: () => photoBackup?.latest(), receipts: () => (localsend && localsend.receipts) || [], t });
+  fileShelf ||= new (require('./file-shelf').FileShelf)({ drop: svc.drop, t });
   fileShelf.show();
+  require('./file-shelf-receipts').attachReceipts(fileShelf, () => (localsend && localsend.receipts) || [], () => photoBackup?.latest());
 }
 
 function updateTray() {
@@ -755,10 +756,10 @@ app.whenReady().then(() => {
   });
   peer.on('closed', () => {
     if (previewShots) previewShots.cancel('session');
-    fileShelf?.refresh();
     pushState();
   });
   peer.on('rtt', pushState);
+  peer.on('closed', () => fileShelf?.refresh());
 
   svc = startServices({ server: peer, getSettings: () => settings, pushState, onHelperReady: refreshPermissions,
     clipboardPair: (ctx) => !ctx ? null : ctx.role === 'host'
@@ -1242,7 +1243,6 @@ app.whenReady().then(() => {
   nativeTheme.on('updated', () => pushState());
   // The system accent colour changed (General › Appearance › System follows it).
   try { systemPreferences.subscribeNotification('AppleColorPreferencesChangedNotification', () => pushState()); } catch {}
-  setupWeb();
   localsend = require('./localsend.js').setupLocalSend({
     settings: () => settings, save: () => store.saveSettings(settings), pushState: () => { pushState(); fileShelf?.refresh(); }, t, window: () => win,
     name: () => id.macName, receivedDir: () => settings.files.folder || app.getPath('downloads'),
@@ -1257,6 +1257,7 @@ app.whenReady().then(() => {
     if (on) loadSilence().start();
     else if (svc.silence) svc.silence.stop();
   };
+  setupWeb();
   actions = setupIpc({
     state,
     settings,

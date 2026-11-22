@@ -268,7 +268,7 @@ assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML|document\.write/.test(pageSrc
 assert.ok(!/search\.value\s*=/.test(pageSrcWin));
 assert.ok(!/shell\.|exec\(|spawn\(/.test(pageSrcWin));
 assert.ok(pageSrcWin.includes('Show in Explorer') && pageSrcWin.includes('Show in folder'));
-assert.ok(pageSrcWin.includes('revealDrop'));
+assert.ok(pageSrcWin.includes('TL.revealItem'));
 assert.ok(!pageSrcWin.includes('showItemInFolder'));
 for (const html of ['windows/app.html', 'windows/mesh/app.html', 'linux/app.html', 'linux/mesh/app.html']) {
   const s = read(html);

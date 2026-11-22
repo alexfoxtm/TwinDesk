@@ -219,64 +219,7 @@
       const it = fromCall(hub.ended, 0, false);
       if (useful(it)) out.push(it);
     }
-    // Completed incoming LocalSend files already on state.localsend. The transfer id stays with
-    // the item so a later reveal asks that history, not the TwinDesk drop list. Wire fields
-    // (address, fingerprint, token) are not copied. A path TwinDesk already lists stays TwinDesk's.
-    const seenPaths = new Set(out.filter((it) => it.kind === 'file' && it.path && it.meta && it.meta.dir === 'in' && it.meta.ok !== false).map((it) => it.path));
-    const ls = s.localsend && typeof s.localsend === 'object' ? s.localsend.transfers : null;
-    take(localSendRecords(ls), (r) => {
-      if (!r || seenPaths.has(r.path)) return null;
-      seenPaths.add(r.path);
-      return item({
-        id: `file:ls:${r.ls}:${r.index}`,
-        kind: 'file', at: r.at, title: r.name, path: r.path, peer: r.peer, copyText: '',
-        meta: { dir: 'in', ok: true, state: 'done', ls: r.ls, ...(r.index ? { lsIndex: r.index } : {}) },
-      });
-    }, out);
     return out;
-  }
-
-  function absolutePath(p) {
-    return typeof p === 'string' && p.length > 1 && p.length <= PATH && (p.charAt(0) === '/' || /^[A-Za-z]:[\\/]/.test(p));
-  }
-
-  // One record per saved file of a finished incoming transfer. Newest transfers first, as stored.
-  function localSendRecords(transfers) {
-    const records = [];
-    if (!Array.isArray(transfers)) return records;
-    const seen = new Set();
-    const n = Math.min(transfers.length, PER_SOURCE);
-    for (let i = 0; i < n && records.length < PER_SOURCE; i++) {
-      let tr;
-      try { tr = transfers[i]; } catch (_) { continue; }
-      if (!tr || typeof tr !== 'object' || Array.isArray(tr) || tr.dir !== 'in' || tr.state !== 'done' || !Array.isArray(tr.saved)) continue;
-      const id = typeof tr.id === 'string' ? tr.id.slice(0, 80) : '';
-      if (!id) continue;
-      const peer = tr.peer && typeof tr.peer === 'object' && typeof tr.peer.alias === 'string' ? tr.peer.alias : '';
-      const max = Math.min(tr.saved.length, 40);
-      for (let index = 0; index < max && records.length < PER_SOURCE; index++) {
-        const file = tr.saved[index];
-        if (!absolutePath(file) || seen.has(file)) continue;
-        seen.add(file);
-        records.push({ name: baseName(file), path: file, at: tr.at, peer, ls: id, index });
-      }
-    }
-    return records;
-  }
-
-  // Activity may reveal a completed receipt only while that transfer is still in the history, and
-  // only by its id and saved index. The returned object has no path.
-  function localsendReveal(it, transfers) {
-    const m = it && it.meta;
-    if (!m || typeof m.ls !== 'string' || !m.ls) return null;
-    if (m.lsIndex != null && (!Number.isInteger(m.lsIndex) || m.lsIndex < 0 || m.lsIndex > 999)) return null;
-    const index = Number.isInteger(m.lsIndex) && m.lsIndex > 0 ? m.lsIndex : 0;
-    const list = Array.isArray(transfers) ? transfers : [];
-    const tr = list.find((entry) => entry && entry.id === m.ls && entry.dir === 'in' && entry.state === 'done' && Array.isArray(entry.saved));
-    const file = tr && tr.saved[index];
-    if (typeof file !== 'string' || !file) return null;
-    if (it.path && file !== it.path) return null;
-    return index ? { id: m.ls, index } : { id: m.ls };
   }
 
   // Same id twice (a file in both files.recent and drop.recent, a notification in history and active):
@@ -322,7 +265,18 @@
     return dedupeSort(fromState(state));
   }
 
-  const API = { KINDS, PREVIEW, BODY, COPY, fromState, build, dedupeSort, filter, counts, matchQuery, atOf, str, baseName, localsendReveal };
+  // Reveal by index into the received list the main process already trusts.
+  function revealItem(it, state, api) {
+    if (!api || typeof api.revealDrop !== 'function' || !it.path) return;
+    const recent = (state && state.files && Array.isArray(state.files.recent) && state.files.recent)
+      || (state && state.drop && Array.isArray(state.drop.recent) && state.drop.recent)
+      || [];
+    const i = recent.findIndex((r) => r && r.path === it.path && r.at === it.at);
+    if (i >= 0) api.revealDrop(i);
+  }
+
+
+  const API = { KINDS, PREVIEW, BODY, COPY, fromState, build, dedupeSort, filter, counts, matchQuery, atOf, str, baseName, revealItem };
   if (typeof module === 'object' && module.exports) module.exports = API;
   else window.TDTimeline = API;
 })();
