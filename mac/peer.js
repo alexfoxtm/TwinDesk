@@ -25,12 +25,13 @@ class Peer extends EventEmitter {
     // … and v2 (shared/fx2.js): through the files engine, a utility process with its own server.
     this.fx2 = fx2Off() ? null : new Fx2({ tls: server.tls });
     if (this.fx2) {
-      // The engine starts on demand: a socket coming in, a hello going out, or the welcome
-      // waiting for a peer that asked. It is held for the session only once that welcome
-      // included the port — an incoming transfer connects there, with no later notice (server.js).
+      // The engine starts when this session will pin it: the welcome waits for a peer that
+      // asked (server.js fx2Wait), or a hello we send. A TLS socket by itself does not.
+      // A phone that never gets the port would otherwise fork the process and stop it 30s
+      // later. It is held for the session only once that welcome included the port — an
+      // incoming transfer connects there, with no later notice (server.js).
       server.fx2Port = () => this.fx2.port;
       server.fx2Wait = (ms) => this.fx2.whenReady(ms);
-      server.https.on('secureConnection', () => this.fx2.warm());
       link.fx2Hello = () => { this.fx2.warm(); return this.fx2.client; };
     }
     this.fx = new FastFiles({ session: () => this._fxSession(), deliver: (m) => this.current && this._deliver(m, this.current), send: (m) => this.sendNow(m), fx2: this.fx2 });

@@ -41,6 +41,33 @@ test('a host session keeps the files engine only when the welcome included its p
   assert.deepEqual(calls.at(-1), ['guest', false]);
 });
 
+test('a tls connection does not start the engine; a session that will pin it does', () => {
+  const server = new EventEmitter();
+  const tls = [];
+  const listened = [];
+  server.https = {
+    on(ev, fn) {
+      listened.push(ev);
+      if (ev === 'secureConnection') tls.push(fn);
+    },
+  };
+  server.tls = { key: 'k', cert: 'c' };
+  server.current = null;
+  const link = new EventEmitter();
+  link.poke = () => {};
+  const peer = new Peer(server, link);
+  const warms = [];
+  peer.fx2.warm = () => { warms.push('warm'); };
+  for (const fn of tls) fn();
+  assert.deepEqual(warms, [], 'a socket on a session that has not pinned the engine does not fork it');
+  assert.equal(listened.includes('secureConnection'), false);
+  link.fx2Hello();
+  assert.deepEqual(warms, ['warm'], 'a hello we send starts it, because that session pins it');
+  peer.fx2.need('host', true);
+  assert.deepEqual(warms, ['warm', 'warm'], 'a welcome that will carry the port starts it');
+  assert.equal(peer.fx2.needs.has('host'), true, 'and the pin keeps it from the 30s stop');
+});
+
 test('a computer that is only nearby does not pin the files engine', () => {
   const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
   assert.equal(main.includes(".need('nearby'"), false);
