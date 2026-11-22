@@ -85,6 +85,13 @@
       PAIR_CONFIRM: 'pair.confirm',
       PAIR_OK: 'pair.ok',
       PAIR_CANCEL: 'pair.cancel',
+      LOCK_STATE: 'lock.state', // host->Android {locked,can,continuing?,layoutStale?}: single-session Mac viewer state
+      LOCK_OPEN: 'lock.open', // Android->host {request:32 lowercase hex}: explicit user action
+      LOCK_READY: 'lock.ready', // Android->host {request}: Screen Sharing authentication completed
+      LOCK_KEEP: 'lock.keep', // Android->host {request}: foreground fast viewer retains its authenticated session
+      LOCK_TICKET: 'lock.ticket', // host->Android {request,ticket,path,expiresIn,account?,primaryView?}; session-bound, never logged or persisted
+      LOCK_END: 'lock.end', // Android {request}; host {request?,reason:unavailable|ended|unlocked|session-ended|timeout|display-changed}
+      // screen.state input (optional) reports whether the sharer currently accepts screen input.
       // session
       HELLO: 'hello', // + {rc:1, resume:'0'} is a non-takeover reclaim (shared/reclaim.js); plain hello still takes a phone's session
       WELCOME: 'welcome',
@@ -100,13 +107,6 @@
       RTC_ANSWER: 'rtc.answer',
       RTC_ICE: 'rtc.ice',
       RTC_DETAIL: 'rtc.detail', // Android -> desktop: {session, height}; an advertised offer tier, or 0 for the baseline
-      LOCK_STATE: 'lock.state', // host->Android {locked,can,continuing?,layoutStale?}: single-session Mac viewer state
-      LOCK_OPEN: 'lock.open', // Android->host {request:32 lowercase hex}: explicit user action
-      LOCK_READY: 'lock.ready', // Android->host {request}: Screen Sharing authentication completed
-      LOCK_KEEP: 'lock.keep', // Android->host {request}: foreground fast viewer retains its authenticated session
-      LOCK_TICKET: 'lock.ticket', // host->Android {request,ticket,path,expiresIn,account?,primaryView?}; session-bound, never logged or persisted
-      LOCK_END: 'lock.end', // Android {request}; host {request?,reason:unavailable|ended|unlocked|session-ended|timeout|display-changed}
-      // screen.state input (optional) reports whether the sharer currently accepts screen input.
       // input inside the Monitor 2 window (absolute, normalized), Windows -> Mac. From a phone's
       // stylus, in.mm/md/mu carry `pen` (P.penOf): the helpers inject a tablet pen; without it, a mouse
       IN_MOVE: 'in.mm',
