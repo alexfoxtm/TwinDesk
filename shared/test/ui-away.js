@@ -125,4 +125,82 @@ for (const href of sheets) {
     assert.ok(LEFT[m[1]], `${href}: ${m[1]} animates ${paint.join(', ')} on a steady screen; move it to transform and opacity`);
   }
 }
+function ruleBody(css, sel) {
+  const m = new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{').exec(css);
+  assert.ok(m, `missing ${sel}`);
+  let i = m.index + m[0].length;
+  let depth = 1;
+  const start = i;
+  while (i < css.length && depth) {
+    if (css[i] === '{') depth++;
+    else if (css[i] === '}') depth--;
+    i++;
+  }
+  return css.slice(start, i - 1);
+}
+function decl(body, prop) {
+  const m = new RegExp('(?:^|[;{])\\s*' + prop + '\\s*:\\s*([^;]+)', 'm').exec(';' + body);
+  assert.ok(m, `missing ${prop} in ${body}`);
+  return m[1].trim();
+}
+
+// Ring: a 7px dot, a 13px disc (the 3px breathe shadow), scale 7/13 to 1, opacity 1 to 0.
+{
+  const dot = fs.readFileSync(path.join(root, 'mac/control.css'), 'utf8');
+  assert.match(dot, /\.dot\s*\{[^}]*width:\s*7px;\s*height:\s*7px/);
+  const ring = ruleBody(calm, '.dot.good::after');
+  assert.equal(decl(ring, 'width'), '13px');
+  assert.equal(decl(ring, 'height'), '13px');
+  assert.equal(decl(ring, 'background'), 'rgba(48, 185, 77, 0.45)');
+  const cover = ruleBody(calm, '.dot.good::before');
+  assert.equal(decl(cover, 'background'), 'var(--good)');
+  assert.equal(decl(cover, 'z-index'), '1');
+  assert.equal(decl(ring, 'z-index'), '0');
+  const b = frames['td-breathe'].replace(/\s+/g, ' ');
+  assert.match(b, /0%, 100% \{ transform: scale\(calc\(7 \/ 13\)\); opacity: 1; \}/);
+  assert.match(b, /50% \{ transform: scale\(1\); opacity: 0; \}/);
+}
+
+// Pulse: a 40px streak. The box starts at -40 and is W+40 wide, so translate 0 to 100%
+// matches upstream left -40px to left 100%. Fully outside the link at both ends.
+{
+  const pulse = ruleBody(calm, '.hero-link.up .hero-pulse');
+  assert.equal(decl(pulse, 'left'), '-40px');
+  assert.equal(decl(pulse, 'width'), 'calc(100% + 40px)');
+  const streak = ruleBody(calm, '.hero-link.up .hero-pulse::before');
+  assert.equal(decl(streak, 'width'), '40px');
+  const travel = frames['td-travel'].replace(/\s+/g, ' ');
+  assert.match(travel, /from \{ transform: translateX\(0\); \}/);
+  assert.match(travel, /to \{ transform: translateX\(100%\); \}/);
+  const W = 200;
+  for (const p of [0, 0.5, 1]) {
+    const shift = p * (W + 40);
+    const x0 = -40 + shift;
+    const x1 = x0 + 40;
+    if (p === 0) assert.ok(x1 <= 0, 'the pulse starts fully left of the link');
+    else if (p === 1) assert.ok(x0 >= W, 'the pulse ends fully right of the link');
+    else assert.ok(x0 < W && x1 > 0, 'the pulse crosses the link in the middle');
+  }
+}
+
+// Dashes: one 24px tile, starting one tile left of the link, so [0, W] stays painted
+// at every translate. left: 0 leaves [0, t) empty.
+{
+  const bar = ruleBody(calm, '.hero-link:not(.up)::before');
+  const left = Number(decl(bar, 'left').replace('px', ''));
+  const extra = Number((decl(bar, 'width').match(/calc\(100% \+ (\d+)px\)/) || [])[1]);
+  assert.equal(extra, 24, 'the streak is one dash tile wider than the link');
+  assert.equal(decl(bar, 'background-size'), '24px 3px');
+  const dash = frames['td-dash'].replace(/\s+/g, ' ');
+  assert.match(dash, /from \{ transform: translateX\(0\); \}/);
+  assert.match(dash, /to \{ transform: translateX\(24px\); \}/);
+  assert.equal(left, -24, 'the streak starts one tile left of the link');
+  const W = 200;
+  for (const t of [0, 6, 12, 24]) {
+    const x0 = left + t;
+    const x1 = x0 + W + extra;
+    assert.ok(x0 <= 0 && x1 >= W, `translate ${t}px covers [${x0}, ${x1}], which does not contain [0, ${W}]`);
+  }
+}
+
 console.log('ui-away: ok');
