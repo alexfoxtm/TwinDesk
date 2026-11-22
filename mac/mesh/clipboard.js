@@ -87,16 +87,15 @@ class Clip extends EventEmitter {
       activePair: opts.activePair,
       knownPair: opts.knownPair,
       currentSocket: (id) => sess(id)?.outbound(),
-      applyLatest: (text, allowed) => this._applyQueuedText(text, allowed),
     });
     const bus = this.bus;
     bus.on(P.T.CLIP, (m, from) => this._onClip(m, from));
-    bus.on(P.T.CLIP_QUEUE, (m, from, ws) => {
+    bus.on(P.T.CLIP_QUEUE, (m, from, source, ws = source) => {
       if (ws && ws === sess(from)?.outbound()) return this.away.receive(m, from);
     });
     bus.on(P.T.CLIP_IMAGE, (m, from) => this.images.header(m, from));
     bus.on(P.T.CLIP_IMAGE_PART, (m, from) => this.images.part(m, from));
-    bus.on(P.T.CLIP_POLICY, (m, from, ws) => {
+    bus.on(P.T.CLIP_POLICY, (m, from, source, ws = source) => {
       const e = this.mesh.get(from);
       if (e) e.pool = m.accept !== false;
       this.images.policy(m, from);
@@ -119,11 +118,30 @@ class Clip extends EventEmitter {
       this._applyWatch();
       this._changed();
     });
+    this.away.applyLatest = (text, allowed) => this._applyQueuedText(text, allowed);
     if (this.helper) {
       this.helper.on('event', (name, ev) => {
         if (name === 'clipboard') this.onLocalCopy(ev);
       });
       this.helper.on('ready', () => setTimeout(() => this.applySettings(), 100));
+    }
+  }
+
+  async _applyQueuedText(text, allowed) {
+    const sequence = ++this.receiveSequence;
+    ++this.receiving;
+    try {
+      const current = await this._readText().catch(() => '');
+      if (sequence !== this.receiveSequence || !allowed()) return;
+      if (current !== text) await this.clipboard.writeText(text);
+      if (sequence < this.lastAppliedText) return;
+      this.lastAppliedText = sequence;
+      ++this.readSequence;
+      this.lastSync.received = text;
+      this.seen = text;
+      this.away.seen = text;
+    } finally {
+      this._endReceive();
     }
   }
 
@@ -239,24 +257,6 @@ class Clip extends EventEmitter {
       this.seen = text; // so instant mode doesn't publish it back
       this._remember('in', text, name);
       this._changed();
-    } finally {
-      this._endReceive();
-    }
-  }
-
-  async _applyQueuedText(text, allowed) {
-    const sequence = ++this.receiveSequence;
-    ++this.receiving;
-    try {
-      const current = await this._readText().catch(() => '');
-      if (sequence !== this.receiveSequence || !allowed()) return;
-      if (current !== text) await this.clipboard.writeText(text);
-      if (sequence < this.lastAppliedText) return;
-      this.lastAppliedText = sequence;
-      ++this.readSequence;
-      this.lastSync.received = text;
-      this.seen = text;
-      this.away.seen = text;
     } finally {
       this._endReceive();
     }
