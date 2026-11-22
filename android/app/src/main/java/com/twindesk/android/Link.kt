@@ -123,6 +123,9 @@ class Link(
     // computer saying busy or wake() do. A computer that never says idle (an older app) keeps today's
     // pings. Not through Bluetooth.
     @Volatile var busyHere: () -> Boolean = { false }
+    @Volatile var busyReason: (() -> String?)? = null
+    private var lastQuietReason = ""
+    private var quietReasonAt = 0L
     @Volatile var keepPinging = false
     @Volatile private var peerIdle = false
     @Volatile private var saidIdle = false
@@ -137,15 +140,47 @@ class Link(
 
     // The screen came on, the network changed, the app opened: active again for a while, so a session
     // that died in the quiet is found within TIMEOUT_MS. Also when a hold starts or ends (Core.changed).
-    fun wake() { wokeAt = System.currentTimeMillis(); if (pinger != null) runCatching { exec.execute { beat() } } }
-    // Only says this side's idle state if it changed (no pings: Core.changed() calls this often).
-    fun nudge() { if (pinger != null) runCatching { exec.execute { if (state == "connected") sayIdle(System.currentTimeMillis()) } } }
+    fun wake() {
+        wokeAt = System.currentTimeMillis()
+        if (state == "connected") run { beat() }
+    }
 
-    private fun idleHere(now: Long) = !keepPinging && !runCatching { busyHere() }.getOrDefault(true) && now - maxOf(lastUse, wokeAt) >= QUIET_ACTIVE_MS
+    fun nudge() {
+        if (state == "connected") runCatching {
+            exec.execute {
+                if (state != "connected") return@execute
+                val mine = sayIdle(System.currentTimeMillis())
+                if (quiet && (!mine || !peerIdle || ble || probeAt != 0L)) beat()
+            }
+        }
+    }
+
+    private fun markProbe() {
+        if (quiet && probeAt == 0L) {
+            probeAt = System.currentTimeMillis()
+            nudge()
+        }
+    }
 
     private fun sayIdle(now: Long): Boolean {
-        val mine = idleHere(now)
+        val reason = when {
+            keepPinging -> "performance"
+            else -> runCatching {
+                busyReason?.invoke() ?: if (busyHere()) "feature" else null
+            }.getOrDefault("feature-error")
+        } ?: if (now - maxOf(lastUse, wokeAt) < QUIET_ACTIVE_MS) "recent-wake" else null
+        val mine = reason == null
         if (mine != saidIdle) { ws?.let { w -> if (!ble && w.send(msg(QUIET_IDLE, "on" to mine).toString())) saidIdle = mine } }
+        val code = reason ?: when {
+            ble -> "bluetooth"
+            !peerIdle -> "peer-not-idle"
+            else -> "quiet"
+        }
+        if (code != lastQuietReason && now - quietReasonAt >= 5000) {
+            Log.i("TwinDesk", "quiet reason=$code")
+            lastQuietReason = code
+            quietReasonAt = now
+        }
         return mine
     }
     var bleRx: () -> Long = { 0L } // Ble.lastDown: bytes arriving through Bluetooth count as alive
@@ -317,8 +352,7 @@ class Link(
     // connected, gets nothing: the caller keeps the bytes for a later consenting socket of this pair.
     fun sendFor(route: TrustedRoute?, m: JSONObject): Boolean {
         val w = matches(route) ?: return false
-        if (quietSince != 0L && probeAt == 0L) probeAt = System.currentTimeMillis()
-        return w.send(m.toString())
+        return w.send(m.toString()).also { if (it) markProbe() }
     }
 
     private fun matches(route: TrustedRoute?): WebSocket? {
@@ -332,15 +366,14 @@ class Link(
     fun send(m: JSONObject): Boolean {
         val w = ws ?: return false
         if (state != "connected") return false
-        if (quietSince != 0L && probeAt == 0L) probeAt = System.currentTimeMillis()
-        return w.send(m.toString())
+        return w.send(m.toString()).also { if (it) markProbe() }
     }
 
     internal fun photoRoute(source: WebSocket): Boolean =
         !parting && connected && !ble && ws === source && host?.os == "mac"
 
     internal fun sendPhoto(m: JSONObject, source: WebSocket): Boolean =
-        photoRoute(source) && source.send(m.toString())
+        photoRoute(source) && source.send(m.toString()).also { if (it) markProbe() }
 
     // send() for the pointer's hot path (WebHost's TD.move): the line written into one builder, made
     // once. Never held for Wi-Fi (Netlink.holdOut holds only files). kind: 0 remote.mm, 1 remote.wh,
@@ -360,7 +393,7 @@ class Link(
             }
             s.append('}').toString()
         }
-        return w.send(line)
+        return w.send(line).also { if (it) markProbe() }
     }
 
     // A JSON number: a whole one without ".0" (as the page's JSON.stringify writes it).
@@ -404,8 +437,7 @@ class Link(
     internal fun sendFor(marker: Any?, m: JSONObject): Boolean {
         val socket = ws ?: return false
         if (marker == null || socket !== marker || state != "connected" || parting) return false
-        if (quietSince != 0L && probeAt == 0L) probeAt = System.currentTimeMillis()
-        return socket.send(m.toString())
+        return socket.send(m.toString()).also { if (it) markProbe() }
     }
 
     internal fun ownsVideoSession(marker: Any?): Boolean =
@@ -756,13 +788,19 @@ class Link(
         saidIdle = false
         quietSince = 0L
         quietEnd = 0L
+        quietPing = 0L
         probeAt = 0L
         probed = false
         lastUse = System.currentTimeMillis()
-        pinger = exec.scheduleWithFixedDelay({ beat() }, Proto.PING_MS, Proto.PING_MS, TimeUnit.MILLISECONDS)
+        scheduleBeat(Proto.PING_MS)
         setState("connected", "")
         peerBackup = m.opt("pb") == 1
         events.onWelcome(h)
+    }
+
+    private fun scheduleBeat(delay: Long) {
+        pinger?.cancel(false)
+        pinger = exec.schedule({ beat() }, delay, TimeUnit.MILLISECONDS)
     }
 
     // Each of the session's sockets on its own: a quiet fallback goes, the session lives on.
@@ -771,7 +809,7 @@ class Link(
         val now = System.currentTimeMillis()
         // Quiet (both ends idle): only the network socket's own rule changes; Bluetooth as before.
         val mine = sayIdle(now)
-        val quietNow = mine && peerIdle && !ble
+        val quietNow = quietLink(mine, peerIdle, ble)
         if (quietNow && quietSince == 0L) { quietSince = now; Log.i("TwinDesk", "link quiet: pings every ${QUIET_PING_MS / 60000} min") }
         if (!quietNow && quietSince != 0L) { quietSince = 0L; quietEnd = now; probeAt = 0L; probed = false; Log.i("TwinDesk", "link active: pings every second") }
         run {
@@ -807,6 +845,11 @@ class Link(
                 } else w.send(msg(Proto.T.PING, "ts" to now).toString())
             }
         }
+        val delay = if (quietNow && alt == null && probeAt == 0L) {
+            val rx = ws?.let { lastRxOf[it] } ?: lastRx
+            quietBeatDelay(maxOf(quietPing, quietSince) + QUIET_PING_MS, maxOf(rx, quietEnd) + QUIET_TIMEOUT_MS + 1, now)
+        } else Proto.PING_MS
+        if (state == "connected") scheduleBeat(delay.coerceAtLeast(1L))
     }
 
     private val pairErrors get() = mapOf(

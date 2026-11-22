@@ -77,8 +77,7 @@ function keeping() {
   try { return !!(keepFn && keepFn()); } catch (_) { return true; }
 }
 
-function idleHere(ws, now) {
-  if (keeping() || holds.size) return false;
+function pastActiveWindow(ws, now) {
   return now - Math.max(ws.quietOpened || 0, wokeAt) >= ACTIVE_MS;
 }
 
@@ -103,7 +102,16 @@ function sent(ws, msg) {
 
 function tick(ws, now, rx, raw, busy = false) {
   if (!ws.quietOpened) ws.quietOpened = now;
-  const mine = !busy && idleHere(ws, now);
+  const reason = busy ? 'session-busy' : keeping() ? 'performance' : holds.size
+    ? ['kvm', 'files', 'lockview'].find((key) => holds.has(key)) || 'feature'
+    : !pastActiveWindow(ws, now) ? 'recent-wake' : null;
+  const mine = reason === null;
+  const code = reason || (ws.quietPeer === true ? 'quiet' : 'peer-not-idle');
+  if (code !== ws.quietReason && (!ws.quietReasonAt || now - ws.quietReasonAt >= 5000)) {
+    console.log(`[quiet] reason=${code}`);
+    ws.quietReason = code;
+    ws.quietReasonAt = now;
+  }
   if ((ws.quietSaid || false) !== mine) { // nothing said yet = busy (what an older app assumes)
     // Only once the other end has shown it knows `idle` (it said it), or to say we're idle: an older
     // app ignores the type. Saying busy before it ever said idle is pointless but harmless.

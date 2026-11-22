@@ -154,16 +154,25 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // Clipboard, notifications and cursor sharing switched on don't: their messages go when
         // something happens, and a message makes the link active at once.
         link.keepPinging = performance
-        link.busyHere = {
-            screen.viewing || lockView.active || adb.viewed || remote.active || files.moving || mirror.wanted || sound.wanted || SoundService.running != null ||
-                MainActivity.shown
+        link.busyReason = {
+            val interactive = ctx.getSystemService(android.os.PowerManager::class.java)?.isInteractive != false
+            when {
+                screen.viewing -> "viewer"
+                lockView.active -> "lock-view"
+                adb.viewed -> "adb-view"
+                remote.active -> "remote"
+                files.moving -> "files"
+                SoundService.running != null -> "media-service"
+                interactive && MainActivity.shown -> "activity"
+                else -> null
+            }
         }
         // The screen came on or the phone was unlocked: look at the session now (a dead one is found
         // within seconds instead of at the next quiet ping).
         runCatching {
             ctx.registerReceiver(object : android.content.BroadcastReceiver() {
-                override fun onReceive(c: Context, i: android.content.Intent) { link.wake() }
-            }, android.content.IntentFilter().apply { addAction(android.content.Intent.ACTION_SCREEN_ON); addAction(android.content.Intent.ACTION_USER_PRESENT) })
+                override fun onReceive(c: Context, i: android.content.Intent) { if (i.action == android.content.Intent.ACTION_SCREEN_OFF) link.nudge() else link.wake() }
+            }, android.content.IntentFilter().apply { addAction(android.content.Intent.ACTION_SCREEN_ON); addAction(android.content.Intent.ACTION_SCREEN_OFF); addAction(android.content.Intent.ACTION_USER_PRESENT) })
         }
     }
 
