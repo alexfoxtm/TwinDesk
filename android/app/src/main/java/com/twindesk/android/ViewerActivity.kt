@@ -1,8 +1,12 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // The Mac's screen, full screen: Mirror (the Mac's own screen) or Extend (a second screen for the
 // Mac, sized to this one). The picture and the touches are viewer.html's; this activity adds a
-// toolbar. The Mac controls keep scaling local and put resolution next to the actual picture size.
-// The desktop overview still owns display and workspace choices. The login view is separate.
+// small bar (tap the handle at the top). A Mac uses the viewing toolbar (scale, resolution, touchpad,
+// sound, rotate, screenshot) and hides the side rail. Windows and Linux keep Mirror / Extend, which
+// display, Displays & desktops, previous/next desktop, keyboard, and close.
+// When this Mac sends a desktop catalog, that sheet is the mirror, display, and desktop control.
+// Stop, the keyboard, and Close stay on the bar. An older Mac, or a picture that is not sharing
+// or not taking input, keeps Mirror, Extend, the display list, and previous/next.
 package com.twindesk.android
 
 import android.os.Bundle
