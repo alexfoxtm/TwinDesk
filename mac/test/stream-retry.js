@@ -69,6 +69,47 @@ test('retries wait 2, 4, 8, 16 then 30 seconds, and a new request starts again a
   }
 });
 
+test('a failure the capture window reports waits 2, 4, 8, 16 then 30 seconds', async () => {
+  const fake = useFakeTimers();
+  try {
+    const server = new EventEmitter();
+    server.current = { os: 'android', transport: 'ip' };
+    server.sendToClient = () => {};
+    const displays = new EventEmitter();
+    displays.target = () => ({ id: 'd1', label: 'D', pixelWidth: 100, pixelHeight: 100, hz: 60 });
+    const s = new Stream(server, displays, () => ({ sharing: { on: true, audio: false }, bitrateMbps: 8 }), { release() {}, loopback() {} });
+    s._ensureWindow = async () => { s.win = { isDestroyed: () => false, webContents: { send() {} } }; };
+    s._source = async () => ({ id: 'screen:1:0' });
+    await s.restart('sharing on');
+    const tell = (status, extra) => ipcMain.emit('capture:state', { sender: s.win.webContents }, { session: s.active.session, status, ...extra });
+    s._retryN = 2;
+    tell('waiting for answer');
+    tell('connecting');
+    assert.equal(s._retryN, 2, 'the offer going out is not a capture that works');
+    s._retryN = 0;
+    const want = [2000, 4000, 8000, 16000, 30000];
+    for (let i = 0; i < want.length; i++) {
+      tell('failed');
+      const t = fake.timers.at(-1);
+      assert.equal(t && t.ms, want[i], `failure ${i + 1}`);
+      fake.timers.splice(fake.timers.indexOf(t), 1);
+      t.fn();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+    }
+    tell('live');
+    assert.equal(s._retryN, 0, 'live capture: the next failure waits 2s');
+    ipcMain.emit('capture:stats', { sender: s.win.webContents }, { session: s.active.session, fps: 30, mbps: 1 });
+    s._retryN = 4;
+    ipcMain.emit('capture:stats', { sender: s.win.webContents }, { session: s.active.session, fps: 30, mbps: 1 });
+    assert.equal(s._retryN, 0, 'frames flowing clear the wait');
+    tell('failed');
+    assert.equal(fake.timers.at(-1).ms, 2000, 'the failure after a real success starts at 2s');
+  } finally {
+    fake.restore();
+  }
+});
+
 test('a wake or a granted permission retries at once, and a started capture clears the wait', async () => {
   const stream = make();
   stream._retryN = 4;
@@ -104,7 +145,9 @@ test('a wake or a granted permission retries at once, and a started capture clea
   live._ensureWindow = async () => { live.win = { isDestroyed: () => false, webContents: { send() {} } }; };
   live._retryN = 4;
   await live.restart('retry');
-  assert.equal(live._retryN, 0, 'a capture that started waits 2s next time');
+  assert.equal(live._retryN, 4, 'sending start is not a capture that works');
+  ipcMain.emit('capture:state', { sender: live.win.webContents }, { session: live.active.session, status: 'live' });
+  assert.equal(live._retryN, 0, 'a live capture waits 2s next time');
 });
 
 test('wake is subscribed once, permission nudges from the main process, and Multi-device still retries every 2s', () => {

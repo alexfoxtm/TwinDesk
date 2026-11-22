@@ -32,7 +32,7 @@ class Stream extends EventEmitter {
     this.session = 0;
     this.active = null; // {session, displayId, width, height} while a session runs
     this.retryTimer = null;
-    this._retryN = 0; // failed starts so far; the wait doubles up to 30s, then a success or a new request clears it
+    this._retryN = 0; // failed starts so far; the wait doubles up to 30s. Live frames or a new request clear it; sending start does not
     this.viewer = null; // the peer's screen.policy accept; null = never said (older app: always watching)
     this.view = { status: 'off', display: null, width: 0, height: 0, fps: 0, mbps: 0, encoder: '', codec: '' };
 
@@ -113,6 +113,9 @@ class Stream extends EventEmitter {
       Object.assign(this.view, { fps, mbps, encoder, codec, qp, encodeMs, limit, targetMbps });
       if (process.env.MACSHARE_DEBUG_STATS) console.log(`[stream] ${JSON.stringify(s)}`);
       if (s.width) Object.assign(this.view, { width: s.width, height: s.height });
+      // A zero sample is the timer starting, not a picture. A late packet must not
+      // cancel a retry that a failure already scheduled (_captureReady leaves that timer).
+      if ((fps || 0) > 0 || (mbps || 0) > 0) this._captureReady();
       this.emit('change');
     });
     // Chromium gave no sound (capture.js): the helper's capture instead.
@@ -128,7 +131,8 @@ class Stream extends EventEmitter {
     ipcMain.on('capture:state', (e, s) => {
       if (!this._fromCapture(e) || !this.active || s.session !== this.active.session) return;
       this._setStatus(s.status);
-      if (s.status === 'failed' || s.status.startsWith('error')) this._scheduleRetry();
+      if (s.status === 'live' || s.status === 'streaming') this._captureReady();
+      else if (s.status === 'failed' || s.status.startsWith('error')) this._scheduleRetry();
     });
     // Tests stub electron without powerMonitor. A real one retries at once after sleep or
     // unlock, and only while a retry is already waiting (a live capture is left alone).
@@ -191,6 +195,16 @@ class Stream extends EventEmitter {
       return true;
     }
     return false;
+  }
+
+  // Sending start is not success: the capture window can still answer failed.
+  // Frames, or a live capture, are. Only those clear a retry that is still waiting.
+  _captureReady() {
+    this._retryN = 0;
+    if (this.view.status === 'live' || this.view.status === 'streaming') {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
   }
 
   _setStatus(status) {
@@ -265,7 +279,8 @@ class Stream extends EventEmitter {
       const src = await this._source(target);
       if (!this.active || this.active.session !== s || this.displays.target()?.id !== target.id) return;
       const set = this.getSettings();
-      if (this._toWindow('start', {
+      // The window answering live, or frames, clears the wait. Sending this does not.
+      this._toWindow('start', {
         session: s, bitrateMbps: set.bitrateMbps, // Share screen › Quality, for phones too
         sourceId: src.id, width, height, audio,
         detailSource: detailOwner ? { width: target.pixelWidth, height: target.pixelHeight } : null,
@@ -273,7 +288,7 @@ class Stream extends EventEmitter {
         fps: ScreenCodec.fps(target.hz, set.sharing && set.sharing.fps), // Share screen › Frame rate
         steady: !!(set.sharing && set.sharing.pace === 'steady'), // Playback › Steady (shared/screencodec.js)
         codec: ScreenCodec.mode(set.sharing && set.sharing.codec), // Share screen › Encoder
-      })) this._retryN = 0; // it started: the next failure waits 2s again
+      });
     } catch (e) {
       if (!this.active || this.active.session !== s) return;
       if (e.code === 'NO_DISPLAY') { this.displays.uncapturable?.(target.id); return this._waitDisplay(); }
