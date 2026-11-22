@@ -6,7 +6,6 @@ import java.io.ByteArrayInputStream
 import java.security.MessageDigest
 import java.util.Base64
 import org.json.JSONObject
-import org.junit.Assume.assumeNoException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -97,18 +96,14 @@ class PhotoBackupTest {
         synchronized(lock) { credit.grant(1, 5, 0) }
         assertFalse("written cannot exceed sent", creditWithoutWaiting(credit, 4, false))
         synchronized(lock) { credit.grant(0, 5, 0) }
-        assertFalse("upTo must match the negotiated window", creditWithoutWaiting(credit, 4, false))
+        assertFalse("upTo cannot exceed the negotiated window", creditWithoutWaiting(credit, 4, false))
+        synchronized(lock) { credit.grant(0, 3, 0) }
+        assertFalse("upTo cannot shrink the negotiated window", creditWithoutWaiting(credit, 3, false))
     }
 
     @Test
     fun parsesWireGrantWithAndroidJson() {
-        val message = try {
-            JSONObject("""{"written":0,"upTo":32768}""").also { it.opt("written") }
-        } catch (stub: RuntimeException) {
-            if (stub.message != "Stub!" && stub.message?.startsWith("Method opt in org.json.JSONObject not mocked.") != true) throw stub
-            assumeNoException("Requires Android's org.json implementation on the test classpath", stub)
-            throw stub
-        }
+        val message = JSONObject("""{"written":0,"upTo":32768}""")
         val lock = Object()
         val credit = PbCredit(lock, 32768, 65536)
         synchronized(lock) {
