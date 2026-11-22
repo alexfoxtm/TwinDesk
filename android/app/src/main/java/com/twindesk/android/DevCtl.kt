@@ -40,6 +40,8 @@ import android.telephony.TelephonyManager
 import android.accessibilityservice.AccessibilityService
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 class DevCtl(core: Core) : Feature(core) {
     companion object {
@@ -55,10 +57,16 @@ class DevCtl(core: Core) : Feature(core) {
     private var torchOn = false
     private var ringtone: Ringtone? = null
     private var alarmBefore = -1
-    private var last = ""
-    private var building = false
-    private var pendingState = false
-    private var pendingAsk = false
+    private val stateBuilds = DeviceStateBuilds(
+        executor = Executors.newSingleThreadExecutor { Thread(it, "td-device-state").apply { isDaemon = true } },
+        post = { main.post(it) },
+        scheduleDeadline = { main.postDelayed(it, 20_000L) },
+        cancelDeadline = { main.removeCallbacks(it) },
+        current = { if (core.link.connected) core.link.sessionMarker() else null },
+        capture = ::captureState,
+        sendFor = { marker, message -> core.link.sendFor(marker, message) },
+        onTimeout = { android.util.Log.w("TwinDesk", "Device state build timed out") },
+    )
 
     // The computer's own controls, for the Computer page (null: it hasn't said: an older TwinDesk).
     @Volatile var computer: JSONObject? = null; private set
@@ -74,7 +82,7 @@ class DevCtl(core: Core) : Feature(core) {
 
     private fun welcomed() {
         computer = null
-        last = ""
+        stateBuilds.resetKey()
         watch(true)
         sendState()
         askTries = 0
@@ -97,10 +105,7 @@ class DevCtl(core: Core) : Feature(core) {
 
     override fun onClosed() {
         main.removeCallbacks(askAgain)
-        main.post {
-            pendingState = false
-            pendingAsk = false
-        }
+        main.post { stateBuilds.closed() }
         watch(false)
         ring(false)
         computer = null
@@ -262,38 +267,17 @@ class DevCtl(core: Core) : Feature(core) {
 
     private fun granted(p: String) = ContextCompat.checkSelfPermission(ctx, p) == PackageManager.PERMISSION_GRANTED
 
-    private fun sendState(ask: Boolean = false) {
-        if (!core.link.connected) return
-        val marker = core.link.sessionMarker() ?: return
-        if (building) {
-            pendingState = true
-            pendingAsk = pendingAsk || ask
-            return
-        }
-        building = true
+    private fun sendState(ask: Boolean = false) = stateBuilds.request(ask)
+
+    private fun captureState(ask: Boolean): () -> Pair<String, JSONObject> {
         val torch = torchOn
         val ringing = ringing
         val lock = InputService.running != null && Build.VERSION.SDK_INT >= 28
-        core.bg.execute {
-            val built = runCatching {
-                val message = buildState(torch, ringing, lock)
-                val key = message.toString()
-                if (ask) message.put("ask", true)
-                key to message
-            }
-            main.post {
-                building = false
-                built.getOrNull()?.let { (key, message) ->
-                    if (shouldSendDeviceState(marker, core.link.sessionMarker(), last, key, ask) &&
-                        core.link.sendFor(marker, message)) last = key
-                }
-                if (pendingState) {
-                    val askAgain = pendingAsk
-                    pendingState = false
-                    pendingAsk = false
-                    sendState(askAgain)
-                }
-            }
+        return {
+            val message = buildState(torch, ringing, lock)
+            val key = message.toString()
+            if (ask) message.put("ask", true)
+            key to message
         }
     }
 
@@ -441,3 +425,60 @@ class DevCtl(core: Core) : Feature(core) {
 
 internal fun shouldSendDeviceState(owner: Any, current: Any?, previous: String, next: String, ask: Boolean): Boolean =
     owner === current && (ask || previous != next)
+
+
+// Main owns the queue and publication. The worker only runs the captured build.
+internal class DeviceStateBuilds<T>(
+    private val executor: Executor,
+    private val post: (Runnable) -> Unit,
+    private val scheduleDeadline: (Runnable) -> Unit,
+    private val cancelDeadline: (Runnable) -> Unit,
+    private val current: () -> Any?,
+    private val capture: (Boolean) -> () -> Pair<String, T>,
+    private val sendFor: (Any, T) -> Boolean,
+    private val onTimeout: () -> Unit,
+) {
+    private var building = false
+    private var pending: Boolean? = null
+    private var last = ""
+
+    fun resetKey() {
+        last = ""
+    }
+
+    fun closed() {
+        pending = null
+    }
+
+    fun request(ask: Boolean) {
+        val marker = current() ?: return
+        if (building) {
+            pending = ask || pending == true
+            return
+        }
+        building = true
+        val build = capture(ask)
+        var expired = false
+        // A blocked Android system call may ignore cancellation. Keep its slot until it
+        // returns, so timeouts cannot accumulate workers or reorder state messages.
+        val deadline = Runnable {
+            expired = true
+            onTimeout()
+        }
+        scheduleDeadline(deadline)
+        executor.execute {
+            val result = runCatching(build)
+            post {
+                cancelDeadline(deadline)
+                building = false
+                if (!expired) result.getOrNull()?.let { (key, message) ->
+                    if (shouldSendDeviceState(marker, current(), last, key, ask) &&
+                        sendFor(marker, message)) last = key
+                }
+                val followUp = pending
+                pending = null
+                if (followUp != null) request(followUp)
+            }
+        }
+    }
+}
