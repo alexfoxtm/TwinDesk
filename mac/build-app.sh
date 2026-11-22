@@ -119,6 +119,16 @@ EOF
   --no-prune --asar=false --out=dist --overwrite --quiet
 
 APP="dist/TwinDesk Fork-darwin-$ARCH/TwinDesk Fork.app"
+# Packager 20.3 has no locale filter. Keep Chromium's locale spellings and their
+# grammatical variants for the languages advertised by this app.
+RES="$APP/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources"
+for locale in "$RES"/*.lproj; do
+  [ -d "$locale" ] || continue
+  case "${locale##*/}" in
+    Base.lproj|en.lproj|en_*.lproj|ru.lproj|ru_*.lproj|tr.lproj|tr_*.lproj|pt_BR.lproj|pt_BR_*.lproj|zh_CN.lproj|zh_CN_*.lproj) ;;
+    *) rm -rf "$locale" ;;
+  esac
+done
 # The packager derives this label from executable-name; keep the fork's visible name.
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName TwinDesk Fork" "$APP/Contents/Info.plist"
 cp -R locales/zh-Hans.lproj locales/ru.lproj locales/tr.lproj locales/pt-BR.lproj "$APP/Contents/Resources/"
