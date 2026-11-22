@@ -436,9 +436,9 @@ function start() {
   if (settings.drive.on) loadDrive();
   const ipc = setupIpc({
     batteryAlerts,
+    loadDrive,
     takePhoto: () => !!phonePhoto && phonePhoto.take(),
     scanDocument: () => !!phonePhoto && phonePhoto.scan(),
-    loadDrive,
     getDrive: () => drive,
     history: (r) => historyKeeper && historyKeeper.act(r),
     get fileRecv() { return fileRecv; },
