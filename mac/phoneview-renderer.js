@@ -78,6 +78,10 @@
   let minimized = false;
   let heldFrame = null;
   let videoEpoch = 0;
+  let codecName = null;
+  // Outputs older than this are from before a minimize gap. Null: paint. Infinity: drop until the
+  // next keyframe we submit (its timestamp replaces this).
+  let acceptPts = null;
 
   function releaseHeldFrame() {
     if (heldFrame) heldFrame.close();
@@ -99,23 +103,36 @@
   }
 
   window.addEventListener('beforeunload', () => { videoEpoch++; releaseHeldFrame(); });
+  function configureDecoder(codec) {
+    decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: hwDecode ? 'prefer-hardware' : 'prefer-software' });
+  }
+
+  // Drop compressed frames already queued. They would decode into the gap and smear on restore.
+  function discardPending() {
+    if (!decoder || decoder.state === 'closed' || typeof decoder.reset !== 'function' || !codecName) return;
+    try { decoder.reset(); configureDecoder(codecName); } catch {}
+  }
+
   function makeDecoder(codec) {
+    codecName = codec;
     if (decoder && decoder.state !== 'closed') try { decoder.close(); } catch {}
     releaseHeldFrame();
     const epoch = ++videoEpoch;
     decoder = new VideoDecoder({
       output: (frame) => {
         if (epoch !== videoEpoch) { frame.close(); return; }
-        if (kind === 'app' && minimized && !rail?.recording()) {
-          releaseHeldFrame();
-          heldFrame = frame;
-        } else {
-          releaseHeldFrame();
-          try {
-            paintFrame(frame);
-            if (vcam) vcam.push(frame, frame.displayWidth, frame.displayHeight);
-          } finally { frame.close(); }
+        // Minimized: do not paint, and do not keep the frame. A recording still uses the canvas.
+        if (minimized && !rail?.recording()) { frame.close(); return; }
+        if (!rail?.recording() && acceptPts != null && typeof frame.timestamp === 'number' && frame.timestamp < acceptPts) {
+          frame.close();
+          return;
         }
+        if (acceptPts != null && typeof frame.timestamp === 'number' && frame.timestamp >= acceptPts) acceptPts = null;
+        releaseHeldFrame();
+        try {
+          paintFrame(frame);
+          if (vcam) vcam.push(frame, frame.displayWidth, frame.displayHeight);
+        } finally { frame.close(); }
         if (!status.hidden) setStatus('');
         if (kind === 'app' && appFrame) {
           api.send({ t: 'appFrame', capture: appFrame });
@@ -128,19 +145,20 @@
         console.warn('decoder', e.message);
         // The GPU's decoder refused this stream (some drivers, a high H.264 level): the window waited
         // for the picture for good (#233), as a closed decoder takes nothing more. Software from then on.
+        const ask = () => { if (!(minimized && !rail?.recording())) needKey(); };
         if (hwDecode) {
           hwDecode = false;
           console.warn('decoder: trying software decoding');
           setTimeout(() => {
             if (epoch !== videoEpoch) return;
-            makeDecoder(codec); waitingKey = true; needKey();
+            makeDecoder(codec); waitingKey = true; ask();
           }, 0);
           return;
         }
-        needKey();
+        ask();
       },
     });
-    decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: hwDecode ? 'prefer-hardware' : 'prefer-software' });
+    configureDecoder(codec);
   }
   let hwDecode = true;
 
@@ -153,6 +171,8 @@
       return;
     }
     if (!decoder || decoder.state !== 'configured') return;
+    // Nothing is on screen. A recording is the exception: the canvas is what it saves.
+    if (minimized && !rail?.recording()) return;
     if (waitingKey && !p.key) return needKey();
     // Behind (a slow decoder): drop up to a fresh keyframe rather than one frame, which smears.
     if (decoder.decodeQueueSize > 4 && !p.key) return needKey();
@@ -163,6 +183,7 @@
       chunk.set(data, config.length);
     }
     waitingKey = false;
+    if (p.key && acceptPts != null) acceptPts = p.pts;
     decoder.decode(new EncodedVideoChunk({ type: p.key ? 'key' : 'delta', timestamp: p.pts, data: chunk }));
   });
 
@@ -474,9 +495,22 @@
   if (pinBtn) pinBtn.onclick = () => { api.send({ t: 'pin' }); canvas.focus(); };
   api.on('opts', (m) => {
     if (!m) return;
-    if (kind === 'app' && typeof m.minimized === 'boolean') {
+    if (typeof m.minimized === 'boolean') {
+      const was = minimized;
       minimized = m.minimized;
-      if (!minimized) paintHeldFrame();
+      // The last painted frame stays. Deltas from before the gap would smear, so the next
+      // picture is a keyframe. Do not ask while still minimized.
+      if (minimized && !was && !rail?.recording()) {
+        waitingKey = true;
+        acceptPts = Number.POSITIVE_INFINITY;
+        releaseHeldFrame();
+        discardPending();
+      }
+      if (was && !minimized) {
+        waitingKey = true;
+        if (acceptPts == null) acceptPts = Number.POSITIVE_INFINITY;
+        needKey();
+      }
     }
     if (pinBtn && typeof m.pinned === 'boolean') { pinBtn.classList.toggle('active', m.pinned); pinBtn.setAttribute('aria-pressed', String(m.pinned)); }
     if (powerBtn && typeof m.screenOff === 'boolean') powerBtn.classList.toggle('active', m.screenOff);

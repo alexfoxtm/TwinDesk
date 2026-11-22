@@ -59,80 +59,87 @@ function fixture(kind = 'app') {
     record(on) { recording = on; }, output(f) { decoders.at(-1).callbacks.output(f); } };
 }
 
-test('minimized app retains one latest frame, restores static content and keeps recording current', () => {
+test('a minimized viewer of any kind does not decode, and restore waits for a keyframe', () => {
+  for (const kind of ['app', 'screen', 'camera']) {
+    const f = fixture(kind);
+    f.config();
+    const decoder = f.decoders[0];
+    const visible = f.frame(1);
+    f.output(visible);
+    assert.deepEqual(f.painted, [1]);
+    assert.equal(visible.closed, 1);
+
+    f.recv('opts', { minimized: true });
+    if (kind === 'app') f.recv('status', { appFrame: 'capture-7' });
+    f.recv('video', { key: true, pts: 123, data: Uint8Array.of(1) });
+    f.recv('video', { key: false, pts: 124, data: Uint8Array.of(2) });
+    const dropped = f.frame(2);
+    f.output(dropped);
+    assert.equal(decoder.chunks, undefined, `${kind}: minimized window does not decode`);
+    assert.equal(dropped.closed, 1, `${kind}: a frame that still comes out is dropped`);
+    assert.deepEqual(f.painted, [1], `${kind}: nothing new is painted`);
+    assert.deepEqual(f.sent.filter((m) => m.t === 'resetVideo'), [], `${kind}: no keyframe ask while minimized`);
+    if (kind === 'app') assert.deepEqual(f.sent.filter((m) => m.t === 'appFrame'), []);
+
+    f.recv('opts', { minimized: false });
+    assert.deepEqual(f.sent.filter((m) => m.t === 'resetVideo'), [{ t: 'resetVideo' }], `${kind}: restore asks for a keyframe now`);
+    f.recv('video', { key: false, pts: 200, data: Uint8Array.of(3) });
+    assert.equal(decoder.chunks, undefined, `${kind}: a delta after the gap is not decoded`);
+    f.recv('video', { key: true, pts: 201, data: Uint8Array.of(4) });
+    assert.deepEqual(decoder.chunks.map((chunk) => chunk.timestamp), [201]);
+    const key = f.frame(9);
+    f.output(key);
+    assert.equal(f.painted.at(-1), 9, `${kind}: the keyframe is the next picture`);
+    assert.equal(key.closed, 1);
+    if (kind === 'app') assert.deepEqual(f.sent.filter((m) => m.t === 'appFrame'), [{ t: 'appFrame', capture: 'capture-7' }]);
+  }
+});
+
+test('recording still paints while minimized, and a retired frame is not shown on restore', () => {
   const f = fixture();
   f.config();
-  const decoder = f.decoders[0];
-  const visible = f.frame(1);
-  f.output(visible);
   f.recv('opts', { minimized: true });
-  f.recv('status', { appFrame: 'capture-7' });
-  const first = f.frame(2), latest = f.frame(3);
-  f.output(first);
-  f.recv('video', { key: true, pts: 123, data: Uint8Array.of(1) });
-  f.recv('video', { key: false, pts: 124, data: Uint8Array.of(2) });
-  f.output(latest);
-  assert.deepEqual(f.painted, [1]);
-  assert.equal(visible.closed, 1);
-  assert.equal(first.closed, 1, 'replaced decoded frame is released');
-  assert.equal(latest.closed, 0);
-  assert.deepEqual(decoder.chunks.map(chunk => chunk.timestamp), [123, 124], 'decode input continues in order while painting pauses');
-  assert.deepEqual(f.sent, [{ t: 'appFrame', capture: 'capture-7' }], 'decoded frame readiness still reaches panel ownership');
-
-  f.recv('opts', { minimized: false });
-  assert.deepEqual(f.painted, [1, 3], 'static content repaints without another encoded frame');
-  assert.equal(latest.closed, 1);
-
-  f.recv('opts', { minimized: true });
-  const screenshot = f.frame(4);
-  f.output(screenshot);
-  f.rail.controls.find(c => c.k === 'shot').el.onclick();
-  assert.equal(screenshot.closed, 1);
-  assert.equal(f.painted.at(-1), 4, 'screenshot paints held frame before onclick handler reads canvas');
-  assert.equal(f.controls.get('shot:after').at(-1), 4, 'onclick sees the freshly painted frame');
   f.record(true);
+  f.recv('video', { key: true, pts: 5, data: Uint8Array.of(5) });
+  assert.deepEqual(f.decoders[0].chunks.map((chunk) => chunk.timestamp), [5], 'a recording keeps decoding');
   const recording = f.frame(5);
   f.output(recording);
   assert.equal(f.painted.at(-1), 5);
-  assert.equal(recording.closed, 1, 'recording consumes continuously updated canvas');
-});
+  assert.equal(recording.closed, 1, 'recording consumes the canvas');
+  f.record(false);
 
-test('closed or replaced capture releases held frames and camera or screen windows keep painting', () => {
-  const f = fixture();
+  const shot = fixture();
+  shot.config();
+  const shown = shot.frame(1);
+  shot.output(shown);
+  shot.recv('opts', { minimized: true });
+  shot.recv('video', { key: true, pts: 8, data: Uint8Array.of(8) });
+  shot.rail.controls.find((c) => c.k === 'shot').el.onclick();
+  assert.deepEqual(shot.painted, [1], 'a screenshot while minimized does not decode a new frame');
+  assert.equal(shot.controls.get('shot:after').at(-1), 1);
+
   f.config();
-  const old = f.decoders[0];
-  f.recv('opts', { minimized: true });
-  const held = f.frame(1);
-  f.output(held);
-  f.config();
-  assert.equal(held.closed, 1, 'new decoder releases old captured content');
+  const old = f.decoders.at(-1);
   const late = f.frame(2);
   old.callbacks.output(late);
-  assert.equal(late.closed, 1);
-  assert.deepEqual(f.painted, []);
-  const current = f.frame(3);
-  f.output(current);
+  assert.equal(late.closed, 1, 'a frame from the decoder that was replaced is dropped');
   f.recv('status', { closed: 'stopped' });
   f.recv('opts', { minimized: false });
-  assert.equal(current.closed, 1);
-  assert.deepEqual(f.painted, [], 'restore cannot paint retired content');
   const afterClose = f.frame(4);
   f.output(afterClose);
   assert.equal(afterClose.closed, 1);
-  f.config();
+  assert.ok(!f.painted.includes(4), 'restore cannot paint a frame from a capture that already closed');
   f.recv('opts', { minimized: true });
-  const onUnload = f.frame(5);
+  const onUnload = f.frame(6);
   f.output(onUnload);
   f.events.get('beforeunload')();
   assert.equal(onUnload.closed, 1);
+});
 
-  for (const kind of ['screen', 'camera']) {
-    const independent = fixture(kind);
-    independent.config();
-    independent.recv('opts', { minimized: true });
-    const frame = independent.frame(1);
-    independent.output(frame);
-    assert.deepEqual(independent.painted, [1]);
-    assert.equal(frame.closed, 1);
-  }
+test('background throttling stays off, and every kind hears minimize', () => {
+  const host = fs.readFileSync(path.join(__dirname, '../phoneview.js'), 'utf8');
+  assert.match(host, /backgroundThrottling:\s*false/);
+  assert.match(host, /if \(view\.win\.isMinimized\(\)\) view\.win\.restore\(\)/);
+  assert.match(host, /win\.on\('minimize', tellMinimized\)/);
+  assert.equal(host.includes("if (kind === 'app') this._send"), false);
 });

@@ -392,6 +392,8 @@ class PhoneViews extends EventEmitter {
       return this.bridge.emit('popup', 'home', 'Set up wireless debugging on the Phone page first');
     }
     const id = nextId++;
+    // backgroundThrottling stays off: a window that is only unfocused still decodes and plays
+    // sound. Minimized is told to the page, which stops decoding until the window is shown.
     const win = new BrowserWindow({
       width, height, minWidth: 220, minHeight: 300, title, show: false,
       titleBarStyle: 'hiddenInset', backgroundColor: '#000000',
@@ -401,19 +403,17 @@ class PhoneViews extends EventEmitter {
     this._send(v, 'phoneview:opts', this._opts(v));
     this.views.set(id, v);
     if (kind === 'app') setImmediate(() => this._stubs());
+    const tellMinimized = () => this._send(v, 'phoneview:opts', { minimized: win.isMinimized() });
     win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
     if (!hidden) win.once('ready-to-show', () => win.show());
     win.webContents.once('did-finish-load', () => {
       v.ready = true;
       for (const [ch, m] of v.queue.splice(0)) win.webContents.send(ch, m);
-      if (kind === 'app') this._send(v, 'phoneview:opts', { minimized: win.isMinimized() });
+      tellMinimized();
     });
-    if (kind === 'app') {
-      const paintState = () => this._send(v, 'phoneview:opts', { minimized: win.isMinimized() });
-      win.on('minimize', paintState);
-      win.on('restore', paintState);
-      win.on('show', paintState);
-    }
+    win.on('minimize', tellMinimized);
+    win.on('restore', tellMinimized);
+    win.on('show', tellMinimized);
     // A camera's window: closed, it only hides (the camera stops with Camera's switch).
     if (kind === 'camera') {
       win.on('close', (e) => {
