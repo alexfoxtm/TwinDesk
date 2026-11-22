@@ -43,6 +43,8 @@
   let sound = true;
   let pacing = 'fast';
   let captureUnavailable = false;
+  let sharingUpdate = null;
+  const captureUnavailableMessage = () => t('Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…', { name });
   let touchMode = 'pad'; // 'pad' | 'direct' (opts.touch)
   let speed = 1; // the touchpad's pointer speed (opts.speed)
   let tapClick = true; // a quick tap left-clicks (opts.tap)
@@ -174,6 +176,11 @@
   window.addEventListener('resize', () => { if (viewGestures) cancelViewTouch(); else hidePointerCue(); applyViewport(); scheduleDetail(); });
 
   function setOverlay(t) {
+    if (sharingUpdate?.t === 'stream.stop') {
+      captureUnavailable = sharingUpdate.reason === 'capture-unavailable';
+      if (captureUnavailable) t = captureUnavailableMessage();
+    }
+    if (sharingUpdate?.t === 'screen.state' && captureUnavailable) return;
     overlay.textContent = t || '';
     overlay.classList.toggle('hidden', !t);
   }
@@ -361,7 +368,7 @@
     requireCurrentFrame();
   });
 
-  window.tdRecv = (msg) => {
+  function receive(msg) {
     if (msg.t !== 'rtc.ice') console.log(`viewer <- ${msg.t}${msg.session != null ? ` #${msg.session}` : ''}`);
     switch (msg.t) {
       case 'viewer.probe':
@@ -389,10 +396,7 @@
       case 'stream.stop':
         if (viewGestures) cancelInput();
         closePc();
-        captureUnavailable = msg.reason === 'capture-unavailable';
-        setOverlay(captureUnavailable
-          ? t('Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…', { name })
-          : t('{name} isn’t sharing its screen', { name }));
+        setOverlay(t('{name} isn’t sharing its screen', { name }));
         break;
       case 'viewer.input':
         inputAllowsCue = msg.on === true;
@@ -403,8 +407,7 @@
         shareAllowsCue = msg.on === true && !msg.spaceHold;
         if (!shareAllowsCue) hidePointerCue();
         if (msg.on === false) reportVideo(false);
-        if (msg.on === false) captureUnavailable = false;
-        if (!captureUnavailable) updateSharingOverlay(msg.on);
+        updateSharingOverlay(msg.on);
         break;
       case 'viewer.scale':
         selectScale(msg.mode);
@@ -443,6 +446,18 @@
         if (msg.on) { kbd.value = ''; sent = ''; kbd.focus(); } else kbd.blur();
         break;
       default: break;
+    }
+  }
+
+  window.tdRecv = (msg) => {
+    if (msg.t !== 'screen.state' && msg.t !== 'stream.stop') return receive(msg);
+    if (msg.t === 'screen.state' && msg.on === false) captureUnavailable = false;
+    // The overlay uses the stop reason while the normal sharing update runs.
+    sharingUpdate = msg;
+    try {
+      return receive(msg);
+    } finally {
+      sharingUpdate = null;
     }
   };
 

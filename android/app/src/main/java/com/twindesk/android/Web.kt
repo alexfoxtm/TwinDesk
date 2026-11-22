@@ -19,7 +19,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import org.json.JSONObject
 
-class WebHost(ctx: Context, page: String, private val core: Core, private val onEvent: (String, JSONObject?) -> Unit = { _, _ -> }) {
+class WebHost(ctx: Context, private val page: String, private val core: Core, private val onPageEvent: (String, JSONObject?) -> Unit = { _, _ -> }) {
     private val main = Handler(Looper.getMainLooper())
     private var ready = false
     private val queue = mutableListOf<JSONObject>()
@@ -135,8 +135,20 @@ class WebHost(ctx: Context, page: String, private val core: Core, private val on
 
     private var motion: Motion? = null
 
+    private fun onEvent(event: String, data: JSONObject?) {
+        if (page == "viewer.html" && core.lockView.locked && (event == "videoMetrics" || event == "videoDetail" ||
+                (event == "videoState" && data?.optBoolean("playing") == true))) return
+        onPageEvent(event, data)
+    }
+
     // A message to the page (any thread).
-    fun post(m: JSONObject) = main.post { if (ready) deliver(m) else queue.add(m) }
+    fun post(m: JSONObject): Boolean {
+        if (page == "viewer.html" && core.lockView.locked) when (m.optString("t")) {
+            "opts" -> m.put("inputOn", false)
+            "viewer.input" -> m.put("on", false)
+        }
+        return main.post { if (ready) deliver(m) else queue.add(m) }
+    }
 
     private fun deliver(m: JSONObject) {
         view.evaluateJavascript("window.tdRecv && window.tdRecv(${m});", null)
@@ -359,8 +371,7 @@ class Screen(core: Core) : Feature(core) {
         core.changed()
     }
 
-    private fun pointerInput(locked: Boolean = core.lockView.locked): Boolean {
-        if (locked) return false
+    private fun pointerInput(): Boolean {
         val input = state?.opt("input") as? Boolean
         return when (core.host?.os) {
             "mac" -> inputOn && input != false // older Macs already report stream.input
@@ -385,7 +396,7 @@ class Screen(core: Core) : Feature(core) {
 
     fun lockChanged(locked: Boolean) {
         clearDoctor()
-        host?.post(msg("viewer.input", "on" to pointerInput(locked)))
+        host?.post(msg("viewer.input", "on" to pointerInput()))
         if (locked) endPreviewSession()
         else {
             previewEpoch++
@@ -497,7 +508,6 @@ class Screen(core: Core) : Feature(core) {
     fun videoState(h: WebHost, generation: Int, session: Int, playing: Boolean, w: Int, height: Int) {
         if (host !== h || !viewing || videoGeneration != generation || videoSession != session ||
             !core.link.ownsVideoSession(videoMarker)) return
-        if (playing && core.lockView.locked) return
         if (playing) decodedCapture = session.toLong() else if (decodedCapture == session.toLong()) decodedCapture = null
         val nextSize = if (playing && w > 0 && height > 0) w to height else null
         if (videoPlaying != playing || decodedSize != nextSize) {
@@ -527,7 +537,6 @@ class Screen(core: Core) : Feature(core) {
         if (host !== h || !viewing || !sharing || !videoPlaying ||
             videoGeneration != generation || videoSession != session || !core.link.ownsVideoSession(marker) ||
             width !in 1..16384 || height !in 1..16384) return
-        if (core.lockView.locked) return
         val sample = StreamDoctorSample(width, height, fps.takeIf { it in 0..240 },
             kbps.takeIf { it in 0..1_000_000 }, dropped.takeIf { it in 0..1_000_000_000 })
         val previous = doctorReading
@@ -542,7 +551,6 @@ class Screen(core: Core) : Feature(core) {
             core.host?.os !in listOf("mac", "win", "linux") ||
             videoGeneration != generation || videoSession != session ||
             height !in 0..2160 || !core.link.ownsVideoSession(videoMarker)) return
-        if (core.lockView.locked) return
         core.link.sendFor(videoMarker, msg("rtc.detail", "session" to session, "height" to height))
     }
 
