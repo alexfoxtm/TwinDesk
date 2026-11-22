@@ -303,8 +303,8 @@ function publishState() {
 
 // Tell the viewer what we share, so it can show Start / Extend / Mirror itself
 // (screen.state); only when something changed or the peer is new.
-let screenStateKey = '';
 let screenInputOwner = null;
+let screenStateKey = '';
 let previewShots = null;
 
 // This viewer's picture only. The socket is the one session.send writes, which is the guest

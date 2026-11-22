@@ -38,11 +38,11 @@
   let videoOwner = null;
   let frameProbe = 0;
   let frameAllowed = true;
-  let captureUnavailable = false;
   let name = t('the computer'); // the one we're connected to (opts)
   let streamAudio = false;
   let sound = true;
   let pacing = 'fast';
+  let captureUnavailable = false;
   let touchMode = 'pad'; // 'pad' | 'direct' (opts.touch)
   let speed = 1; // the touchpad's pointer speed (opts.speed)
   let tapClick = true; // a quick tap left-clicks (opts.tap)
@@ -167,31 +167,6 @@
   }
   const steadySdp = (sdp) => (pacing === 'steady' ? sdp.replace(/^a=extmap:[^\r\n]*\/playout-delay\r?\n/gm, '') : sdp);
 
-  let cueFrame = null, cueTimer = null;
-  let shareAllowsCue = false, inputAllowsCue = false;
-
-  function hidePointerCue() {
-    clearTimeout(cueTimer);
-    if (cueFrame !== null) cancelAnimationFrame(cueFrame);
-    cueFrame = cueTimer = null;
-    if (pointerCue) pointerCue.hidden = true;
-  }
-
-  function previewPointer() {
-    if (!pointerCue || !shareAllowsCue || !inputAllowsCue || document.hidden ||
-        !frameAllowed || !videoOwner?.playing || pc?.connectionState !== 'connected') return;
-    clearTimeout(cueTimer);
-    cueTimer = setTimeout(hidePointerCue, 160);
-    if (cueFrame !== null) return;
-    cueFrame = requestAnimationFrame(() => {
-      cueFrame = null;
-      const r = drawn();
-      if (!r) return hidePointerCue();
-      pointerCue.style.transform = `translate(${r.x + cur.x * r.w}px, ${r.y + cur.y * r.h}px)`;
-      pointerCue.hidden = false;
-    });
-  }
-
   let doctorTimer = null, doctorRevision = 0;
   let doctorLast = null;
 
@@ -245,7 +220,8 @@
         (!playing || owner.pc.connectionState === 'connected') && typeof TD.videoState === 'function' && Number.isInteger(owner.generation) && owner.generation > 0 && Number.isInteger(owner.session)) {
       owner.playing = playing;
       TD.videoState(owner.generation, owner.session, playing, video.videoWidth, video.videoHeight);
-      if (playing) { scheduleDetail(); scheduleDoctor(owner); }
+      if (playing) scheduleDetail();
+      if (playing) scheduleDoctor(owner);
     }
   }
 
@@ -288,6 +264,7 @@
 
   async function onOffer(msg) {
     closePc();
+    captureUnavailable = false;
     // On a USB cable the computer sends its relay (msg.ice): the picture goes through adb.
     const my = (pc = new RTCPeerConnection(msg.ice || { iceServers: [] }));
     session = msg.session;
@@ -315,6 +292,7 @@
     };
     my.onconnectionstatechange = () => {
       if (my !== pc) return;
+      if (my.connectionState !== 'connected') hidePointerCue();
       const connection = my.connectionState;
       if (connection === 'connected') requireCurrentFrame();
       else if (connection === 'failed') { reportVideo(false); setOverlay(t('Reconnecting…')); }
@@ -373,7 +351,6 @@
         if (!pc && !captureUnavailable) setOverlay(t('Waiting for {name}…', { name }));
         break;
       case 'rtc.offer':
-        captureUnavailable = false;
         setOverlay(t('Waiting for {name}…', { name }));
         onOffer(msg); break;
       case 'rtc.ice':
@@ -451,6 +428,31 @@
     const W = window.innerWidth, H = window.innerHeight;
     return { x: (W - r.w * zoom) / 2 + panX, y: (H - r.h * zoom) / 2 + panY, w: r.w * zoom, h: r.h * zoom };
   }
+  let cueFrame = null, cueTimer = null;
+  let shareAllowsCue = false, inputAllowsCue = false;
+
+  function hidePointerCue() {
+    clearTimeout(cueTimer);
+    if (cueFrame !== null) cancelAnimationFrame(cueFrame);
+    cueFrame = cueTimer = null;
+    if (pointerCue) pointerCue.hidden = true;
+  }
+
+  function previewPointer() {
+    if (!pointerCue || !shareAllowsCue || !inputAllowsCue || document.hidden ||
+        !frameAllowed || !videoOwner?.playing || pc?.connectionState !== 'connected') return;
+    clearTimeout(cueTimer);
+    cueTimer = setTimeout(hidePointerCue, 160);
+    if (cueFrame !== null) return;
+    cueFrame = requestAnimationFrame(() => {
+      cueFrame = null;
+      const r = drawn();
+      if (!r) return hidePointerCue();
+      pointerCue.style.transform = `translate(${r.x + cur.x * r.w}px, ${r.y + cur.y * r.h}px)`;
+      pointerCue.hidden = false;
+    });
+  }
+
   function norm(cx, cy, clamp) {
     const r = drawn();
     if (!r) return null;
