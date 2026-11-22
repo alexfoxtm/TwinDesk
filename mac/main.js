@@ -1261,8 +1261,13 @@ app.whenReady().then(() => {
     if (on) loadSilence().start();
     else if (svc.silence) svc.silence.stop();
   };
+  const setupForkIpc = (context) => setupIpc({
+    ...context,
+    get silence() { return svc.silence; },
+    photoBackup,
+  });
   setupWeb();
-  actions = setupIpc({
+  actions = setupForkIpc({
     state,
     settings,
     pushState,
@@ -1278,8 +1283,6 @@ app.whenReady().then(() => {
     showFileShelf,
     login,
     refreshPermissions,
-    get silence() { return svc.silence; },
-    photoBackup,
     updates,
     applyRelay,
     proximityLock,
