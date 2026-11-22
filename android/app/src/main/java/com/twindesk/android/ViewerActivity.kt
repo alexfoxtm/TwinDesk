@@ -272,12 +272,15 @@ private fun Viewer(core: Core, host: WebHost, rail: MirrorRail, lockPage: LockPa
                         onKeyboard = { s.keyboard(!keyboard); action++ },
                         touchpad = core.store.flag("screen.touchpad", true),
                         onTouchpad = { s.setOpt("screen.touchpad", it) },
-                        audio = core.store.flag("screen.sound", false),
-                        onAudio = { s.setOpt("screen.sound", it) },
-                        autoRotate = rail.autoRotate,
-                        onRotate = { rail.toggleRotation(); action++ },
-                        onScreenshot = rail::capture,
-                        onOpenLogin = if (core.lockView.locked && core.lockView.available && !login) ({ openLogin(); bar = true }) else null,
+                        moreEntries = buildList {
+                            val audio = core.store.flag("screen.sound", false)
+                            add(ViewerMenuEntry(tr("Sound"), audio) { s.setOpt("screen.sound", !audio) })
+                            add(ViewerMenuEntry(tr("Auto-rotate"), rail.autoRotate, { rail.toggleRotation(); action++ }))
+                            add(ViewerMenuEntry(tr("Screenshot"), false, rail::capture))
+                            if (core.lockView.locked && core.lockView.available && !login) {
+                                add(ViewerMenuEntry(tr("Open Mac login screen"), false) { openLogin(); bar = true })
+                            }
+                        },
                         onStop = if (s.remote && s.sharing) ({ closeLogin(); s.control(share = false) }) else null,
                         onClose = { closeLogin(); s.end(); close() },
                     )

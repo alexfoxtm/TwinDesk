@@ -45,6 +45,8 @@ private val menuColors = darkColorScheme(
     onSurface = Color.White, onSurfaceVariant = muted, primary = accent,
 )
 
+internal data class ViewerMenuEntry(val label: String, val selected: Boolean, val action: () -> Unit)
+
 @Composable
 internal fun MacViewerToolbar(
     title: String,
@@ -72,14 +74,9 @@ internal fun MacViewerToolbar(
     onKeyboard: () -> Unit,
     touchpad: Boolean,
     onTouchpad: (Boolean) -> Unit,
-    audio: Boolean,
-    onAudio: (Boolean) -> Unit,
-    autoRotate: Boolean,
-    onRotate: () -> Unit,
-    onScreenshot: () -> Unit,
+    moreEntries: List<ViewerMenuEntry>,
     onStop: (() -> Unit)?,
     onClose: () -> Unit,
-    onOpenLogin: (() -> Unit)? = null,
 ) {
     MaterialTheme(colorScheme = menuColors) {
         BoxWithConstraints {
@@ -134,10 +131,7 @@ internal fun MacViewerToolbar(
                                 ViewerChoice(tr("Direct touch"), !touchpad, onMenu) { onTouchpad(false) }
                                 HorizontalDivider()
                             }
-                            ViewerChoice(tr("Sound"), audio, onMenu) { onAudio(!audio) }
-                            ViewerChoice(tr("Auto-rotate"), autoRotate, onMenu, onRotate)
-                            ViewerChoice(tr("Screenshot"), false, onMenu, onScreenshot)
-                            if (onOpenLogin != null) ViewerChoice(tr("Open Mac login screen"), false, onMenu, onOpenLogin)
+                            for (entry in moreEntries) ViewerChoice(entry.label, entry.selected, onMenu, entry.action)
                             if (onStop != null) {
                                 HorizontalDivider()
                                 ViewerChoice(tr("Stop"), false, onMenu, onStop)
