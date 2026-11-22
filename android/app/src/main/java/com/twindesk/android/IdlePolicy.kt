@@ -19,7 +19,7 @@ internal fun netTimerNeeded(heldMessages: Boolean, expiringNeeds: Boolean) = hel
 
 internal fun beaconDelay(interactive: Boolean, connected: Boolean, peerOn: Boolean): Long = when {
     !interactive -> 5000L
-    connected && !peerOn -> 4000L
+    connected && !peerOn -> 3000L
     else -> Proto.BEACON_MS
 }
 
