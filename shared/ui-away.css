@@ -1,10 +1,16 @@
 /* TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE. */
 /* The control window while it isn't the focused one (shared/ui-away.js): the ambient animations
    stop where they are. Each endless animation of the window's stylesheets is either here or named
-   as work in progress in shared/test/ui-away.js. */
+   as work in progress in shared/test/ui-away.js.
+   Below that, the same sheet (loaded only by mac/control.html, after the upstream sheets) draws
+   the steady cues with transform and opacity, so a focused window does not repaint them. */
 .td-away .dot.good,
+.td-away .dot.good::before,
+.td-away .dot.good::after,
 .td-away .hero-link,
+.td-away .hero-link:not(.up)::before,
 .td-away .hero-pulse,
+.td-away .hero-pulse::before,
 .td-away .feature-art .fa-dash,
 .td-away .ios-hero .ring,
 .td-away .ios-hero .app,
@@ -20,3 +26,54 @@
 .td-away .wt-caret,
 .td-away .mg-mirror,
 .td-away .mg-finger { animation-play-state: paused !important; }
+
+/* Steady cues while the window is focused. Upstream still animates box-shadow, background-position
+   and left; these rules (later sheet) replace that with transform and opacity. Same timing.
+   The halo colour is the breathe shadow's rgba, not --good, so light and dark match upstream.
+   Glass and Simple both use these rules. A covered centre (::before) keeps the 7px dot solid
+   while the 13px disc behind it grows from the dot's size to a 3px ring and fades. */
+.dot.good { animation: none; position: relative; isolation: isolate; }
+.dot.good::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--good); z-index: 1;
+  pointer-events: none; transition: background-color 0.3s;
+}
+@starting-style { .dot.good::before { background: var(--idle); } }
+.dot.good::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
+  border-radius: 50%; background: rgba(48, 185, 77, 0.45); z-index: 0; pointer-events: none;
+  animation: td-breathe 2.8s ease-in-out infinite;
+}
+@keyframes td-breathe {
+  0%, 100% { transform: scale(calc(7 / 13)); opacity: 1; }
+  50% { transform: scale(1); opacity: 0; }
+}
+
+.hero-link:not(.up) { animation: none; background: none; }
+.hero-link:not(.up)::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: calc(100% + 24px); pointer-events: none;
+  background: repeating-linear-gradient(90deg, var(--idle) 0 6px, transparent 6px 12px); background-size: 24px 3px;
+  animation: td-dash 1.6s linear infinite;
+}
+@keyframes td-dash { from { transform: translateX(0); } to { transform: translateX(24px); } }
+
+.hero-link.up .hero-pulse {
+  left: -40px; width: calc(100% + 40px); background: none;
+  animation: td-travel 2.2s var(--ease) infinite;
+}
+.hero-link.up .hero-pulse::before {
+  content: ""; position: absolute; left: 0; top: 0; width: 40px; height: 100%; pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+}
+@keyframes td-travel { from { transform: translateX(0); } to { transform: translateX(100%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .dot.good::before, .dot.good::after, .hero-link:not(.up)::before, .hero-link.up .hero-pulse::before { content: none; }
+  .hero-link:not(.up) {
+    background: repeating-linear-gradient(90deg, var(--idle) 0 6px, transparent 6px 12px);
+    background-size: 24px 3px;
+  }
+  .hero-link.up .hero-pulse {
+    left: 0; width: 40px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+  }
+}
