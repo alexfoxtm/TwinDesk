@@ -59,8 +59,8 @@ class PhoneViews extends EventEmitter {
     });
     server.on('closed', () => {
       this.activeApp = '';
-      this.a11y = false;
       this.multipleApps = true;
+      this.a11y = false;
       if (!this.appPanel.owns(this.appPanel.current)) this.releaseAppPanel();
     });
     server.on(`t:${T.PHONE_AWAKE}`, (m) => this._awake(m));
