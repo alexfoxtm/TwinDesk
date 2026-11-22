@@ -542,6 +542,8 @@ final class Capture {
 
   // MARK: tap callback
 
+  private var lastSlowTap: UInt64 = 0
+
   func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
     let pass = Unmanaged.passUnretained(event)
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
@@ -549,6 +551,14 @@ final class Capture {
       return pass
     }
     if event.getIntegerValueField(.eventSourceUserData) == injectedMark { return pass }
+    let arrived = DispatchTime.now().uptimeNanoseconds
+    let timestamp = event.timestamp
+    if timestamp > 0, arrived > timestamp, arrived - timestamp > 50_000_000,
+       lastSlowTap == 0 || arrived - lastSlowTap >= 5_000_000_000 {
+      lastSlowTap = arrived
+      let ms = Double(arrived - timestamp) / 1_000_000
+      writerQueue.async { log(String(format: "input tap event age %.1f ms", ms)) }
+    }
     if Capture.gestureTypes.contains(type.rawValue) { return onGesture(event) ? nil : pass }
     if type.rawValue == Capture.systemDefined { return onSystemKey(event) ? nil : pass }
     switch type {

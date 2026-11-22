@@ -65,6 +65,7 @@ final class SpaceOverview {
   private let commitWindowS = 0.5
   private let confirmWindowS = 1.5
 
+  private var revision: UInt64 = 0
   private var machine: OverviewMachine?
   private var switchId: Any?
   private var commitId: Any?
@@ -80,6 +81,7 @@ final class SpaceOverview {
       replyError(id, "unavailable")
       return
     }
+    revision &+= 1
     machine = nil
     guard tokenOK(token) else { replyError(id, "unavailable"); return }
     guard MissionControlAccess.canToggle else { replyError(id, "unavailable"); return }
@@ -126,6 +128,7 @@ final class SpaceOverview {
 
   func commit(id: Any?, token: String) {
     guard let machine else { replyError(id, "stale"); return }
+    revision &+= 1
     if machine.phase == .releasing {
       let effects = machine.commit(token: token, now: ProcessInfo.processInfo.systemUptime, input: MissionControlAccess.snapshot())
       replyCommit(id, effects.commitReply)
@@ -161,6 +164,7 @@ final class SpaceOverview {
   func lookRecovery() -> (checkMove: (() -> SpaceMove)?, finish: (PollInput, SpaceMove) -> Void)? {
     guard injector.remoteOverview else { return nil }
     let job = machine
+    let revision = self.revision
     let phase = job?.phase
     let needsMove = job?.needsMoveCheck
     let before = baseline, display = displayId, space = spaceId
@@ -168,13 +172,15 @@ final class SpaceOverview {
       SpaceMoveCheck.judge(before: before, after: MacSpaces.currents(), displayId: display, spaceId: space)
     } : nil
     return (checkMove, { input, move in
-      guard injector.remoteOverview, self.machine === job, job?.phase == phase,
+      guard injector.remoteOverview, self.revision == revision,
+            self.machine === job, job?.phase == phase,
             job?.needsMoveCheck == needsMove,
             InputRecovery.allowRestore(phase: phase, input: input) else { return }
       if let job, phase == .releasing {
         self.apply(job.recover(now: ProcessInfo.processInfo.systemUptime, input: input, move: move))
         if job.needsTick { self.schedule(after: self.pollS) }
       } else {
+        self.revision &+= 1
         injector.restoreRemoteAfterOverview()
       }
     })
@@ -230,6 +236,7 @@ final class SpaceOverview {
   }
 
   private func apply(_ effects: OverviewEffects) {
+    revision &+= 1
     if effects.hold { injector.holdRemoteForOverview() }
     // Close while remote input is still dropped. Restore waits for a fresh hidden
     // read, so a click cannot land on a thumbnail that is still leaving. The confirm

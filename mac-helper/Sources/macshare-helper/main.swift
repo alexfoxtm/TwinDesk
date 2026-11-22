@@ -51,23 +51,23 @@ private let spacesLookQueue = DispatchQueue(label: "macshare.spaces-look", qos: 
 private var lastSlowLook: TimeInterval = -.infinity
 
 private func readSpacesLook(_ id: Any?) {
-  let started = ProcessInfo.processInfo.systemUptime
   let hosts = MissionControlAccess.hosts()
   let recovery = SpaceOverview.shared.lookRecovery()
   spacesLookQueue.async {
+    let started = ProcessInfo.processInfo.systemUptime
     let result = MacSpaces.look()
     let overview: PollInput = result["error"] == nil || recovery != nil
       ? MissionControlAccess.snapshot(hosts: hosts) : .unreadable
     let move = InputRecovery.allowRestore(phase: .releasing, input: overview)
       ? recovery?.checkMove?() ?? .pending : .pending
     let trusted = AXIsProcessTrusted()
+    let finished = ProcessInfo.processInfo.systemUptime
+    let ms = (finished - started) * 1000
+    if ms > 50 && finished - lastSlowLook >= 5 {
+      lastSlowLook = finished
+      log(String(format: "spacesLook took %.1f ms", ms))
+    }
     DispatchQueue.main.async {
-      let now = ProcessInfo.processInfo.systemUptime
-      let ms = (now - started) * 1000
-      if ms > 50 && now - lastSlowLook >= 5 {
-        lastSlowLook = now
-        log(String(format: "spacesLook took %.1f ms", ms))
-      }
       recovery?.finish(overview, move)
       if let err = result["error"] as? String { replyError(id, err); return }
       var looked = result
