@@ -56,7 +56,19 @@ function startServices({ server, getSettings, pushState, onHelperReady, clipboar
     offerDisplays: () => Spaces.catalogOffer(displays.list(), { remote: s().sharing.remote !== false, held: displays.holds.has('apps-open') }).offerDisplays,
   });
   const spaceLook = new SpaceLook(helper, pushState);
-  helper.on('event', (event) => { if (event === 'activeSpaceChanged') pushState(); });
+  let lookTimer;
+  const invalidateLook = () => {
+    const session = server.current;
+    if (!session) return;
+    clearTimeout(lookTimer);
+    lookTimer = setTimeout(() => {
+      const still = () => server.current === session;
+      if (still()) spaceLook.demand({
+        session, view: () => stream.viewedDisplay(), still, invalidated: true,
+      });
+    }, 100);
+  };
+  helper.on('event', (event) => { if (event === 'activeSpaceChanged') invalidateLook(); });
   const desktopRefresh = new DesktopRefresh({
     listen: (fn) => server.on(`t:${P.T.SCREEN_DESKTOPS}`, fn),
     authorize: (ctx) => Spaces.streamInputGate(ctx, () => server.current),
@@ -91,11 +103,13 @@ function startServices({ server, getSettings, pushState, onHelperReady, clipboar
   for (const x of [stream, clipboard, kvm, terminal, drop, fileSend, smb, apps, sshClient, audio, pcView, pcApps, notifs, fileClip, wake, appSend]) x.on('change', pushState);
   displays.on('change', () => {
     input.releaseAll(); // the shared display moved or changed size mid-press
+    invalidateLook();
     pushState();
   });
 
   // Helper lifecycle: (re)create the virtual display and restart the stream after every start.
   helper.on('ready', () => {
+    invalidateLook();
     displays.applyVirtual().then(() => stream.restart('helper started'));
     onHelperReady();
     pushState();

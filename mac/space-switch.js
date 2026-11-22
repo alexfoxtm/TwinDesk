@@ -211,6 +211,25 @@ class SpaceLook {
     this.againForce = false;
     this.againOpts = null;
     this.ticket = 0;
+    this.sampledSession = null;
+    this.sampledView = null;
+    this.pendingDemand = null;
+  }
+
+  demand({ session, view, still, invalidated = false }) {
+    const viewed = view();
+    const changed = session !== this.sampledSession || !S.fenceView(this.sampledView, viewed);
+    if (!invalidated && !changed && (!viewed || this.busy)) return;
+    if (this.busy) {
+      const dirty = invalidated || this.pendingDemand?.session === session &&
+        this.pendingDemand.invalidated;
+      this.pendingDemand = { session, view, still, invalidated: dirty };
+      return;
+    }
+    if (!still()) return;
+    this.sampledSession = session;
+    this.sampledView = viewed;
+    this.refresh({ view, still, force: invalidated || changed });
   }
 
   current() {
@@ -263,6 +282,9 @@ class SpaceLook {
         try { if (opts && opts.onFresh) opts.onFresh(); } catch (_) { /* the session is already gone */ }
       }
       if (again) this.refresh(againForce ? Object.assign({}, againOpts, { force: true }) : againOpts);
+      const pending = this.pendingDemand;
+      this.pendingDemand = null;
+      if (pending && pending.still()) this.demand(pending);
     };
     this.helper.request('spacesLook', {}).then((look) => {
       finish(look && typeof look === 'object' ? look : null);

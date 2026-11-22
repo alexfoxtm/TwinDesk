@@ -395,9 +395,10 @@ function sendScreenState() {
   // Mission Control or call a space setter (mac-helper Spaces.swift).
   const view = () => (svc.stream && svc.stream.viewedDisplay ? svc.stream.viewedDisplay() : null);
   const viewed = view();
-  if (viewed && svc.spaceLook && !svc.spaceLook.busy) svc.spaceLook.refresh({
+  if (svc.spaceLook) svc.spaceLook.demand({
+    session: c,
     view,
-    still: () => peer && peer.current === c && !!view(),
+    still: () => peer && peer.current === c,
   });
   const look = svc.spaceLook ? svc.spaceLook.current() : null;
   const Spaces = require('../shared/mac-spaces.js');
