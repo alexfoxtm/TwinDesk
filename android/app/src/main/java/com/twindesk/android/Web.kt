@@ -88,10 +88,6 @@ class WebHost(ctx: Context, page: String, private val core: Core, private val on
         @JavascriptInterface fun videoState(generation: Int, session: Int, playing: Boolean, w: Int, h: Int) = main.post {
             onEvent("videoState", msg("videoState", "generation" to generation, "session" to session, "playing" to playing, "w" to w, "h" to h))
         }.let { }
-        @JavascriptInterface fun videoMetrics(generation: Int, session: Int, w: Int, h: Int, fps: Int, kbps: Int, dropped: Long) = main.post {
-            onEvent("videoMetrics", msg("videoMetrics", "generation" to generation, "session" to session,
-                "w" to w, "h" to h, "fps" to fps, "kbps" to kbps, "dropped" to dropped))
-        }.let { }
         @JavascriptInterface fun canDecodeVideo(codec: String, width: Int, height: Int, fps: Double): Boolean {
             val mime = when (codec.lowercase()) {
                 "video/h264" -> "video/avc"
@@ -109,6 +105,10 @@ class WebHost(ctx: Context, page: String, private val core: Core, private val on
         }
         @JavascriptInterface fun detail(generation: Int, session: Int, height: Int) = main.post {
             onEvent("videoDetail", msg("videoDetail", "generation" to generation, "session" to session, "height" to height))
+        }.let { }
+        @JavascriptInterface fun videoMetrics(generation: Int, session: Int, w: Int, h: Int, fps: Int, kbps: Int, dropped: Long) = main.post {
+            onEvent("videoMetrics", msg("videoMetrics", "generation" to generation, "session" to session,
+                "w" to w, "h" to h, "fps" to fps, "kbps" to kbps, "dropped" to dropped))
         }.let { }
         @JavascriptInterface fun playing(w: Int, h: Int) = main.post { onEvent("playing", JSONObject().put("w", w).put("h", h)) }.let { }
         @JavascriptInterface fun haptic() = main.post { view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) }.let { }
