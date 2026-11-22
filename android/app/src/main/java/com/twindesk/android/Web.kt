@@ -182,6 +182,11 @@ data class StreamDoctorSample(val width: Int, val height: Int, val fps: Int?, va
 // the viewer page while ViewerActivity is open (screen.policy tells the Mac to stream).
 class Screen(core: Core) : Feature(core) {
     @Volatile var state: JSONObject? = null; private set // the Mac's screen.state
+    private fun Link.ownsVideoSession(marker: Any?): Boolean =
+        marker != null && currentTrustedRoute()?.marker === marker
+
+    @Volatile var videoUnavailable = false; private set
+
     @Volatile var inputOn = true; private set // the Mac's "Receive input" (stream.input)
     @Volatile var spaceNote = ""; private set // a desktop refusal, a switch in progress, or why remote control stays paused
     @Volatile var desktopPreviews = DesktopPreview.EMPTY
@@ -199,11 +204,6 @@ class Screen(core: Core) : Feature(core) {
     private var decodedCapture: Long? = null
     private val pendingTimer = Handler(Looper.getMainLooper())
     private val pendingTick = Runnable { onPendingClock() }
-    private fun Link.ownsVideoSession(marker: Any?): Boolean =
-        marker != null && currentTrustedRoute()?.marker === marker
-
-    @Volatile var videoUnavailable = false; private set
-
     @Volatile var viewing = false; private set
     @Volatile var size: Pair<Int, Int>? = null; private set
     @Volatile var decodedSize: Pair<Int, Int>? = null; private set
@@ -382,6 +382,21 @@ class Screen(core: Core) : Feature(core) {
 
     // The touchpad settings changed on the Remote page: an open viewer follows.
     fun repost() { host?.post(opts()) }
+
+    fun lockChanged(locked: Boolean) {
+        clearDoctor()
+        host?.post(msg("viewer.input", "on" to pointerInput(locked)))
+        if (locked) endPreviewSession()
+        else {
+            previewEpoch++
+            core.changed()
+        }
+        videoGeneration++
+        videoPlaying = false
+        decodedSize = null
+        val session = videoSession
+        if (viewing && session != null && videoMarker != null && core.link.connected && core.link.sessionMarker() === videoMarker) host?.post(msg("viewer.probe", "session" to session, "viewerGeneration" to videoGeneration, "accept" to !locked))
+    }
 
     fun setOpt(key: String, on: Boolean) {
         core.store.setFlag(key, on)
@@ -936,20 +951,7 @@ class Screen(core: Core) : Feature(core) {
         return DesktopPreview.Incoming(false, unavailable, m.optString("displayId"), m.optString("spaceId"), capture, viewGen, m.optInt("width"), m.optInt("height"), jpeg)
     }
 
-    fun lockChanged(locked: Boolean) {
-        clearDoctor()
-        host?.post(msg("viewer.input", "on" to pointerInput(locked)))
-        if (locked) endPreviewSession()
-        else {
-            previewEpoch++
-            core.changed()
-        }
-        videoGeneration++
-        videoPlaying = false
-        decodedSize = null
-        val session = videoSession
-        if (viewing && session != null && videoMarker != null && core.link.connected && core.link.sessionMarker() === videoMarker) host?.post(msg("viewer.probe", "session" to session, "viewerGeneration" to videoGeneration, "accept" to !locked))
-    }
+
 }
 
 // The Mac's sound here (audio m2w): a page in a WebView with no window answers its offers.

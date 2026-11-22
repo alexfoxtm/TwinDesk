@@ -128,7 +128,7 @@ assert.ok(web.includes('DesktopPreview.reduce'));
 assert.ok(web.includes('DesktopPreview.retain'));
 assert.ok(viewer.includes('s.previewSheet(overview && sheetReady && started)'));
 assert.ok(viewer.includes('screen.previewSheet(false)'));
-const locked = web.slice(web.indexOf('fun lockChanged'), web.indexOf('class MacSound', web.indexOf('fun lockChanged')));
+const locked = web.slice(web.indexOf('fun lockChanged'), web.indexOf('fun videoState(h:'));
 assert.ok(locked.includes('endPreviewSession()'));
 const state = web.slice(web.indexOf('"screen.state"'), web.indexOf('"stream.input"'));
 assert.ok(state.includes('endPreviewSession()'));
