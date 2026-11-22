@@ -47,14 +47,14 @@ test('shelf presents bounded saved files and native drag or reveal only for its 
   drop.recent = [];
   try {
     for (let i = 0; i < 12; i++) { const file = path.join(dir, `file-${i}.txt`); fs.writeFileSync(file, 'fixture'); drop.recent.push({ path: file, ok: true }); }
-    const shelf = new FileShelf({ drop, latestPhoto: () => ({ path: drop.recent[0].path }) });
+    const shelf = new FileShelf({ drop });
     assert.equal(drop.listenerCount('change'), 0);
     shelf.show();
     assert.equal(drop.listenerCount('change'), 1);
     const state = read(shelf);
     assert.equal(state.items.length, 8);
-    assert.equal(state.items[0].kind, 'photo');
-    assert.equal(new Set(state.items.map(x => x.name)).size, 8, 'latest photo deduplicates Recent');
+    assert.equal(state.items[0].kind, 'file');
+    assert.equal(new Set(state.items.map(x => x.name)).size, 8, 'Recent entries are unique');
     assert.ok(state.items.every(item => !('path' in item)));
     const id = state.items[0].id;
     assert.equal(read(shelf).items[0].id, id, 'ordinary refresh retains focus identity');
@@ -69,14 +69,13 @@ test('shelf presents bounded saved files and native drag or reveal only for its 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('shelf refuses foreign frames, revoked photo and replaced or symlinked local files', () => {
+test('shelf refuses foreign frames, removed drops and replaced or symlinked local files', () => {
   const dir = tmp();
   const drop = new EventEmitter();
   const file = path.join(dir, 'file.txt'), link = path.join(dir, 'link.txt');
   fs.writeFileSync(file, 'original'); fs.symlinkSync(file, link);
-  drop.recent = [{ path: link, ok: true }];
-  let photo = { path: file };
-  const shelf = new FileShelf({ drop, latestPhoto: () => photo });
+  drop.recent = [{ path: file, ok: true }, { path: link, ok: true }];
+  const shelf = new FileShelf({ drop });
   const oldDrags = dragged.length, oldReveals = revealed.length;
   try {
     shelf.show();
@@ -89,7 +88,7 @@ test('shelf refuses foreign frames, revoked photo and replaced or symlinked loca
     fs.renameSync(file, path.join(dir, 'old.txt')); fs.writeFileSync(file, 'replacement');
     ipcMain.emit('file-shelf:drag', ownEvent, id);
     const replacementId = read(shelf).items[0].id;
-    photo = null;
+    drop.recent = [];
     ipcMain.emit('file-shelf:reveal', ownEvent, replacementId);
     assert.equal(dragged.length, oldDrags);
     assert.equal(revealed.length, oldReveals);

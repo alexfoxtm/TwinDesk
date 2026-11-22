@@ -49,9 +49,8 @@ function wire() {
 }
 
 class FileShelf {
-  constructor({ drop, latestPhoto = () => null, t = (key) => key }) {
+  constructor({ drop, t = (key) => key }) {
     this.drop = drop;
-    this.latestPhoto = latestPhoto;
     this.t = t;
     this.win = null;
     this.items = new Map();
@@ -62,9 +61,7 @@ class FileShelf {
   }
 
   _candidates() {
-    let photo = null;
-    try { photo = this.latestPhoto(); } catch { /* A revoked or unreadable backup has no item. */ }
-    return [photo && { ...photo, photo: true }, ...(this.drop?.recent || []).slice(0, 40).filter(item => item.ok)].filter(Boolean);
+    return (this.drop?.recent || []).slice(0, 40).filter(item => item.ok);
   }
 
   _identify(source) { return fileIdentity(source.path); }
@@ -77,7 +74,7 @@ class FileShelf {
       const identity = this._identify(source);
       if (!identity) continue;
       seen.add(source.path);
-      found.push({ path: source.path, name: path.basename(source.path), photo: source.photo === true, identity });
+      found.push({ path: source.path, name: path.basename(source.path), kind: identity.folder ? 'folder' : 'file', identity });
     }
     return found;
   }
@@ -86,23 +83,24 @@ class FileShelf {
     const previous = this.items;
     this.items = new Map();
     const items = this._sources().map(source => {
-      const old = [...previous.values()].find(item => item.path === source.path && item.photo === source.photo && same(item.identity, source.identity));
+      const old = [...previous.values()].find(item => item.path === source.path && item.kind === source.kind && same(item.identity, source.identity));
       const item = { ...source, id: old?.id || randomUUID() };
       this.items.set(item.id, item);
       return { id: item.id, name: item.name, size: item.identity.folder ? null : item.identity.size,
-        kind: item.photo ? 'photo' : item.identity.folder ? 'folder' : 'file',
+        kind: item.kind,
+        ...(item.kind === 'folder' ? { detail: this.t('Folder') } : {}),
         extension: item.identity.folder ? '' : path.extname(item.name).slice(1, 9).toUpperCase() };
     });
     return { title: this.t('File Shelf'), empty: this.t('Nothing received'), drag: this.t('Drag a file into another app'),
-      reveal: this.t('Show in Finder'), close: this.t('Close'), photo: this.t('Latest backed-up photo'), folder: this.t('Folder'), items };
+      reveal: this.t('Show in Finder'), close: this.t('Close'), items };
   }
 
   _item(id) {
     if (typeof id !== 'string') return null;
     const item = this.items.get(id);
     if (!item || !same(item.identity, fileIdentity(item.path))) { this._publish(); return null; }
-    // latestPhoto may have been revoked since the sheet was drawn, or Recent may have been cleared.
-    const current = this._sources().some(source => source.path === item.path && source.photo === item.photo && same(source.identity, item.identity));
+    // Recent may have been cleared since the sheet was drawn.
+    const current = this._sources().some(source => source.path === item.path && source.kind === item.kind && same(source.identity, item.identity));
     if (!current) this._publish();
     return current ? item : null;
   }

@@ -91,6 +91,7 @@ test('completed LocalSend receipts show on the shelf and in activity from histor
     const state = read(shelf);
     assert.deepEqual(state.items.map((item) => item.name), ['same.txt', 'from-phone.txt', 'notes.txt', 'album', 'older.txt']);
     assert.equal(state.items[0].kind, 'photo');
+    assert.equal(state.items[0].detail, 'Latest backed-up photo');
     assert.equal(state.items[3].kind, 'folder');
     assert.ok(state.items.every((item) => !('path' in item) && !JSON.stringify(item).includes(dir)));
     assert.deepEqual(Object.keys(state.items[1]).sort(), ['extension', 'id', 'kind', 'name', 'size']);
@@ -368,4 +369,34 @@ test('edited LocalSend receipts can still be dragged and revealed', () => {
     shelf.shutdown();
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('shelf refuses foreign frames, revoked photo and replaced or symlinked local files', () => {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'twindesk-shelf-photo-'));
+  const drop = new EventEmitter();
+  const file = path.join(dir, 'file.txt'), link = path.join(dir, 'link.txt');
+  fs.writeFileSync(file, 'original'); fs.symlinkSync(file, link);
+  drop.recent = [{ path: link, ok: true }];
+  let photo = { path: file };
+  const shelf = new FileShelf({ drop, receipts: () => [], latestPhoto: () => photo });
+  const oldDrags = dragged.length, oldReveals = revealed.length;
+  try {
+    shelf.show();
+    const state = read(shelf);
+    assert.equal(state.items.length, 1, 'symlink is omitted');
+    const id = state.items[0].id;
+    const ownEvent = event(shelf);
+    ipcMain.emit('file-shelf:drag', { ...ownEvent, senderFrame: {} }, id);
+    ipcMain.emit('file-shelf:reveal', { ...ownEvent, sender: { id: -1 } }, id);
+    fs.renameSync(file, path.join(dir, 'old.txt')); fs.writeFileSync(file, 'replacement');
+    ipcMain.emit('file-shelf:drag', ownEvent, id);
+    const replacementId = read(shelf).items[0].id;
+    photo = null;
+    ipcMain.emit('file-shelf:reveal', ownEvent, replacementId);
+    assert.equal(dragged.length, oldDrags);
+    assert.equal(revealed.length, oldReveals);
+    assert.equal(read(shelf).items.length, 0, 'revoked item leaves the shelf');
+    shelf.shutdown();
+    assert.equal(handles.get('file-shelf:read')(ownEvent), null, 'retired contents cannot read shelf');
+  } finally { shelf.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

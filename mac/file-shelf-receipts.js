@@ -6,7 +6,7 @@ const { sameIdentity } = require('../shared/localsend/wire');
 function attachReceipts(shelf, receipts, latestPhoto = () => null) {
   if (shelf.receipts) return;
   shelf.receipts = receipts;
-  shelf.latestPhoto = latestPhoto;
+  let photoPath;
   const identify = shelf._identify.bind(shelf);
   shelf._identify = (source) => {
     const identity = identify(source);
@@ -15,7 +15,7 @@ function attachReceipts(shelf, receipts, latestPhoto = () => null) {
   };
   shelf._candidates = function () {
     let received = [], photo = null;
-    try { photo = this.latestPhoto(); } catch { /* A revoked or unreadable backup has no item. */ }
+    try { photo = latestPhoto(); } catch { /* A revoked or unreadable backup has no item. */ }
     try {
       const list = typeof this.receipts === 'function' ? this.receipts() : [];
       if (Array.isArray(list)) received = list.slice(0, 40);
@@ -28,7 +28,18 @@ function attachReceipts(shelf, receipts, latestPhoto = () => null) {
       if (item && typeof item.path === 'string') ranked.push({ path: item.path, at: item.at, identity: item.identity });
     }
     ranked.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
-    return [photo && typeof photo.path === 'string' ? { path: photo.path, photo: true } : null, ...ranked].filter(Boolean);
+    photoPath = typeof photo?.path === 'string' ? photo.path : null;
+    return photoPath ? [{ path: photoPath }, ...ranked] : ranked;
+  };
+  const sources = shelf._sources.bind(shelf);
+  shelf._sources = () => sources().map(source => source.path === photoPath ? { ...source, kind: 'photo' } : source);
+  const snapshot = shelf._snapshot.bind(shelf);
+  shelf._snapshot = () => {
+    const state = snapshot();
+    for (const item of state.items) {
+      if (item.kind === 'photo') item.detail = shelf.t('Latest backed-up photo');
+    }
+    return state;
   };
   shelf.refresh();
 }

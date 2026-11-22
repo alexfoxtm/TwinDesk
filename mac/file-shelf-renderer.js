@@ -26,7 +26,7 @@ function render(state) {
     const label = document.createElement('div'); label.className = 'label';
     const name = document.createElement('div'); name.className = 'name'; name.textContent = item.name;
     const detail = document.createElement('div'); detail.className = 'detail';
-    detail.textContent = [item.kind === 'photo' ? state.photo : item.kind === 'folder' ? state.folder : '', item.size === null ? '' : bytes(item.size)].filter(Boolean).join(' · ');
+    detail.textContent = [item.detail, item.size === null ? '' : bytes(item.size)].filter(Boolean).join(' · ');
     label.append(name, detail); file.append(icon, label);
     file.ondragstart = event => { event.preventDefault(); api.drag(item.id); };
     file.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); api.reveal(item.id); } };
