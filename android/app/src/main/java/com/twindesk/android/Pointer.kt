@@ -44,18 +44,19 @@ class Pointer(core: Core) : Feature(core) {
         val want: Context = service ?: core.ctx
         if (service == null && !Settings.canDrawOverlays(core.ctx)) return remove()
         if (view != null && host !== want) remove() // the service came or went: move the arrow over
-        val density = core.ctx.resources.displayMetrics.density
-        val size = (22 * density).toInt()
-        val v = view ?: object : View(want) {
-            val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.FILL }
-            val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 1.6f * density; strokeJoin = Paint.Join.ROUND }
-            val arrow = Path().apply {
-                val s = density
-                moveTo(1.5f * s, 1.5f * s); lineTo(1.5f * s, 17f * s); lineTo(5.5f * s, 13.2f * s); lineTo(8.4f * s, 19.6f * s)
-                lineTo(11f * s, 18.4f * s); lineTo(8.2f * s, 12.2f * s); lineTo(13.6f * s, 12.2f * s); close()
+        val v = view ?: run {
+            val density = core.ctx.resources.displayMetrics.density
+            val size = (22 * density).toInt()
+            val arrowView = object : View(want) {
+                val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.FILL }
+                val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 1.6f * density; strokeJoin = Paint.Join.ROUND }
+                val arrow = Path().apply {
+                    val s = density
+                    moveTo(1.5f * s, 1.5f * s); lineTo(1.5f * s, 17f * s); lineTo(5.5f * s, 13.2f * s); lineTo(8.4f * s, 19.6f * s)
+                    lineTo(11f * s, 18.4f * s); lineTo(8.2f * s, 12.2f * s); lineTo(13.6f * s, 12.2f * s); close()
+                }
+                override fun onDraw(c: Canvas) { c.drawPath(arrow, fill); c.drawPath(arrow, edge) }
             }
-            override fun onDraw(c: Canvas) { c.drawPath(arrow, fill); c.drawPath(arrow, edge) }
-        }.also { nv ->
             val p = WindowManager.LayoutParams(
                 size, size,
                 if (service != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -63,19 +64,28 @@ class Pointer(core: Core) : Feature(core) {
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT,
             ).apply {
+                this.x = x + 1
+                this.y = y + 1
                 gravity = Gravity.TOP or Gravity.START
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
                 title = "TwinDesk pointer"
             }
             val m = want.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            runCatching { m.addView(nv, p) }.onFailure { return }
+            runCatching { m.addView(arrowView, p) }.onFailure { return }
             lp = p; host = want; wm = m
-            view = nv
+            view = arrowView
+            return
         }
         val p = lp ?: return
+        if (p.x == x + 1 && p.y == y + 1) return
+        val oldX = p.x
+        val oldY = p.y
         p.x = x + 1
         p.y = y + 1
-        runCatching { wm?.updateViewLayout(v, p) }
+        runCatching { wm?.updateViewLayout(v, p) }.onFailure {
+            p.x = oldX
+            p.y = oldY
+        }
     }
 
     fun hide() {
