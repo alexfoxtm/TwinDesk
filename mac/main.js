@@ -524,15 +524,31 @@ function changeLanguage() {
   app.quit(); // as Quit does: before-quit gives everything back (KVM, calls, the helper)
 }
 
+// Glass paints an opaque body (shared/ui-glass.css --base). The window is opaque in that colour, so
+// the desktop does not show through the corners. Simple stays transparent: its vibrancy is the sidebar.
+function controlChrome() {
+  const glass = Look.style(settings.ui.style) === 'glass';
+  const theme = settings.ui.theme;
+  const dark = theme === 'dark' || (theme !== 'light' && nativeTheme.shouldUseDarkColors);
+  return {
+    vibrancy: glass ? null : 'sidebar',
+    backgroundColor: glass ? (dark ? '#18181c' : '#f2f2f5') : '#00000000',
+  };
+}
+
 // General › Appearance changed: the theme; the window's vibrancy only for Simple (Glass paints its
 // gradient over the whole window, the sidebar a frosted pane on it, so a blur under it would show nothing).
 function applyLook() {
   Look.applyTheme(nativeTheme, settings.ui.theme);
-  if (win && !win.isDestroyed()) win.setVibrancy(Look.style(settings.ui.style) === 'glass' ? null : 'sidebar');
+  if (!win || win.isDestroyed()) return;
+  const chrome = controlChrome();
+  win.setVibrancy(chrome.vibrancy);
+  win.setBackgroundColor(chrome.backgroundColor);
 }
 
 function createWindow() {
   if (quitting) return;
+  const chrome = controlChrome();
   win = new BrowserWindow({
     width: 1060,
     height: 720,
@@ -541,9 +557,9 @@ function createWindow() {
     title: 'TwinDesk',
     show: false,
     titleBarStyle: 'hiddenInset', // the sidebar runs up under the traffic lights
-    vibrancy: Look.style(settings.ui.style) === 'glass' ? undefined : 'sidebar', // Simple's (applyLook)
+    vibrancy: chrome.vibrancy || undefined, // Glass: unset, as before (null in the constructor would differ)
     visualEffectState: 'active',
-    backgroundColor: '#00000000',
+    backgroundColor: chrome.backgroundColor,
     webPreferences: {
       preload: path.join(__dirname, 'preload-control.js'),
       contextIsolation: true,
@@ -1295,7 +1311,7 @@ app.whenReady().then(() => {
   });
   updates.start();
   Look.applyTheme(nativeTheme, settings.ui.theme);
-  nativeTheme.on('updated', () => pushState());
+  nativeTheme.on('updated', () => { applyLook(); pushState(); });
   // The system accent colour changed (General › Appearance › System follows it).
   try { systemPreferences.subscribeNotification('AppleColorPreferencesChangedNotification', () => pushState()); } catch {}
   const showShelf = showFileShelf;
