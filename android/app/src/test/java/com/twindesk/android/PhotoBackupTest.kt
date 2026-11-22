@@ -2,6 +2,11 @@
 package com.twindesk.android
 
 import android.Manifest
+import java.io.ByteArrayInputStream
+import java.security.MessageDigest
+import java.util.Base64
+import org.json.JSONObject
+import org.junit.Assume.assumeNoException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -48,6 +53,80 @@ class PhotoBackupTest {
             assertTrue(System.nanoTime() - started < 1_000_000_000)
         } finally {
             thread.interrupt()
+        }
+    }
+
+    @Test
+    fun senderFillsShortReadsAndWaitsForTheFinalWrittenOffset() {
+        val data = byteArrayOf(1, 2, 3, 4, 5)
+        val input = object : ByteArrayInputStream(data) {
+            override fun read(b: ByteArray, off: Int, len: Int): Int =
+                super.read(b, off, minOf(1, len))
+        }
+        val lock = Object()
+        val credit = PbCredit(lock, 4, data.size)
+        val chunks = mutableListOf<List<Byte>>()
+        synchronized(lock) { credit.grant(0, 4, 0) }
+        val body = pumpPhotoBody(input, data.size, 4, true,
+            ready = { end, final ->
+                assertEquals(chunks.size == 2, final)
+                if (final) {
+                    assertFalse("End must wait for written, even when upTo covers the tail",
+                        creditWithoutWaiting(credit, end, true))
+                    synchronized(lock) { credit.grant(5, 5, 5) }
+                }
+                creditWithoutWaiting(credit, end, final)
+            },
+            chunk = { sent, seq, encoded ->
+                assertEquals(chunks.size, seq)
+                assertEquals(if (seq == 0) 4 else 5, sent)
+                chunks += Base64.getDecoder().decode(encoded).toList()
+                if (seq == 0) synchronized(lock) { credit.grant(4, 5, sent) }
+                true
+            },
+        )
+        assertNull(body.failure)
+        assertEquals(listOf(data.take(4), data.takeLast(1)), chunks)
+        assertEquals(MessageDigest.getInstance("SHA-256").digest(data).hex(), body.sha)
+    }
+
+    @Test
+    fun rejectsInvalidGrantsBeforeTheyCanReleaseAChunk() {
+        val lock = Object()
+        val credit = PbCredit(lock, 4, 9)
+        synchronized(lock) { credit.grant(1, 5, 0) }
+        assertFalse("written cannot exceed sent", creditWithoutWaiting(credit, 4, false))
+        synchronized(lock) { credit.grant(0, 5, 0) }
+        assertFalse("upTo must match the negotiated window", creditWithoutWaiting(credit, 4, false))
+    }
+
+    @Test
+    fun parsesWireGrantWithAndroidJson() {
+        val message = try {
+            JSONObject("""{"written":0,"upTo":32768}""").also { it.opt("written") }
+        } catch (stub: RuntimeException) {
+            if (stub.message != "Stub!" && stub.message?.startsWith("Method opt in org.json.JSONObject not mocked.") != true) throw stub
+            assumeNoException("Requires Android's org.json implementation on the test classpath", stub)
+            throw stub
+        }
+        val lock = Object()
+        val credit = PbCredit(lock, 32768, 65536)
+        synchronized(lock) {
+            credit.grant(JSONObject("""{"written":0.5,"upTo":32768}"""), 0)
+            credit.grant(JSONObject("""{"written":0}"""), 0)
+        }
+        assertFalse(creditWithoutWaiting(credit, 32768, false))
+        synchronized(lock) { credit.grant(message, 0) }
+        assertTrue(creditWithoutWaiting(credit, 32768, false))
+    }
+
+    // A ready grant succeeds before wait(). A missing grant returns immediately on interruption.
+    private fun creditWithoutWaiting(credit: PbCredit, end: Int, final: Boolean): Boolean {
+        Thread.currentThread().interrupt()
+        try {
+            return credit.await(end, final) { true }
+        } finally {
+            Thread.interrupted()
         }
     }
 

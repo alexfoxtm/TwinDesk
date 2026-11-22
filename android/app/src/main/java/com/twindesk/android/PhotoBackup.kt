@@ -20,13 +20,11 @@ import android.provider.BaseColumns
 import android.provider.MediaStore
 import android.provider.MediaStore.Files.FileColumns
 import android.provider.MediaStore.MediaColumns
-import android.util.Base64
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
-import java.security.MessageDigest
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
 
@@ -449,9 +447,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         synchronized(lock) {
             val f = flight ?: return
             if (f.owner.socket !== owner.socket || !pumpingLocked(f) || m.optString("req") != f.req) return
-            val written = longField(m.opt("written")) ?: return
-            val upTo = longField(m.opt("upTo")) ?: return
-            f.credit?.grant(written, upTo, f.sent)
+            f.credit?.grant(m, f.sent)
         }
     }
 
@@ -547,55 +543,20 @@ class PhotoBackup(core: Core) : Feature(core) {
                 failPump(f, "stop", settle = false)
                 return
             }
-            val md = MessageDigest.getInstance("SHA-256")
-            val buf = ByteArray(CHUNK)
-            var got = 0
-            var seq = 0
-            while (true) {
-                val end = minOf(got + CHUNK, f.row.size)
-                val final = got == f.row.size
-                if (f.credit?.await(end, final) { pumpingLocked(f) } == false || !room(f)) {
-                    failPump(f, "stop", settle = false)
-                    return
-                }
-                val n = try {
-                    if (f.credit == null) input.read(buf)
-                    else if (final) {
-                        if (input.read() == -1) -1 else 1
-                    } else {
-                        var filled = 0
-                        while (filled < end - got) {
-                            val count = input.read(buf, filled, end - got - filled)
-                            if (count < 0) break
-                            filled += count
-                        }
-                        if (filled == end - got) filled else -1
+            val body = pumpPhotoBody(input, f.row.size, CHUNK, f.credit != null,
+                ready = { end, final ->
+                    f.credit?.await(end, final) { pumpingLocked(f) } != false && room(f)
+                },
+                chunk = { sent, seq, data ->
+                    synchronized(lock) {
+                        if (!pumpingLocked(f)) return
+                        f.sent = sent
                     }
-                } catch (_: SecurityException) {
-                    failPump(f, "permission", settle = false)
-                    return
-                }
-                if (n < 0) break
-                if (n == 0) continue
-                if (got + n > f.row.size) {
-                    failPump(f, "checksum", settle = false)
-                    return
-                }
-                synchronized(lock) {
-                    if (!pumpingLocked(f)) return
-                    f.sent = got + n
-                }
-                md.update(buf, 0, n)
-                val data = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
-                if (!sendEcho(f, Proto.T.BACKUP_CHUNK, "seq" to seq, "data" to data)) {
-                    failPump(f, "stop", settle = false)
-                    return
-                }
-                got += n
-                seq += 1
-            }
-            if (got != f.row.size) {
-                failPump(f, "checksum", settle = false)
+                    sendEcho(f, Proto.T.BACKUP_CHUNK, "seq" to seq, "data" to data)
+                },
+            )
+            if (body.failure != null) {
+                failPump(f, body.failure, settle = false)
                 return
             }
             if (!still(f)) return
@@ -603,7 +564,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                 failPump(f, "version", settle = true)
                 return
             }
-            val sha = md.digest().hex()
+            val sha = body.sha
             synchronized(lock) {
                 if (!pumpingLocked(f)) return
                 f.sha = sha
@@ -1118,14 +1079,6 @@ class PhotoBackup(core: Core) : Feature(core) {
     }
 
     private fun isDead(req: String) = req in dead
-
-    private fun longField(v: Any?): Long? = when (v) {
-        is Int -> v.toLong()
-        is Long -> v
-        is Double -> if (!v.isNaN() && !v.isInfinite() && v % 1.0 == 0.0 && v >= Long.MIN_VALUE.toDouble() && v <= Long.MAX_VALUE.toDouble()) v.toLong() else null
-        is String -> v.toLongOrNull()
-        else -> null
-    }
 
     private fun longHint(name: String) = tr("New camera photos are copied into the folder you choose, by year and month, after you turn this on here and on {name}. The copy includes the photo’s location. Nothing is deleted or replaced.", "name" to name)
 
