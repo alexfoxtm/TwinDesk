@@ -122,10 +122,10 @@ let quitting = false;
 let startHidden = process.argv.includes('--hidden');
 let settings, id, server, pairing, discovery, link, peer, svc, actions, pairSync, updates;
 let proximityLock = null;
+let photoBackup = null; // new camera photos from a paired Android phone (mac/photobackup.js)
 let web = null; // TwinDesk Web: this Mac as a page for iPhones and browsers (setupWeb)
 let localsend = null; // files with LocalSend-compatible apps (mac/localsend.js), off until turned on in Files
 let phoneHub = null; // Calls, Messages and Photos (loadHub); svc.hub is the Mac's sound capture (audiohub.js)
-let photoBackup = null; // new camera photos from a paired Android phone (mac/photobackup.js)
 let fileShelf = null;
 
 const state = {
@@ -1274,11 +1274,11 @@ app.whenReady().then(() => {
     discovery,
     link,
     ...svc,
-    get silence() { return svc.silence; },
     hub: loadHub,
-    photoBackup,
     showFileShelf,
     login,
+    get silence() { return svc.silence; },
+    photoBackup,
     refreshPermissions,
     updates,
     applyRelay,

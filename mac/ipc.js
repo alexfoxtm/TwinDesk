@@ -821,12 +821,6 @@ function setupIpc(ctx) {
       if (ctx.batteryAlerts && deviceId != null && deviceId !== '') ctx.batteryAlerts.forget(String(deviceId));
       // The device can be a saved host or a paired client.
       ctx.proximityLock?.forget(String(deviceId));
-      if (ctx.photoBackup) ctx.photoBackup.forget(String(deviceId)); // consent for this phone; archived photos stay
-      if (ctx.silence) { // Silence together: its lease and its switches go with the pairing
-        ctx.silence.forget(String(deviceId));
-        delete settings.silence.peers[String(deviceId)];
-        store.saveSettings(settings);
-      }
       if (ctx.link.hosts.some((h) => h.id === String(deviceId))) return ctx.link.forget(String(deviceId));
       ctx.pairing.forget(String(deviceId));
       ctx.terminal.forget(String(deviceId));
@@ -889,6 +883,16 @@ function setupIpc(ctx) {
   actions.disconnect = () => {
     if (ctx.silence) ctx.silence.stop();
     return disconnect();
+  };
+  const forget = actions.forget;
+  actions.forget = (deviceId) => {
+    if (ctx.photoBackup) ctx.photoBackup.forget(String(deviceId)); // consent for this phone; archived photos stay
+    if (ctx.silence) { // Silence together: its lease and its switches go with the pairing
+      ctx.silence.forget(String(deviceId));
+      delete settings.silence.peers[String(deviceId)];
+      store.saveSettings(settings);
+    }
+    return forget(deviceId);
   };
   for (const [name, fn] of Object.entries(actions)) ipcMain.on(name, (_e, arg) => fn(arg));
   return actions;
