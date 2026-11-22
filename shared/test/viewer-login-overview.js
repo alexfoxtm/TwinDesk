@@ -1,8 +1,6 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
-// The Mac viewer still has its old controls, and the new sheet does not pretend to show the desktop.
-// Run with: node shared/test/desktop-overview.js
+// Login hides the desktop overview and a locked Mac revokes preview access.
 'use strict';
-
 
 const assert = require('assert');
 const fs = require('fs');

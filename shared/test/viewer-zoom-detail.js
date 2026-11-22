@@ -87,6 +87,13 @@ async function sharperPictureAndRestore() {
   assert.strictEqual(f.detailRequests.at(-1).height, 1440);
   f.recv({ t: 'viewer.scale', mode: 'fit' }); f.advance(400);
   assert.strictEqual(f.detailRequests.at(-1).height, 0, 'Fit restores this stream baseline');
+  pinch(f); f.advance(400);
+  assert.strictEqual(f.detailRequests.at(-1).height, 1440);
+  const requests = f.detailRequests.length;
+  f.recv({ t: 'viewer.scale', mode: 'fit' });
+  await connect(f, 41);
+  f.advance(400);
+  assert.strictEqual(f.detailRequests.length, requests, 'replacement cancels a pending baseline restore');
 }
 async function unsupportedAndRetiredFrames() {
   const f = fixture();
