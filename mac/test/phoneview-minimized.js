@@ -10,20 +10,27 @@ const { test } = require('node:test');
 const code = fs.readFileSync(path.join(__dirname, '../phoneview-renderer.js'), 'utf8');
 
 function fixture(kind = 'app') {
-  const events = new Map(), handlers = new Map(), decoders = [], sent = [], painted = [];
+  const events = new Map(), handlers = new Map(), decoders = [], sent = [], painted = [], blanks = [], pushed = [], statusKeys = [];
   const controls = new Map();
+  const timers = [];
+  let now = 5000;
   const canvas = {
     width: 100, height: 200, style: {}, focus() {}, addEventListener() {},
-    getContext: () => ({ drawImage: (frame) => painted.push(frame.id) }),
+    getContext: () => ({
+      fillStyle: '',
+      drawImage: (frame) => painted.push(frame.id),
+      fillRect: () => blanks.push(`${canvas.width}x${canvas.height}`),
+    }),
   };
   const element = () => ({ hidden: true, style: {}, classList: { add() {}, toggle() {} },
     setAttribute() {}, addEventListener() {} });
   const nodes = { screen: canvas, stage: { clientWidth: 400, clientHeight: 800 }, status: element(), title: element() };
   let recording = false;
   class Decoder {
-    constructor(callbacks) { this.callbacks = callbacks; this.state = 'unconfigured'; this.decodeQueueSize = 0; decoders.push(this); }
+    constructor(callbacks) { this.callbacks = callbacks; this.state = 'unconfigured'; this.decodeQueueSize = 0; this.resets = 0; decoders.push(this); }
     configure() { this.state = 'configured'; }
     decode(chunk) { this.chunks = (this.chunks || []).concat(chunk); }
+    reset() { this.resets++; this.state = 'unconfigured'; }
     close() { this.state = 'closed'; }
   }
   const api = {
@@ -41,58 +48,170 @@ function fixture(kind = 'app') {
     mount() {}, recording: () => recording,
   };
   const window = { phoneview: api,
-    PlayerI18n: { translate() {}, text() {}, literal() {}, t: key => key, onChange() {} },
+    PlayerI18n: {
+      translate() {},
+      text(el, key) { if (el === nodes.status) statusKeys.push(key); },
+      literal() {}, t: key => key, onChange() {},
+    },
     addEventListener: (name, fn) => events.set(name, fn),
     MirrorRail: () => rail,
+    CamOut: () => ({ push: (frame) => pushed.push(frame.id), onRotate() {} }),
   };
+  function later(fn, ms) {
+    const t = { fn, at: now + (ms || 0) };
+    timers.push(t);
+    return t;
+  }
+  function cancel(t) {
+    const i = timers.indexOf(t);
+    if (i >= 0) timers.splice(i, 1);
+  }
+  function advance(ms) {
+    const end = now + ms;
+    for (;;) {
+      let next = null;
+      for (const t of timers) if (t.at <= end && (!next || t.at < next.at)) next = t;
+      if (!next) break;
+      now = next.at;
+      timers.splice(timers.indexOf(next), 1);
+      next.fn();
+    }
+    now = end;
+  }
   vm.runInNewContext(code, {
     window, document: { body: element(), getElementById: key => nodes[key] || null, querySelector: () => element(), addEventListener() {} },
     location: { search: '?kind=' + kind }, URLSearchParams, devicePixelRatio: 2, VideoDecoder: Decoder,
     EncodedVideoChunk: class { constructor(data) { Object.assign(this, data); } },
-    ResizeObserver: class { observe() {} }, performance: { now: () => 5000 }, console,
-    setTimeout, clearTimeout,
+    ResizeObserver: class { observe() {} }, performance: { now: () => now }, console,
+    setTimeout: later, clearTimeout: cancel,
   });
   const recv = (name, value) => { for (const fn of handlers.get(name) || []) fn(value); };
   const config = () => recv('video', { config: true, data: Uint8Array.from([0, 0, 1, 0x67, 0x42, 0, 0x1f]) });
-  const frame = id => ({ id, displayWidth: 300, displayHeight: 600, closed: 0, close() { this.closed++; } });
-  return { recv, config, frame, canvas, decoders, sent, painted, events, controls, rail,
+  const frame = (id, timestamp) => ({ id, timestamp, displayWidth: 300, displayHeight: 600, closed: 0, close() { this.closed++; } });
+  return { recv, config, frame, canvas, decoders, sent, painted, blanks, pushed, statusKeys, status: nodes.status, events, controls, rail, advance,
     record(on) { recording = on; }, output(f) { decoders.at(-1).callbacks.output(f); } };
 }
 
-test('a minimized viewer of any kind does not decode, and restore waits for a keyframe', () => {
-  for (const kind of ['app', 'screen', 'camera']) {
+test('a minimized app or screen does not decode, and the phone panel still goes dark', () => {
+  for (const kind of ['app', 'screen']) {
     const f = fixture(kind);
     f.config();
     const decoder = f.decoders[0];
-    const visible = f.frame(1);
+    const visible = f.frame(1, 1);
     f.output(visible);
     assert.deepEqual(f.painted, [1]);
     assert.equal(visible.closed, 1);
 
     f.recv('opts', { minimized: true });
+    assert.equal(decoder.resets, 1, `${kind}: minimize drops frames already queued`);
     if (kind === 'app') f.recv('status', { appFrame: 'capture-7' });
     f.recv('video', { key: true, pts: 123, data: Uint8Array.of(1) });
     f.recv('video', { key: false, pts: 124, data: Uint8Array.of(2) });
-    const dropped = f.frame(2);
+    const dropped = f.frame(2, 124);
     f.output(dropped);
     assert.equal(decoder.chunks, undefined, `${kind}: minimized window does not decode`);
     assert.equal(dropped.closed, 1, `${kind}: a frame that still comes out is dropped`);
     assert.deepEqual(f.painted, [1], `${kind}: nothing new is painted`);
     assert.deepEqual(f.sent.filter((m) => m.t === 'resetVideo'), [], `${kind}: no keyframe ask while minimized`);
-    if (kind === 'app') assert.deepEqual(f.sent.filter((m) => m.t === 'appFrame'), []);
+    if (kind === 'app') {
+      assert.deepEqual(f.sent.filter((m) => m.t === 'appFrame'), [{ t: 'appFrame', capture: 'capture-7' }], 'the phone panel goes dark without a decoded frame');
+    }
 
     f.recv('opts', { minimized: false });
     assert.deepEqual(f.sent.filter((m) => m.t === 'resetVideo'), [{ t: 'resetVideo' }], `${kind}: restore asks for a keyframe now`);
+    assert.equal(f.statusKeys.at(-1), 'Waiting for the picture…', `${kind}: the stale picture is cleared like the first one`);
+    assert.ok(f.blanks.length >= 1, `${kind}: the canvas is blank while that keyframe is due`);
     f.recv('video', { key: false, pts: 200, data: Uint8Array.of(3) });
     assert.equal(decoder.chunks, undefined, `${kind}: a delta after the gap is not decoded`);
     f.recv('video', { key: true, pts: 201, data: Uint8Array.of(4) });
     assert.deepEqual(decoder.chunks.map((chunk) => chunk.timestamp), [201]);
-    const key = f.frame(9);
+    const stale = f.frame(8, 50);
+    f.output(stale);
+    assert.equal(stale.closed, 1, `${kind}: a frame from before the keyframe is not painted`);
+    const key = f.frame(9, 201);
     f.output(key);
     assert.equal(f.painted.at(-1), 9, `${kind}: the keyframe is the next picture`);
     assert.equal(key.closed, 1);
     if (kind === 'app') assert.deepEqual(f.sent.filter((m) => m.t === 'appFrame'), [{ t: 'appFrame', capture: 'capture-7' }]);
+    f.advance(5000);
+    assert.equal(f.sent.filter((m) => m.t === 'resetVideo').length, 1, `${kind}: asks stop once the keyframe is in`);
   }
+});
+
+test('a minimized camera keeps feeding the virtual camera and the Camera tab', () => {
+  const f = fixture('camera');
+  f.config();
+  f.recv('video', { key: true, pts: 1, data: Uint8Array.of(1) });
+  f.output(f.frame(1, 1));
+  assert.deepEqual(f.painted, [1]);
+  assert.deepEqual(f.pushed, [1]);
+
+  f.recv('opts', { minimized: true });
+  assert.equal(f.decoders[0].resets, 0, 'minimize does not reset the camera decoder');
+  f.recv('video', { key: false, pts: 2, data: Uint8Array.of(2) });
+  assert.deepEqual(f.decoders[0].chunks.map((chunk) => chunk.timestamp), [1, 2], 'a minimized camera still decodes');
+  const next = f.frame(2, 2);
+  f.output(next);
+  assert.deepEqual(f.painted, [1, 2], 'the feed is the same path that paints');
+  assert.deepEqual(f.pushed, [1, 2], 'the virtual camera and the Camera tab still get the frame');
+  assert.equal(next.closed, 1);
+  assert.deepEqual(f.sent.filter((m) => m.t === 'resetVideo'), []);
+
+  f.recv('opts', { minimized: false });
+  assert.deepEqual(f.sent.filter((m) => m.t === 'resetVideo'), [], 'nothing was skipped, so restore does not wait');
+  f.advance(5000);
+  assert.deepEqual(f.sent.filter((m) => m.t === 'resetVideo'), []);
+});
+
+test('restore keeps asking while the keyframe has not arrived', () => {
+  const f = fixture('screen');
+  f.config();
+  f.recv('video', { key: false, pts: 1, data: Uint8Array.of(1) });
+  assert.deepEqual(f.sent.filter((m) => m.t === 'resetVideo'), [{ t: 'resetVideo' }]);
+  f.recv('opts', { minimized: true });
+  f.recv('opts', { minimized: false });
+  assert.equal(f.sent.filter((m) => m.t === 'resetVideo').length, 1, 'the restore ask is inside the one-second throttle');
+  f.advance(999);
+  assert.equal(f.sent.filter((m) => m.t === 'resetVideo').length, 1);
+  f.advance(1);
+  assert.equal(f.sent.filter((m) => m.t === 'resetVideo').length, 2, 'asks again once the throttle allows');
+  f.advance(1000);
+  assert.equal(f.sent.filter((m) => m.t === 'resetVideo').length, 3);
+  f.recv('video', { key: true, pts: 40, data: Uint8Array.of(4) });
+  f.output(f.frame(4, 40));
+  f.advance(5000);
+  assert.equal(f.sent.filter((m) => m.t === 'resetVideo').length, 3, 'stops once decoding resumes');
+
+  const again = fixture('screen');
+  again.config();
+  again.recv('opts', { minimized: true });
+  again.recv('opts', { minimized: false });
+  again.recv('opts', { minimized: true });
+  again.advance(5000);
+  assert.equal(again.sent.filter((m) => m.t === 'resetVideo').length, 1, 'minimized again: stop asking');
+
+  const closed = fixture('screen');
+  closed.config();
+  closed.recv('opts', { minimized: true });
+  closed.recv('opts', { minimized: false });
+  closed.recv('status', { closed: 'stopped' });
+  closed.advance(5000);
+  assert.equal(closed.sent.filter((m) => m.t === 'resetVideo').length, 1, 'closed: stop asking');
+});
+
+test('restore waits for a keyframe only when frames were skipped', () => {
+  const f = fixture('screen');
+  f.config();
+  f.record(true);
+  f.recv('video', { key: true, pts: 1, data: Uint8Array.of(1) });
+  f.output(f.frame(1, 1));
+  f.recv('opts', { minimized: true });
+  f.recv('video', { key: false, pts: 2, data: Uint8Array.of(2) });
+  assert.deepEqual(f.decoders[0].chunks.map((chunk) => chunk.timestamp), [1, 2], 'recording keeps decoding while minimized');
+  assert.equal(f.decoders[0].resets, 0, 'recording does not drop the decoder');
+  f.recv('opts', { minimized: false });
+  assert.deepEqual(f.sent.filter((m) => m.t === 'resetVideo'), [], 'nothing was skipped, so the picture is not held for a keyframe');
+  assert.equal(f.blanks.length, 0);
 });
 
 test('recording still paints while minimized, and a retired frame is not shown on restore', () => {
@@ -102,7 +221,7 @@ test('recording still paints while minimized, and a retired frame is not shown o
   f.record(true);
   f.recv('video', { key: true, pts: 5, data: Uint8Array.of(5) });
   assert.deepEqual(f.decoders[0].chunks.map((chunk) => chunk.timestamp), [5], 'a recording keeps decoding');
-  const recording = f.frame(5);
+  const recording = f.frame(5, 5);
   f.output(recording);
   assert.equal(f.painted.at(-1), 5);
   assert.equal(recording.closed, 1, 'recording consumes the canvas');
@@ -110,7 +229,7 @@ test('recording still paints while minimized, and a retired frame is not shown o
 
   const shot = fixture();
   shot.config();
-  const shown = shot.frame(1);
+  const shown = shot.frame(1, 1);
   shot.output(shown);
   shot.recv('opts', { minimized: true });
   shot.recv('video', { key: true, pts: 8, data: Uint8Array.of(8) });
@@ -120,17 +239,17 @@ test('recording still paints while minimized, and a retired frame is not shown o
 
   f.config();
   const old = f.decoders.at(-1);
-  const late = f.frame(2);
+  const late = f.frame(2, 2);
   old.callbacks.output(late);
   assert.equal(late.closed, 1, 'a frame from the decoder that was replaced is dropped');
   f.recv('status', { closed: 'stopped' });
   f.recv('opts', { minimized: false });
-  const afterClose = f.frame(4);
+  const afterClose = f.frame(4, 4);
   f.output(afterClose);
   assert.equal(afterClose.closed, 1);
   assert.ok(!f.painted.includes(4), 'restore cannot paint a frame from a capture that already closed');
   f.recv('opts', { minimized: true });
-  const onUnload = f.frame(6);
+  const onUnload = f.frame(6, 6);
   f.output(onUnload);
   f.events.get('beforeunload')();
   assert.equal(onUnload.closed, 1);

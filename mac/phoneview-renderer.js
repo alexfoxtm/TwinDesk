@@ -45,12 +45,40 @@
     askedKey = now;
     api.send({ t: 'resetVideo' });
   }
+  let keyRetry = null;
+  function stopKeyRetry() {
+    if (keyRetry) clearTimeout(keyRetry);
+    keyRetry = null;
+  }
+  // After a restore the phone may be still, so nothing else asks. Once a second until a
+  // keyframe is decoded, or the window is minimized or closed. needKey keeps the one-second throttle.
+  function armKeyRetry() {
+    stopKeyRetry();
+    const tick = () => {
+      keyRetry = null;
+      if (!waitingKey || minimized) return;
+      needKey();
+      if (waitingKey && !minimized) keyRetry = setTimeout(tick, 1000);
+    };
+    keyRetry = setTimeout(tick, 1000);
+  }
 
   const setStatus = (key, vars) => {
     closedStatus = null;
     I.text(status, key, vars);
     status.hidden = !key;
   };
+
+  // The first picture is a black canvas and this line. A restore that still needs a keyframe
+  // does the same, so the frame from before the gap is not left up. Clicks still go to the phone
+  // once its size is known, as they do while the first picture is on its way.
+  function showWaitingPicture() {
+    if (canvas.width > 0 && canvas.height > 0) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    setStatus('Waiting for the picture…');
+  }
 
   function renderClosedStatus(s) {
     const key = s.closedKey || (localStatuses.has(s.closed) ? s.closed : '');
@@ -76,12 +104,28 @@
 
   let rail = null;
   let minimized = false;
+  // True once this minimize gap dropped decoder state. Restore waits for a keyframe only then.
+  // A camera, and a recording, never set it: their pictures kept coming.
+  let skipped = false;
   let heldFrame = null;
   let videoEpoch = 0;
   let codecName = null;
   // Outputs older than this are from before a minimize gap. Null: paint. Infinity: drop until the
   // next keyframe we submit (its timestamp replaces this).
   let acceptPts = null;
+
+  // A camera stays live while minimized: vcam.push, on this same path, is the virtual camera
+  // and the Camera tab (shared/vcam-feed.js). A recording is the canvas. Everything else skips.
+  function skipMinimized() {
+    return minimized && kind !== 'camera' && !rail?.recording();
+  }
+
+  // Keep the phone screen off (phoneview.js appFrame) even though this window is not painting.
+  function flushAppFrame() {
+    if (kind !== 'app' || typeof appFrame !== 'string' || !skipMinimized()) return;
+    api.send({ t: 'appFrame', capture: appFrame });
+    appFrame = null;
+  }
 
   function releaseHeldFrame() {
     if (heldFrame) heldFrame.close();
@@ -102,7 +146,7 @@
     try { paintFrame(heldFrame); } finally { releaseHeldFrame(); }
   }
 
-  window.addEventListener('beforeunload', () => { videoEpoch++; releaseHeldFrame(); });
+  window.addEventListener('beforeunload', () => { videoEpoch++; releaseHeldFrame(); stopKeyRetry(); });
   function configureDecoder(codec) {
     decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: hwDecode ? 'prefer-hardware' : 'prefer-software' });
   }
@@ -121,8 +165,9 @@
     decoder = new VideoDecoder({
       output: (frame) => {
         if (epoch !== videoEpoch) { frame.close(); return; }
-        // Minimized: do not paint, and do not keep the frame. A recording still uses the canvas.
-        if (minimized && !rail?.recording()) { frame.close(); return; }
+        // Minimized: do not paint, and do not keep the frame. A camera still paints, because
+        // that is what feeds the virtual camera. A recording still uses the canvas.
+        if (skipMinimized()) { frame.close(); return; }
         if (!rail?.recording() && acceptPts != null && typeof frame.timestamp === 'number' && frame.timestamp < acceptPts) {
           frame.close();
           return;
@@ -145,7 +190,7 @@
         console.warn('decoder', e.message);
         // The GPU's decoder refused this stream (some drivers, a high H.264 level): the window waited
         // for the picture for good (#233), as a closed decoder takes nothing more. Software from then on.
-        const ask = () => { if (!(minimized && !rail?.recording())) needKey(); };
+        const ask = () => { if (!skipMinimized()) needKey(); };
         if (hwDecode) {
           hwDecode = false;
           console.warn('decoder: trying software decoding');
@@ -171,8 +216,17 @@
       return;
     }
     if (!decoder || decoder.state !== 'configured') return;
-    // Nothing is on screen. A recording is the exception: the canvas is what it saves.
-    if (minimized && !rail?.recording()) return;
+    // Nothing is on screen. A camera keeps decoding. A recording is the canvas, so it does too.
+    if (skipMinimized()) {
+      if (!skipped) {
+        skipped = true;
+        waitingKey = true;
+        acceptPts = Number.POSITIVE_INFINITY;
+        releaseHeldFrame();
+        discardPending();
+      }
+      return;
+    }
     if (waitingKey && !p.key) return needKey();
     // Behind (a slow decoder): drop up to a fresh keyframe rather than one frame, which smears.
     if (decoder.decodeQueueSize > 4 && !p.key) return needKey();
@@ -183,6 +237,8 @@
       chunk.set(data, config.length);
     }
     waitingKey = false;
+    if (p.key) skipped = false;
+    stopKeyRetry();
     if (p.key && acceptPts != null) acceptPts = p.pts;
     decoder.decode(new EncodedVideoChunk({ type: p.key ? 'key' : 'delta', timestamp: p.pts, data: chunk }));
   });
@@ -193,7 +249,10 @@
   });
 
   api.on('status', (s) => {
-    if (kind === 'app' && typeof s.appFrame === 'string') appFrame = s.appFrame;
+    if (kind === 'app' && typeof s.appFrame === 'string') {
+      appFrame = s.appFrame;
+      flushAppFrame();
+    }
     if (s.via) {
       const el = document.getElementById('via');
       I.literal(el, s.via === 'usb' ? 'USB' : 'Wi-Fi');
@@ -202,7 +261,7 @@
       I.translate(el);
       el.hidden = false;
     }
-    if (s.closed || s.error) { appFrame = null; releaseHeldFrame(); }
+    if (s.closed || s.error) { appFrame = null; releaseHeldFrame(); stopKeyRetry(); }
     if (s.closed) videoEpoch++;
     if (s.error) {
       closedStatus = null;
@@ -498,18 +557,29 @@
     if (typeof m.minimized === 'boolean') {
       const was = minimized;
       minimized = m.minimized;
-      // The last painted frame stays. Deltas from before the gap would smear, so the next
-      // picture is a keyframe. Do not ask while still minimized.
-      if (minimized && !was && !rail?.recording()) {
-        waitingKey = true;
-        acceptPts = Number.POSITIVE_INFINITY;
-        releaseHeldFrame();
-        discardPending();
+      // A camera is not minimized for this: its feed has to keep running. A recording is not
+      // either. Otherwise the decoder is dropped, and restore asks until a keyframe arrives.
+      if (minimized && !was) {
+        stopKeyRetry();
+        if (kind !== 'camera' && !rail?.recording()) {
+          skipped = true;
+          waitingKey = true;
+          acceptPts = Number.POSITIVE_INFINITY;
+          releaseHeldFrame();
+          discardPending();
+        }
+        flushAppFrame();
       }
       if (was && !minimized) {
-        waitingKey = true;
-        if (acceptPts == null) acceptPts = Number.POSITIVE_INFINITY;
-        needKey();
+        stopKeyRetry();
+        if (skipped) {
+          waitingKey = true;
+          if (acceptPts == null) acceptPts = Number.POSITIVE_INFINITY;
+          showWaitingPicture();
+          needKey();
+          armKeyRetry();
+        }
+        skipped = false;
       }
     }
     if (pinBtn && typeof m.pinned === 'boolean') { pinBtn.classList.toggle('active', m.pinned); pinBtn.setAttribute('aria-pressed', String(m.pinned)); }
