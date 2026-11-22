@@ -29,7 +29,7 @@
 // attempt opened and has not pressed, never a toggle on an unknown read or after
 // ownership was cleared, and the hold remains until a hidden read.
 //
-// spacesLook may call recoverHidden. That resumes remote input only on a fresh
+// spacesLook may recover hidden input. That resumes remote input only on a fresh
 // hidden read, and only when no attempt is polling, armed, or committing. It
 // does not open Mission Control, press a thumbnail, or post the Dock notification.
 // An unknown or ambiguous read keeps the hold until a later hidden read. There
@@ -158,20 +158,26 @@ final class SpaceOverview {
   /// committing leave it too, so a touch is not sent while the overview may
   /// still be drawing. A press that has not confirmed its destination keeps
   /// the hold. If no attempt remains, a hidden read only clears the flag.
-  func recoverHidden() {
-    guard injector.remoteOverview else { return }
-    let input = MissionControlAccess.snapshot()
-    let phase = machine?.phase
-    guard InputRecovery.allowRestore(phase: phase, input: input) else { return }
-    if let machine, machine.phase == .releasing {
-      let move = machine.needsMoveCheck
-        ? SpaceMoveCheck.judge(before: baseline, after: MacSpaces.currents(), displayId: displayId, spaceId: spaceId)
-        : SpaceMove.pending
-      apply(machine.recover(now: ProcessInfo.processInfo.systemUptime, input: input, move: move))
-      if machine.needsTick { schedule(after: pollS) }
-      return
-    }
-    injector.restoreRemoteAfterOverview()
+  func lookRecovery() -> (checkMove: (() -> SpaceMove)?, finish: (PollInput, SpaceMove) -> Void)? {
+    guard injector.remoteOverview else { return nil }
+    let job = machine
+    let phase = job?.phase
+    let needsMove = job?.needsMoveCheck
+    let before = baseline, display = displayId, space = spaceId
+    let checkMove: (() -> SpaceMove)? = phase == .releasing && needsMove == true ? {
+      SpaceMoveCheck.judge(before: before, after: MacSpaces.currents(), displayId: display, spaceId: space)
+    } : nil
+    return (checkMove, { input, move in
+      guard injector.remoteOverview, self.machine === job, job?.phase == phase,
+            job?.needsMoveCheck == needsMove,
+            InputRecovery.allowRestore(phase: phase, input: input) else { return }
+      if let job, phase == .releasing {
+        self.apply(job.recover(now: ProcessInfo.processInfo.systemUptime, input: input, move: move))
+        if job.needsTick { self.schedule(after: self.pollS) }
+      } else {
+        injector.restoreRemoteAfterOverview()
+      }
+    })
   }
 
   func abort(id: Any?, token: String) {
@@ -299,10 +305,18 @@ enum MissionControlAccess {
     return dockNotify("com.apple.expose.awake" as CFString, 0) == 0
   }
 
+  static func hosts() -> (docks: [pid_t], managers: [pid_t]) {
+    (NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").map(\.processIdentifier),
+     NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.WindowManager").map(\.processIdentifier))
+  }
+
   static func snapshot() -> PollInput {
+    snapshot(hosts: hosts())
+  }
+
+  static func snapshot(hosts: (docks: [pid_t], managers: [pid_t])) -> PollInput {
     guard AXIsProcessTrusted() else { return .unreadable }
-    let docks = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
-    let managers = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.WindowManager")
+    let (docks, managers) = hosts
     if docks.count > 1 || managers.count > 1 { return .ambiguousHost }
     let dockChildren = childrenOf(docks.first)
     let managerChildren = childrenOf(managers.first)
@@ -335,20 +349,15 @@ enum MissionControlAccess {
   }
 
   /// nil only when the process is running and its children cannot be read. No process is an empty list.
-  private static func childrenOf(_ running: NSRunningApplication?) -> [AXUIElement]? {
-    guard let running else { return [] }
-    return axChildren(app(running))
-  }
-
-  private static func app(_ running: NSRunningApplication) -> AXUIElement {
-    let element = AXUIElementCreateApplication(running.processIdentifier)
+  private static func childrenOf(_ pid: pid_t?) -> [AXUIElement]? {
+    guard let pid else { return [] }
+    let element = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(element, 0.25)
-    return element
+    return axChildren(element)
   }
 
   private static func button(displayId: UInt32, index: Int, count: Int) -> AXUIElement? {
-    let docks = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock")
-    let managers = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.WindowManager")
+    let (docks, managers) = hosts()
     guard docks.count < 2, managers.count < 2 else { return nil }
     guard let dockChildren = childrenOf(docks.first), let managerChildren = childrenOf(managers.first) else { return nil }
     let groups = dockChildren.filter { axString($0, kAXIdentifierAttribute as CFString) == "mc" }

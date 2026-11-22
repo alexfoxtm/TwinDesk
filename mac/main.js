@@ -377,12 +377,14 @@ function sendScreenState() {
   // the helper's read says the windows on screen belong to the desktops that are current.
   // A window still visible from another desktop keeps it false. The read does not open
   // Mission Control or call a space setter (mac-helper Spaces.swift).
-  if (svc.spaceLook) svc.spaceLook.refresh({
-    view: () => (svc.stream && svc.stream.viewedDisplay ? svc.stream.viewedDisplay() : null),
+  const view = () => (svc.stream && svc.stream.viewedDisplay ? svc.stream.viewedDisplay() : null);
+  const viewed = view();
+  if (viewed && svc.spaceLook && !svc.spaceLook.busy) svc.spaceLook.refresh({
+    view,
+    still: () => peer && peer.current === c && !!view(),
   });
   const look = svc.spaceLook ? svc.spaceLook.current() : null;
   const Spaces = require('../shared/mac-spaces.js');
-  const viewed = svc.stream && svc.stream.viewedDisplay ? svc.stream.viewedDisplay() : null;
   const spaces = Spaces.offerSpaces(look, viewed);
   const held = appsHeld();
   const offer = Spaces.catalogOffer(svc.displays.list(), { remote: settings.sharing.remote !== false, held });

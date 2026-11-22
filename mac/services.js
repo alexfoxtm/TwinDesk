@@ -56,6 +56,7 @@ function startServices({ server, getSettings, pushState, onHelperReady, clipboar
     offerDisplays: () => Spaces.catalogOffer(displays.list(), { remote: s().sharing.remote !== false, held: displays.holds.has('apps-open') }).offerDisplays,
   });
   const spaceLook = new SpaceLook(helper, pushState);
+  helper.on('event', (event) => { if (event === 'activeSpaceChanged') pushState(); });
   const desktopRefresh = new DesktopRefresh({
     listen: (fn) => server.on(`t:${P.T.SCREEN_DESKTOPS}`, fn),
     authorize: (ctx) => Spaces.streamInputGate(ctx, () => server.current),

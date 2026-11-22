@@ -47,6 +47,40 @@ func spaceHoldWhy(_ input: PollInput) -> String {
   }
 }
 
+private let spacesLookQueue = DispatchQueue(label: "macshare.spaces-look", qos: .userInitiated)
+private var lastSlowLook: TimeInterval = -.infinity
+
+private func readSpacesLook(_ id: Any?) {
+  let started = ProcessInfo.processInfo.systemUptime
+  let hosts = MissionControlAccess.hosts()
+  let recovery = SpaceOverview.shared.lookRecovery()
+  spacesLookQueue.async {
+    let result = MacSpaces.look()
+    let overview: PollInput = result["error"] == nil || recovery != nil
+      ? MissionControlAccess.snapshot(hosts: hosts) : .unreadable
+    let move = InputRecovery.allowRestore(phase: .releasing, input: overview)
+      ? recovery?.checkMove?() ?? .pending : .pending
+    let trusted = AXIsProcessTrusted()
+    DispatchQueue.main.async {
+      let now = ProcessInfo.processInfo.systemUptime
+      let ms = (now - started) * 1000
+      if ms > 50 && now - lastSlowLook >= 5 {
+        lastSlowLook = now
+        log(String(format: "spacesLook took %.1f ms", ms))
+      }
+      recovery?.finish(overview, move)
+      if let err = result["error"] as? String { replyError(id, err); return }
+      var looked = result
+      let held = injector.remoteOverview
+      looked["ax"] = trusted
+      looked["inputHeld"] = held
+      looked["overview"] = OverviewReport.token(overview)
+      if held { looked["holdWhy"] = spaceHoldWhy(overview) }
+      reply(id, looked)
+    }
+  }
+}
+
 let virtualDisplay = VirtualDisplay()
 let injector = Injector()
 let pasteboardWatch = PasteboardWatch()
@@ -299,17 +333,7 @@ func handle(_ line: String) {
     // overview is a fresh accessibility read, including when TwinDesk itself is not
     // holding input. inputHeld is not that read: a Mission Control the person opened
     // leaves it false. "unknown" is not hidden.
-    SpaceOverview.shared.recoverHidden()
-    var looked = MacSpaces.look()
-    if let err = looked["error"] as? String { replyError(id, err) } else {
-      let held = injector.remoteOverview
-      let overview = MissionControlAccess.snapshot()
-      looked["ax"] = AXIsProcessTrusted()
-      looked["inputHeld"] = held
-      looked["overview"] = OverviewReport.token(overview)
-      if held { looked["holdWhy"] = spaceHoldWhy(overview) }
-      reply(id, looked)
-    }
+    readSpacesLook(id)
   case "spacesAbort": // before AXPress. A replaced session is this command, not a check after the press.
     SpaceOverview.shared.abort(id: id, token: (msg["token"] as? String) ?? "")
   case "spacesCommit": // next turn presses unless abort already settled it. The reply waits for the postcheck.
@@ -482,6 +506,9 @@ for sig in [SIGTERM, SIGINT, SIGHUP] {
   }
 }
 signal(SIGPIPE, SIG_IGN) // main closed a pipe (e.g. the audio fd): just stop writing
+let activeSpaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+  forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+) { _ in emit(["event": "activeSpaceChanged"]) }
 NSApplication.shared.setActivationPolicy(.prohibited)
 log("ready")
 NSApplication.shared.run()
