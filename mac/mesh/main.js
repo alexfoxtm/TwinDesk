@@ -355,17 +355,8 @@ function onPreviewWant(m) {
 }
 
 function sendScreenState() {
+  updateScreenInputOwner();
   const c = peer && peer.current;
-  const scoped = c && svc && svc.stream.byId.get(c.deviceId)?.peer;
-  const socket = scoped && (scoped.current?.conn || scoped.current?.ws);
-  if (screenInputOwner && (screenInputOwner.peer !== scoped || screenInputOwner.socket !== socket)) {
-    const previous = screenInputOwner.peer.current;
-    if (previous && (previous.conn || previous.ws) === screenInputOwner.socket) {
-      screenInputOwner.peer.sendToClient({ t: P.T.STREAM_INPUT, on: false });
-    }
-    screenInputOwner = null;
-    screenStateKey = '';
-  }
   if (!c || !svc) {
     screenStateKey = '';
     if (previewShots) previewShots.kick();
@@ -391,13 +382,13 @@ function sendScreenState() {
   const spaces = Spaces.offerSpaces(look, viewed);
   // This device's picture only. Another viewer's display is not a choice here.
   const offer = Spaces.catalogOffer(svc.displays.list(), { remote: settings.sharing.remote !== false, held: !!(svc.displays.holds && svc.displays.holds.has('apps-open')), mesh: true });
-  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, input: !!svc.input.enabled(), modes: ['extend', 'mirror'], spaces };
+  const msg = { t: P.T.SCREEN_STATE, on: !!settings.sharing.on, mode: displayMode(), remote: settings.sharing.remote !== false, modes: ['extend', 'mirror'], spaces };
   const desktops = Spaces.desktopCatalog(look, viewed, offer.named, { offerDisplays: false });
   if (desktops) msg.desktops = desktops;
   const spaceHold = Spaces.spaceHold(look);
   if (spaceHold) msg.spaceHold = spaceHold;
-  if (scoped && socket) screenInputOwner = { peer: scoped, socket };
   const keyed = [c.deviceId, msg];
+  msg.input = !!svc.input.enabled();
   const key = JSON.stringify(keyed);
   if (key === screenStateKey) {
     if (previewShots) previewShots.kick();
@@ -406,6 +397,21 @@ function sendScreenState() {
   screenStateKey = key;
   peer.sendToClient(msg);
   if (previewShots) previewShots.kick();
+}
+
+function updateScreenInputOwner() {
+  const c = peer && peer.current;
+  const scoped = c && svc && svc.stream.byId.get(c.deviceId)?.peer;
+  const socket = scoped && (scoped.current?.conn || scoped.current?.ws);
+  if (screenInputOwner && (screenInputOwner.peer !== scoped || screenInputOwner.socket !== socket)) {
+    const previous = screenInputOwner.peer.current;
+    if (previous && (previous.conn || previous.ws) === screenInputOwner.socket) {
+      screenInputOwner.peer.sendToClient({ t: P.T.STREAM_INPUT, on: false });
+    }
+    screenInputOwner = null;
+    screenStateKey = '';
+  }
+  if (scoped && socket) screenInputOwner = { peer: scoped, socket };
 }
 
 function displayPick(m) {
