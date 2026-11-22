@@ -735,6 +735,13 @@ class Core private constructor(val ctx: Context) : Link.Events {
     @Suppress("DEPRECATION")
     private fun hasRoute(address: String): Boolean = runCatching {
         val ip = android.net.InetAddresses.parseNumericAddress(address)
+        // Hotspot and Netlink group interfaces may exist without a ConnectivityManager Network.
+        if (java.net.NetworkInterface.getNetworkInterfaces().toList().any { iface ->
+            iface.isUp && !iface.isLoopback && iface.interfaceAddresses.any { local ->
+                local.networkPrefixLength > 0 &&
+                    android.net.IpPrefix(local.address, local.networkPrefixLength.toInt()).contains(ip)
+            }
+        }) return true
         val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java) ?: return true
         cm.allNetworks.any { network -> cm.getLinkProperties(network)?.routes?.any { it.matches(ip) } != false }
     }.getOrDefault(true)
