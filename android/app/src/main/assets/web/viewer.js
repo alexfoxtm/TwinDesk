@@ -469,31 +469,6 @@
     const W = window.innerWidth, H = window.innerHeight;
     return { x: (W - r.w * zoom) / 2 + panX, y: (H - r.h * zoom) / 2 + panY, w: r.w * zoom, h: r.h * zoom };
   }
-  let cueFrame = null, cueTimer = null;
-  let shareAllowsCue = false, inputAllowsCue = false;
-
-  function hidePointerCue() {
-    clearTimeout(cueTimer);
-    if (cueFrame !== null) cancelAnimationFrame(cueFrame);
-    cueFrame = cueTimer = null;
-    if (pointerCue) pointerCue.hidden = true;
-  }
-
-  function previewPointer() {
-    if (!pointerCue || !shareAllowsCue || !inputAllowsCue || document.hidden ||
-        !frameAllowed || !videoOwner?.playing || pc?.connectionState !== 'connected') return;
-    clearTimeout(cueTimer);
-    cueTimer = setTimeout(hidePointerCue, 160);
-    if (cueFrame !== null) return;
-    cueFrame = requestAnimationFrame(() => {
-      cueFrame = null;
-      const r = drawn();
-      if (!r) return hidePointerCue();
-      pointerCue.style.transform = `translate(${r.x + cur.x * r.w}px, ${r.y + cur.y * r.h}px)`;
-      pointerCue.hidden = false;
-    });
-  }
-
   function norm(cx, cy, clamp) {
     const r = drawn();
     if (!r) return null;
@@ -721,6 +696,31 @@
   // Touchpad: the pointer moves by how far the finger slides (faster flicks go further) and the
   // finger never clicks; held still it right-clicks. cur is the pointer, normalized like in.mm.
   const cur = { x: 0.5, y: 0.5 };
+  let cueFrame = null, cueTimer = null;
+  let shareAllowsCue = false, inputAllowsCue = false;
+
+  function hidePointerCue() {
+    clearTimeout(cueTimer);
+    if (cueFrame !== null) cancelAnimationFrame(cueFrame);
+    cueFrame = cueTimer = null;
+    if (pointerCue) pointerCue.hidden = true;
+  }
+
+  function previewPointer() {
+    if (!pointerCue || !shareAllowsCue || !inputAllowsCue || document.hidden ||
+        !frameAllowed || !videoOwner?.playing || pc?.connectionState !== 'connected') return;
+    clearTimeout(cueTimer);
+    cueTimer = setTimeout(hidePointerCue, 160);
+    if (cueFrame !== null) return;
+    cueFrame = requestAnimationFrame(() => {
+      cueFrame = null;
+      const r = drawn();
+      if (!r) return hidePointerCue();
+      pointerCue.style.transform = `translate(${r.x + cur.x * r.w}px, ${r.y + cur.y * r.h}px)`;
+      pointerCue.hidden = false;
+    });
+  }
+
   function padDown(e) {
     if (touches.size === 1) {
       followCursor();
