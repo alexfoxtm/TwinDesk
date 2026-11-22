@@ -759,7 +759,6 @@ app.whenReady().then(() => {
     pushState();
   });
   peer.on('rtt', pushState);
-  peer.on('closed', () => fileShelf?.refresh());
 
   svc = startServices({ server: peer, getSettings: () => settings, pushState, onHelperReady: refreshPermissions,
     clipboardPair: (ctx) => !ctx ? null : ctx.role === 'host'
@@ -769,6 +768,7 @@ app.whenReady().then(() => {
   const checkClipboardPair = () => svc.clipboard.checkQueuePair();
   link.on('change', checkClipboardPair);
   pairing.on('change', checkClipboardPair);
+
   previewShots = new (require('./display-shots.js').DisplayShots)({
     helper: svc.helper,
     readLocked: () => require('./console-lock').readLocked(),
@@ -782,8 +782,8 @@ app.whenReady().then(() => {
   require('electron').powerMonitor.on('lock-screen', () => {
     if (previewShots) previewShots.cancel('session');
   });
-
   svc.kvm.laneReady.then(laneGo);
+  peer.on('closed', () => fileShelf?.refresh());
   // Camera › Take a photo with the phone (shared/phonephoto.js): its photo onto the clipboard.
   {
     const { PhonePhoto, copyPicture } = require('../shared/phonephoto.js');
@@ -1262,15 +1262,15 @@ app.whenReady().then(() => {
     if (on) loadSilence().start();
     else if (svc.silence) svc.silence.stop();
   };
+  svc.fork = {
+    get silence() { return svc.silence; },
+    photoBackup,
+  };
   setupWeb();
   actions = setupIpc({
     state,
     settings,
     pushState,
-    fork: {
-      get silence() { return svc.silence; },
-      photoBackup,
-    },
     onLanguage: changeLanguage,
     onLook: applyLook,
     t,

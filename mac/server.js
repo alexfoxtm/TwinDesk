@@ -255,7 +255,6 @@ class Server extends EventEmitter {
   // Send an error and close the socket.
   fail(ctx, code, message) {
     ctx.expectedClose = true;
-    this.emit('revoked', ctx);
     this.send(ctx, { t: P.T.ERROR, code, message });
     if (ctx.alt) { // the whole session goes, not just this path of it
       const alt = ctx.alt;

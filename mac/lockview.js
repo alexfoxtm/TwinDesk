@@ -299,7 +299,11 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
   server.on('message', message);
   server.on('client', client);
   server.on('closed', closed);
-  server.on('revoked', revoked);
+  const fail = server.fail;
+  server.fail = function (ctx, code, message) {
+    revoked(ctx);
+    return fail.call(this, ctx, code, message);
+  };
   server.on('deviceClosed', deviceClosed);
   server.on('noreclaim', deviceClosed);
   server.on('transport', transport);
@@ -336,7 +340,8 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
     clearTimeout(unlockTimer);
     delete server.lockview;
     delete server.lockviewRefresh;
-    for (const [event, fn] of [['message', message], ['client', client], ['closed', closed], ['revoked', revoked], ['deviceClosed', deviceClosed], ['noreclaim', deviceClosed], ['transport', transport], ['closing', close]]) server.off(event, fn);
+    server.fail = fail;
+    for (const [event, fn] of [['message', message], ['client', client], ['closed', closed], ['deviceClosed', deviceClosed], ['noreclaim', deviceClosed], ['transport', transport], ['closing', close]]) server.off(event, fn);
     powerMonitor.off('lock-screen', lock);
     powerMonitor.off('unlock-screen', unlock);
     powerMonitor.off('resume', inspectLock);
