@@ -143,6 +143,25 @@
     scheduleDetail();
   }
 
+  function updateTouch(nextRealTouch, nextTouchMode) {
+    const wasDirect = real();
+    if (nextTouchMode !== touchMode) cancelInput();
+    realTouch = nextRealTouch;
+    touchMode = nextTouchMode;
+    if (macViewGestures || !detail || wasDirect || !real() || zoom === 1) return;
+    cancelInput();
+    zoom = 1;
+    panX = panY = 0;
+    applyViewport();
+    scheduleDetail();
+  }
+
+  function updateSharingOverlay(on) {
+    if (!pc) setOverlay(on ? t('Waiting for {name}…', { name })
+      : viewGestures ? t('{name} isn’t sharing its screen', { name })
+      : t('{name} isn’t sharing its screen. Start it with the button below.', { name }));
+  }
+
   function applyViewport() {
     const r = fitRect();
     if (scaleMode !== 'custom') zoom = presetZoom(scaleMode, r);
@@ -380,13 +399,12 @@
         if (!inputAllowsCue) hidePointerCue();
         break;
       case 'screen.state':
-        if ('touch' in msg) realTouch = msg.touch === true;
+        updateTouch('touch' in msg ? msg.touch === true : realTouch, touchMode);
         shareAllowsCue = msg.on === true && !msg.spaceHold;
         if (!shareAllowsCue) hidePointerCue();
-        if (msg.on === false) { captureUnavailable = false; cancelDetail(); stopDoctor(); }
-        if (!pc && !captureUnavailable) setOverlay(msg.on ? t('Waiting for {name}…', { name })
-          : viewGestures ? t('{name} isn’t sharing its screen', { name })
-          : t('{name} isn’t sharing its screen. Start it with the button below.', { name }));
+        if (msg.on === false) reportVideo(false);
+        if (msg.on === false) captureUnavailable = false;
+        if (!captureUnavailable) updateSharingOverlay(msg.on);
         break;
       case 'viewer.scale':
         selectScale(msg.mode);
@@ -408,9 +426,7 @@
         if (msg.name) name = msg.name;
         sound = msg.sound !== false;
         pacing = ['smooth', 'steady'].includes(msg.pacing) ? msg.pacing : 'fast';
-        const touch = msg.touch === 'direct' ? 'direct' : 'pad';
-        if (touch !== touchMode) cancelInput();
-        touchMode = touch;
+        updateTouch(realTouch, msg.touch === 'direct' ? 'direct' : 'pad');
         if (Number(msg.speed) > 0) speed = Number(msg.speed);
         tapClick = msg.tap === true;
         if (msg.pen === false && penOn) penLeave(); // switched off while it is near
