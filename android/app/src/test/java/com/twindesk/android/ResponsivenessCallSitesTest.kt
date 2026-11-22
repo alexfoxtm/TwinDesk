@@ -65,6 +65,20 @@ class ResponsivenessCallSitesTest {
         }
     }
 
+    @Test fun beaconLoopSkipsTheWaitWhenTheCadenceChangesDuringACycle() {
+        val discovery = Discovery(RuntimeEnvironment.getApplication(), { JSONObject() }, {}, {})
+        val running = discovery.field("running")
+        running.setBoolean(discovery, true)
+        var cycles = 0
+        discovery.onBeaconCycle = {
+            if (++cycles == 1) discovery.sessionChanged(true)
+        }
+        discovery.runBeaconLoop {
+            assertEquals("a cadence change during the first cycle needs an immediate second cycle", 2, cycles)
+            running.setBoolean(discovery, false)
+        }
+    }
+
     @Test fun focusGainIncrementsTheSetupInput() {
         val context = RuntimeEnvironment.getApplication()
         val instance = Core::class.java.getDeclaredField("instance").apply { isAccessible = true }
@@ -113,12 +127,16 @@ class ResponsivenessCallSitesTest {
             var permission = "missing"
             var visibleRow = ""
             var reads = 0
+            var lastVisibleInput = true
             composition.setContent {
                 CompositionLocalProvider(
                     LocalLifecycleOwner provides owner,
                     LocalContext provides RuntimeEnvironment.getApplication(),
                 ) {
-                    SetupGate(focus, { visible, tick, gains -> Triple(visible, tick, gains) },
+                    SetupGate(focus, { visible, tick, gains ->
+                        lastVisibleInput = visible
+                        Triple(visible, tick, gains)
+                    },
                         { reads++; permission }, { show.value }) { row ->
                         SideEffect { visibleRow = row }
                     }
@@ -147,6 +165,7 @@ class ResponsivenessCallSitesTest {
             show.value = false
             Snapshot.sendApplyNotifications()
             runCurrent()
+            assertEquals(false, lastVisibleInput)
             val hiddenReads = reads
             owner.lifecycle.currentState = Lifecycle.State.RESUMED
             advanceTimeBy(4500)

@@ -311,7 +311,6 @@ class IdleWiringTest {
         val host = rememberHost(core)
         core.discovery.found[host.id] = Found(host.id, "Mac", "mac", host.address, host.port, host.fp, 0, false)
         core.write("started", true)
-        val revision = discovery.read("beaconRevision")
         val mobile = ShadowNetwork.newInstance(1)
         val vpn = ShadowNetwork.newInstance(2)
         val backedOff = System.currentTimeMillis() + 60_000
@@ -322,21 +321,41 @@ class IdleWiringTest {
             }
             val ims = ShadowNetwork.newInstance(3)
             val mobileCaps = caps(NetworkCapabilities.TRANSPORT_CELLULAR, true)
+            val wifi = ShadowNetwork.newInstance(4)
+            val onReturn = checkNotNull(discovery.onRouteAvailable)
+            var returns = 0
+            discovery.onRouteAvailable = { returns++ }
+            var lanChanges = 0
+            discovery.onNetworkChange = { lanChanges++ }
             core.write("awayAttempts", 3)
             core.write("returnAfter", backedOff)
             callback.onCapabilitiesChanged(vpn, caps(NetworkCapabilities.TRANSPORT_VPN, true))
             callback.onLinkPropertiesChanged(vpn, properties)
+            assertEquals("VPN does not advertise a usable route", 0, returns)
             callback.onCapabilitiesChanged(ims, caps(NetworkCapabilities.TRANSPORT_CELLULAR, false))
             callback.onLinkPropertiesChanged(ims, properties)
-            core.timers.submit {}.get(3, TimeUnit.SECONDS)
-            assertEquals(backedOff, core.read("returnAfter"))
+            assertEquals("IMS does not advertise a usable route", 0, returns)
+            callback.onLost(ims)
 
+            callback.onCapabilitiesChanged(wifi, caps(NetworkCapabilities.TRANSPORT_WIFI, true))
+            callback.onLinkPropertiesChanged(wifi, properties)
+            val beforeChurn = lanChanges
+            callback.onCapabilitiesChanged(mobile, mobileCaps)
+            callback.onLinkPropertiesChanged(mobile, properties)
+            callback.onLost(mobile)
+            assertEquals("mobile churn does not wake the LAN path", beforeChurn, lanChanges)
+            assertEquals("mobile churn cannot signal a return while Wi-Fi has a route", 0, returns)
+
+            callback.onLost(wifi)
+            val beforeMobile = discovery.read("beaconRevision")
+            val wokeBeforeMobile = core.link.read("wokeAt")
+            discovery.onRouteAvailable = onReturn
             callback.onLinkPropertiesChanged(mobile, properties)
             callback.onCapabilitiesChanged(mobile, mobileCaps)
             awaitCondition { (core.read("returnAfter") as Long) in 1 until backedOff }
 
-            assertEquals(0L, core.link.read("wokeAt"))
-            assertEquals(revision, discovery.read("beaconRevision"))
+            assertEquals(wokeBeforeMobile, core.link.read("wokeAt"))
+            assertEquals(beforeMobile, discovery.read("beaconRevision"))
         } finally {
             core.timers.shutdownNow()
         }
@@ -372,9 +391,11 @@ class IdleWiringTest {
         assertEquals(1, dials)
         assertEquals(awayDeadline, core.read("returnAfter"))
 
+        core.write("returnAfter", 1L)
         core.onClosed(host, null)
         val failureDeadline = core.read("returnFailureDeadline") as Long
         assertTrue(failureDeadline > System.currentTimeMillis())
+        assertEquals(failureDeadline, core.read("returnAfter"))
         core.write("lastRouteReturn", SystemClock.elapsedRealtime() - 5000)
         restore()
         assertEquals(1, dials)
