@@ -29,10 +29,11 @@
 /* Steady cues while the window is focused. Upstream still animates box-shadow, background-position
    and left; these rules (later sheet) replace that with transform and opacity. Same timing.
    The halo colour is the breathe shadow's rgba, not --good, so light and dark match upstream.
-   Glass and Simple both use these rules. The disc sits behind the dot's own background, so the
+   Glass and Simple both use these rules. The dot's inherited centre paints above the disc, so the
    7px centre stays solid while the 13px disc grows to a 3px ring and fades. A new dot is green
    at once. A class change still fades, from .dot's own background-color transition. */
 .dot.good { animation: none; position: relative; isolation: isolate; }
+.dot.good::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: inherit; pointer-events: none; }
 .dot.good::after {
   content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
   border-radius: 50%; background: rgba(48, 185, 77, 0.45); z-index: -1; pointer-events: none;

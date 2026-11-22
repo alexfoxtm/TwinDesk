@@ -230,7 +230,7 @@ function runRtt({ win, controlWatch }) {
   const fire = (emitter) => {
     const before = calls.length;
     emitter.emit('rtt', { rttMs: 40 });
-    return { calls: calls.slice(before), sent: sent.slice(), windowBuilds };
+    return { calls: calls.slice(before), sent: sent.slice(), windowBuilds, client: box.state.client };
   };
   return { fireServer: () => fire(server), firePeer: () => fire(peer), calls, sent, get windowBuilds() { return windowBuilds; } };
 }
@@ -247,7 +247,9 @@ function assertTick(got, { send, snapshots }) {
 
 test('an rtt with the window closed, hidden or covered still reaches the tray', () => {
   const closed = runRtt({ win: null, controlWatch: createWatch() });
-  assertTick(closed.fireServer(), { send: 0, snapshots: false });
+  const tick = closed.fireServer();
+  assertTick(tick, { send: 0, snapshots: false });
+  assert.equal(tick.client?.id, 'phone', 'the light push refreshes the tray client');
   assertTick(closed.firePeer(), { send: 0, snapshots: false });
 
   const hidden = runRtt({

@@ -152,7 +152,10 @@ function decl(body, prop) {
   assert.equal(decl(ring, 'width'), '13px');
   assert.equal(decl(ring, 'height'), '13px');
   assert.equal(decl(ring, 'background'), 'rgba(48, 185, 77, 0.45)');
-  assert.equal(decl(ring, 'z-index'), '-1', 'the ring paints behind the dot, which is already green');
+  assert.equal(decl(ring, 'z-index'), '-1', 'the disc sits below the dot centre');
+  const centre = ruleBody(calm, '.dot.good::before');
+  assert.deepEqual(['position', 'inset', 'border-radius', 'background'].map(property => decl(centre, property)),
+    ['absolute', '0', 'inherit', 'inherit'], 'the unanimated centre covers the disc');
   assert.match(ruleBody(calm, '.dot.good'), /isolation:\s*isolate/);
   const b = frames['td-breathe'].replace(/\s+/g, ' ');
   assert.match(b, /0%, 100% \{ transform: scale\(calc\(7 \/ 13\)\); opacity: 1; \}/);

@@ -5,6 +5,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { test } = require('node:test');
 
@@ -168,7 +169,12 @@ test('showing the window while it is leaving full screen does not hide it afterw
   const { dead, win, ctl } = attached();
   win.full = true;
   close(win);
-  ctl.hold(); // menu bar, while the window is still on screen: show() may not emit show
+  close(win);
+  assert.equal(win.listenerCount('leave-full-screen'), 1, 'a second close reuses the pending leave');
+  const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  const showWindow = main.slice(main.indexOf('function showWindow()'), main.indexOf('function showUpdateWindow()'));
+  win.show = () => {}; // Already visible: no show event.
+  vm.runInNewContext(showWindow + '\nshowWindow();', { win, idleCtl: ctl, quitting: false, app: { focus() {} } });
   win.full = false;
   win.emit('leave-full-screen');
   assert.equal(win.isVisible(), true);

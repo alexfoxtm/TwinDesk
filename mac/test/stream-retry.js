@@ -85,6 +85,7 @@ test('a failure the capture window reports waits 2, 4, 8, 16 then 30 seconds', a
     s._retryN = 2;
     tell('waiting for answer');
     tell('connecting');
+    ipcMain.emit('capture:stats', { sender: s.win.webContents }, { session: s.active.session, fps: 0, mbps: 0 });
     assert.equal(s._retryN, 2, 'the offer going out is not a capture that works');
     s._retryN = 0;
     const want = [2000, 4000, 8000, 16000, 30000];
@@ -97,7 +98,10 @@ test('a failure the capture window reports waits 2, 4, 8, 16 then 30 seconds', a
       await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));
     }
+    s._scheduleRetry();
+    const pending = s.retryTimer;
     tell('live');
+    assert.ok(!fake.timers.includes(pending) && s.retryTimer === null, 'live clears the scheduled retry');
     assert.equal(s._retryN, 0, 'live capture: the next failure waits 2s');
     ipcMain.emit('capture:stats', { sender: s.win.webContents }, { session: s.active.session, fps: 30, mbps: 1 });
     s._retryN = 4;
