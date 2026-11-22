@@ -161,7 +161,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
     @Synchronized
     private fun hosting() {
         val now = System.currentTimeMillis()
-        val want = on && (hostOn || now < tempUntil || role == "host" || pairing != null)
+        val want = wantsHosting(now)
         if (want && !server.running) server.start()
         if (!want && server.running) server.stop()
         val port = if (server.running) server.port else 0
@@ -171,10 +171,14 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         }
     }
 
+    private fun wantsHosting(now: Long) =
+        on && (hostOn || now < tempUntil || role == "host" || pairing != null)
+
     private var ticker: java.util.concurrent.ScheduledFuture<*>? = null
 
     @Synchronized internal fun updateTicker() {
-        val needed = peerTimerNeeded(hostWs != null, pairing != null, waitingFor.isNotEmpty(), tempUntil > 0)
+        val needed = peerTimerNeeded(hostWs != null, pairing != null, waitingFor.isNotEmpty(), tempUntil > 0) ||
+            (!server.running && wantsHosting(System.currentTimeMillis()))
         if (needed && ticker == null) {
             ticker = core.timers.scheduleWithFixedDelay({ runCatching { tick() }.onFailure { Log.e("TwinDesk", "peer", it) } }, 1, 1, TimeUnit.SECONDS)
         } else if (!needed) {
