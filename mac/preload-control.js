@@ -8,7 +8,7 @@ const ACTIONS = [
   'setSharing', 'setStreamInput', 'selectDisplay', 'setDisplayMode', 'setVirtual', 'setStreamMaxHeight',
   'setBitrate', 'setKvm', 'setPortals', 'moveKvm', 'identifyDisplays', 'setApp', 'setAudio', 'camera', 'phoneMedia', 'phoneBtPick', 'setTerminal', 'setRemote', 'setRezume', 'rezumeDo', 'openSharingSettings', 'setFiles', 'setDrive', 'pickDriveFolder', 'resetDriveFolder', 'openDriveFolder', 'pickDropFolder', 'resetDropFolder', 'revealDrop', 'clearFiles', 'cancelSend', 'setSmb', 'setShareMac', 'chooseShareFolder', 'stopSharingFolder', 'openPcShare', 'setApps', 'setReceive', 'showPcView', 'closePcView', 'setPcApps', 'listPcApps', 'openPcApp', 'openPcShell', 'setScreenSound', 'setKeys', 'setClipboard', 'copyHistory', 'clearHistory', 'history', 'setTab', 'setLanguage', 'setLook', 'setSharingOpts', 'remoteScreen', 'wakePeer', 'setWakeOnLan',
   'pairRespond', 'forget', 'openSettings', 'relaunch', 'setMulti', 'setModules', 'setProximityLock', 'deckSave', 'deckTry',
-  'keepPcAppInDock', 'sendFiles', 'chooseSendFiles', 'setNotifs', 'muteNotifApp', 'allowFullDisk', 'allowNativeNotifications', 'setSilence', 'silenceDo',
+  'keepPcAppInDock', 'sendFiles', 'chooseSendFiles', 'setNotifs', 'muteNotifApp', 'allowFullDisk',
   'connectAddress', 'pairWith', 'confirmGuestCode', 'cancelGuestPair', 'forgetHost', 'refreshDiscovery', 'copyText', 'allowPermission', 'skipSetup',
   'connectPhone', 'disconnectPhone', 'disconnect', 'connectAgain', 'setPhone', 'phonePair', 'phoneScreen', 'phoneCamera', 'takePhoto', 'scanDocument', 'phoneListCameras', 'phoneOpenApp', 'phoneCloseView', 'phoneScreenAct', 'phoneRetry', 'phoneInstallFull', 'phoneInstallApps', 'phoneMount', 'phoneUnmount', 'setMount', 'phoneAppMenu',
   'deviceDo', 'setOverview', 'setChats', 'notifReply', 'adbQr', // the redesign: Overview, General › Overview, Messages, QR codes
@@ -18,6 +18,7 @@ const ACTIONS = [
   'iosSign', 'iosSignIpa', // TwinDesk iPhone (shared/iossign.js)
   'lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal', // Files › LocalSend-compatible devices (shared/localsend/wire.js)
   'setUpdates', 'skipUpdate', 'unskipUpdate', 'checkUpdates', 'openUpdate', 'openLink', 'setNet', 'netJoinHotspot', 'netCancel', 'netWifi', 'hub', 'photoBackup',
+  'allowNativeNotifications', 'setSilence', 'silenceDo',
 ];
 
 const api = {

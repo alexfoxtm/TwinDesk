@@ -8,7 +8,7 @@ const ACTIONS = [
   'setSharing', 'setStreamTarget', 'setStreamInput', 'selectDisplay', 'setDisplayMode', 'setVirtual', 'setStreamMaxHeight',
   'setBitrate', 'setKvm', 'setApp', 'setAudio', 'camera', 'setRemote', 'deckSave', 'deckTry', 'iosSign', 'iosSignIpa', 'setRezume', 'rezumeDo', 'phoneMedia', 'phoneBtPick', 'setTerminal', 'openSharingSettings', 'setFiles', 'setDrive', 'pickDriveFolder', 'resetDriveFolder', 'openDriveFolder', 'pickDropFolder', 'resetDropFolder', 'revealDrop', 'clearFiles', 'pauseSend', 'resumeSend', 'forgetSend', 'setSmb', 'setShareMac', 'chooseShareFolder', 'stopSharingFolder', 'openPcShare', 'setApps', 'setReceive', 'showPcView', 'closePcView', 'setPcApps', 'listPcApps', 'openPcApp', 'openPcShell', 'setScreenSound', 'setKeys', 'setClipboard', 'copyHistory', 'openClip', 'clearHistory', 'history', 'setTab', 'setLanguage', 'setLook', 'setSharingOpts', 'remoteScreen', 'wakePeer', 'setWakeOnLan',
   'pairRespond', 'forget', 'openSettings', 'relaunch', 'setModules', 'setMulti', 'setProximityLock',
-  'keepPcAppInDock', 'sendFiles', 'chooseSendFiles', 'setNotifs', 'muteNotifApp', 'allowFullDisk', 'allowNativeNotifications',
+  'keepPcAppInDock', 'sendFiles', 'chooseSendFiles', 'setNotifs', 'muteNotifApp', 'allowFullDisk',
   'connectAddress', 'pairWith', 'selectPeer', 'forgetPeer', 'confirmGuestCode', 'cancelGuestPair', 'forgetHost',
   'refreshDiscovery', 'copyText', 'allowPermission', 'skipSetup', 'connectPhone', 'disconnectPhone', 'setPhone',
   'phonePair', 'phoneScreen', 'phoneCamera', 'takePhoto', 'scanDocument', 'phoneOpenApp', 'phoneCloseView', 'phoneScreenAct', 'phoneRetry', 'phoneInstallFull', 'phoneInstallApps', 'phoneMount',
@@ -21,6 +21,7 @@ const ACTIONS = [
   'copyLiteral',
   'webDeleteItem', 'webClearChat', 'webStopScreen', 'webStopCam', 'webOpenItem', 'webSaveItem', 'webCopy', 'webShareSet', 'webShareFolder',
   'lsSet', 'lsRefresh', 'lsAdd', 'lsChoose', 'lsSend', 'lsPin', 'lsAnswer', 'lsCancel', 'lsClear', 'lsReveal', // Files › LocalSend-compatible devices (shared/localsend/wire.js)
+  'allowNativeNotifications',
 ];
 
 const api = {
