@@ -466,8 +466,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
         clip.forgetQueue(id)
         photos.forget(id)
         silence.forget(id)
-        if (returnHost()?.id == id) stopReturn()
         companion.forget(id)
+        if (returnHost()?.id == id) stopReturn()
         taskAlerts.forget(id)
         if (link.host?.id == id) link.disconnect()
         store.forgetHostClearingCredentials(id)
@@ -497,14 +497,14 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // ---- Link.Events ----
 
     override fun onChange() {
-        lockView.linkChanged()
         screen.doctorLinkChanged()
-        tether.linkChanged()
-        runCatching { taskAlerts.linkChanged() }
-        files.photoRouteChanged()
         runCatching { share.linkChanged() } // the session moved (Bluetooth <-> Wi-Fi): shared folders follow
-        runCatching { remote.linkChanged() } // … and the Remote page's pace
+        lockView.linkChanged()
+        tether.linkChanged()
+        files.photoRouteChanged()
         runCatching { photos.linkChanged() } // … and a camera-photo backup bound to the previous socket
+        runCatching { remote.linkChanged() } // … and the Remote page's pace
+        runCatching { taskAlerts.linkChanged() }
         changed()
     }
 

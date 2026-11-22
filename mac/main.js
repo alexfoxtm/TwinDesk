@@ -1767,12 +1767,12 @@ app.on('before-quit', (event) => {
 
 app.on('before-quit', () => {
   if (focusReleasePending) return;
-  proximityLock?.shutdown();
   if (svc && svc.mic) svc.mic.shutdown();
   if (svc && svc.batteryAlerts) svc.batteryAlerts.reset();
   if (svc && svc.rzShelf) svc.rzShelf.shutdown();
   fileShelf?.shutdown();
   if (svc && svc.rz) svc.rz.shutdown();
+  proximityLock?.shutdown();
   quitting = true;
   if (svc && svc.phoneViews) svc.phoneViews.shutdown();
   if (svc && svc.phoneDrive) svc.phoneDrive.shutdown();
