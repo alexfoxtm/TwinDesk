@@ -1921,9 +1921,9 @@ private fun ModulesCard(core: Core) {
             SwitchRow(tr(t.title), "", id !in off) {
                 Modules.set(core.store, id, it)
                 if (id == "notifications") core.taskAlerts.modulesChanged()
+                off = Modules.off(core.store)
                 if (id == "files") core.localSend.start()
                 if (id == "photos") core.photos.modulesChanged()
-                off = Modules.off(core.store)
             }
         }
     }
