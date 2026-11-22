@@ -1756,9 +1756,13 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   if (focusReleasePending) return;
   focusReleasePending = true;
-  svc.silence.stop();
+  proximityLock?.shutdown();
+  svc.batteryAlerts?.reset();
   // The shortcut must finish before its dependencies close.
-  svc.silence.mac.close().catch(() => {}).finally(() => {
+  Promise.resolve().then(() => {
+    svc.silence.stop();
+    return svc.silence.mac.close();
+  }).catch(() => {}).finally(() => {
     focusReleased = true;
     focusReleasePending = false;
     app.quit();
