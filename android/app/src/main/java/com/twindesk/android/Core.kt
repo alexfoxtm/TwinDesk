@@ -159,9 +159,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
     internal val timers = Executors.newScheduledThreadPool(2) { r -> Thread(r, "td-timers").apply { isDaemon = true } }
     private var returnTimer: java.util.concurrent.ScheduledFuture<*>? = null
     private var returnTimerAt = 0L
+    private var returnTimerGeneration = 0L
     private var bleTimer: java.util.concurrent.ScheduledFuture<*>? = null
     private var bleState: List<Boolean>? = null
-    private val refreshTimers = Runnable { updateTimers() }
+    private val timerLock = Any()
+    private val timerRefreshQueued = java.util.concurrent.atomic.AtomicBoolean()
     private val advertisingSettled = Runnable { requestTimers() }
 
     private fun lowPowerAdvertising() = lowPowerAdvertisingNeeded(
@@ -173,9 +175,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
     )
 
     private fun requestTimers() {
-        if (!started) return
-        main.removeCallbacks(refreshTimers)
-        main.post(refreshTimers)
+        if (!started || !timerRefreshQueued.compareAndSet(false, true)) return
+        timers.execute {
+            timerRefreshQueued.set(false)
+            synchronized(timerLock) { updateTimers() }
+        }
     }
 
     private fun canReturn() = returnTimerNeeded(inBackground(), link.connected, link.state == "connecting", link.pair != null, peer.connected)
@@ -187,14 +191,16 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (returning && (returnTimer == null || returnTimerAt != deadline)) {
             returnTimer?.cancel(false)
             returnTimerAt = deadline
+            val generation = ++returnTimerGeneration
             returnTimer = timers.schedule({
                 runCatching { returnTick() }.onFailure { Log.e("TwinDesk", "reconnect", it) }
-                main.post {
-                    if (returnTimerAt == deadline) returnTimer = null
-                    requestTimers()
+                synchronized(timerLock) {
+                    if (returnTimerGeneration == generation) returnTimer = null
                 }
+                requestTimers()
             }, (deadline - System.currentTimeMillis()).coerceAtLeast(0L), TimeUnit.MILLISECONDS)
-        } else if (!returning) {
+        } else if (!returning && returnTimer != null) {
+            returnTimerGeneration++
             returnTimer?.cancel(false)
             returnTimer = null
         }
