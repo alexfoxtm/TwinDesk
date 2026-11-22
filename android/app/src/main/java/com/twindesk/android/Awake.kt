@@ -13,7 +13,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
-class Awake(ctx: Context) {
+class Awake(ctx: Context, private val onChange: () -> Unit) {
     private val app = ctx.applicationContext
     private val wake = runCatching {
         app.getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TwinDesk:files")
@@ -41,6 +41,7 @@ class Awake(ctx: Context) {
             held = true
             for (l in wifi) runCatching { l.acquire() }
             Log.i("TwinDesk", "awake for file transfers")
+            onChange()
         }
         off?.cancel(false)
         off = timer.schedule({ release() }, HOLD_MS, TimeUnit.MILLISECONDS)
@@ -54,6 +55,7 @@ class Awake(ctx: Context) {
         runCatching { if (wake?.isHeld == true) wake.release() }
         for (l in wifi) runCatching { if (l.isHeld) l.release() }
         Log.i("TwinDesk", "file transfers done: may sleep")
+        onChange()
     }
 
     companion object {

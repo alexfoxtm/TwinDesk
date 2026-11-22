@@ -81,7 +81,7 @@ class Files(core: Core) : Feature(core) {
         var lastNote = 0L
     }
 
-    private val awake = Awake(core.ctx) // the phone stays awake while file bytes move
+    private val awake = Awake(core.ctx) { core.link.nudge() } // the phone stays awake while file bytes move
     val moving: Boolean get() = awake.busy
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "td-files-in").apply { isDaemon = true } }
     private val pump = Executors.newSingleThreadExecutor { r -> Thread(r, "td-files-out").apply { isDaemon = true } }
