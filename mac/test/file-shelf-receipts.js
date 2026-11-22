@@ -402,8 +402,8 @@ test('shelf refuses foreign frames, revoked photo and replaced or symlinked loca
       size: st.size, mtime: st.mtimeMs, folder: false } };
     assert.equal(read(shelf).items.length, 1);
     fs.appendFileSync(file, ' edited in place');
-    assert.equal(read(shelf).items.length, 1, 'edited backup stays on the shelf');
-    assert.deepEqual(invalidated, []);
+    assert.equal(read(shelf).items.length, 0, 'edited backup leaves the shelf');
+    assert.deepEqual(invalidated, [photo]);
     shelf.shutdown();
     assert.equal(handles.get('file-shelf:read')(ownEvent), null, 'retired contents cannot read shelf');
   } finally { shelf.shutdown(); fs.rmSync(dir, { recursive: true, force: true }); }

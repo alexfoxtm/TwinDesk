@@ -10,7 +10,9 @@ function attachReceipts(shelf, receipts, latestPhoto = () => null, recheckPhoto 
   const identify = shelf._identify.bind(shelf);
   shelf._identify = (source) => {
     const identity = identify(source);
-    if (source.photo && source.identity && !sameIdentity(source.identity, identity)) {
+    if (source.photo && source.identity && (!sameIdentity(source.identity, identity) ||
+        (source.photo.size ?? source.identity.size ?? identity.size) !== identity.size ||
+        (source.photo.at ?? source.identity.mtime ?? identity.mtime) !== identity.mtime)) {
       recheckPhoto(source.photo);
       return null;
     }

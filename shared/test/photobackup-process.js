@@ -10,6 +10,7 @@ const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { setTimeout: delay } = require('node:timers/promises');
 const PB = require('../photobackup');
+const { ReceiptLedger } = require('../../mac/photo-backup-worker');
 const { attach } = require('../../mac/photobackup');
 
 async function run() {
@@ -50,16 +51,32 @@ async function run() {
     settings: { photoBackup: { peers: { phone: { pair, folder, on: true, rev: 1, since: state.since } } } },
     peer, pushState() {}, save() {},
   };
+  const other = fs.mkdtempSync(path.join(folder, 'other-'));
+  const seed = (dir, added, name) => {
+    const ym = '2026/01';
+    fs.mkdirSync(path.join(dir, ym), { recursive: true });
+    const dest = path.join(dir, ym, name);
+    fs.writeFileSync(dest, name);
+    fs.utimesSync(dest, added / 1000, added / 1000);
+    const st = fs.statSync(dest);
+    const ledger = new ReceiptLedger(options.store.filePath('photo-backup.json'));
+    ledger.set('phone:' + pair, PB.itemKey('external', 'version', name === 'older.jpg' ? 2 : 3), 1,
+      { state: 'done', dest, root: dir, ym, size: st.size, dev: st.dev, ino: st.ino, mtime: st.mtimeMs });
+    ledger.save();
+    return dest;
+  };
+  const older = seed(folder, now - 10_000, 'older.jpg');
   let pb = attach(options);
+  const otherPhoto = seed(other, now - 5000, 'other.jpg');
   const send = (msg) => peer.emit('t:' + msg.t, msg, ctx, ws);
-  async function until(find) {
+  async function until(find, message = 'timed out waiting for photo backup') {
     const expires = Date.now() + 5000;
     while (Date.now() < expires) {
       const result = find();
       if (result) return result;
       await delay(5);
     }
-    assert.fail('timed out waiting for photo backup');
+    assert.fail(message);
   }
   const receive = (type, pred = () => true) => until(() => {
     const index = messages.findIndex((msg) => msg.t === 'backup.' + type && pred(msg));
@@ -67,11 +84,14 @@ async function run() {
   });
   const chunk = Buffer.alloc(PB.CHUNK, 37);
   const size = 17 * chunk.length;
-  async function begin() {
+  async function offer(id = 1) {
     const sync = await receive('sync');
     send({ ...state, t: 'backup.inv', req: 'inv', scan: 'scan', sync: sync.req,
-      items: [{ item: PB.itemKey('external', 'version', 1), gen: 1, size,
+      items: [{ item: PB.itemKey('external', 'version', id), gen: 1, size,
         name: 'photo.jpg', added: now, taken: now }] });
+  }
+  async function begin() {
+    await offer();
     const take = await receive('take');
     send({ ...take, t: 'backup.accept' });
     const grant = await receive('credit', (msg) => msg.req === take.req);
@@ -80,6 +100,17 @@ async function run() {
   }
   const body = (take, seq) => send({ ...take, t: 'backup.chunk', seq, data: chunk.toString('base64') });
   try {
+    send(state);
+    await receive('sync');
+    ctx.transport = 'ble';
+    peer.emit('transport', ctx);
+    options.settings.photoBackup.peers.phone.folder = other;
+    pb.refresh();
+    assert.equal(pb.latest()?.path, otherPhoto, 'worker start invalidated the startup preview ledger');
+    options.settings.photoBackup.peers.phone.folder = folder;
+    pb.refresh();
+    ctx.transport = 'ip';
+    peer.emit('transport', ctx);
     send(state);
     const interrupted = await begin();
     body(interrupted, 0);
@@ -94,6 +125,24 @@ async function run() {
     assert.equal(refusal.why, 'disk');
     body(interrupted, 16);
 
+    const reconnect = (credit = 1) => {
+      ctx.transport = 'ble';
+      peer.emit('transport', ctx);
+      messages.length = 0;
+      ctx.transport = 'ip';
+      peer.emit('transport', ctx);
+      send({ ...state, photoCredit: credit });
+    };
+    for (const [label, invalid] of [
+      ['ingress window', take => { for (let i = 0; i < 17; i++) body(take, i); }],
+      ['early End', take => send({ ...take, t: 'backup.end', sha256: '0'.repeat(64) })],
+      ['encoded length', take => send({ ...take, t: 'backup.chunk', seq: 0, data: 'YWI=' })],
+    ]) {
+      const rejected = await begin();
+      invalid(rejected);
+      assert.equal(messages.find(m => m.req === rejected.req)?.why, 'checksum', label);
+      reconnect();
+    }
     const take = await begin();
     assert.notEqual(take.req, interrupted.req);
     for (let i = 0; i < 16; i++) body(take, i);
@@ -103,19 +152,72 @@ async function run() {
     const expected = Buffer.concat(Array(17).fill(chunk));
     send({ ...take, t: 'backup.end', sha256: createHash('sha256').update(expected).digest('hex') });
     await receive('done', (m) => m.req === take.req);
-    const latest = await until(() => pb.latest());
+    const latest = await until(() => pb.latest()?.path !== older && pb.latest());
     assert.deepEqual(fs.readFileSync(latest.path), expected);
     assert.ok(!messages.some((m) => m.req === interrupted.req));
-    fs.appendFileSync(latest.path, 'edited');
-    assert.equal(pb.latest().path, latest.path);
-    pb.close();
-
-    // A fresh Mac has only the receipt ledger until the peer announces.
-    pb = attach(options);
-    assert.equal(pb.latest()?.path, latest.path, 'startup restores the last receipt before phone state');
     ctx.transport = 'ble';
     peer.emit('transport', ctx);
-    assert.equal(pb.latest()?.path, latest.path, 'BLE alone keeps the last receipt visible');
+    fs.unlinkSync(latest.path);
+    pb.recheckLatest(latest);
+    await until(() => pb.latest()?.path === older, 'unbound recheck falls back to the older photo');
+
+    options.settings.photoBackup.peers.phone.folder = other;
+    pb.refresh();
+    options.settings.photoBackup.peers.phone.folder = folder;
+    pb.refresh();
+    reconnect();
+    const next = await begin();
+    for (let i = 0; i < 16; i++) body(next, i);
+    await receive('credit', (m) => m.req === next.req && m.upTo === size);
+    body(next, 16);
+    await receive('credit', (m) => m.req === next.req && m.written === size);
+    send({ ...next, t: 'backup.end', sha256: createHash('sha256').update(expected).digest('hex') });
+    await receive('done', (m) => m.req === next.req);
+    const newest = await until(() => pb.latest()?.path !== older && pb.latest());
+    reconnect(0);
+    await offer();
+    await until(() => messages.some(m => m.t === 'backup.have'), 'legacy sees the worker receipt after exit');
+    assert.equal(pb.latest()?.path, newest.path, 'legacy reload sees the worker receipt after exit');
+    pb.close();
+
+    pb = attach(options);
+    assert.equal(pb.latest()?.path, newest.path, 'startup restores the last receipt before phone state');
+    ctx.transport = 'ble';
+    peer.emit('transport', ctx);
+    assert.equal(pb.latest()?.path, newest.path, 'BLE alone keeps the last receipt visible');
+    fs.appendFileSync(newest.path, 'edited');
+    const empty = fs.mkdtempSync(path.join(folder, 'empty-'));
+    options.settings.photoBackup.peers.phone.folder = empty;
+    pb.refresh();
+    options.settings.photoBackup.peers.phone.folder = folder;
+    pb.refresh();
+    assert.equal(pb.latest()?.path, older, 'an edited photo is skipped when loading receipts');
+    pb.close();
+
+    fs.unlinkSync(marker);
+    pb = attach(options);
+    reconnect();
+    const stalled = await begin();
+    body(stalled, 0);
+    await until(() => fs.existsSync(marker));
+    for (let i = 0; i < 64; i++) send(state);
+    assert.ok(!messages.some(m => m.req === stalled.req && m.t === 'backup.refuse'));
+    send({ ...stalled, t: 'backup.stop' });
+    assert.equal(messages.find(m => m.req === stalled.req)?.why, 'disk',
+      'control overflow aborts the stalled worker and fences Stop');
+
+
+    pb.close();
+
+    pb = attach(options);
+    assert.equal(pb.latest()?.path, older);
+    reconnect();
+    await receive('sync');
+    const corrupt = path.join(options.store.filePath('photo-backup.json') + '.receipts', 'f'.repeat(64) + '.json');
+    fs.writeFileSync(corrupt, 'bad receipt');
+    options.settings.photoBackup.peers.phone.folder = empty;
+    pb.refresh();
+    assert.equal(pb.latest(), null, 'an unreadable new archive cannot show the previous archive photo');
   } finally {
     pb.close();
     if (oldOptions === undefined) delete process.env.NODE_OPTIONS;

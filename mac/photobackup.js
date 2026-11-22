@@ -10,6 +10,8 @@ const { ReceiptLedger, latest: findLatest } = require('./photo-backup-worker');
 const P = require('../shared/protocol');
 const { connectionOf } = require('../shared/asked-send');
 
+const MAX_PENDING_CONTROL = 64;
+
 const TYPES = [
   P.T.BACKUP_STATE, P.T.BACKUP_INV, P.T.BACKUP_ACCEPT, P.T.BACKUP_CHUNK,
   P.T.BACKUP_END, P.T.BACKUP_REFUSE, P.T.BACKUP_STOP,
@@ -21,6 +23,7 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
   const file = store.filePath('photo-backup.json');
   let worker = null;
   let retiring = false;
+  let pendingControl = 0;
   let legacy = null;
   let ledger = null;
   let bound = null;
@@ -108,6 +111,7 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
     worker.on('error', () => { /* exit owns cleanup and restart */ });
     worker.on('close', () => {
       worker = null;
+      pendingControl = 0;
       rechecking = false;
       const expected = retiring;
       retiring = false;
@@ -132,9 +136,15 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
       }
       if (event.drained) {
         if (event.drained === 'recheck') rechecking = false;
+        if (event.drained === 'control') pendingControl--;
         return;
       }
-      if (event.generation !== epoch || bound?.mode !== 'credit') return;
+      if (event.generation !== epoch) return;
+      if (event.receipt || event.rechecked) latest = event.receipt;
+      if (bound?.mode !== 'credit') {
+        if (event.receipt || event.rechecked) pushState();
+        return;
+      }
       if (event.msg) {
         const msg = event.msg;
         if (msg.t === 'backup.state') return;
@@ -158,7 +168,6 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
         send(msg);
       } else {
         status = event.why;
-        if (event.receipt || event.rechecked) latest = event.receipt;
         pushState();
       }
     });
@@ -193,7 +202,19 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
   }
 
   function post(msg, kind = 'receive') {
-    dispatch({ kind, gen: epoch, msg });
+    if (!worker?.connected || retiring) return;
+    const controlFrame = kind === 'invalid' || (kind === 'receive' && msg.t !== 'backup.chunk');
+    if (controlFrame && pendingControl >= MAX_PENDING_CONTROL) {
+      // Abort backup explicitly so Stop and revocation still fence queued work.
+      fence(true);
+      if (flight) refuse('disk');
+      else send({ t: 'backup.refuse', req: msg?.req, rev: bound?.state?.rev,
+        mrev: bound?.local.mrev, why: 'disk' });
+      retire();
+      return;
+    }
+    if (controlFrame) pendingControl++;
+    dispatch({ kind, gen: epoch, msg, controlFrame });
   }
 
   function peers() { return settings.photoBackup.peers; }
@@ -229,10 +250,12 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
     const ws = socket(ctx);
     const p = control(ctx) && row(ctx);
     const nextArchive = p?.on && p.folder ? { origin: `${ctx.deviceId}:${ctx.photoBackupPair}`, folder: p.folder } : null;
-    if (archive?.origin !== nextArchive?.origin || archive?.folder !== nextArchive?.folder) {
+    const archiveChanged = archive?.origin !== nextArchive?.origin || archive?.folder !== nextArchive?.folder;
+    if (archiveChanged) {
       archive = nextArchive;
       latest = null;
       if (archive) {
+        // Keep the startup and legacy preview available before a credit phone binds.
         ledger ??= new ReceiptLedger(file, { readOnly: true });
         if (!ledger.broken) latest = findLatest(ledger, archive.origin, archive.folder);
       }
@@ -250,9 +273,12 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
       }
       return;
     }
-    if (!bound && !ws) return;
+    if (!bound && !ws) {
+      if (archiveChanged && worker) command('unbind');
+      return;
+    }
     if (legacy) {
-      if (archive && !ledger.broken) latest = findLatest(ledger, archive.origin, archive.folder);
+      if (!archiveChanged && archive && !ledger.broken) latest = findLatest(ledger, archive.origin, archive.folder);
       legacy.unbind();
       legacy = null;
     }

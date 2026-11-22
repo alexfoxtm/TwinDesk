@@ -101,7 +101,8 @@ function latest(ledger, origin, root) {
     for (const row of candidates) {
       if (!PB.rowPath(row, row.dest)) continue;
       const st = fs.lstatSync(row.dest, { throwIfNoEntry: false });
-      if (!st?.isFile() || st.dev !== row.dev || st.ino !== row.ino) continue;
+      if (!st?.isFile() || st.dev !== row.dev || st.ino !== row.ino ||
+          st.size !== row.size || st.mtimeMs !== row.mtime) continue;
       return { path: row.dest, name: path.basename(row.dest), size: st.size, at: row.mtime,
         identity: { dev: st.dev, ino: st.ino, birthtimeMs: st.birthtimeMs, folder: false } };
     }
@@ -149,7 +150,7 @@ if (parentPort) {
     },
   });
 
-  parentPort.on('message', ({ kind, gen, args, msg, archive: target }) => {
+  parentPort.on('message', ({ kind, gen, args, msg, controlFrame, archive: target }) => {
     try {
       if (kind === 'bind' || kind === 'local' || kind === 'unbind') {
         if (archive?.origin !== target?.origin || archive?.folder !== target?.folder) receipt = null;
@@ -196,6 +197,7 @@ if (parentPort) {
       publishState(kind === 'recheck');
     } finally {
       if (kind === 'recheck') parentPort.postMessage({ drained: kind });
+      if (controlFrame) parentPort.postMessage({ drained: 'control' });
     }
   });
 }
