@@ -4,6 +4,8 @@ General › Local API lets your own scripts and tools on the same computer use T
 to the connected device and put text on the clipboard. It's off until you switch it on, on the
 Mac, Windows and Linux (one-to-one, not Multi-device yet).
 
+For TwinDesk Fork, use `/Applications/TwinDesk Fork.app` in the command below. Its default API profile is `~/Library/Application Support/io.github.alexfoxtm.twindesk`.
+
 ## Where it is
 
 While it's on, TwinDesk writes `local-api.json` in its own folder (the path is shown under the
@@ -44,14 +46,14 @@ On the Mac, turn on **General › Local API**. On the connected Android phone, t
 Use Node.js to wrap a command with the bundled script and receive an alert when it finishes or fails.
 
 ```sh
-node "/Applications/TwinDesk Fork.app/Contents/Resources/app/mac/scripts/twindesk-notify.js" \
+node "/Applications/TwinDesk.app/Contents/Resources/app/mac/scripts/twindesk-notify.js" \
   --title "Build" -- make
 ```
 
 The label defaults to `Terminal task` and can contain up to 80 characters. The command runs
 locally with its normal input, output, exit code and terminating signal. Only the label and
 success or failure are sent to the phone. The script reads the current API address and key
-from `~/Library/Application Support/io.github.alexfoxtm.twindesk/local-api.json` for each call.
+from `~/Library/Application Support/MacShare/local-api.json` for each call.
 `MACSHARE_PROFILE` selects the same alternate profile used by the Mac app.
 
 This version watches commands started on a Mac with a direct Android connection. TwinDesk

@@ -35,7 +35,7 @@ function argumentsOf(argv) {
 }
 
 function endpoint() {
-  const profile = process.env.MACSHARE_PROFILE || path.join(os.homedir(), 'Library', 'Application Support', 'io.github.alexfoxtm.twindesk');
+  const profile = require('../store').profilePath(path.join(os.homedir(), 'Library', 'Application Support'));
   let value;
   try {
     const file = path.join(profile, 'local-api.json');

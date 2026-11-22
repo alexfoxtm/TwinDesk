@@ -66,7 +66,7 @@ app.commandLine.appendSwitch('force-fieldtrials', 'WebRTC-ForceSendPlayoutDelay/
 app.setName('AlexfoxtmTwinDesk');
 app.setAppLogsPath(path.join(require('os').homedir(), 'Library', 'Logs', 'AlexfoxtmTwinDesk'));
 // Fork profile. Upstream keeps ~/Library/Application Support/MacShare; this app does not read or write it.
-app.setPath('userData', process.env.MACSHARE_PROFILE || path.join(app.getPath('appData'), 'io.github.alexfoxtm.twindesk')); // PROFILE: a second dev copy
+app.setPath('userData', require('./store').profilePath(app.getPath('appData'))); // PROFILE: a second dev copy
 require('../shared/applog.js').start(app); // console.* and crashes into the log folder, both apps
 // Screen share codec (shared/screencodec.js): H.265 available in WebRTC, so the
 // Encoder setting works on the next share. One enable-features switch for the app: Chromium keeps only the last one.
