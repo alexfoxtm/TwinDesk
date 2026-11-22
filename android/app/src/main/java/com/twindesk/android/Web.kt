@@ -460,7 +460,8 @@ class Screen(core: Core) : Feature(core) {
     }
 
     override fun onWelcome(host: Host) {
-        clearDoctor()
+        resetVideo()
+        this.host?.post(msg("stream.stop"))
         sessionEpoch++
         endPreviewSession()
         this.host?.post(opts())
@@ -546,6 +547,7 @@ class Screen(core: Core) : Feature(core) {
         if (displayId != null) m.put("displayId", displayId)
         if (share == false) {
             startedByUs = false
+            resetVideo(keepDoctor = true)
             cancelDesktopWait()
         }
         core.send(m)
@@ -856,9 +858,10 @@ class Screen(core: Core) : Feature(core) {
             "screen.state" -> {
                 val was = state
                 state = m
+                val on = m.optBoolean("on")
+                if (!on) resetVideo(keepDoctor = true)
                 host?.post(msg("viewer.input", "on" to pointerInput()))
                 host?.post(m)
-                val on = m.optBoolean("on")
                 if (!on || !m.optBoolean("remote", true)) endPreviewSession()
                 else desktopPreviews = DesktopPreview.retain(desktopPreviews, desktopCatalog, previewSession)
                 // Off -> on, not asked for here: the person pressed Share Screen on the computer.
