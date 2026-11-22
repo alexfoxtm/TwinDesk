@@ -91,7 +91,6 @@
       LOCK_KEEP: 'lock.keep', // Android->host {request}: foreground fast viewer retains its authenticated session
       LOCK_TICKET: 'lock.ticket', // host->Android {request,ticket,path,expiresIn,account?,primaryView?}; session-bound, never logged or persisted
       LOCK_END: 'lock.end', // Android {request}; host {request?,reason:unavailable|ended|unlocked|session-ended|timeout|display-changed}
-      // screen.state input (optional) reports whether the sharer currently accepts screen input.
       // session
       HELLO: 'hello', // + {rc:1, resume:'0'} is a non-takeover reclaim (shared/reclaim.js); plain hello still takes a phone's session
       WELCOME: 'welcome',
