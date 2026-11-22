@@ -299,6 +299,7 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
   server.on('message', message);
   server.on('client', client);
   server.on('closed', closed);
+  const ownFail = Object.getOwnPropertyDescriptor(server, 'fail');
   const fail = server.fail;
   server.fail = function (ctx, code, message) {
     revoked(ctx);
@@ -340,7 +341,8 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
     clearTimeout(unlockTimer);
     delete server.lockview;
     delete server.lockviewRefresh;
-    server.fail = fail;
+    if (ownFail) Object.defineProperty(server, 'fail', ownFail);
+    else delete server.fail;
     for (const [event, fn] of [['message', message], ['client', client], ['closed', closed], ['deviceClosed', deviceClosed], ['noreclaim', deviceClosed], ['transport', transport], ['closing', close]]) server.off(event, fn);
     powerMonitor.off('lock-screen', lock);
     powerMonitor.off('unlock-screen', unlock);

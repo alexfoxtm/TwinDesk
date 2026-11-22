@@ -97,6 +97,16 @@ async function receiveMetricsRejectLateStats() {
   await new Promise(resolve => setImmediate(resolve));
   f.advance(10000);
   assert.deepEqual(f.videoMetrics, [], 'an async report from the locked generation is discarded');
+  finish = undefined;
+  f.recv({ t: 'viewer.probe', session: 61, viewerGeneration: 163, accept: true });
+  f.videoFrame();
+  f.advance(2000);
+  assert.equal(typeof finish, 'function', 'metrics polling resumes after unlock and a decoded frame');
+  f.document.hidden = true;
+  f.docEvents.get('visibilitychange')();
+  finish(new Map([['in', { id: 'hidden', type: 'inbound-rtp', kind: 'video', timestamp: 2000 }]]));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.videoMetrics, [], 'a backgrounded viewer discards in-flight statistics');
 }
 
 detailRevokedByLock().then(trackpadCueDoesNotSurviveRevocation)

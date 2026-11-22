@@ -143,14 +143,14 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
 
     // A message to the page (any thread).
     fun post(m: JSONObject): Boolean {
-        if (page == "viewer.html" && core.lockView.locked) when (m.optString("t")) {
-            "opts" -> m.put("inputOn", false)
-            "viewer.input" -> m.put("on", false)
-        }
         return main.post { if (ready) deliver(m) else queue.add(m) }
     }
 
     private fun deliver(m: JSONObject) {
+        if (page == "viewer.html" && core.lockView.locked) when (m.optString("t")) {
+            "opts" -> m.put("inputOn", false)
+            "viewer.input" -> m.put("on", false)
+        }
         view.evaluateJavascript("window.tdRecv && window.tdRecv(${m});", null)
     }
 

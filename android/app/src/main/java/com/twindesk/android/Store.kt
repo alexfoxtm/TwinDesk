@@ -76,9 +76,8 @@ class Store(private val ctx: Context) {
 
     fun saveHosts(list: List<Host>, key: String = "hosts") {
         if (key == "hosts") {
-            val stored = hosts(key)
-            for (h in list) {
-                if (stored.any { it.id == h.id && it.fp != h.fp }) LockVault(ctx).forget(h.id)
+            for (h in hosts(key)) {
+                if (list.none { it.id == h.id && it.fp == h.fp }) LockVault(ctx).forget(h.id)
             }
         }
         prefs.edit().putString(key, jsonArray(list.map { it.json() }).toString()).apply()
