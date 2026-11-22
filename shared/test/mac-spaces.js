@@ -1000,8 +1000,15 @@ async function main() {
     assert.strictEqual(authorize({ id: 'phone', source: host }), null);
     host.released = false;
     host.alt = { readyState: 1 };
-    session.fromHost({ t: P.T.SCREEN_SPACE, dir: 'next' }, host, host.alt);
-    assert.strictEqual(seen.length, 0, 'a fallback arrival cannot authorize a desktop request');
+    for (const type of [P.T.SCREEN_SPACE, P.T.SCREEN_DESKTOPS]) {
+      const unexpected = () => assert.fail('a fallback arrival reached the bus');
+      hub.bus.on(type, unexpected);
+      session.handlers.set(type, [() => assert.fail('a fallback arrival reached session handlers')]);
+      session.fromHost({ t: type, dir: 'next' }, host, host.alt);
+      hub._busHandlers.get(type).pop();
+      session.handlers.delete(type);
+    }
+    assert.strictEqual(seen.length, 0);
     session.fromHost({ t: P.T.SCREEN_SPACE, dir: 'next' }, host, host.ws);
     assert.strictEqual(seen.length, 1);
     assert.strictEqual(seen[0].id, 'phone');

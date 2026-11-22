@@ -120,5 +120,5 @@ async function unsupportedAndRetiredFrames() {
   assert.ok(legacy.sent.some(m => m.t === 'in.wh'), 'hosts without detail keep two-finger scroll');
 }
 sharperPictureAndRestore().then(unsupportedAndRetiredFrames).then(() => {
-  console.log('viewer-viewport: sharper owned frames, restore, cancellation, and legacy gestures passed');
+  console.log('viewer-zoom-detail: sharper owned frames, restore, cancellation, and legacy gestures passed');
 }).catch(error => { console.error(error); process.exitCode = 1; });

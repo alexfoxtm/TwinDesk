@@ -300,14 +300,13 @@ class Hub extends EventEmitter {
     const arrived = !!(source && source.arrived === true);
     const conn = arrived && source.conn ? source.conn : null;
     const ws = arrived && source.ws && typeof source.ws === 'object' ? source.ws : null;
-    let consumed = false;
     const fns = this._busHandlers.get(msg.t);
     // Bus handlers see a message only with its live connection, or when nothing arrived
     // (inject). A released or replaced socket is not stamped onto the bus.
     const desktopRequest = msg.t === P.T.SCREEN_SPACE || msg.t === P.T.SCREEN_DESKTOPS;
     const busSource = desktopRequest ? s.inbound() : conn;
-    if (fns && (desktopRequest ? busSource : (!arrived || conn))) {
-      consumed = true;
+    let consumed = !!fns && (desktopRequest || !arrived || !!conn);
+    if (consumed && (!desktopRequest || busSource)) {
       for (const fn of fns) fn(msg, s.id, arrived ? busSource : undefined, ws);
     }
     for (const r of this.routes) {

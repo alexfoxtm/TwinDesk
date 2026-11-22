@@ -115,8 +115,6 @@ assert.ok(viewer.includes('spaces = s.spaces && s.sharing && s.inputOn'));
 assert.ok(toolbar.includes('if (sheetReady) onOverview() else onMenu("display")'));
 assert.ok(!viewer.includes('showLogin'));
 assert.ok(!viewer.includes('lockView'));
-assert.ok(toolbar.includes('if (sheetReady) onOverview() else onMenu("display")'));
-assert.ok(viewer.includes('spaces = s.spaces && s.sharing && s.inputOn'));
 assert.ok(viewer.includes('LaunchedEffect(overview)'));
 assert.ok(viewer.includes('s.refreshDesktops()'));
 assert.ok(viewer.includes('onDisplay = { id -> if (id != desks.viewing && id != s.pendingDisplayId) s.selectDisplay(id) }'));
