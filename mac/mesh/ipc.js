@@ -479,7 +479,6 @@ function setupIpc(ctx) {
       Object.assign(settings.notifs, require('../../shared/notifrules.js').clean(partial, settings.notifs)); // style, otpCopy, quiet, phoneApps
       save();
       ctx.notifs.applySettings();
-      if (partial && partial.receive === true) void ctx.notifs.nativePermission.request();
       if (ctx.batteryAlerts) ctx.batteryAlerts.setting(!!settings.notifs.batteryAlerts);
     },
     muteNotifApp(arg) {
@@ -863,6 +862,11 @@ function setupIpc(ctx) {
   ipcMain.handle('deckRun', (_e, a) => (ctx.deck && a && typeof a === 'object' ? ctx.deck.exec(a).then(() => ({ ok: true }), (e) => ({ ok: false, why: e.message })) : { ok: false })); // Try
   ipcMain.handle('deckState', () => (ctx.deck ? ctx.deck.state().catch(() => ({})) : {})); // its sound, Bluetooth and display pickers
   ipcMain.handle('phoneListCameras', () => (ctx.phone && ctx.phone.bridge ? ctx.phone.bridge.listCameras() : [])); // Camera: the phone's cameras
+  const setNotifs = actions.setNotifs;
+  actions.setNotifs = (partial) => {
+    setNotifs(partial);
+    if (partial && partial.receive === true) void ctx.notifs.nativePermission.request();
+  };
   for (const [name, fn] of Object.entries(actions)) ipcMain.on(name, (_e, arg) => fn(arg));
   return actions;
 }

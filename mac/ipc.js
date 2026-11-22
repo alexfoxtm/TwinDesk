@@ -152,13 +152,11 @@ function setupIpc(ctx) {
       ctx.phone.connect(String(deviceId));
     },
     disconnectPhone() {
-      if (ctx.silence) ctx.silence.stop(); // a Focus turned on for the phone ends with the session
       ctx.proximityLock?.cancel();
       ctx.phone.disconnect();
     },
     // Disconnect the session (phone or computer); Connect again / Take over the Mac we're a guest of.
     disconnect() {
-      if (ctx.silence) ctx.silence.stop();
       ctx.proximityLock?.cancel();
       if (ctx.server.current && P.isPhoneOs(ctx.server.current.os)) return ctx.phone.disconnect();
       ctx.server.disconnect();
@@ -445,8 +443,10 @@ function setupIpc(ctx) {
       Object.assign(settings.notifs, require('../shared/notifrules.js').clean(partial, settings.notifs)); // style, otpCopy, quiet, phoneApps
       save();
       ctx.notifs.applySettings();
-      if (partial && partial.receive === true) void ctx.notifs.nativePermission.request();
       if (ctx.batteryAlerts) ctx.batteryAlerts.setting(!!settings.notifs.batteryAlerts);
+    },
+    muteNotifApp(arg) {
+      if (arg && typeof arg.app === 'string') ctx.notifs.setMuted(arg.app.slice(0, 200), !!arg.muted);
     },
     // Notifications › Silence together (shared/silence.js): this pair's two switches (the phone
     // in the session), each this Mac's own choice.
@@ -474,9 +474,6 @@ function setupIpc(ctx) {
       else if (a.do === 'pick' && ['on', 'off', 'probe'].includes(a.which)) { mac.pick(a.which, typeof a.id === 'string' ? a.id.slice(0, 40) : ''); ctx.silence.refresh(); }
       else if (a.do === 'dedicated') { mac.setDedicated(a.on === true); ctx.silence.refresh(); }
       else if (a.do === 'check') mac.check().then(() => ctx.silence.refresh());
-    },
-    muteNotifApp(arg) {
-      if (arg && typeof arg.app === 'string') ctx.notifs.setMuted(arg.app.slice(0, 200), !!arg.muted);
     },
     async allowNativeNotifications() {
       const permission = await ctx.notifs.nativePermission.request();
@@ -823,13 +820,13 @@ function setupIpc(ctx) {
     forget(deviceId) {
       if (ctx.batteryAlerts && deviceId != null && deviceId !== '') ctx.batteryAlerts.forget(String(deviceId));
       // The device can be a saved host or a paired client.
+      ctx.proximityLock?.forget(String(deviceId));
       if (ctx.photoBackup) ctx.photoBackup.forget(String(deviceId)); // consent for this phone; archived photos stay
       if (ctx.silence) { // Silence together: its lease and its switches go with the pairing
         ctx.silence.forget(String(deviceId));
         delete settings.silence.peers[String(deviceId)];
         store.saveSettings(settings);
       }
-      ctx.proximityLock?.forget(String(deviceId));
       if (ctx.link.hosts.some((h) => h.id === String(deviceId))) return ctx.link.forget(String(deviceId));
       ctx.pairing.forget(String(deviceId));
       ctx.terminal.forget(String(deviceId));
@@ -878,6 +875,21 @@ function setupIpc(ctx) {
   ipcMain.handle('deckSetObs', (_e, v) => (ctx.deck && v && typeof v === 'object' ? ctx.deck.setObs(v) : { on: false })); // → OBS's state with them
   ipcMain.handle('phoneAssets', () => ctx.phone.assetsView());
   ipcMain.handle('qrPair', () => (ctx.qrPair ? ctx.qrPair() : { url: '' })); // Connection: the phone pairing QR code's link
+  const setNotifs = actions.setNotifs;
+  actions.setNotifs = (partial) => {
+    setNotifs(partial);
+    if (partial && partial.receive === true) void ctx.notifs.nativePermission.request();
+  };
+  const disconnectPhone = actions.disconnectPhone;
+  actions.disconnectPhone = () => {
+    if (ctx.silence) ctx.silence.stop(); // a Focus turned on for the phone ends with the session
+    return disconnectPhone();
+  };
+  const disconnect = actions.disconnect;
+  actions.disconnect = () => {
+    if (ctx.silence) ctx.silence.stop();
+    return disconnect();
+  };
   for (const [name, fn] of Object.entries(actions)) ipcMain.on(name, (_e, arg) => fn(arg));
   return actions;
 }

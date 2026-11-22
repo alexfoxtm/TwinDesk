@@ -1745,21 +1745,28 @@ app.on('window-all-closed', () => {}); // keep running in the menu bar
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
 });
-let silenceQuitting = false;
+let focusReleasePending = false;
+let focusReleased = false;
 app.on('before-quit', (event) => {
+  if (focusReleased || (!focusReleasePending && !svc?.silence)) return;
+  event.preventDefault();
+  if (focusReleasePending) return;
+  focusReleasePending = true;
+  svc.silence.stop();
+  // The shortcut must finish before its dependencies close.
+  svc.silence.mac.close().catch(() => {}).finally(() => {
+    focusReleased = true;
+    focusReleasePending = false;
+    app.quit();
+  });
+});
+
+app.on('before-quit', () => {
   proximityLock?.shutdown();
-  if (svc && svc.batteryAlerts) svc.batteryAlerts.reset();
+  if (focusReleasePending) return;
   if (photoBackup) photoBackup.close();
-  if (!silenceQuitting && svc && svc.silence) {
-    event.preventDefault();
-    silenceQuitting = true;
-    svc.silence.stop();
-    // Shortcuts finish asynchronously. Keep the app alive for release; an unreadable Focus
-    // retains its durable record for the next start instead of running Off blindly.
-    svc.silence.mac.close().catch(() => {}).finally(() => app.quit());
-    return;
-  }
   if (svc && svc.mic) svc.mic.shutdown();
+  if (svc && svc.batteryAlerts) svc.batteryAlerts.reset();
   if (svc && svc.rzShelf) svc.rzShelf.shutdown();
   fileShelf?.shutdown();
   if (svc && svc.rz) svc.rz.shutdown();
