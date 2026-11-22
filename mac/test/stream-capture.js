@@ -25,6 +25,7 @@ const { Stream } = require('../stream.js');
 const { Stream: MeshStream } = require('../mesh/stream.js');
 Module._load = originalLoad;
 
+
 test('passes selected display, bounded dimensions and audio to the capture window', async () => {
   for (const Class of [Stream, MeshStream]) {
     const server = new EventEmitter();
@@ -57,22 +58,6 @@ test('passes selected display, bounded dimensions and audio to the capture windo
   }
 });
 
-test('capture errors reach only the current viewer without raw error details', () => {
-  for (const Class of [Stream, MeshStream]) {
-    const sent = [];
-    const context = { view: {}, server: { current: { deviceId: 'phone' }, sendToClient: (m) => sent.push(m) },
-      getSettings: () => ({ sharing: { on: true } }), emit() {} };
-    Class.prototype._setStatus.call(context, 'error: private system diagnostic');
-    assert.deepEqual(sent, [{ t: 'stream.stop', reason: 'capture-unavailable' }]);
-    Class.prototype._setStatus.call(context, 'starting');
-    Class.prototype._setStatus.call(context, 'live');
-    assert.equal(sent.length, 1, 'recovery is not mistaken for a capture failure');
-    context.server.current = null;
-    Class.prototype._setStatus.call(context, 'error: capture ended');
-    assert.equal(sent.length, 1, 'no disconnected viewer receives status');
-  }
-});
-
 test('refuses a capture source for a different selected display', async () => {
   const server = new EventEmitter();
   const displays = new EventEmitter();
@@ -94,5 +79,21 @@ test('does not use an unnamed source for a different remaining display', async (
     await assert.rejects(stream._source(), (err) => err && err.code === 'NO_DISPLAY');
   } finally {
     captureSources = [{ id: 'screen:2:0', display_id: '2' }];
+  }
+});
+
+test('capture errors reach only the current viewer without raw error details', () => {
+  for (const Class of [Stream, MeshStream]) {
+    const sent = [];
+    const context = { view: {}, server: { current: { deviceId: 'phone' }, sendToClient: (m) => sent.push(m) },
+      getSettings: () => ({ sharing: { on: true } }), emit() {} };
+    Class.prototype._setStatus.call(context, 'error: private system diagnostic');
+    assert.deepEqual(sent, [{ t: 'stream.stop', reason: 'capture-unavailable' }]);
+    Class.prototype._setStatus.call(context, 'starting');
+    Class.prototype._setStatus.call(context, 'live');
+    assert.equal(sent.length, 1, 'recovery is not mistaken for a capture failure');
+    context.server.current = null;
+    Class.prototype._setStatus.call(context, 'error: capture ended');
+    assert.equal(sent.length, 1, 'no disconnected viewer receives status');
   }
 });
