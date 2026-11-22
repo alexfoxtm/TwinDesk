@@ -546,7 +546,10 @@ class Core private constructor(val ctx: Context) : Link.Events {
                     when {
                         f === clip -> clip.onMessage(t, m, route)
                         f === tether -> tether.onMessage(t, m, route)
-                        f === screen && t == "rtc.offer" -> screen.onOffer(m, route)
+                        f === screen && t == "rtc.offer" -> {
+                            screen.onOffer(m, route)
+                            true
+                        }
                         else -> f.onMessage(t, m)
                     }
                 } catch (e: Exception) { Log.e("TwinDesk", "message $t", e); true }

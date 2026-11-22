@@ -497,16 +497,14 @@ class Screen(core: Core) : Feature(core) {
         core.changed()
     }
 
-    internal fun onOffer(m: JSONObject, route: Link.TrustedRoute?): Boolean {
+    internal fun onOffer(m: JSONObject, route: Link.TrustedRoute?) {
         // Link's socket can change while Core hands this message to the UI thread.
-        if (route == null || !core.link.accepts(route)) return true
+        if (route == null || !core.link.accepts(route)) return
         resetVideo()
-        videoUnavailable = false
         videoSession = m.optInt("session", -1)
         videoMarker = route.marker
         host?.post(JSONObject(m.toString()).put("viewerGeneration", videoGeneration))
         core.changed()
-        return true
     }
 
     fun videoMetrics(h: WebHost, generation: Int, session: Int, width: Int, height: Int, fps: Int, kbps: Int, dropped: Long) {
@@ -615,8 +613,6 @@ class Screen(core: Core) : Feature(core) {
             frameFor(),
             pending,
         )
-        // A catalog that already says this display is showing, before its frame is decoded,
-        // must not send and must not replace the wait (its revision is what the frame is compared to).
         if (step.pending === pending && step.action is DesktopSelect.Action.None) return
         takeDesktop(step, "")
         core.changed()
@@ -637,6 +633,8 @@ class Screen(core: Core) : Feature(core) {
             frameFor(),
             pending,
         )
+        // A catalog that already says this display is showing, before its frame is decoded,
+        // must not send and must not replace the wait (its revision is what the frame is compared to).
         if (step.pending === pending && step.action is DesktopSelect.Action.None) return
         takeDesktop(step, "")
         core.changed()
