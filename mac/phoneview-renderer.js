@@ -61,6 +61,8 @@
 
   // ---- video ----
 
+  let appFrame = null;
+
   function codecOf(sps) {
     // Annex B: find the SPS NAL (type 7); profile, constraints and level are the next three bytes.
     for (let i = 0; i + 4 < sps.length; i++) {
@@ -72,7 +74,6 @@
     return 'avc1.42e01f';
   }
 
-  let appFrame = null;
   let rail = null;
   let minimized = false;
   let heldFrame = null;
