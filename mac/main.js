@@ -212,10 +212,10 @@ function pushState() {
   pushQueued = true;
   setImmediate(() => {
     pushQueued = false;
-    // No control window: the snapshots below are only sent there. The tray still needs
-    // client, found and where the pointer is. Lock view already ran; screen state and
-    // preview shots run below, as they do when the window is open.
-    if (!(win && !win.isDestroyed())) {
+    // No window on screen: destroyed, hidden, minimized or covered. The snapshots
+    // below are only for that window. The tray, the screen message, preview shots,
+    // the lock key, file shortcuts and pair sync still run. Lock view already ran.
+    if (!(win && !win.isDestroyed() && controlWatch.watching(win))) {
       if (discovery) state.found = discovery.list();
       const c = peer && peer.current;
       state.client = c ? { id: c.deviceId, name: c.name, os: c.os, role: c.role, address: c.address, rttMs: c.rttMs, transport: c.transport || 'ip' } : null;
@@ -226,6 +226,7 @@ function pushState() {
       if (pairSync) pairSync.check();
       sendScreenState();
       updateTray();
+      controlWatch.mark(win);
       return;
     }
     // The address the other computer can reach, first (the UI shows only this one):
@@ -331,8 +332,8 @@ function pushState() {
     state.localsend = localsend ? localsend.view() : { cfg: { on: !!(settings.localsend && settings.localsend.on) }, peers: [], offers: [], transfers: [] }; // Files › LocalSend-compatible devices
     if (pairSync) pairSync.check();
     sendScreenState();
-    // Covered, minimized or hidden: the tray and the screen message above still run.
-    // The window is sent nothing until it is on screen again (one push on that edge).
+    // On screen: the window gets this state. A window that was covered or hidden
+    // between the check above and here is not sent; it gets one push when it returns.
     const sendState = controlWatch.watching(win);
     controlWatch.mark(win);
     if (sendState && win && !win.isDestroyed()) win.webContents.send('state', state);
@@ -602,12 +603,6 @@ function noteControlVisible(visible) {
   if (controlWatch.note(win, visible)) pushState();
 }
 
-// Round trip is the 1 Hz push. Skip it while the window is not on screen; the
-// fields it carries are in the one push sent as the window becomes visible.
-function pushWatched() {
-  if (controlWatch.watching(win)) pushState();
-}
-
 function dockIcon() {
   if (!app.dock) return;
   const visible = !!(win && !win.isDestroyed() && win.isVisible());
@@ -778,7 +773,7 @@ app.whenReady().then(() => {
   });
   server.on('rtt', (ctx) => {
     if (process.env.MACSHARE_DEBUG_STATS) console.log(`[server] rtt ${ctx.rttMs} ms`);
-    pushWatched();
+    pushState();
   });
 
   discovery = new Discovery(id, server.port, { rc: true }); // Android may reclaim after the grace window (#192)
@@ -834,7 +829,7 @@ app.whenReady().then(() => {
     if (previewShots) previewShots.cancel('session');
     pushState();
   });
-  peer.on('rtt', pushWatched);
+  peer.on('rtt', pushState);
 
   svc = startServices({ server: peer, getSettings: () => settings, pushState, onHelperReady: refreshPermissions,
     clipboardPair: (ctx) => !ctx ? null : ctx.role === 'host'
