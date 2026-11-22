@@ -116,8 +116,8 @@ class MainActivity : ComponentActivity() {
         resumed.value++ // permissions may have changed in Settings
         Core.get(this).foreground() // a look at the session; one put off by Reconnect in the background
         Core.get(this).adb.check() // back from Settings: is wireless debugging on now?
-        Core.get(this).hub.let { if (it.callsOn || it.messagesOn || it.mediaOn || it.filesOn) it.permsChanged() }
         Core.get(this).photos.permsChanged() // photo backup stops if photo or location access changed in Settings
+        Core.get(this).hub.let { if (it.callsOn || it.messagesOn || it.mediaOn || it.filesOn) it.permsChanged() }
         Core.get(this).taskAlerts.linkChanged()
         Core.get(this).share.let { if (it.on && it.serving != it.allowed) it.core.bg.execute { it.sync() } } // All files access just allowed (or taken away)
     }
@@ -1921,9 +1921,9 @@ private fun ModulesCard(core: Core) {
             SwitchRow(tr(t.title), "", id !in off) {
                 Modules.set(core.store, id, it)
                 if (id == "notifications") core.taskAlerts.modulesChanged()
-                off = Modules.off(core.store)
                 if (id == "files") core.localSend.start()
                 if (id == "photos") core.photos.modulesChanged()
+                off = Modules.off(core.store)
             }
         }
     }

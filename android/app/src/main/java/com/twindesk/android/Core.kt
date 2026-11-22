@@ -105,8 +105,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val dev = DevCtl(this) // this phone's controls on the computer's Overview, the computer's on the Computer page
     val appList = AppList(this) // the phone's apps, for the pages that pick some (Notifications, Banking apps)
     val bank = BankGuard(this) // a banking app opened: debugging off, and TwinDesk exits (General › Banking apps)
-    val pcMedia = PcMedia(this) // what plays on the computer: the Media page and a media notification here
     val silence = Silence(this) // Notifications › Silence together: Do not disturb here and the Mac's Focus, each way when switched on
+    val pcMedia = PcMedia(this) // what plays on the computer: the Media page and a media notification here
     val taskAlerts = TaskAlerts(this)
     // Connect with Android: another phone, on a session of its own beside the computer's (Peer.kt).
     // Not a Feature: the computer's messages never reach it, nor its the computer.
