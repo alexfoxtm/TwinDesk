@@ -66,6 +66,10 @@ class AppList(private val core: Core) {
         return b
     }
 
+    fun clearIcons() {
+        synchronized(icons) { icons.clear() }
+    }
+
     private fun watch() {
         if (watching) return
         watching = true

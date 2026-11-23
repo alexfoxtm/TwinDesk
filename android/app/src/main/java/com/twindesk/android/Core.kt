@@ -230,6 +230,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     private fun start() {
         if (started || store.flag("exited", false)) return
         started = true
+        registerRebuildableCaches()
         discovery.start()
         runCatching { peer.start() }.onFailure { Log.e("TwinDesk", "peer", it) }
         Notify.channels(ctx)
@@ -274,6 +275,21 @@ class Core private constructor(val ctx: Context) : Link.Events {
             }, android.content.IntentFilter().apply { addAction(android.content.Intent.ACTION_SCREEN_ON); addAction(android.content.Intent.ACTION_SCREEN_OFF); addAction(android.content.Intent.ACTION_USER_PRESENT); addAction(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED) })
         }
         requestTimers()
+    }
+
+    private fun registerRebuildableCaches() {
+        ctx.applicationContext.registerComponentCallbacks(object : android.content.ComponentCallbacks2 {
+            override fun onTrimMemory(level: Int) = RebuildableCaches.trim(level)
+            @Suppress("DEPRECATION")
+            override fun onLowMemory() = RebuildableCaches.trim(android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
+            override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
+        })
+        RebuildableCaches.register {
+            deckIconCache.clear()
+            appList.clearIcons()
+            notifs.clearIcons()
+            rezume.clearIcons()
+        }
     }
 
     // General › Connections › Prioritize performance over battery life (off): on, the session pings

@@ -209,7 +209,13 @@ fun DesktopOverview(
     var arrived by remember { mutableStateOf(reduceMotion) }
     LaunchedEffect(Unit) { arrived = true }
     val decodes = remember(previews.session) { PreviewDecodes() }
-    DisposableEffect(decodes) { onDispose { decodes.clear() } }
+    DisposableEffect(decodes) {
+        val drop = RebuildableCaches.register { decodes.clear() }
+        onDispose {
+            drop()
+            decodes.clear()
+        }
+    }
     LaunchedEffect(decodes, previews.shots.isEmpty()) {
         if (previews.shots.isEmpty()) decodes.clear()
     }

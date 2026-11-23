@@ -77,6 +77,10 @@ class Notifs(core: Core) : Feature(core) {
     private val iconsIn = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
         override fun removeEldestEntry(e: MutableMap.MutableEntry<String, Bitmap>?) = size > 100
     }
+
+    fun clearIcons() {
+        synchronized(iconsIn) { iconsIn.clear() }
+    }
     // Each sent notification's reply action (a chat's Reply), for notif.reply from the computer.
     // The ticket is the session that was allowed to see it. A later socket cannot use it.
     private val replies = object : LinkedHashMap<String, ReplyBind>(32, 0.75f, true) {

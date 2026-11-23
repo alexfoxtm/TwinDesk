@@ -963,8 +963,8 @@ internal fun DeckGlyph(icon: String, tint: Color, size: Dp) {
 
 // ---- the window space ----
 
-private val iconCache = HashMap<String, ImageBitmap?>()
-private fun appIcon(data: String): ImageBitmap? = if (data.isEmpty()) null else iconCache.getOrPut(data) {
+internal val deckIconCache = BoundedIconCache<ImageBitmap?>(DECK_ICON_CACHE_MAX)
+private fun appIcon(data: String): ImageBitmap? = if (data.isEmpty()) null else deckIconCache.getOrPut(data) {
     runCatching { val b = Base64.decode(data.substringAfter(","), Base64.DEFAULT); BitmapFactory.decodeByteArray(b, 0, b.size)?.asImageBitmap() }.getOrNull()
 }
 
