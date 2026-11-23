@@ -24,6 +24,7 @@ async function entrypoints(file, allowed) {
       isTrustedAccessibilityClient: () => true,
     },
     setupSeen() {}, pushState() {},
+    permArm() {}, // refreshPermissions arms the 3 s poll; this slice has no timer
     require(name) { throw new Error('unexpected dependency ' + name); },
   };
   vm.runInNewContext(source.slice(start, end) + '\nrefreshPermissions();', context, { filename: file });

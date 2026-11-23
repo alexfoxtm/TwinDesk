@@ -83,6 +83,8 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0);
 }
 
+const wakePace = require('./wake-pace');
+
 const P = require('../shared/protocol.js');
 const Pick = require('../shared/screen-pick.js');
 const CL = require('../shared/cursorlock.js');
@@ -118,6 +120,18 @@ let win = null;
 let tray = null;
 // Settings window: send state only while the user can see it (mac/win-watch.js).
 const controlWatch = require('./win-watch').createWatch();
+// Hide, minimize and close keep their existing calls. The pace hooks run from
+// here so those lines stay as the idle test records them. Assigned once the
+// timers exist; until then a hide does nothing extra.
+let onWatchEdge = () => {};
+let permArm = () => {};
+let refreshBlePace = () => {};
+{
+  const unsee = controlWatch.unsee.bind(controlWatch);
+  const reset = controlWatch.reset.bind(controlWatch);
+  controlWatch.unsee = () => { unsee(); onWatchEdge(); };
+  controlWatch.reset = () => { reset(); onWatchEdge(); };
+}
 // Close hides it. It is destroyed five minutes after that, unless it was opened again (mac/win-idle.js).
 const { attach: attachIdle } = require('./win-idle');
 let lockKey = null; // the cursor lock key at home (shared/cursorlock.js)
@@ -507,9 +521,11 @@ function refreshPermissions() {
       state.permissions.inputMonitoring = !!r.inputMonitoring;
       setupSeen();
       pushState();
+      permArm();
     }, () => {});
   }
   pushState();
+  permArm();
 }
 
 // macOS owns privacy grants. Updates must never reset them automatically.
@@ -601,7 +617,11 @@ function createWindow() {
 // visible: true/false from the page, or null when the window was just shown or
 // restored and the page has not reported. One push on the edge, none while it stays.
 function noteControlVisible(visible) {
-  if (controlWatch.note(win, visible)) pushState();
+  const was = !!(win && !win.isDestroyed() && controlWatch.watching(win));
+  const edge = controlWatch.note(win, visible);
+  if (edge) pushState();
+  // Covered as well as shown: note() is true only when the window becomes watched.
+  if (edge || was !== !!(win && !win.isDestroyed() && controlWatch.watching(win))) onWatchEdge();
 }
 
 function dockIcon() {
@@ -1434,8 +1454,9 @@ app.whenReady().then(() => {
   // Files on their way, live: the percentage beside the menu bar icon, ↓ coming in, ↑ going out
   // (macOS notifications have no progress bar, and TwinDesk has no Dock icon to put one on).
   let trayPct = '';
-  // Every 500 ms while a session is on (files move only then) and until what it showed is cleared;
-  // with no session nothing runs. A new session starts it again.
+  // Every 500 ms while a transfer is moving (the tray title, the popup, the notification) and
+  // until that title is cleared. An open window and a live stream do not read it; file rows
+  // reach the window through drop/fileSend 'change'. A session with no transfer does not start it.
   let pctTimer = null;
   const pctTick = () => {
     const dv = svc.drop.view;
@@ -1462,38 +1483,70 @@ app.whenReady().then(() => {
     }
     if (sb) liveShow('send', t('Sending {file}', { file: sb.items > 1 ? t('{count} items', { count: sb.items }) : sb.name }), t('To {name}', { name: peerLabel() }));
     const title = (gotOf ? ` ↓${pct(got, gotOf)}%` : '') + (sentOf ? ` ↑${pct(sent, sentOf)}%` : '');
-    if (!peer.current && !title && !rb && !sb && !dv.inBatches.length && !sv.outBatches.length) { clearInterval(pctTimer); pctTimer = null; }
+    if (!wakePace.pctShouldRun({ drop: dv, send: sv, trayTitle: title })) { clearInterval(pctTimer); pctTimer = null; }
     if (title === trayPct || !tray) return;
     trayPct = title;
     tray.setTitle(title, { fontType: 'monospacedDigit' });
   };
-  const pctStart = () => { if (!pctTimer) { pctTimer = setInterval(pctTick, 500); pctTimer.unref(); } };
-  peer.on('client', pctStart);
-  peer.on('closed', pctStart); // once more: what it showed is cleared, then it stops
-  if (peer.current) pctStart();
-  // Started at login: in the menu bar only; the window is made when it's first opened.
-  if (startHidden) startHidden = false;
-  else createWindow();
-  refreshPermissions();
-  if (process.env.MACSHARE_DEV_TEST) require('./dev/m2m')({ role: process.env.MACSHARE_DEV_TEST, svc, actions, link, pairing, peer });
+  const pctArm = () => {
+    if (pctTimer) return;
+    if (!wakePace.pctShouldRun({ drop: svc.drop.view, send: svc.fileSend.view, trayTitle: trayPct })) return;
+    pctTick();
+    if (pctTimer || !wakePace.pctShouldRun({ drop: svc.drop.view, send: svc.fileSend.view, trayTitle: trayPct })) return;
+    pctTimer = setInterval(pctTick, 500);
+    pctTimer.unref();
+  };
+  svc.drop.on('change', pctArm);
+  svc.fileSend.on('change', pctArm);
   readDefaultIf();
   // Addresses change when an interface's address changes (one getifaddrs). The default route
   // is read then, and only then: nothing spawns /sbin/route or pushes while the list is the same.
+  // While nothing is connected and the window is not on screen, the tick returns before that read.
+  // Show, cover and a session each run it once, so a resume is not a tick later than this interval.
   let addrKey = '';
-  setInterval(() => {
+  const noteAddresses = () => {
+    if (!wakePace.addrShouldPoll({
+      peerConnected: !!(peer && peer.current),
+      windowWatching: !!(win && !win.isDestroyed() && controlWatch.watching(win)),
+    })) return;
     const key = interfaces().map((i) => `${i.name}=${i.address}`).join(',');
     if (key === addrKey) return;
     addrKey = key;
     readDefaultIf();
     pushState();
-  }, 5000).unref();
-  // While Setup shows something missing, notice the grant without waiting for a window focus.
+  };
   setInterval(() => {
-    if (!win || win.isDestroyed() || !win.isVisible()) return;
-    const p = state.permissions;
-    const missing = p.screen !== 'granted' || !p.accessibility || p.inputMonitoring === false;
-    if (missing) refreshPermissions();
-  }, 3000).unref();
+    noteAddresses();
+  }, 5000).unref();
+  // While Setup is on screen and something is missing, notice the grant without waiting for a focus.
+  // Hidden, or nothing missing: the interval is not running. Focus still refreshes immediately.
+  let permTimer = null;
+  const permNow = () => ({
+    visible: !!(win && !win.isDestroyed() && win.isVisible()),
+    permissions: state.permissions,
+  });
+  const permTick = () => {
+    if (!wakePace.permShouldPoll(permNow())) { clearInterval(permTimer); permTimer = null; return; }
+    refreshPermissions();
+  };
+  permArm = () => {
+    if (!wakePace.permShouldPoll(permNow())) {
+      if (permTimer) { clearInterval(permTimer); permTimer = null; }
+      return;
+    }
+    if (permTimer) return;
+    permTimer = setInterval(permTick, 3000);
+    permTimer.unref();
+  };
+  onWatchEdge = () => { noteAddresses(); permArm(); refreshBlePace(); };
+  peer.on('client', () => { pctArm(); noteAddresses(); });
+  peer.on('closed', () => { pctArm(); noteAddresses(); }); // a leftover tray title is cleared, then the timer stops
+  if (peer.current) pctArm();
+  // Started at login: in the menu bar only; the window is made when it's first opened.
+  if (startHidden) startHidden = false;
+  else createWindow();
+  refreshPermissions();
+  if (process.env.MACSHARE_DEV_TEST) require('./dev/m2m')({ role: process.env.MACSHARE_DEV_TEST, svc, actions, link, pairing, peer });
 });
 
 // Not on one network: the session through Bluetooth (this Mac advertises; phones and PCs connect),
@@ -1527,7 +1580,12 @@ function setupNet() {
   // Looked for only while there's no session; Invite asks one to connect.
   svc.bleLook = new BleLook({ helper: svc.helper, self: () => ({ id: id.macId, name: id.macName.slice(0, 40), os: P.OS.MAC }) });
   svc.bleLook.on('change', pushState);
-  setInterval(() => {
+  // 3 s while a session is up or the window is watched (wifiQuiet is 5 s, the nearby list is on
+  // screen). 20 s otherwise: the only reader left is the iPhone invite, which already waits 20 s.
+  // One tick on the session and window edges, and once at start, so the first invite is not later.
+  let bleTimer = null;
+  let bleEvery = 0;
+  const bleTick = () => {
     // The session on the same Wi-Fi a while (General's Turn off Bluetooth on Wi-Fi connections,
     // blepolicy.js wifiQuiet): no advertising, its pipes and the session's Bluetooth fallback closed;
     // back as it was when the session ends.
@@ -1543,14 +1601,30 @@ function setupNet() {
     svc.bleLook.look(settings.net.blePc === true && !peer.current);
     // No session, and an iPhone or iPad linked over Bluetooth (it links only to computers it's paired
     // with): invited now and then, which wakes TwinDesk there to come back (Ble.swift).
-    if (!peer.current && Date.now() - iosInvitedAt > 20000) {
+    // >= so the 20 s idle tick still invites; the old 3 s tick saw this same wait a moment late.
+    if (!peer.current && Date.now() - iosInvitedAt >= 20000) {
       for (const g of svc.ble.list()) {
         if (g.os !== P.OS.IOS) continue;
         iosInvitedAt = Date.now();
         svc.ble.invite(g.id);
       }
     }
-  }, 3000).unref();
+  };
+  const armBle = () => {
+    const ms = wakePace.bleIntervalMs({
+      peerConnected: !!peer.current,
+      windowWatching: !!(win && !win.isDestroyed() && controlWatch.watching(win)),
+    });
+    if (bleTimer && bleEvery === ms) return;
+    if (bleTimer) clearInterval(bleTimer);
+    bleEvery = ms;
+    bleTimer = setInterval(bleTick, ms);
+    bleTimer.unref();
+  };
+  refreshBlePace = () => { bleTick(); armBle(); };
+  peer.on('client', refreshBlePace);
+  peer.on('closed', refreshBlePace);
+  refreshBlePace();
   discovery.extra = {
     list: () => {
       const out = svc.ble.list();
