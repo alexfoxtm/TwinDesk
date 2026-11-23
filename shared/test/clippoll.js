@@ -40,4 +40,26 @@ timers.length = 0;
 b = bridge(); b.control = null; w = clipWatch(b);
 b.server.emit('t:clip', { text: 'x' });
 assert.strictEqual(timers.length, 0);
+
+// No allowClipPoll above: Windows, Linux and mesh still poll once armed.
+// The Mac sets it. Off pauses the interval and keeps it armed; on resumes.
+timers.length = 0;
+b = bridge();
+let allow = false;
+b.allowClipPoll = () => allow;
+w = clipWatch(b);
+b.server.emit('t:clip', { text: 'paused' });
+fire('timeout');
+assert.strictEqual(w.polling, false);
+assert.strictEqual(b.control.reads, 0);
+assert.strictEqual(b.lastPhoneClip, 'paused');
+allow = true;
+w.sync();
+assert.strictEqual(w.polling, true);
+fire('interval');
+assert.strictEqual(b.control.reads, 1);
+allow = false;
+w.sync();
+assert.strictEqual(w.polling, false);
+assert.strictEqual(b.control.reads, 1);
 process.stdout.write('clippoll: ok\n');

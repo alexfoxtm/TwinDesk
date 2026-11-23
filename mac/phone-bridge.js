@@ -143,6 +143,8 @@ class PhoneBridge extends EventEmitter {
     phone.on('info', () => this._kick());
     this.setup = false; // set up on purpose this session (Connection's Set Up, a pairing code)
     server.on('client', (ctx) => {
+      this._armPoll();
+      if (this.clipWatch) this.clipWatch.sync();
       if (isPhone(ctx)) {
         const id = typeof ctx.deviceId === 'string' ? ctx.deviceId : '';
         // Same phone again (its socket moved, or it connected once more): the adb session is
@@ -157,6 +159,8 @@ class PhoneBridge extends EventEmitter {
       this._stopAll('');
     });
     server.on('closed', () => {
+      this._armPoll();
+      if (this.clipWatch) this.clipWatch.sync();
       if (!isPhone(server.current)) {
         this.setup = false;
         NativeScreen.closeAll();
@@ -191,7 +195,31 @@ class PhoneBridge extends EventEmitter {
     server.on('client', () => { soundReset(); this._sound(); });
     server.on('closed', () => { if (!isPhone(server.current)) soundReset(); this._sound(); });
     server.on('transport', () => this._sound());
+    if (clipboard && typeof clipboard.on === 'function') clipboard.on('change', () => { if (this.clipWatch) this.clipWatch.sync(); });
+    this.pollTimer = null;
+    this._armPoll(); // only while an Android phone is the peer; adb, USB, sound and the Xiaomi check
+  }
+
+  // The 3 s adb lookup. Not tied to the clipboard switch: that lookup is the cable move,
+  // sound and the Xiaomi input check. It does not run with no Android phone connected.
+  _armPoll() {
+    if (!isPhone(this.server.current)) {
+      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+      return;
+    }
+    if (this.pollTimer) return;
     this.pollTimer = setInterval(() => this._poll(), POLL_MS);
+    if (this.pollTimer.unref) this.pollTimer.unref();
+  }
+
+  // Phone → Mac copies (#257). The helper pasteboard watch is Mac → phone, so it does not
+  // replace this. Off when clipboard sync cannot receive, or no Android control session is up.
+  allowClipPoll() {
+    const clip = this.getSettings && this.getSettings().clipboard;
+    if (!clip || clip.enabled === false || clip.receive === false) return false;
+    if (!isPhone(this.server.current)) return false;
+    const c = this.control;
+    return !!c && !c.closed;
   }
 
   // The Android phone selected now (not a socket it has already replaced).
@@ -221,6 +249,7 @@ class PhoneBridge extends EventEmitter {
     this.views?.releaseAppPanel?.();
     const control = this.control;
     this.control = null;
+    if (this.clipWatch) this.clipWatch.sync();
     if (control && !control.closed) control.stop();
   }
 
@@ -656,6 +685,7 @@ class PhoneBridge extends EventEmitter {
     s.on('closed', (why) => {
       if (this.control !== s) return;
       this.control = null;
+      if (this.clipWatch) this.clipWatch.sync();
       if (this.kvm) this._kvmEnd(true);
       this._set('error', `The phone connection stopped (${why}).`);
       setTimeout(() => { if (this._live(epoch)) this._kick(); }, 2000);
@@ -668,6 +698,7 @@ class PhoneBridge extends EventEmitter {
     }
     this.control = s;
     if (!this.clipWatch) this.clipWatch = require('../shared/clippoll.js').clipWatch(this); // copies a missing listener doesn't report (#257)
+    else this.clipWatch.sync();
     // A session that ended without its hover exit (the Wi-Fi gone, the app quit) left Android a mouse
     // hovering over the status bar or the gesture area: edges and gesture navigation stop answering
     // until the phone restarts. Any hover exit from here clears it.

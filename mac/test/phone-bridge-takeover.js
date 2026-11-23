@@ -68,7 +68,7 @@ function harness(input = 'adb') {
     screenWithSound: false,
   };
   return {
-    server, phoneHub, bridge, calls, sent,
+    server, phoneHub, bridge, calls, sent, settings,
     setDevices(fn) { devices = fn; },
     stop() {
       clearInterval(bridge.pollTimer);
@@ -76,6 +76,34 @@ function harness(input = 'adb') {
     },
   };
 }
+
+test('the adb poll and the phone clipboard poll wait until a phone can use them', () => {
+  const h = harness();
+  try {
+    assert.equal(h.bridge.pollTimer, null, 'no 3 s adb poll before a phone connects');
+    h.bridge.control = { closed: false, stop() {}, getClipboard() {} };
+    h.server.current = phone('a', '10.0.0.2');
+    assert.equal(h.bridge.allowClipPoll(), false, 'clipboard sync is off');
+    h.settings.clipboard = { enabled: true, receive: true };
+    assert.equal(h.bridge.allowClipPoll(), true);
+    h.settings.clipboard.receive = false;
+    assert.equal(h.bridge.allowClipPoll(), false, 'receive off');
+    h.settings.clipboard.receive = true;
+    h.server.current = { os: 'ios', deviceId: 'pad' };
+    assert.equal(h.bridge.allowClipPoll(), false, 'not an Android phone');
+    h.server.current = phone('a', '10.0.0.2');
+    h.bridge.control.closed = true;
+    assert.equal(h.bridge.allowClipPoll(), false, 'no control session');
+    h.bridge.control.closed = false;
+    h.server.emit('client', h.server.current);
+    assert.ok(h.bridge.pollTimer, 'an Android phone starts the 3 s poll');
+    h.server.current = null;
+    h.server.emit('closed');
+    assert.equal(h.bridge.pollTimer, null, 'the poll stops when the phone is gone');
+  } finally {
+    h.stop();
+  }
+});
 
 test('a second Android phone releases the first and looks that phone up', async () => {
   for (const input of ['adb', 'phone']) {

@@ -14,26 +14,41 @@ const GRACE_MS = 1500;
 
 function clipWatch(bridge) {
   let timer = null;
-  const stop = () => { clearInterval(timer); timer = null; };
+  let armed = false; // scrcpy missed a copy: keep asking until stop(), even if a tick is paused
+  // Absent on Windows, Linux and mesh: those keep polling once armed. The Mac sets it.
+  const allowed = () => typeof bridge.allowClipPoll !== 'function' || bridge.allowClipPoll() !== false;
+  const clear = () => { clearInterval(timer); timer = null; };
+  const stop = () => { armed = false; clear(); };
+  const tick = () => {
+    if (!allowed()) return clear();
+    const s = bridge.control;
+    if (!s || s.closed) return;
+    try { s.getClipboard(); } catch (_) { stop(); }
+  };
+  const start = () => {
+    if (timer || !armed || !allowed()) return;
+    const s = bridge.control;
+    if (!s || s.closed) return;
+    timer = setInterval(tick, POLL_MS);
+    if (timer.unref) timer.unref();
+  };
+  // Clipboard sync or the peer changed: pause, or resume a poll that was already armed.
+  const sync = () => { if (armed) (allowed() ? start() : clear()); };
   bridge.server.on('t:clip', (m) => {
-    if (!m || typeof m.text !== 'string' || !m.text || m.text === bridge.lastPhoneClip || timer) return; // ours (scrcpy's), injected
+    if (!m || typeof m.text !== 'string' || !m.text || m.text === bridge.lastPhoneClip || timer || armed) return; // ours (scrcpy's), injected
     const c = bridge.control;
     if (!c || c.closed) return; // no control session: nothing missed it
     // The app's copy may come a moment before scrcpy's: missed only if scrcpy still hasn't said so.
     const t = setTimeout(() => {
-      if (timer || bridge.lastPhoneClip === m.text || bridge.control !== c || c.closed) return;
+      if (timer || armed || bridge.lastPhoneClip === m.text || bridge.control !== c || c.closed) return;
       bridge.lastPhoneClip = m.text;
       console.log('[phone] the phone’s copies don’t reach TwinDesk in the background: asking for them every 1.5 s');
-      timer = setInterval(() => {
-        const s = bridge.control;
-        if (!s || s.closed) return;
-        try { s.getClipboard(); } catch (_) { stop(); }
-      }, POLL_MS);
-      if (timer.unref) timer.unref();
+      armed = true;
+      start();
     }, GRACE_MS);
     if (t.unref) t.unref();
   });
-  return { stop, get polling() { return !!timer; } };
+  return { stop, sync, get polling() { return !!timer; } };
 }
 
 module.exports = { clipWatch, POLL_MS };
