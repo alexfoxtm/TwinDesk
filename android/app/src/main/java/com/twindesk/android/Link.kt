@@ -108,6 +108,9 @@ class Link(
     private var lanAskAfter = 0L
     private val resumeTried = HashMap<String, Long>()
     private val lastRxOf = java.util.concurrent.ConcurrentHashMap<WebSocket, Long>()
+    // When the computer last pinged this socket. Our own ping is skipped while that is inside the
+    // current interval (the computer keeps pinging, and measures rtt from our pong). Cleared with lastRxOf.
+    private val lastPeerPingOf = java.util.concurrent.ConcurrentHashMap<WebSocket, Long>()
     private var helloTimer: ScheduledFuture<*>? = null
     // The next hello is a reclaim (shared/reclaim.js): rc:1 plus a resume string older hosts refuse.
     private var reclaimHello = false
@@ -564,6 +567,7 @@ class Link(
 
     private fun gone(w: WebSocket, failure: String?) {
         lastRxOf.remove(w)
+        lastPeerPingOf.remove(w)
         endOf.remove(w)
         when {
             w === pending -> pending = null
@@ -614,6 +618,7 @@ class Link(
         if (ble || !altBle || now - movedAt < FALLBACK_MS || now - (lastRxOf[w] ?: 0L) > ANSWERING_MS) return@run
         alt = null
         lastRxOf.remove(a)
+        lastPeerPingOf.remove(a)
         a.close(1000, null)
         Log.i("TwinDesk", "Bluetooth fallback closed. The connection remains on Wi-Fi")
         events.onChange()
@@ -652,6 +657,7 @@ class Link(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = run {
             if (webSocket !== ws) return@run gone(webSocket, t.message)
             lastRxOf.remove(webSocket)
+            lastPeerPingOf.remove(webSocket)
             if (state == "connected" && fallBack()) return@run
             onClose(if (generateSequence(t) { it.cause }.any { it is CertificateException }) "identity" else t.message ?: "failed")
         }
@@ -718,7 +724,16 @@ class Link(
                 if (ingress === ws && !parting && connected && ble && resumeKey.isNotEmpty()) onLanOffer(m)
                 return
             }
-            Proto.T.PING -> { if (state == "connected") raw(msg(Proto.T.PONG, "ts" to m.opt("ts"))); return }
+            Proto.T.PING -> {
+                if (state == "connected") {
+                    // This ping already proved the socket. beat() holds our own until the interval
+                    // runs out, so a live computer is the only side that pings. The pong is unchanged.
+                    lastPeerPingOf[ingress] = System.currentTimeMillis()
+                    raw(msg(Proto.T.PONG, "ts" to m.opt("ts")))
+                    beat()
+                }
+                return
+            }
             Proto.T.PONG -> { if (m.has("ts")) rttMs = maxOf(0, System.currentTimeMillis() - m.optLong("ts")); return }
             QUIET_IDLE -> {
                 if (state == "connected") {
@@ -834,6 +849,7 @@ class Link(
         peerIdle = false
         peerPerf = false
         peerKeep = false
+        lastPeerPingOf.clear()
         saidSig = ""
         idleTrue = false
         idlePerf = false
@@ -928,19 +944,22 @@ class Link(
         }
         if (quietNow && quietSince == 0L) { quietSince = now; Log.i("TwinDesk", "link quiet: pings every ${QUIET_PING_MS / 60000} min") }
         if (!quietNow && quietSince != 0L) { quietSince = 0L; quietEnd = now; probeAt = 0L; probed = false; Log.i("TwinDesk", "link active: pings every second") }
+        var primaryRx = lastRx
         for (w in listOfNotNull(ws, alt)) {
             val onBle = if (w === ws) ble else altBle
             val limit = if (onBle) Proto.BLE_TIMEOUT_MS else Proto.TIMEOUT_MS
             var rx = maxOf(lastRxOf[w] ?: lastRx, if (onBle) bleRx() else 0L, if (onBle) 0L else maxOf(quietEnd, perfEnd))
             if (!onBle && perfNow) {
                 if (quietEnd == now || perfEnd == now) rx = maxOf(rx, now) // a tier change does not inherit the old silence
+                if (w === ws) primaryRx = rx
                 if (now - rx > Proto.TIMEOUT_MS_IDLE_PERF) {
                     Log.i("TwinDesk", "network socket silent for ${now - rx} ms on an idle performance link, closing")
                     if (w === ws && alt == null) message = tr("Not responding")
                     w.cancel()
                     continue
                 }
-                if (now - maxOf(perfPing, perfSince) >= Proto.PING_MS_IDLE_PERF) {
+                val interval = Proto.PING_MS_IDLE_PERF
+                if (ownPingWanted(w, now, interval, now - maxOf(perfPing, perfSince) >= interval, perfPing)) {
                     perfPing = now
                     w.send(msg(Proto.T.PING, "ts" to now).toString())
                 }
@@ -949,42 +968,77 @@ class Link(
             if (!onBle && quietNow) {
                 if (w === ws && probeAt != 0L) { // something went out while quiet: is anyone there?
                     if (rx >= probeAt) { probeAt = 0L; probed = false }
-                    else if (!probed) { probed = true; quietPing = now; w.send(msg(Proto.T.PING, "ts" to now).toString()); continue }
-                    else if (now - probeAt > Proto.TIMEOUT_MS) {
+                    else if (!probed) {
+                        // The probe is the question. A recent computer ping does not replace it.
+                        probed = true
+                        quietPing = now
+                        w.send(msg(Proto.T.PING, "ts" to now).toString())
+                        if (w === ws) primaryRx = rx
+                        continue
+                    } else if (now - probeAt > Proto.TIMEOUT_MS) {
                         Log.i("TwinDesk", "no answer on a quiet link, closing")
                         if (alt == null) message = tr("Not responding")
                         w.cancel()
                         continue
-                    } else continue
+                    } else {
+                        if (w === ws) primaryRx = rx
+                        continue
+                    }
                 }
+                if (w === ws) primaryRx = rx
                 if (now - rx > QUIET_TIMEOUT_MS) {
                     Log.i("TwinDesk", "network socket silent for ${now - rx} ms on a quiet link, closing")
                     if (w === ws && alt == null) message = tr("Not responding")
                     w.cancel()
-                } else if (now - maxOf(quietPing, quietSince) >= QUIET_PING_MS) {
-                    quietPing = now
-                    w.send(msg(Proto.T.PING, "ts" to now).toString())
+                } else {
+                    val interval = QUIET_PING_MS
+                    if (ownPingWanted(w, now, interval, now - maxOf(quietPing, quietSince) >= interval, quietPing)) {
+                        quietPing = now
+                        w.send(msg(Proto.T.PING, "ts" to now).toString())
+                    }
                 }
                 continue
             }
+            if (w === ws) primaryRx = rx
             if (now - rx > limit) {
                 Log.i("TwinDesk", "${if (onBle) "Bluetooth" else "network"} socket silent for ${now - rx} ms, closing")
                 if (w === ws && alt == null) message = tr("Not responding")
                 w.cancel()
-            } else w.send(msg(Proto.T.PING, "ts" to now).toString())
+            } else if (ownPingWanted(w, now, Proto.PING_MS, true, 0L)) {
+                w.send(msg(Proto.T.PING, "ts" to now).toString())
+            }
         }
         beatAlarm = quietNow && alt == null && probeAt == 0L
-        return when {
-            quietNow && alt == null && probeAt == 0L -> {
-                val rx = ws?.let { lastRxOf[it] } ?: lastRx
-                quietBeatDelay(maxOf(quietPing, quietSince) + QUIET_PING_MS, maxOf(rx, quietEnd) + QUIET_TIMEOUT_MS + 1, now)
-            }
-            perfNow && alt == null -> {
-                val rx = maxOf(ws?.let { lastRxOf[it] } ?: lastRx, perfEnd, quietEnd)
-                quietBeatDelay(maxOf(perfPing, perfSince) + Proto.PING_MS_IDLE_PERF, maxOf(rx, perfEnd) + Proto.TIMEOUT_MS_IDLE_PERF + 1, now)
-            }
-            else -> Proto.PING_MS
+        // A fallback socket, or a probe still out, stays on the 1 s timer: that is what notices it.
+        if (alt != null || probeAt != 0L) return Proto.PING_MS
+        val peerAt = ws?.let { lastPeerPingOf[it] } ?: 0L
+        // The 1 s tier keeps its 1 s timer whenever we sent (or had nothing to skip). A fresh
+        // computer ping is the one case that pushes the next wake out to the end of that second,
+        // still no later than the silence limit. A socket we are already closing stays on 1 s too.
+        if (!perfNow && !quietNow) {
+            val fresh = peerAt != 0L && now - peerAt < Proto.PING_MS
+            if (!fresh) return Proto.PING_MS
+            val limit = if (ble) Proto.BLE_TIMEOUT_MS else Proto.TIMEOUT_MS
+            return quietBeatDelay(peerAt + Proto.PING_MS, primaryRx + limit + 1, now)
         }
+        val interval = if (perfNow) Proto.PING_MS_IDLE_PERF else QUIET_PING_MS
+        val fresh = peerAt != 0L && now - peerAt < interval
+        val pingAt = if (fresh) peerAt + interval else if (perfNow) maxOf(perfPing, perfSince) + interval else maxOf(quietPing, quietSince) + interval
+        val expires = if (perfNow) maxOf(primaryRx, perfEnd) + Proto.TIMEOUT_MS_IDLE_PERF + 1
+            else maxOf(primaryRx, quietEnd) + QUIET_TIMEOUT_MS + 1
+        return quietBeatDelay(pingAt, expires, now)
+    }
+
+    // Skip our ping while the computer's is still inside this interval. Once that interval has
+    // passed, send on this beat (not a beat later), unless we already sent one in the interval.
+    // sentAt 0: the 1 s tier, which sends on every beat when the computer has not just pinged.
+    // A quiet probe does not come through here.
+    private fun ownPingWanted(w: WebSocket, now: Long, interval: Long, cadenceDue: Boolean, sentAt: Long): Boolean {
+        val peerAt = lastPeerPingOf[w] ?: 0L
+        if (peerAt != 0L && now - peerAt < interval) return false
+        if (sentAt != 0L && now - sentAt < interval) return false
+        if (peerAt != 0L) return true
+        return cadenceDue
     }
 
     private val pairErrors get() = mapOf(
@@ -1027,6 +1081,7 @@ class Link(
         pending?.cancel()
         pending = null
         lastRxOf.clear()
+        lastPeerPingOf.clear()
     }
 
     private fun onClose(failure: String?) {

@@ -92,6 +92,12 @@ class PingKeepaliveTest {
         h.link.write("peerKeep", keep)
     }
 
+    @Suppress("UNCHECKED_CAST")
+    private fun peerPing(h: Harness, ageMs: Long) {
+        val map = h.link.read("lastPeerPingOf") as java.util.concurrent.ConcurrentHashMap<WebSocket, Long>
+        map[h.socket] = System.currentTimeMillis() - ageMs
+    }
+
     @Test fun keepOffAndPeerNotIdleStaysOnTheSecond() {
         val h = Harness(context)
         try {
@@ -259,6 +265,109 @@ class PingKeepaliveTest {
             h.link.write("lastRx", System.currentTimeMillis() - 21_000)
             h.beat()
             assertTrue(h.cancelled)
+        } finally { h.close() }
+    }
+
+    @Test fun phoneSkipsItsPingWhileTheComputerJustPinged() {
+        val h = Harness(context)
+        try {
+            h.text("""{"t":"ping","ts":7}""")
+            val pong = h.sent.map { JSONObject(it) }.single { it.optString("t") == Proto.T.PONG }
+            assertEquals(7, pong.optInt("ts"))
+            assertTrue("answering the computer's ping does not send one of our own", h.pings().isEmpty())
+            h.sent.clear()
+            peerPing(h, 400)
+            val delay = h.beat()
+            assertTrue("a computer ping 400 ms ago covers this 1 s interval", h.pings().isEmpty())
+            assertTrue("delay=$delay", delay in 300..800)
+            assertEquals(0, h.alarmAdded)
+        } finally { h.close() }
+    }
+
+    @Test fun phonePingsAtOnceWhenThatComputerPingIsOneIntervalOld() {
+        val h = Harness(context)
+        try {
+            peerPing(h, 1_000)
+            val delay = h.beat()
+            assertEquals("one interval with no computer ping: our ping goes on this beat", 1, h.pings().size)
+            assertTrue("delay=$delay", delay in 800..1_000)
+        } finally { h.close() }
+    }
+
+    @Test fun idlePerformanceSkipsADuePingWhenTheComputerPingedInsideThreeSeconds() {
+        val h = Harness(context)
+        try {
+            h.link.keepPinging = true
+            peer(h, on = true, perf = true, keep = true)
+            h.beat()
+            h.sent.clear()
+            h.link.write("perfSince", System.currentTimeMillis() - 3_500)
+            h.link.write("perfPing", 0L)
+            peerPing(h, 1_500)
+            val delay = h.beat()
+            assertTrue("1500 ms is inside the 3 s interval, so the due ping is skipped", h.pings().isEmpty())
+            assertTrue("delay=$delay", delay in 1_000..2_000)
+        } finally { h.close() }
+    }
+
+    @Test fun idlePerformancePingsAtOnceWhenTheComputerPingIsStale() {
+        val h = Harness(context)
+        try {
+            h.link.keepPinging = true
+            peer(h, on = true, perf = true, keep = true)
+            h.beat()
+            h.sent.clear()
+            h.link.write("perfSince", System.currentTimeMillis() - 1_000)
+            h.link.write("perfPing", 0L)
+            peerPing(h, 3_000)
+            h.beat()
+            assertEquals("the 3 s cadence is not due, but the computer ping is, so we ping now", 1, h.pings().size)
+        } finally { h.close() }
+    }
+
+    @Test fun quietSafetyPingIsSkippedWhileTheComputerPingIsFresh() {
+        val h = Harness(context)
+        try {
+            peer(h, on = true)
+            h.link.write("quietSince", System.currentTimeMillis() - (5 * 60 * 1000 + 1_000))
+            h.link.write("quietPing", 0L)
+            h.link.write("lastRx", System.currentTimeMillis())
+            peerPing(h, 1_000)
+            h.beat()
+            assertTrue("the 5 min safety ping waits while the computer's ping is inside that interval", h.pings().isEmpty())
+            assertTrue(h.link.quiet)
+        } finally { h.close() }
+    }
+
+    @Test fun quietProbeStillGoesOutWhileTheComputerPingIsFresh() {
+        val h = Harness(context)
+        try {
+            peer(h, on = true)
+            val now = System.currentTimeMillis()
+            h.link.write("quietSince", now - 1_000)
+            h.link.write("probeAt", now)
+            h.link.write("probed", false)
+            h.link.write("lastRx", now - 100)
+            peerPing(h, 0)
+            val delay = h.beat()
+            assertEquals("a quiet probe is still sent", 1, h.pings().size)
+            assertTrue("delay=$delay", delay in 1..1_000)
+            assertEquals(0, h.alarmAdded)
+        } finally { h.close() }
+    }
+
+    @Test fun pongStillMeasuresRttAndDoesNotCountAsAComputerPing() {
+        val h = Harness(context)
+        try {
+            val sentAt = System.currentTimeMillis() - 40
+            h.text("""{"t":"pong","ts":$sentAt}""")
+            val rtt = h.link.rttMs
+            assertTrue("rtt=$rtt", rtt != null && rtt >= 20 && rtt < 5_000)
+            assertTrue(h.pings().isEmpty())
+            assertTrue((h.link.read("lastPeerPingOf") as Map<*, *>).isEmpty())
+            h.sent.clear()
+            h.beat()
+            assertEquals(1, h.pings().size)
         } finally { h.close() }
     }
 }

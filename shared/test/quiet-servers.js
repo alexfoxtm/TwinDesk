@@ -274,6 +274,20 @@ try {
       assert.equal(c.ws.terminated, false, `${name}: leaving a long quiet for the 3 s tier does not trip 10 s`);
     }
 
+    // Liveness is silence of any message, not "the phone must ping". A phone that only answers
+    // (its own pings stopped) stays up, and that pong is what rtt is measured from. The installed
+    // Mac build does this the same way: _onMessage stamps lastRx before it looks at the type.
+    Q._reset();
+    {
+      const s = server(file);
+      const c = client(s);
+      second(s, 30);
+      assert.equal(c.ws.terminated, false, `${name}: a phone that only answers pings is not dropped`);
+      assert.ok(pings(c) >= 30, `${name}: this end keeps pinging`);
+      assert.equal(typeof c.ctx.rttMs, 'number', `${name}: a pong still sets rtt`);
+      assert.ok(c.ctx.rttMs >= 0, `${name}: rtt is not negative`);
+    }
+
     console.log(`  ${name}: ok`);
   }
 
