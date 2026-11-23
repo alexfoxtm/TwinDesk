@@ -331,14 +331,16 @@ class ReZume extends EventEmitter {
   // whose title changes all the time costs no more than the poll did. The earliest asked wins.
   _poke(at) {
     if (!this.watching) return;
-    const when = Math.max(at || 0, this.lastTick + POLL_MS, Date.now());
+    // One clock read. A second Date.now() can already be 1 ms later, and Node warns on a negative delay.
+    const now = Date.now();
+    const when = Math.max(at || 0, this.lastTick + POLL_MS, now);
     if (this.pokeTimer && this.pokeAt <= when) return;
     clearTimeout(this.pokeTimer);
     this.pokeAt = when;
     this.pokeTimer = setTimeout(() => {
       this.pokeTimer = null;
       if (this.watching) this._tickNow();
-    }, when - Date.now());
+    }, Math.max(0, when - now));
   }
 
   async _tick() {

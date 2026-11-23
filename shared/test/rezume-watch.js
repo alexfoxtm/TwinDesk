@@ -63,6 +63,32 @@ function side(watchOk) {
     assert.strictEqual(s.h.timer._idleTimeout, 1500);
     s.bus.emit('closed');
   }
+  {
+    // Date.now() moves between the schedule decision and setTimeout. The delay stays >= 0.
+    const s = side(true);
+    s.h.watching = true;
+    s.h.lastTick = 0;
+    s.h.pokeAt = 0;
+    s.h.pokeTimer = null;
+    const delays = [];
+    const origNow = Date.now;
+    const origTimeout = global.setTimeout;
+    let step = 0;
+    const t0 = 1700000000000;
+    try {
+      Date.now = () => t0 + step++;
+      global.setTimeout = (fn, ms) => {
+        delays.push(ms);
+        return { unref() {}, ref() {} };
+      };
+      s.h._poke(0);
+    } finally {
+      Date.now = origNow;
+      global.setTimeout = origTimeout;
+    }
+    assert.ok(delays.length >= 1, 'the poke scheduled a look');
+    assert.ok(delays.every((ms) => typeof ms === 'number' && ms >= 0), 'setTimeout delay was ' + delays.join(','));
+  }
   console.log('rezume-watch: ok');
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });
