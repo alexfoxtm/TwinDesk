@@ -54,6 +54,12 @@ class DevCtl(core: Core) : Feature(core) {
     private val main = Handler(Looper.getMainLooper())
     private val sendSoon = Runnable { sendState() }
     private var watching = false
+    private var packagesWatching = false
+    private var peerAsks = false
+    private var askedUntil = 0L
+    private val topCache = TopCache()
+    private val topLock = Any()
+    @Volatile private var packageSet: Set<String>? = null
     private var torchOn = false
     private var ringtone: Ringtone? = null
     private var alarmBefore = -1
@@ -82,7 +88,12 @@ class DevCtl(core: Core) : Feature(core) {
 
     private fun welcomed() {
         computer = null
+        peerAsks = false
+        askedUntil = 0L
+        main.removeCallbacks(askExpired)
         stateBuilds.resetKey()
+        // Until the computer's first dev.state, it may be a build that never asks. Keep today's stream.
+        watchPackages(true)
         watch(true)
         sendState()
         askTries = 0
@@ -105,8 +116,12 @@ class DevCtl(core: Core) : Feature(core) {
 
     override fun onClosed() {
         main.removeCallbacks(askAgain)
+        main.removeCallbacks(askExpired)
         main.post { stateBuilds.closed() }
+        peerAsks = false
+        askedUntil = 0L
         watch(false)
+        watchPackages(false)
         ring(false)
         computer = null
         main.post { onComputer?.invoke() }
@@ -115,7 +130,16 @@ class DevCtl(core: Core) : Feature(core) {
     override fun onMessage(t: String, m: JSONObject): Boolean {
         when (t) {
             DO -> main.post { act(m) }
-            STATE -> { computer = m; core.changed(); main.post { onComputer?.invoke() } }
+            STATE -> {
+                computer = m
+                if (m.optInt("asks") == 1) peerAsks = true
+                val asking = m.optBoolean("ask")
+                if (asking) noteAsk(System.currentTimeMillis() + DEV_ASKED_MS)
+                if (asking) sendState()
+                refreshWatch()
+                core.changed()
+                main.post { onComputer?.invoke() }
+            }
             // Explorer's Capture from phone on the computer: the camera here, each photo there.
             CaptureActivity.T -> main.post {
                 if (m.optBoolean("on")) {
@@ -160,7 +184,8 @@ class DevCtl(core: Core) : Feature(core) {
                 "volume" -> volume(m.optDouble("level", -1.0))
             }
         }
-        later(250)
+        // One result even when the computer is not watching. While it is, the usual debounce applies.
+        if (deviceStateLive(peerAsks, askedUntil, System.currentTimeMillis())) later(250) else sendState()
     }
 
     private val audio get() = ctx.getSystemService(AudioManager::class.java)
@@ -224,6 +249,7 @@ class DevCtl(core: Core) : Feature(core) {
     }
 
     private fun torch(on: Boolean) {
+        torchOn = on
         val cm = ctx.getSystemService(CameraManager::class.java) ?: return
         val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true } ?: return
         cm.setTorchMode(id, on)
@@ -321,7 +347,7 @@ class DevCtl(core: Core) : Feature(core) {
         val m = msg(STATE, "can" to can, "ringing" to ringing, "qs" to qs, "info" to info())
         m.put("app", JSONObject().put("v", BuildConfig.VERSION_NAME)) // which TwinDesk (shared/appinfo.js): the computer warns when it's older
         top()?.let { m.put("top", jsonArray(it)) }
-        return m
+        return stampDeviceAsks(m)
     }
 
     // For the computer's Overview card: storage, the network, the signal.
@@ -360,7 +386,18 @@ class DevCtl(core: Core) : Feature(core) {
     }
 
     // The most used apps of the last week, with Usage access (wireless debugging grants it).
+    // The 7-day query is cached for five minutes, and dropped when an app is installed or removed.
     private fun top(): List<String>? {
+        val now = System.currentTimeMillis()
+        val pkgs = packageSet
+        if (pkgs != null) synchronized(topLock) { topCache.get(now, pkgs)?.let { return it } }
+        val result = queryTop()
+        val after = packageSet ?: launchablePackages().also { packageSet = it }
+        if (pkgs == null || pkgs == after) synchronized(topLock) { topCache.put(now, after, result) }
+        return result
+    }
+
+    private fun queryTop(): List<String>? {
         val ops = ctx.getSystemService(AppOpsManager::class.java)
         @Suppress("DEPRECATION")
         val mode = runCatching { ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), ctx.packageName) }.getOrDefault(AppOpsManager.MODE_IGNORED)
@@ -374,9 +411,34 @@ class DevCtl(core: Core) : Feature(core) {
             .entries.sortedByDescending { it.value }.take(8).map { it.key }
     }
 
+    private fun launchablePackages(): Set<String> = runCatching {
+        ctx.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+            .map { it.activityInfo.packageName }
+            .toSet()
+    }.getOrDefault(emptySet())
+
     private fun later(ms: Long) {
+        if (!deviceStateLive(peerAsks, askedUntil, System.currentTimeMillis())) return
         main.removeCallbacks(sendSoon)
         main.postDelayed(sendSoon, ms + 150)
+    }
+
+    private fun noteAsk(until: Long) {
+        askedUntil = until
+        main.removeCallbacks(askExpired)
+        val delay = until - System.currentTimeMillis()
+        if (delay > 0) main.postDelayed(askExpired, delay) else refreshWatch()
+    }
+
+    private val askExpired = Runnable { refreshWatch() }
+
+    /** Sensors and the minute poll run only while a build that speaks "asks" still has a fresh one. */
+    private fun refreshWatch() {
+        val connected = core.link.connected
+        val live = connected && deviceStateLive(peerAsks, askedUntil, System.currentTimeMillis())
+        if (!live) main.removeCallbacks(sendSoon)
+        watch(live)
+        if (!connected) watchPackages(false)
     }
 
     // ---- watching for changes while connected ----
@@ -391,7 +453,35 @@ class DevCtl(core: Core) : Feature(core) {
         override fun onTorchModeChanged(cameraId: String, enabled: Boolean) { torchOn = enabled; later(100) }
     }
     private val poll = object : Runnable {
-        override fun run() { later(0); main.postDelayed(this, 60_000) } // volume and the most used apps
+        override fun run() {
+            // The ask window closed between polls: drop the sensors instead of building another snapshot.
+            if (!deviceStateLive(peerAsks, askedUntil, System.currentTimeMillis())) {
+                refreshWatch()
+                return
+            }
+            later(0)
+            main.postDelayed(this, 60_000) // volume and the most used apps
+        }
+    }
+    private val packageReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            packageSet = null
+            synchronized(topLock) { topCache.invalidate() }
+        }
+    }
+
+    private fun watchPackages(on: Boolean) {
+        if (on == packagesWatching) return
+        packagesWatching = on
+        if (on) {
+            val f = IntentFilter().apply {
+                addAction(Intent.ACTION_PACKAGE_ADDED)
+                addAction(Intent.ACTION_PACKAGE_REMOVED)
+                addDataScheme("package")
+            }
+            if (Build.VERSION.SDK_INT >= 33) ctx.registerReceiver(packageReceiver, f, Context.RECEIVER_NOT_EXPORTED)
+            else ctx.registerReceiver(packageReceiver, f)
+        } else runCatching { ctx.unregisterReceiver(packageReceiver) }
     }
 
     private fun watch(on: Boolean) = main.post {
@@ -425,6 +515,40 @@ class DevCtl(core: Core) : Feature(core) {
 
 internal fun shouldSendDeviceState(owner: Any, current: Any?, previous: String, next: String, ask: Boolean): Boolean =
     owner === current && (ask || previous != next)
+
+internal const val DEV_ASKED_MS = 150_000L
+internal const val TOP_FRESH_MS = 5 * 60_000L
+
+/** A peer that never says `asks` is served as before. A peer that does is served only while its last ask is fresh. */
+internal fun deviceStateLive(peerAsks: Boolean, askedUntil: Long, now: Long): Boolean =
+    !peerAsks || now < askedUntil
+
+/** Marks a phone snapshot as one the computer may ask to refresh (shared/devctl.js). */
+internal fun stampDeviceAsks(message: JSONObject): JSONObject = message.put("asks", 1)
+
+/** The 7-day usage list, kept until it is five minutes old or the installed package set changes. */
+internal class TopCache {
+    private var at = 0L
+    private var packages: Set<String> = emptySet()
+    private var value: List<String>? = null
+    private var have = false
+
+    fun get(now: Long, packages: Set<String>): List<String>? {
+        if (!have || packages != this.packages || now - at >= TOP_FRESH_MS) return null
+        return value
+    }
+
+    fun put(now: Long, packages: Set<String>, value: List<String>?) {
+        at = now
+        this.packages = packages
+        this.value = value
+        have = true
+    }
+
+    fun invalidate() {
+        have = false
+    }
+}
 
 
 // Main owns the queue and publication. The worker only runs the captured build.
