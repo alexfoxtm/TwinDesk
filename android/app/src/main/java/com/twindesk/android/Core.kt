@@ -177,6 +177,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         android.os.SystemClock.elapsedRealtime() < fastAdvertisingUntil,
         discovery.found.values.any { it.os == "mac" } ||
             ble.found.values.any { it.os == "mac" } || serve.found.values.any { it.os == "mac" },
+        link.connected,
     )
 
     private fun requestTimers() {

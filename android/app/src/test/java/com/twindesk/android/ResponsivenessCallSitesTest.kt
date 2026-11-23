@@ -45,8 +45,8 @@ class ResponsivenessCallSitesTest {
         val screenOn = discovery.field("screenOn")
         data class Cadence(val screen: Boolean, val connected: Boolean, val peer: Boolean, val delay: Long)
         for ((screen, connection, peer, expected) in listOf(
-            Cadence(true, true, false, 3000L),
-            Cadence(false, true, false, 5000L),
+            Cadence(true, true, false, BEACON_CONNECTED_MS),
+            Cadence(false, true, false, BEACON_CONNECTED_MS),
             Cadence(true, true, true, Proto.BEACON_MS),
             Cadence(true, false, false, Proto.BEACON_MS),
         )) {
@@ -77,6 +77,24 @@ class ResponsivenessCallSitesTest {
             assertEquals("a cadence change during the first cycle needs an immediate second cycle", 2, cycles)
             running.setBoolean(discovery, false)
         }
+    }
+
+    @Test fun beaconLoopUsesTheFastCadenceAsSoonAsTheLinkDrops() {
+        val discovery = Discovery(RuntimeEnvironment.getApplication(), { JSONObject() }, {}, {})
+        val running = discovery.field("running")
+        running.setBoolean(discovery, true)
+        discovery.sessionChanged(true)
+        var cycles = 0
+        discovery.onBeaconCycle = {
+            if (++cycles == 1) discovery.sessionChanged(false)
+        }
+        var waited = 0L
+        discovery.runBeaconLoop { delay ->
+            waited = delay
+            running.setBoolean(discovery, false)
+        }
+        assertEquals(2, cycles)
+        assertEquals(Proto.BEACON_MS, waited)
     }
 
     @Test fun focusGainIncrementsTheSetupInput() {

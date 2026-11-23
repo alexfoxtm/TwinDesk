@@ -17,9 +17,13 @@ internal fun peerTimerNeeded(host: Boolean, pairing: Boolean, waiting: Boolean, 
 
 internal fun netTimerNeeded(heldMessages: Boolean, expiringNeeds: Boolean) = heldMessages || expiringNeeds
 
+internal const val BEACON_CONNECTED_MS = 45_000L
+
 internal fun beaconDelay(interactive: Boolean, connected: Boolean, peerOn: Boolean): Long = when {
+    // Another phone still has to see this one inside the 10s discovery window.
+    connected && peerOn -> if (interactive) Proto.BEACON_MS else 5000L
+    connected -> BEACON_CONNECTED_MS
     !interactive -> 5000L
-    connected && !peerOn -> 3000L
     else -> Proto.BEACON_MS
 }
 
@@ -33,5 +37,10 @@ internal fun staleDialDelay(away: Boolean, attempts: Int): Long = when {
     else -> 60_000L
 }
 
-internal fun lowPowerAdvertisingNeeded(interactive: Boolean, pending: Boolean, networkChanged: Boolean, macSeen: Boolean): Boolean =
-    !interactive && !pending && !networkChanged && !macSeen
+internal fun lowPowerAdvertisingNeeded(
+    interactive: Boolean,
+    pending: Boolean,
+    networkChanged: Boolean,
+    macSeen: Boolean,
+    connected: Boolean = false,
+): Boolean = !interactive && !pending && !networkChanged && !macSeen && !connected
