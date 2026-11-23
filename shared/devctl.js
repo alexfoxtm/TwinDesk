@@ -92,7 +92,9 @@ class DevCtl extends EventEmitter {
       this.emit('change');
       // The other side's first word in a session: ours again, so the two always have each other's
       // (one sent before the other side listened is otherwise never sent again: only changes are).
-      if (first || (m && m.ask === true)) this._sendState(true); // asked: it hasn't got ours
+      // A window already open asks in that same reply. Without it, a peer that reads sensors only
+      // while asked idles them until the next minute poll.
+      if (first || (m && m.ask === true)) this._sendState(true, first && this._looking()); // asked: it hasn't got ours
       if (first) this._checkApp();
     });
     link.on(T.DO, (m) => this._asked(m || {}));
@@ -171,14 +173,16 @@ class DevCtl extends EventEmitter {
     setTimeout(() => this._sendState(true), m.do === 'bluetooth' ? 1500 : 300); // the radio takes a moment
   }
 
-  async _sendState(force) {
+  // force: send even when nothing changed. ask: the copy we send says ask; this.mine stays the
+  // state alone, which dedupe and _ask() read.
+  async _sendState(force, ask = false) {
     if (!this.local || !this.sessionUp) return;
     const st = await this.local.state();
     const msg = { t: T.STATE, can: this.local.can(), ...st, ...(this.version ? { app: { v: this.version, f: AppInfo.mine() } } : {}), ...(this.watching ? { asks: 1 } : {}) };
     const k = JSON.stringify(msg);
     if (!force && k === this.mine) return;
     this.mine = k;
-    if (this.sessionUp) this.link.send(msg);
+    if (this.sessionUp) this.link.send(ask ? { ...msg, ask: true } : msg);
   }
 
   // The other side's TwinDesk against this one ({version, older, newer, missing}), null until it says.

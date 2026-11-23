@@ -72,5 +72,23 @@ const flush = () => new Promise((r) => setImmediate(r));
     s.d.look(); await flush();
     assert.strictEqual(s.sent.length, m, 'hidden: no asks');
   }
+  // The window is already open when a peer that asks connects: the first reply asks, and this.mine
+  // stays the state (dedupe and _ask read it). Hidden: that reply omits ask.
+  {
+    const open = side({ watching: () => true });
+    open.ev.emit('welcome'); await flush();
+    const n = open.sent.length;
+    open.ev.emit('dev.state', { can: {}, asks: 1 }); await flush();
+    assert.strictEqual(open.sent.length, n + 1);
+    assert.strictEqual(open.sent[n].ask, true, 'already watching: the first reply asks');
+    assert.strictEqual(open.sent[n].asks, 1);
+    assert.ok(!('ask' in JSON.parse(open.d.mine)), 'mine stays the state, without ask');
+    const hidden = side({ watching: () => false });
+    hidden.ev.emit('welcome'); await flush();
+    const h = hidden.sent.length;
+    hidden.ev.emit('dev.state', { can: {}, asks: 1 }); await flush();
+    assert.strictEqual(hidden.sent.length, h + 1);
+    assert.ok(!('ask' in hidden.sent[h]), 'hidden: the first reply omits ask');
+  }
   console.log('devctl-looking: ok');
 })().catch((e) => { console.error(e); process.exit(1); });
