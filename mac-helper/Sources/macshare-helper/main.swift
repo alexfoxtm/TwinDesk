@@ -48,7 +48,9 @@ func spaceHoldWhy(_ input: PollInput) -> String {
 }
 
 private let spacesLookQueue = DispatchQueue(label: "macshare.spaces-look", qos: .userInitiated)
+private let helperWorkQueue = DispatchQueue(label: "macshare.work", qos: .userInitiated)
 private var lastSlowLook: TimeInterval = -.infinity
+private var lastSlowHandle: TimeInterval = -.infinity
 
 private func readSpacesLook(_ id: Any?) {
   let hosts = MissionControlAccess.hosts()
@@ -119,6 +121,16 @@ func handle(_ line: String) {
   let id = msg["id"]
   Capture.shared.touch() // every command is a keepalive for the capture dead-man
   let num = { (k: String, d: Double) in (msg[k] as? NSNumber)?.doubleValue ?? d }
+  let started = ProcessInfo.processInfo.systemUptime
+  defer {
+    let finished = ProcessInfo.processInfo.systemUptime
+    let ms = (finished - started) * 1000
+    if ms > 50 && finished - lastSlowHandle >= 5 {
+      lastSlowHandle = finished
+      let name = cmd
+      writerQueue.async { log(String(format: "main handle %@ took %.1f ms", name, ms)) }
+    }
+  }
   switch cmd {
 #if !MULTI
   case "portalCapabilities":
@@ -274,10 +286,11 @@ func handle(_ line: String) {
       "screen": CGPreflightScreenCaptureAccess(),
     ])
   case "textFocus":
-    reply(id, textFocus())
+    helperWorkQueue.async { reply(id, textFocus()) }
   case "notifWatch":
-    NotifWatch.shared.set(on: (msg["on"] as? Bool) ?? false)
-    reply(id, ["readable": NotifWatch.shared.readable()])
+    NotifWatch.shared.set(on: (msg["on"] as? Bool) ?? false) { readable in
+      reply(id, ["readable": readable])
+    }
   case "fileSource":
     // Copy shortcut: who is in front, and the files on the clipboard (if any).
     let pb = NSPasteboard.general
@@ -375,14 +388,16 @@ func handle(_ line: String) {
   case "windowAt":
     // Frontmost normal window under a global point (for "drop here"): owner, title, bounds.
     let pt = CGPoint(x: num("x", 0), y: num("y", 0))
-    let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
-    for w in list where (w[kCGWindowLayer as String] as? Int) == 0 {
-      guard let b = w[kCGWindowBounds as String] as? [String: Double],
-            CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0).contains(pt) else { continue }
-      return reply(id, ["owner": w[kCGWindowOwnerName as String] as? String ?? "", "title": w[kCGWindowName as String] as? String ?? "",
-                        "bounds": ["x": b["X"] ?? 0, "y": b["Y"] ?? 0, "width": b["Width"] ?? 0, "height": b["Height"] ?? 0]])
+    helperWorkQueue.async {
+      let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+      for w in list where (w[kCGWindowLayer as String] as? Int) == 0 {
+        guard let b = w[kCGWindowBounds as String] as? [String: Double],
+              CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0).contains(pt) else { continue }
+        return reply(id, ["owner": w[kCGWindowOwnerName as String] as? String ?? "", "title": w[kCGWindowName as String] as? String ?? "",
+                          "bounds": ["x": b["X"] ?? 0, "y": b["Y"] ?? 0, "width": b["Width"] ?? 0, "height": b["Height"] ?? 0]])
+      }
+      reply(id, ["owner": ""]) // nothing but the desktop
     }
-    reply(id, ["owner": ""]) // nothing but the desktop
   case "smbMount":
     Smb.mount(url: (msg["url"] as? String) ?? "", user: (msg["user"] as? String) ?? "", password: (msg["password"] as? String) ?? "") { r in
       switch r {
@@ -391,9 +406,13 @@ func handle(_ line: String) {
       }
     }
   case "smbUnmount":
-    if let err = Smb.unmount(path: (msg["path"] as? String) ?? "") { replyError(id, err) } else { reply(id) }
+    let path = (msg["path"] as? String) ?? ""
+    helperWorkQueue.async {
+      if let err = Smb.unmount(path: path) { replyError(id, err) } else { reply(id) }
+    }
   case "appsList":
-    reply(id, ["apps": Apps.list()])
+    let running = Apps.runningRegular()
+    helperWorkQueue.async { reply(id, ["apps": Apps.list(running: running)]) }
   case "appLaunch":
     Apps.launch(id: (msg["appId"] as? String) ?? "") { r in
       switch r {
@@ -406,27 +425,41 @@ func handle(_ line: String) {
     Deck.handle(cmd, msg, id)
   case "appWindows":
     let pids = Set(((msg["pids"] as? [NSNumber]) ?? []).map { $0.intValue })
-    reply(id, ["windows": Apps.windows(pids: pids, popups: (msg["popups"] as? Bool) ?? false)])
+    let popups = (msg["popups"] as? Bool) ?? false
+    helperWorkQueue.async { reply(id, ["windows": Apps.windows(pids: pids, popups: popups)]) }
   case "appResize":
-    reply(id, ["done": Apps.resize(wid: (msg["wid"] as? NSNumber)?.intValue ?? 0,
-                                   w: (msg["w"] as? NSNumber)?.doubleValue ?? 0, h: (msg["h"] as? NSNumber)?.doubleValue ?? 0)])
+    let wid = (msg["wid"] as? NSNumber)?.intValue ?? 0
+    let w = (msg["w"] as? NSNumber)?.doubleValue ?? 0
+    let h = (msg["h"] as? NSNumber)?.doubleValue ?? 0
+    let owners = Apps.ownerPids()
+    helperWorkQueue.async { reply(id, ["done": Apps.resize(wid: wid, w: w, h: h, owners: owners)]) }
   case "appMove":
-    if let b = msg["bounds"] as? [String: NSNumber] {
-      Apps.moveOnto(pid: (msg["pid"] as? NSNumber)?.intValue ?? 0,
-                    bounds: CGRect(x: b["x"]?.doubleValue ?? 0, y: b["y"]?.doubleValue ?? 0,
-                                   width: b["width"]?.doubleValue ?? 0, height: b["height"]?.doubleValue ?? 0))
+    let pid = (msg["pid"] as? NSNumber)?.intValue ?? 0
+    let bounds = (msg["bounds"] as? [String: NSNumber]).map { b in
+      CGRect(x: b["x"]?.doubleValue ?? 0, y: b["y"]?.doubleValue ?? 0,
+             width: b["width"]?.doubleValue ?? 0, height: b["height"]?.doubleValue ?? 0)
     }
-    reply(id)
+    helperWorkQueue.async {
+      if let bounds { Apps.moveOnto(pid: pid, bounds: bounds) }
+      reply(id)
+    }
   case "appPlace":
-    reply(id, ["done": Apps.place(wid: (msg["wid"] as? NSNumber)?.intValue ?? 0,
-                                  x: (msg["x"] as? NSNumber)?.doubleValue ?? 0, y: (msg["y"] as? NSNumber)?.doubleValue ?? 0)])
+    let wid = (msg["wid"] as? NSNumber)?.intValue ?? 0
+    let x = (msg["x"] as? NSNumber)?.doubleValue ?? 0
+    let y = (msg["y"] as? NSNumber)?.doubleValue ?? 0
+    let owners = Apps.ownerPids()
+    helperWorkQueue.async { reply(id, ["done": Apps.place(wid: wid, x: x, y: y, owners: owners)]) }
   case "moveWin": // Apps › Move windows: the key held to grab a window, "" = off
     WindowGrab.shared.setKey((msg["key"] as? String) ?? "")
     reply(id)
   case "appFocus":
-    reply(id, ["done": Apps.focus(wid: (msg["wid"] as? NSNumber)?.intValue ?? 0)])
+    let wid = (msg["wid"] as? NSNumber)?.intValue ?? 0
+    let owners = Apps.ownerPids()
+    helperWorkQueue.async { reply(id, ["done": Apps.focus(wid: wid, owners: owners)]) }
   case "appClose":
-    reply(id, ["done": Apps.close(wid: (msg["wid"] as? NSNumber)?.intValue ?? 0)])
+    let wid = (msg["wid"] as? NSNumber)?.intValue ?? 0
+    let owners = Apps.ownerPids()
+    helperWorkQueue.async { reply(id, ["done": Apps.close(wid: wid, owners: owners)]) }
   case "dragStart":
     DragIn.shared.start(drag: (msg["drag"] as? String) ?? "", items: (msg["items"] as? [[String: Any]]) ?? [])
     reply(id)
@@ -464,7 +497,7 @@ func handle(_ line: String) {
     if let dev = msg["dev"] as? String, let text = msg["msg"] as? String { BleLook.shared.invite(dev: dev, text: text) }
     reply(id)
   case "wifiInfo":
-    reply(id, WifiCtl.shared.info())
+    WifiCtl.shared.info { dict in reply(id, dict) }
   case "wifiLocation":
     WifiCtl.shared.askLocation()
     reply(id)

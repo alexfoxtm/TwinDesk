@@ -4,9 +4,35 @@
 import Cocoa
 
 enum Apps {
+  /// Serializes `iconCache` and the icon render. `NotifWatch` (macshare.notifs) and `list`
+  /// (macshare.work) both call `icon(_:)`.
+  private static let iconLock = NSLock()
   private static var iconCache: [String: String] = [:]
   /// Never offered: assistants and system agents that aren't normal windowed apps.
   private static let hidden: Set<String> = ["com.apple.Siri", "com.apple.siri.launcher", "com.apple.SiriNCService"]
+
+  struct ListedApp {
+    let id: String
+    let name: String
+    let url: URL
+  }
+
+  /// Every running app's pid. Call on the main thread (`NSWorkspace`). Window commands
+  /// take this snapshot so the window-list scan does not touch `NSWorkspace` off main.
+  static func ownerPids() -> Set<Int> {
+    Set(NSWorkspace.shared.runningApplications.map { Int($0.processIdentifier) })
+  }
+
+  /// Running regular apps. Call on the main thread (`NSWorkspace`).
+  static func runningRegular() -> [ListedApp] {
+    var out: [ListedApp] = []
+    for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+      if let id = app.bundleIdentifier, let url = app.bundleURL, !hidden.contains(id) {
+        out.append(ListedApp(id: id, name: app.localizedName ?? id, url: url))
+      }
+    }
+    return out
+  }
 
   private static func offerable(_ b: Bundle, id: String) -> Bool {
     if hidden.contains(id) { return false }
@@ -15,7 +41,9 @@ enum Apps {
     return !flag("LSUIElement") && !flag("LSBackgroundOnly") // menu-bar extras and background agents
   }
 
-  static func list() -> [[String: Any]] {
+  /// Installed apps plus `running` (a main-thread snapshot). Directory reads, bundle reads, and
+  /// icon encoding happen on the caller, which is `macshare.work`.
+  static func list(running: [ListedApp]) -> [[String: Any]] {
     var byId: [String: (name: String, url: URL)] = [:]
     let fm = FileManager.default
     let roots = ["/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities",
@@ -29,10 +57,8 @@ enum Apps {
         byId[id] = (display, url)
       }
     }
-    for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-      if let id = app.bundleIdentifier, let url = app.bundleURL, byId[id] == nil, !hidden.contains(id) {
-        byId[id] = (app.localizedName ?? id, url)
-      }
+    for app in running where byId[app.id] == nil {
+      byId[app.id] = (app.name, app.url)
     }
     return byId.map { id, v in ["id": id, "name": v.name, "icon": icon(v.url)] }
       .sorted { ($0["name"] as! String).localizedCaseInsensitiveCompare($1["name"] as! String) == .orderedAscending }
@@ -40,6 +66,8 @@ enum Apps {
 
   /// 64 px PNG as a data: URL.
   static func icon(_ url: URL) -> String {
+    iconLock.lock()
+    defer { iconLock.unlock() }
     if let c = iconCache[url.path] { return c }
     let img = NSWorkspace.shared.icon(forFile: url.path)
     let size = NSSize(width: 64, height: 64)
@@ -92,8 +120,8 @@ enum Apps {
   }
 
   /// Resize a window (points), keeping its top-left.
-  static func resize(wid: Int, w: Double, h: Double) -> Bool {
-    guard let (win, _) = ax(for: wid) else { return false }
+  static func resize(wid: Int, w: Double, h: Double, owners: Set<Int>) -> Bool {
+    guard let (win, _) = ax(for: wid, owners: owners) else { return false }
     var s = CGSize(width: w, height: h)
     guard let v = AXValueCreate(.cgSize, &s) else { return false }
     return AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, v) == .success
@@ -116,13 +144,26 @@ enum Apps {
     return CGRect(origin: p, size: s)
   }
 
+  /// On-screen normal window for `wid` (layer 0, larger than 40 pt), from the window list.
+  /// `owners` is the main-thread `NSWorkspace` pid snapshot `windows` used to filter with.
+  private static func cgWindow(wid: Int, owners: Set<Int>) -> (pid: Int, frame: CGRect)? {
+    let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+    for w in list {
+      guard (w[kCGWindowNumber as String] as? Int) == wid, (w[kCGWindowLayer as String] as? Int ?? -1) == 0,
+            let pid = w[kCGWindowOwnerPID as String] as? Int, owners.contains(pid),
+            let b = w[kCGWindowBounds as String] as? [String: Double],
+            (b["Width"] ?? 0) > 40, (b["Height"] ?? 0) > 40 else { continue }
+      return (pid, CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0))
+    }
+    return nil
+  }
+
   /// The AX window matching a CG window (by pid + frame).
-  private static func ax(for wid: Int) -> (AXUIElement, Int)? {
-    guard let cg = windows(pids: Set(NSWorkspace.shared.runningApplications.map { Int($0.processIdentifier) }))
-      .first(where: { ($0["wid"] as? Int) == wid }), let pid = cg["pid"] as? Int else { return nil }
-    let r = CGRect(x: cg["x"] as! Double, y: cg["y"] as! Double, width: cg["w"] as! Double, height: cg["h"] as! Double)
-    for w in axWindows(pid) {
-      if let f = frame(w), abs(f.minX - r.minX) < 2, abs(f.minY - r.minY) < 2, abs(f.width - r.width) < 2 { return (w, pid) }
+  private static func ax(for wid: Int, owners: Set<Int>) -> (AXUIElement, Int)? {
+    guard let cg = cgWindow(wid: wid, owners: owners) else { return nil }
+    let r = cg.frame
+    for w in axWindows(cg.pid) {
+      if let f = frame(w), abs(f.minX - r.minX) < 2, abs(f.minY - r.minY) < 2, abs(f.width - r.width) < 2 { return (w, cg.pid) }
     }
     return nil
   }
@@ -136,12 +177,13 @@ enum Apps {
   }
 
   /// One window's top-left to x, y (points), raised: a moved window back (shared/movewin.js).
-  static func place(wid: Int, x: Double, y: Double) -> Bool {
-    guard let (w, pid) = ax(for: wid) else { return false }
+  static func place(wid: Int, x: Double, y: Double, owners: Set<Int>) -> Bool {
+    guard let (w, pid) = ax(for: wid, owners: owners) else { return false }
     var p = CGPoint(x: x, y: y)
     guard let v = AXValueCreate(.cgPoint, &p) else { return false }
     let ok = AXUIElementSetAttributeValue(w, kAXPositionAttribute as CFString, v) == .success
     AXUIElementPerformAction(w, kAXRaiseAction as CFString)
+    // NSRunningApplication is thread-safe; activate() does not need the main run loop.
     NSRunningApplication(processIdentifier: pid_t(pid))?.activate()
     return ok
   }
@@ -161,15 +203,16 @@ enum Apps {
     }
   }
 
-  static func focus(wid: Int) -> Bool {
-    guard let (w, pid) = ax(for: wid) else { return false }
+  static func focus(wid: Int, owners: Set<Int>) -> Bool {
+    guard let (w, pid) = ax(for: wid, owners: owners) else { return false }
     AXUIElementPerformAction(w, kAXRaiseAction as CFString)
+    // NSRunningApplication is thread-safe; activate() does not need the main run loop.
     NSRunningApplication(processIdentifier: pid_t(pid))?.activate()
     return true
   }
 
-  static func close(wid: Int) -> Bool {
-    guard let (w, _) = ax(for: wid) else { return false }
+  static func close(wid: Int, owners: Set<Int>) -> Bool {
+    guard let (w, _) = ax(for: wid, owners: owners) else { return false }
     var b: CFTypeRef?
     guard AXUIElementCopyAttributeValue(w, kAXCloseButtonAttribute as CFString, &b) == .success, let btn = b else { return false }
     return AXUIElementPerformAction(btn as! AXUIElement, kAXPressAction as CFString) == .success

@@ -2,33 +2,54 @@
 // Other apps' notifications. macOS has no API for them, so we read the Notification
 // Center database (SQLite, read-only) once a second for records newer than the last one seen.
 // Needs Full Disk Access for the responsible app (TwinDesk). Emits `notif` and `notifState`.
+// The poll runs on macshare.notifs. sqlite3_busy_timeout can sleep, and that sleep must not
+// land on the main run loop: that loop hosts the HID event tap.
 import Cocoa
 import SQLite3
 
 final class NotifWatch {
   static let shared = NotifWatch()
+  private let queue = DispatchQueue(label: "macshare.notifs", qos: .utility)
   private var db: OpaquePointer?
-  private var timer: Timer?
+  private var timer: DispatchSourceTimer?
+  private var watching = false
   private var last: Int64 = -1
   private var names: [String: String] = [:]
+  private var lastState = ""
   private let own: Set<String> = ["io.github.alexfoxtm.twindesk", "org.macshare.mac", "com.github.Electron"]
 
   private var dbPath: String {
     NSHomeDirectory() + "/Library/Group Containers/group.com.apple.usernoted/db2/db"
   }
 
-  func set(on: Bool) {
-    timer?.invalidate()
-    timer = nil
-    if db != nil { sqlite3_close(db); db = nil }
-    last = -1
-    guard on else { return }
-    tick()
-    timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.tick() }
+  /// Starts or stops the poll on `queue` and reports whether the database can be read.
+  /// `done` runs on `queue`. `reply` is safe to call from there.
+  func set(on: Bool, done: @escaping (Bool) -> Void) {
+    queue.async { [weak self] in
+      guard let self else { done(false); return }
+      self.watching = false
+      self.timer?.cancel()
+      self.timer = nil
+      if self.db != nil { sqlite3_close(self.db); self.db = nil }
+      self.last = -1
+      guard on else { done(self.readable()); return }
+      self.watching = true
+      self.tick()
+      let timer = DispatchSource.makeTimerSource(queue: self.queue)
+      // The database poll stays at withTimeInterval: 1.0 (one second), off the HID run loop.
+      timer.schedule(deadline: .now() + 1.0, repeating: 1.0, leeway: .milliseconds(200))
+      timer.setEventHandler { [weak self] in
+        guard let self, self.watching else { return }
+        self.tick()
+      }
+      timer.resume()
+      self.timer = timer
+      done(self.readable())
+    }
   }
 
-  /// Can we read the database (Full Disk Access)?
-  func readable() -> Bool {
+  /// Can we read the database (Full Disk Access)? Caller is `queue`.
+  private func readable() -> Bool {
     var probe: OpaquePointer?
     defer { if probe != nil { sqlite3_close(probe) } }
     guard sqlite3_open_v2(dbPath, &probe, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return false }
@@ -45,7 +66,6 @@ final class NotifWatch {
     return true
   }
 
-  private var lastState = ""
   private func state(_ s: String) {
     if s == lastState { return }
     lastState = s
@@ -53,6 +73,7 @@ final class NotifWatch {
   }
 
   private func tick() {
+    guard watching else { return }
     guard open() else { return state("noAccess") }
     if last < 0 { // start after what is already there
       var st: OpaquePointer?

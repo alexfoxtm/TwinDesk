@@ -25,6 +25,11 @@ final class WifiCtl: NSObject, CLLocationManagerDelegate {
             "joined": joined, "location": locationState()]
   }
 
+  /// Reads `joined` on `work`, the same queue that writes it. `done` runs there.
+  func info(done: @escaping ([String: Any]) -> Void) {
+    work.async { done(self.info()) }
+  }
+
   // Main thread (CLLocationManager wants the thread it was made on to have a run loop). When In
   // Use is all Wi-Fi names need.
   func askLocation() {
