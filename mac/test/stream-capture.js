@@ -15,7 +15,21 @@ ipcMain.handle = () => {};
 let captureSources = [{ id: 'screen:2:0', display_id: '2' }];
 Module._load = function (request, parent, isMain) {
   if (request === 'electron') return {
-    BrowserWindow: class {}, ipcMain,
+    BrowserWindow: class {
+      constructor() {
+        this.destroyed = false;
+        this.sent = [];
+        const handlers = {};
+        this.webContents = {
+          send: (ch, msg) => { this.sent.push({ ch, msg }); },
+          on: (name, fn) => { (handlers[name] ||= []).push(fn); },
+          emit: (name, ...args) => { for (const fn of handlers[name] || []) fn(...args); },
+        };
+        this.loadFile = async () => {};
+        this.isDestroyed = () => this.destroyed;
+        this.destroy = () => { this.destroyed = true; };
+      }
+    }, ipcMain,
     session: { defaultSession: { setDisplayMediaRequestHandler() {} } },
     desktopCapturer: { getSources: async () => captureSources },
     systemPreferences: { getMediaAccessStatus: () => 'granted' },
@@ -136,6 +150,83 @@ test('stats stay quiet until a window is watching or the stream is live, and fra
   ipcMain.emit('capture:state', { sender: s.win.webContents }, { session: s.active.session, status: 'live' });
   emitStats(0, 0);
   assert.ok(changes > watched, 'a live stream still receives a zero sample while the window is hidden');
+});
+
+test('a crashed or dropped capture window still receives stats-gate on the next live or open window', async () => {
+  const server = new EventEmitter();
+  const peer = { os: 'android', transport: 'ip' };
+  server.current = peer;
+  server.sendToClient = () => {};
+  const displays = new EventEmitter();
+  displays.target = () => ({ id: '2', label: 'D', pixelWidth: 100, pixelHeight: 100, hz: 60 });
+  const settings = { sharing: { on: true, audio: false }, bitrateMbps: 8 };
+  const s = new Stream(server, displays, () => settings, { release() {}, loopback() {} });
+  s._source = async () => ({ id: 'screen:2:0' });
+  const gateOn = () => s.win.sent.filter((e) => e.ch === 'stats-gate' && e.msg.on === true).length;
+  const live = () => {
+    ipcMain.emit('capture:state', { sender: s.win.webContents }, { session: s.active.session, status: 'live' });
+  };
+  const crash = () => {
+    s.win.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    assert.equal(s.win, null);
+    assert.equal(s._statsGate, null, 'a crashed window forgets the stats gate');
+    clearTimeout(s.retryTimer);
+    s.retryTimer = null;
+  };
+  const boot = async (reason) => {
+    await s.restart(reason);
+    const start = s.win.sent.find((e) => e.ch === 'start');
+    assert.equal(start.msg.stats, false, 'a hidden window that is not live starts with stats off');
+    assert.equal(s._statsGate, start.msg.stats, 'start is the gate the new window was told');
+  };
+
+  await boot('sharing on');
+  live();
+  assert.equal(s.view.status, 'live');
+  assert.equal(s._statsGate, true);
+  assert.ok(gateOn() >= 1);
+
+  crash();
+  await boot('retry');
+  const beforeLive = gateOn();
+  live();
+  assert.ok(gateOn() > beforeLive, 'live after a crash still sends stats-gate { on: true }');
+
+  crash();
+  await boot('retry');
+  const beforeOpen = gateOn();
+  s.setStatsWindow(true);
+  assert.ok(gateOn() > beforeOpen, 'opening the window after a crash still sends stats-gate { on: true }');
+  s.setStatsWindow(false);
+
+  live();
+  assert.equal(s.view.status, 'live');
+  assert.equal(s._statsGate, true);
+  s.active = null;
+  server.current = null;
+  s._drop();
+  assert.equal(s.view.status, 'live', 'the drop ran while status was still live');
+  assert.equal(s.win, null);
+  assert.equal(s._statsGate, null, 'dropping the window forgets the stats gate');
+  server.current = peer;
+  await boot('again');
+  const beforeDropLive = gateOn();
+  live();
+  assert.ok(gateOn() > beforeDropLive, 'live after a drop still sends stats-gate { on: true }');
+
+  assert.equal(s.view.status, 'live');
+  s.active = null;
+  server.current = null;
+  s._drop();
+  assert.equal(s._statsGate, null);
+  server.current = peer;
+  await boot('again');
+  const beforeDropOpen = gateOn();
+  s.setStatsWindow(true);
+  assert.ok(gateOn() > beforeDropOpen, 'opening the window after a drop still sends stats-gate { on: true }');
+
+  clearTimeout(s.retryTimer);
+  clearTimeout(s.dropTimer);
 });
 
 test('capture errors reach only the current viewer without raw error details', () => {

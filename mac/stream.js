@@ -181,6 +181,7 @@ class Stream extends EventEmitter {
   _ensureWindow() {
     clearTimeout(this.dropTimer);
     if (this.win && !this.win.isDestroyed()) return Promise.resolve();
+    this._statsGate = null; // this window has not been told a gate yet
     const w = this.win = new BrowserWindow({
       show: false,
       webPreferences: {
@@ -194,6 +195,7 @@ class Stream extends EventEmitter {
       if (this.win !== w) return; // closed on purpose (_drop)
       console.error(`[stream] capture window gone: ${d.reason}`);
       this.win = null;
+      this._statsGate = null; // the crashed window's last gate must not stick
       this._scheduleRetry();
     });
     this.win.webContents.on('console-message', (e) => console.log(`[capture] ${e.message}`));
@@ -312,6 +314,10 @@ class Stream extends EventEmitter {
       if (!this.active || this.active.session !== s || this.displays.target()?.id !== target.id) return;
       const set = this.getSettings();
       // The window answering live, or frames, clears the wait. Sending this does not.
+      // start is the gate this window has. Remember it, or a later live looks unchanged
+      // and never sends stats-gate (the previous window may have crashed on true).
+      const stats = this._statsOn();
+      this._statsGate = stats;
       this._toWindow('start', {
         session: s, bitrateMbps: set.bitrateMbps, // Share screen › Quality, for phones too
         sourceId: src.id, width, height, audio,
@@ -320,7 +326,7 @@ class Stream extends EventEmitter {
         fps: ScreenCodec.fps(target.hz, set.sharing && set.sharing.fps), // Share screen › Frame rate
         steady: !!(set.sharing && set.sharing.pace === 'steady'), // Playback › Steady (shared/screencodec.js)
         codec: ScreenCodec.mode(set.sharing && set.sharing.codec), // Share screen › Encoder
-        stats: this._statsOn(), // false: the capture window posts only samples that have frames
+        stats, // false: the capture window posts only samples that have frames
       });
     } catch (e) {
       if (!this.active || this.active.session !== s) return;
@@ -416,6 +422,7 @@ class Stream extends EventEmitter {
     if (this.active || !this.win || (this.server.current && this.getSettings().sharing.on)) return;
     const w = this.win;
     this.win = null;
+    this._statsGate = null; // the dropped window's last gate must not stick
     if (!w.isDestroyed()) w.destroy();
   }
 
