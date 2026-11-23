@@ -4,6 +4,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { EventEmitter } = require('events');
 const Module = require('module');
 
@@ -80,6 +82,60 @@ test('does not use an unnamed source for a different remaining display', async (
   } finally {
     captureSources = [{ id: 'screen:2:0', display_id: '2' }];
   }
+});
+
+test('stats stay quiet until a window is watching or the stream is live, and frames still clear the retry', async () => {
+  const { shouldSendStats } = require('../stats-send.js');
+  assert.equal(shouldSendStats(undefined, { fps: 0, mbps: 0 }), true, 'mesh and an omitted flag still send every sample');
+  assert.equal(shouldSendStats(true, { fps: 0, mbps: 0 }), true);
+  assert.equal(shouldSendStats(false, { fps: 0, mbps: 0 }), false);
+  assert.equal(shouldSendStats(false, { fps: 1, mbps: 0 }), true);
+  assert.equal(shouldSendStats(false, { fps: 0, mbps: 0.1 }), true);
+  const cap = fs.readFileSync(path.join(__dirname, '../capture.js'), 'utf8');
+  const mac = fs.readFileSync(path.join(__dirname, '../stream.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  assert.match(cap, /if \(!window\.TwinDeskStatsSend\.shouldSendStats\(me\.reportStats, \{ fps, mbps \}\)\) return;/);
+  assert.match(mac, /if \(frames\) this\._captureReady\(\)/);
+  assert.match(mac, /if \(!this\._statsOn\(\)\)/);
+  assert.match(main, /svc\.stream\.setStatsWindow\(/);
+
+  const server = new EventEmitter();
+  server.current = { os: 'android', transport: 'ip' };
+  server.sendToClient = () => {};
+  const displays = new EventEmitter();
+  displays.target = () => ({ id: 'd1', label: 'D', pixelWidth: 100, pixelHeight: 100, hz: 60 });
+  const s = new Stream(server, displays, () => ({ sharing: { on: true, audio: false }, bitrateMbps: 8 }), { release() {}, loopback() {} });
+  const sent = [];
+  s._ensureWindow = async () => { s.win = { isDestroyed: () => false, webContents: { send: (ch, msg) => sent.push({ ch, msg }) } }; };
+  s._source = async () => ({ id: 'screen:1:0' });
+  let changes = 0;
+  s.on('change', () => { changes += 1; });
+  await s.restart('sharing on');
+  const start = sent.find((e) => e.ch === 'start');
+  assert.equal(start.msg.stats, false, 'a hidden window is not sent idle stats');
+  const afterStart = changes;
+  const emitStats = (fps, mbps) => ipcMain.emit('capture:stats', { sender: s.win.webContents }, { session: s.active.session, fps, mbps });
+  s._retryN = 3;
+  const waiting = {};
+  s.retryTimer = waiting;
+  emitStats(0, 0);
+  assert.equal(s._retryN, 3, 'a zero sample does not clear the failure counter');
+  assert.equal(s.retryTimer, waiting);
+  assert.equal(changes, afterStart, 'a zero sample does not rebuild state');
+  emitStats(24, 1);
+  assert.equal(s._retryN, 0, 'frames clear the failure counter before the capture is live');
+  assert.equal(s.retryTimer, waiting, 'frames do not cancel a retry until the capture is live');
+  assert.equal(changes, afterStart, 'frames while hidden and not live do not rebuild state');
+  assert.equal(s.view.fps, 24, 'the sample is kept for the next push');
+  s.setStatsWindow(true);
+  assert.equal(sent.some((e) => e.ch === 'stats-gate' && e.msg.on === true), true);
+  emitStats(0, 0);
+  assert.ok(changes > afterStart, 'a watched window receives the sample');
+  const watched = changes;
+  s.setStatsWindow(false);
+  ipcMain.emit('capture:state', { sender: s.win.webContents }, { session: s.active.session, status: 'live' });
+  emitStats(0, 0);
+  assert.ok(changes > watched, 'a live stream still receives a zero sample while the window is hidden');
 });
 
 test('capture errors reach only the current viewer without raw error details', () => {

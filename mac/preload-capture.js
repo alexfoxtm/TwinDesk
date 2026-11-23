@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('capture', {
   onPcm: (fn) => ipcRenderer.on('pcm', (_e, buf) => fn(buf)),
   send: (msg) => ipcRenderer.send('capture:out', msg),
   stats: (s) => ipcRenderer.send('capture:stats', s),
+  onStatsGate: (fn) => ipcRenderer.on('stats-gate', (_e, m) => fn(m)),
   state: (s) => ipcRenderer.send('capture:state', s),
   helperAudio: () => ipcRenderer.invoke('capture:helperAudio'), // Chromium gave no sound: the helper's
 

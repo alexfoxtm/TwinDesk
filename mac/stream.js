@@ -33,6 +33,8 @@ class Stream extends EventEmitter {
     this.active = null; // {session, displayId, width, height} while a session runs
     this.retryTimer = null;
     this._retryN = 0; // failed starts so far; the wait doubles up to 30s. Live frames or a new request clear it; sending start does not
+    this._statsWindow = false; // the settings window is on screen and can show fps
+    this._statsGate = null; // last on/off told to the capture window
     this.viewer = null; // the peer's screen.policy accept; null = never said (older app: always watching)
     this.view = { status: 'off', display: null, width: 0, height: 0, fps: 0, mbps: 0, encoder: '', codec: '' };
 
@@ -110,12 +112,21 @@ class Stream extends EventEmitter {
     ipcMain.on('capture:stats', (e, s) => {
       if (!this._fromCapture(e) || !this.active || s.session !== this.active.session) return;
       const { fps, mbps, encoder, codec, qp, encodeMs, limit, targetMbps } = s;
+      const frames = (fps || 0) > 0 || (mbps || 0) > 0;
+      // A zero sample is the timer starting, not a picture. A late packet must not
+      // cancel a retry that a failure already scheduled (_captureReady leaves that timer).
+      if (frames) this._captureReady();
+      // Hidden and not live: keep a frames sample for the next push, and do not
+      // rebuild state. Zeros are dropped. A watched window or a live stream still emits.
+      if (!this._statsOn()) {
+        if (!frames) return;
+        Object.assign(this.view, { fps, mbps, encoder, codec, qp, encodeMs, limit, targetMbps });
+        if (s.width) Object.assign(this.view, { width: s.width, height: s.height });
+        return;
+      }
       Object.assign(this.view, { fps, mbps, encoder, codec, qp, encodeMs, limit, targetMbps });
       if (process.env.MACSHARE_DEBUG_STATS) console.log(`[stream] ${JSON.stringify(s)}`);
       if (s.width) Object.assign(this.view, { width: s.width, height: s.height });
-      // A zero sample is the timer starting, not a picture. A late packet must not
-      // cancel a retry that a failure already scheduled (_captureReady leaves that timer).
-      if ((fps || 0) > 0 || (mbps || 0) > 0) this._captureReady();
       this.emit('change');
     });
     // Chromium gave no sound (capture.js): the helper's capture instead.
@@ -212,7 +223,28 @@ class Stream extends EventEmitter {
     if (status.startsWith('error') && this.server.current && this.getSettings().sharing.on) {
       this.server.sendToClient({ t: P.T.STREAM_STOP, reason: 'capture-unavailable' });
     }
+    if (typeof this._syncStatsGate === 'function') this._syncStatsGate();
     this.emit('change');
+  }
+
+  // The settings window can show fps, or the capture is live (fps may fall to 0).
+  _statsOn() {
+    return this._statsWindow === true || this.view.status === 'live' || this.view.status === 'streaming';
+  }
+
+  setStatsWindow(on) {
+    const next = !!on;
+    if (next === !!this._statsWindow) return;
+    this._statsWindow = next;
+    this._syncStatsGate();
+  }
+
+  _syncStatsGate() {
+    if (!this.win || this.win.isDestroyed()) return;
+    const on = this._statsOn();
+    if (on === this._statsGate) return;
+    this._statsGate = on;
+    this._toWindow('stats-gate', { on });
   }
 
   // 2s, 4s, 8s, 16s, then 30s. The timer does not keep the process up.
@@ -288,6 +320,7 @@ class Stream extends EventEmitter {
         fps: ScreenCodec.fps(target.hz, set.sharing && set.sharing.fps), // Share screen › Frame rate
         steady: !!(set.sharing && set.sharing.pace === 'steady'), // Playback › Steady (shared/screencodec.js)
         codec: ScreenCodec.mode(set.sharing && set.sharing.codec), // Share screen › Encoder
+        stats: this._statsOn(), // false: the capture window posts only samples that have frames
       });
     } catch (e) {
       if (!this.active || this.active.session !== s) return;

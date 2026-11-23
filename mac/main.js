@@ -1538,7 +1538,12 @@ app.whenReady().then(() => {
     permTimer = setInterval(permTick, 3000);
     permTimer.unref();
   };
-  onWatchEdge = () => { noteAddresses(); permArm(); refreshBlePace(); };
+  onWatchEdge = () => {
+    noteAddresses();
+    permArm();
+    refreshBlePace();
+    if (svc && svc.stream && typeof svc.stream.setStatsWindow === 'function') svc.stream.setStatsWindow(!!(win && !win.isDestroyed() && controlWatch.watching(win)));
+  };
   peer.on('client', () => { pctArm(); noteAddresses(); });
   peer.on('closed', () => { pctArm(); noteAddresses(); }); // a leftover tray title is cleared, then the timer stops
   if (peer.current) pctArm();

@@ -89,9 +89,11 @@ async function getStream(sourceId, width, height, fps, audio) {
 
 // Every frame matters more than the last bit of sharpness: under pressure the encoder lowers
 // quality, never the frame rate (dropped frames are what feels jagged and what adds lag).
-async function start({ session, bitrateMbps, sourceId, width, height, audio, fps = 60, ice, codec, steady, detailSource }) {
+async function start({ session, bitrateMbps, sourceId, width, height, audio, fps = 60, ice, codec, steady, detailSource, stats }) {
   close();
   const me = { session, pendingIce: [], remoteSet: false, last: null };
+  // undefined: mesh, and any start that omits the flag, keeps sending every sample.
+  if (typeof stats === 'boolean') me.reportStats = stats;
   cur = me;
   try {
     me.stream = await getStream(sourceId, width, height, fps, audio);
@@ -205,12 +207,15 @@ async function stats(me) {
   }
   me.last = { bytes: out.bytesSent, at: now, frames: out.framesEncoded, qpSum: out.qpSum || 0, encodeTime: out.totalEncodeTime || 0 };
   const codec = byId.get(out.codecId);
+  const fps = Math.round(out.framesPerSecond || 0);
+  mbps = Math.round(mbps * 10) / 10;
+  if (!window.TwinDeskStatsSend.shouldSendStats(me.reportStats, { fps, mbps })) return;
   api.stats({
     session: me.session,
-    fps: Math.round(out.framesPerSecond || 0),
+    fps,
     width: out.frameWidth || 0,
     height: out.frameHeight || 0,
-    mbps: Math.round(mbps * 10) / 10,
+    mbps,
     encoder: out.encoderImplementation || '',
     codec: codec ? codec.mimeType.replace(/^video\//, '') : '',
     qp,
@@ -228,5 +233,6 @@ api.onPcm((buf) => {
   cur.player.port.postMessage(copy, [copy.buffer]);
 });
 api.onStart(start);
+api.onStatsGate((m) => { if (cur && m && typeof m.on === 'boolean') cur.reportStats = m.on; });
 api.onStop(close);
 api.onRemote(onRemote);
