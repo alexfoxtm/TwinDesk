@@ -358,7 +358,8 @@ func handle(_ line: String) {
     injector.releaseAll()
     reply(id)
   case "clipboardWatch":
-    let every = (msg["every"] as? NSNumber)?.doubleValue ?? 0.25
+    // JSON true bridges to NSNumber. A bool is not a period; keep the 0.25 s default.
+    let every = (msg["every"] is Bool) ? 0.25 : ((msg["every"] as? NSNumber)?.doubleValue ?? 0.25)
     pasteboardWatch.set(on: (msg["on"] as? Bool) ?? false, every: every)
     reply(id)
   case "frontWatch": // ReZume: the app or window in front changed (FrontWatch.swift), so main looks only then

@@ -76,6 +76,9 @@ class Clipboard extends EventEmitter {
       this.images.reset();
       this._watch();
     });
+    // Resume replaces the socket (idle BLE -> a fresh Wi-Fi socket) and emits transport,
+    // not client. The new socket has not said idle, so the watch goes back to 0.25 s now.
+    server.on('transport', () => this._watch());
     server.on(`t:${P.T.CLIP}`, (msg) => this._onClip(msg));
     server.on(`t:${P.T.CLIP_QUEUE}`, (msg, ctx, ws) => this._onQueue(msg, ctx, ws));
     server.on(`t:${P.T.CLIP_IMAGE}`, (msg) => this.images.header(msg));
@@ -377,20 +380,29 @@ class Clipboard extends EventEmitter {
 }
 
 // quiet.js consumes idle before the server emits it. One wrap for the process; each
-// clipboard adds itself. A true return is an idle edge, so the pasteboard pace follows it.
+// clipboard adds a weak ref. A true return is an idle edge on that socket, so only the
+// clipboard whose current socket it is re-paces. A collected clipboard is dropped.
 function watchPeerIdle(clip) {
   if (!Quiet.seen._paceClips) {
     const orig = Quiet.seen;
-    const clips = new Set();
+    const clips = [];
     function seen(ws, msg) {
       const idle = orig(ws, msg);
-      if (idle) for (const c of clips) c._watch();
+      if (idle) {
+        let i = 0;
+        while (i < clips.length) {
+          const c = clips[i].deref();
+          if (!c) { clips.splice(i, 1); continue; }
+          if (c.server.current && c.server.current.ws === ws) c._watch();
+          i++;
+        }
+      }
       return idle;
     }
     seen._paceClips = clips;
     Quiet.seen = seen;
   }
-  Quiet.seen._paceClips.add(clip);
+  Quiet.seen._paceClips.push(new WeakRef(clip));
 }
 
 module.exports = { Clipboard };

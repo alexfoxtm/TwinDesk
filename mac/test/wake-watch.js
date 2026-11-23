@@ -60,6 +60,43 @@ test('the pasteboard watch is off until send is on, and 1 s only while the phone
   assert.deepEqual(h.sent.at(-1).msg, { on: true, every: 0.25 }, 'the queue has no idle socket, so it stays fast');
 });
 
+test('a transport resume returns the pasteboard to 0.25 s, and another socket does not', () => {
+  const h = helper();
+  const server = new EventEmitter();
+  server.current = null;
+  server.sendToClient = () => {};
+  const settings = { clipboard: { enabled: true, send: true, receive: true, queue: false, historySize: 5, mode: 'switch' } };
+  const clip = new Clipboard(server, h, () => settings, () => null);
+  const refs = Quiet.seen._paceClips;
+  assert.ok(refs.some((r) => r instanceof WeakRef && r.deref() === clip), 'the clipboard is held weakly');
+  const old = {};
+  server.current = { ws: old };
+  old.quietPeer = true;
+  clip._watch(true);
+  assert.equal(h.sent.at(-1).msg.every, 1);
+  let woke = 0;
+  const inner = clip._watch.bind(clip);
+  clip._watch = () => { woke += 1; return inner(); };
+  const fresh = {};
+  server.current = { ws: fresh, transport: 'ip' };
+  server.emit('transport', server.current);
+  assert.equal(woke, 1);
+  assert.equal(h.sent.at(-1).msg.every, 0.25, 'the fresh socket has not said idle');
+  fresh.quietPeer = true;
+  clip._watch();
+  assert.equal(h.sent.at(-1).msg.every, 1);
+  const before = woke;
+  const other = {};
+  assert.equal(Quiet.seen(other, { t: 'idle', on: false }), true);
+  assert.equal(woke, before, 'idle on a socket that is not current does not re-pace');
+  assert.equal(h.sent.at(-1).msg.every, 1);
+  assert.equal(fresh.quietPeer, true);
+  Quiet.seen(fresh, { t: 'idle', on: false });
+  assert.ok(woke > before);
+  assert.equal(fresh.quietPeer, false);
+  assert.equal(h.sent.at(-1).msg.every, 0.25, 'idle on the current socket still returns to 0.25 s');
+});
+
 test('notification polling stays off until send is accepted, and the database interval stays 1 s', async () => {
   const h = helper();
   const server = new EventEmitter();
@@ -92,7 +129,7 @@ test('a pasteboard pace change does not reset the item, and mesh still gets 0.25
   assert.match(pb, /func set\(on: Bool, every: Double = 0\.25\)/);
   assert.match(pb, /let paceOnly = on && timer != nil/);
   assert.match(pb, /if !paceOnly \{\s*lastCount = -1/s);
-  assert.match(main, /let every = \(msg\["every"\] as\? NSNumber\)\?\.doubleValue \?\? 0\.25/);
+  assert.match(main, /let every = \(msg\["every"\] is Bool\) \? 0\.25 : \(\(msg\["every"\] as\? NSNumber\)\?\.doubleValue \?\? 0\.25\)/);
   assert.match(main, /pasteboardWatch\.set\(on: \(msg\["on"\] as\? Bool\) \?\? false, every: every\)/);
   assert.match(js, /const every = on && this\._peerIdle\(\) \? 1 : 0\.25/);
 });
