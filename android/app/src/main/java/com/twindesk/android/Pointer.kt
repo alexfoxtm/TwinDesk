@@ -86,15 +86,19 @@ class Pointer(core: Core) : Feature(core) {
     }
 
     fun hide() {
-        frames.hide()
+        frames.hide { cancelPointerFrame(Choreographer.getInstance(), frameCb) }
         main.post { remove() }
     }
 
     private fun remove() {
-        frames.hide()
+        frames.hide { cancelPointerFrame(Choreographer.getInstance(), frameCb) }
         view?.let { v -> runCatching { wm?.removeView(v) } }
         view = null; lp = null; host = null; wm = null
     }
+}
+
+internal fun cancelPointerFrame(choreographer: Choreographer, callback: Choreographer.FrameCallback) {
+    choreographer.removeFrameCallback(callback)
 }
 
 internal fun placePointer(
@@ -143,8 +147,11 @@ internal class PointerFrames(private val apply: (Int, Int) -> Unit) {
         apply(x, y)
     }
 
-    fun hide() {
+    fun hide(cancelFrame: () -> Unit = {}) {
         pending = false
+        if (!posted) return
+        posted = false
+        cancelFrame()
     }
 }
 

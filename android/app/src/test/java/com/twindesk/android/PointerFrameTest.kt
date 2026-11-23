@@ -30,4 +30,19 @@ class PointerFrameTest {
         frames.onFrame()
         assertEquals(listOf(5 to 6), applied)
     }
+
+    @Test fun hideCancelsThePostedFrameCallback() {
+        val frames = PointerFrames { _, _ -> }
+        var posts = 0
+        var cancels = 0
+        frames.move(1, 2) { posts++ }
+        frames.hide { cancels++ }
+        assertEquals(1, posts)
+        assertEquals(1, cancels)
+        frames.hide { cancels++ }
+        assertEquals(1, cancels)
+        frames.onFrame()
+        frames.move(3, 4) { posts++ }
+        assertEquals(2, posts)
+    }
 }
