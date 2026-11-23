@@ -29,6 +29,11 @@ internal fun beaconDelay(interactive: Boolean, connected: Boolean, peerOn: Boole
 
 internal fun discoveryMulticastNeeded(running: Boolean, interactive: Boolean): Boolean = running && interactive
 
+// LocalSend's multicast lock and its periodic announce. The TCP server stays open either way:
+// a listening port is not a transfer, and a direct peer does not need multicast to finish.
+internal fun localSendMulticastNeeded(running: Boolean, interactive: Boolean, activeTransfer: Boolean): Boolean =
+    running && (interactive || activeTransfer)
+
 internal fun staleDialDelay(away: Boolean, attempts: Int): Long = when {
     !away -> 5000L
     attempts == 0 -> 5000L

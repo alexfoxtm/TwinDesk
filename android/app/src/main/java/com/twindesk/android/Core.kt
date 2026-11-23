@@ -264,11 +264,13 @@ class Core private constructor(val ctx: Context) : Link.Events {
                         android.content.Intent.ACTION_SCREEN_OFF -> {
                             link.nudge()
                             rezume.onScreen(false)
+                            localSend.onScreen(false)
                         }
                         android.content.Intent.ACTION_SCREEN_ON, android.content.Intent.ACTION_USER_PRESENT -> {
                             link.wake()
                             timers.execute { retryReturnNow() }
                             rezume.onScreen(true)
+                            localSend.onScreen(true)
                         }
                     }
                     requestTimers()

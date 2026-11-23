@@ -489,6 +489,26 @@ class LocalSendCore(
     private var server: SSLServerSocket? = null
     private var udp: MulticastSocket? = null
     private val group: InetAddress by lazy { InetAddress.getByName(Ls.GROUP) }
+    // Screen off and nothing moving: the 30s tick still expires peers, and it does not multicast.
+    // The TCP socket stays open. Set from LocalSend's life thread; the tick thread only reads it.
+    @Volatile var multicastPaused: Boolean = false
+    internal var announceObserver: (() -> Unit)? = null
+
+    fun pauseAnnounce(paused: Boolean) {
+        val was = multicastPaused
+        multicastPaused = paused
+        if (was && !paused) announceNow()
+    }
+
+    // One announce, off the caller. A screen-on and an unpause both come through here.
+    fun announceNow() {
+        pool.execute { runCatching { announce() } }
+    }
+
+    internal fun discoveryTick() {
+        expire()
+        if (!multicastPaused) announce()
+    }
 
     fun info(announce: Boolean? = null): JSONObject = JSONObject()
         .put("alias", Ls.clip(alias(), 64).ifEmpty { "TwinDesk" }).put("version", Ls.VERSION)
@@ -513,8 +533,9 @@ class LocalSendCore(
             listen() // sets port from the bound socket before any announce. UDP below stays on 53317.
             if (opts.multicast) openUdp()
             ticker = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "td-localsend-tick").apply { isDaemon = true } }.also { t ->
-                t.scheduleWithFixedDelay({ runCatching { expire(); announce() } }, Ls.ANNOUNCE_S, Ls.ANNOUNCE_S, TimeUnit.SECONDS)
-                for (ms in listOf(100L, 500L, 2000L)) t.schedule({ runCatching { announce() } }, ms, TimeUnit.MILLISECONDS) // one multicast packet is easily lost
+                t.scheduleWithFixedDelay({ runCatching { discoveryTick() } }, Ls.ANNOUNCE_S, Ls.ANNOUNCE_S, TimeUnit.SECONDS)
+                // Opening bursts. Skipped while paused, including one that was scheduled and then the screen went off.
+                for (ms in listOf(100L, 500L, 2000L)) t.schedule({ runCatching { if (!multicastPaused) announce() } }, ms, TimeUnit.MILLISECONDS)
             }
         }
         events.changed()
@@ -672,6 +693,7 @@ class LocalSendCore(
 
     // Says we're here on every network. The others answer with /register.
     fun announce() {
+        announceObserver?.invoke()
         val s = udp ?: return
         if (!running) return
         join()

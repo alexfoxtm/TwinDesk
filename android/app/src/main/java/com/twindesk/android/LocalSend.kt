@@ -2,7 +2,9 @@
 // Files with LocalSend-compatible apps on the phone: LocalSendCore.kt (the protocol) with
 // what is the phone's own — the switch (off until turned on), Downloads › TwinDesk for what's
 // accepted, the question for every arriving transfer (on the Files page and as a notification with
-// Accept and Decline), the multicast lock while it's on. There is no "always accept".
+// Accept and Decline), the multicast lock while the screen is on or a transfer is moving
+// (released with the screen off and nothing in progress, so Doze is not woken by every multicast
+// on the Wi-Fi). There is no "always accept".
 //
 // It runs while TwinDesk runs; nothing is listened for, announced or accepted while the switch is off.
 // "LocalSend" names the protocol these apps speak; TwinDesk is not affiliated with it.
@@ -20,6 +22,7 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Environment
+import android.os.PowerManager
 import android.os.Handler
 import android.os.Looper
 import android.os.StatFs
@@ -53,6 +56,8 @@ class LocalSend(private val core: Core) : LsEvents {
     private val history = ArrayList<LsTransfer>() // newest first
     private val again = HashMap<String, Again>()
     private var multicast: WifiManager.MulticastLock? = null
+    // Unknown counts as on, same as Core: a missing PowerManager must not silence discovery.
+    @Volatile private var interactive = true
 
     val running: Boolean get() = node?.running == true
     val receiving: Boolean get() = node?.receiving == true
@@ -63,7 +68,19 @@ class LocalSend(private val core: Core) : LsEvents {
     fun asksPin(id: String): Boolean = synchronized(lock) { again.containsKey(id) }
 
     // With the rest of TwinDesk (Core.start): not after Exit, and not before Core is whole.
-    fun start() { apply() }
+    fun start() {
+        interactive = ctx.getSystemService(PowerManager::class.java)?.isInteractive != false
+        apply()
+    }
+
+    // Screen on or off (Core's screen receiver). A wake announces at once so peers list this phone
+    // again without waiting out the rest of the 30s period. Runs on `life`, with apply().
+    fun onScreen(on: Boolean) = life.execute {
+        val woke = on && !interactive
+        interactive = on
+        val announced = syncMulticast()
+        if (woke && node != null && !announced) node?.announceNow()
+    }
 
     fun set(value: Boolean) {
         core.store.setFlag(FLAG, value)
@@ -86,21 +103,24 @@ class LocalSend(private val core: Core) : LsEvents {
             core.changed()
             try {
                 // Android drops multicast for an app without this lock: the others' announces are how they're found.
+                // Held only while the screen is on or a transfer is moving (syncMulticast). Reference
+                // counting stays off, so one release drops it no matter how many times it was taken.
                 multicast = runCatching {
-                    ctx.applicationContext.getSystemService(WifiManager::class.java).createMulticastLock("twindesk-localsend").apply { setReferenceCounted(false); acquire() }
+                    ctx.applicationContext.getSystemService(WifiManager::class.java).createMulticastLock("twindesk-localsend").apply { setReferenceCounted(false) }
                 }.getOrNull()
                 val n = LocalSendCore(File(ctx.filesDir, "localsend"), { core.store.deviceName }, sink, this,
                     LsOptions(deviceModel = Build.MODEL ?: "", deviceType = "mobile", log = { Log.d("TwinDesk", "localsend: $it") }))
                 node = n
+                syncMulticast() // before start(), so the opening bursts honor a dark screen
                 n.start()
-                showScan() // the core announces for the first two seconds after opening
+                showScan() // the core announces for the first two seconds after opening, unless paused
             } catch (e: Exception) {
                 Log.d("TwinDesk", "localsend: $e")
                 failed = e.message ?: e.javaClass.simpleName
                 val failedNode = node
                 node = null
                 runCatching { failedNode?.stop() }
-                runCatching { multicast?.release() }
+                releaseMulticast()
                 multicast = null
             }
             starting = false
@@ -108,7 +128,7 @@ class LocalSend(private val core: Core) : LsEvents {
             val n = node
             node = null
             runCatching { n?.stop() }
-            runCatching { multicast?.release() }
+            releaseMulticast()
             multicast = null
             synchronized(lock) {
                 for (i in history.indices) if (history[i].live) history[i] = history[i].copy(state = "cancelled")
@@ -128,6 +148,34 @@ class LocalSend(private val core: Core) : LsEvents {
             failed = ""
         }
         core.changed()
+    }
+
+    // A live history row or an offer still waiting for an answer. `receiving` is the TCP port,
+    // which stays open with the switch on and is not a transfer.
+    private fun activeTransfer(): Boolean {
+        val live = synchronized(lock) { history.any { it.live } }
+        return live || offers.isNotEmpty()
+    }
+
+    // On `life`. → whether this call resumed announces (that already sends one announce).
+    private fun syncMulticast(): Boolean {
+        val n = node
+        val need = localSendMulticastNeeded(n != null, interactive, activeTransfer())
+        if (need) holdMulticast() else releaseMulticast()
+        if (n == null) return false
+        val wasPaused = n.multicastPaused
+        n.pauseAnnounce(!need)
+        return wasPaused && need
+    }
+
+    private fun holdMulticast() {
+        val held = multicast ?: return
+        runCatching { if (!held.isHeld) held.acquire() }
+    }
+
+    private fun releaseMulticast() {
+        val held = multicast ?: return
+        runCatching { if (held.isHeld) held.release() }
     }
 
     // ---- accepted files: Downloads › TwinDesk, as the computer's files ----
@@ -340,6 +388,7 @@ class LocalSend(private val core: Core) : LsEvents {
     override fun changed() = core.changed()
 
     override fun offer(o: LsOffer) {
+        life.execute { syncMulticast() }
         val text = listOfNotNull(tr("From {address} with a LocalSend-compatible app.", "address" to o.ip),
             if (o.verified) null else tr("This sender didn’t prove which device it is: its name is only what it says."),
             if (o.imitates) tr("Another device uses this name: this may not be the one you think.") else null,
@@ -365,11 +414,13 @@ class LocalSend(private val core: Core) : LsEvents {
 
     override fun offerEnd(id: String, accepted: Boolean, why: String) {
         cancelNotice(id, ID_OFFER)
+        life.execute { syncMulticast() }
         core.changed()
     }
 
     override fun transfer(t: LsTransfer) {
         record(t)
+        life.execute { syncMulticast() }
         val file = what(t.names, t.files)
         runCatching {
             val b = Notification.Builder(ctx, Notify.CH_FILES).setOnlyAlertOnce(true).setOngoing(t.live).setAutoCancel(!t.live)
