@@ -4,34 +4,37 @@ import android.content.ComponentCallbacks2
 
 internal const val DECK_ICON_CACHE_MAX = 48
 
-/** Least-recently-used icon bytes. The eldest entry goes once the cap is passed. */
+/**
+ * Least-recently-used icon bytes. The eldest entry goes once the cap is passed.
+ * Access-order reads mutate the map, so every call takes the same lock as a trim.
+ */
 internal class BoundedIconCache<V>(private val max: Int = DECK_ICON_CACHE_MAX) {
     private val map = object : LinkedHashMap<String, V>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, V>?) = size > max
     }
 
-    fun getOrPut(key: String, create: () -> V): V {
+    fun getOrPut(key: String, create: () -> V): V = synchronized(map) {
         if (map.containsKey(key)) {
             @Suppress("UNCHECKED_CAST")
             return map.get(key) as V
         }
         val value = create()
         map[key] = value
-        return value
+        value
     }
 
-    fun clear() = map.clear()
+    fun clear() = synchronized(map) { map.clear() }
 
-    val size get() = map.size
+    val size get() = synchronized(map) { map.size }
 
     operator fun set(key: String, value: V) {
-        map[key] = value
+        synchronized(map) { map[key] = value }
     }
 
-    operator fun get(key: String): V? {
+    operator fun get(key: String): V? = synchronized(map) {
         if (!map.containsKey(key)) return null
         @Suppress("UNCHECKED_CAST")
-        return map.get(key) as V
+        map.get(key) as V
     }
 }
 
@@ -56,4 +59,19 @@ internal object RebuildableCaches {
     }
 
     fun clearForTest() = drops.clear()
+}
+
+/**
+ * What a phone-wide trim may drop. The app list is built only if a page already did.
+ * Icons the computer sent with notifications are not here: it sends each one once a session.
+ */
+internal fun registerPhoneRebuildableCaches(
+    deck: () -> Unit,
+    appList: Lazy<*>,
+    appListDrop: () -> Unit,
+    rezume: () -> Unit,
+): () -> Unit = RebuildableCaches.register {
+    deck()
+    if (appList.isInitialized()) appListDrop()
+    rezume()
 }

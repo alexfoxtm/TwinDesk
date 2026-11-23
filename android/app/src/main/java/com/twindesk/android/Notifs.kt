@@ -74,13 +74,6 @@ class Notifs(core: Core) : Feature(core) {
     // App icons with notifications (shared/notificon.js): ours go with an app's first one in a
     // session; the computer's are kept by app (the computer sends each only once).
     private val iconsSent = HashSet<String>()
-    private val iconsIn = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
-        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, Bitmap>?) = size > 100
-    }
-
-    fun clearIcons() {
-        synchronized(iconsIn) { iconsIn.clear() }
-    }
     // Each sent notification's reply action (a chat's Reply), for notif.reply from the computer.
     // The ticket is the session that was allowed to see it. A later socket cannot use it.
     private val replies = object : LinkedHashMap<String, ReplyBind>(32, 0.75f, true) {
@@ -718,14 +711,29 @@ class Notifs(core: Core) : Feature(core) {
         val app = m.optString("app").take(300)
         val url = m.optString("icon")
         val head = "data:image/png;base64,"
-        synchronized(iconsIn) {
-            if (url.startsWith(head) && url.length <= 48000 && app.isNotEmpty()) {
-                runCatching {
-                    val b = Base64.decode(url.substring(head.length), Base64.DEFAULT)
-                    BitmapFactory.decodeByteArray(b, 0, b.size)
-                }.getOrNull()?.let { iconsIn[app] = it }
-            }
-            return iconsIn[app]
+        if (url.startsWith(head) && url.length <= 48000 && app.isNotEmpty()) {
+            runCatching {
+                val b = Base64.decode(url.substring(head.length), Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(b, 0, b.size)
+            }.getOrNull()?.let { NotifIcons.remember(app, it) }
         }
+        return NotifIcons.get(app)
+    }
+}
+
+/** Notification icons the computer sent. Session state: a trim cannot rebuild them. */
+internal object NotifIcons {
+    private val icons = object : LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
+        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, Bitmap>?) = size > 100
+    }
+
+    fun remember(app: String, bitmap: Bitmap) {
+        synchronized(icons) { icons[app] = bitmap }
+    }
+
+    fun get(app: String): Bitmap? = synchronized(icons) { icons[app] }
+
+    fun clear() {
+        synchronized(icons) { icons.clear() }
     }
 }

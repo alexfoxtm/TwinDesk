@@ -126,7 +126,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val nowPlaying = NowPlaying(this) // what plays here, for the computer's media controls
     val rezume = Rezume(this) // ReZume: go on with what's in use on the other device (off until turned on)
     val dev = DevCtl(this) // this phone's controls on the computer's Overview, the computer's on the Computer page
-    val appList by lazy { AppList(this) } // the phone's apps, for the pages that pick some (Notifications, Banking apps)
+    private val appListLazy = lazy { AppList(this) } // the phone's apps, for the pages that pick some (Notifications, Banking apps)
+    val appList by appListLazy
     val bank = BankGuard(this) // a banking app opened: debugging off, and TwinDesk exits (General › Banking apps)
     val silence = Silence(this) // Notifications › Silence together: Do not disturb here and the Mac's Focus, each way when switched on
     val pcMedia = PcMedia(this) // what plays on the computer: the Media page and a media notification here
@@ -284,12 +285,12 @@ class Core private constructor(val ctx: Context) : Link.Events {
             override fun onLowMemory() = RebuildableCaches.trim(android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
             override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
         })
-        RebuildableCaches.register {
-            deckIconCache.clear()
-            appList.clearIcons()
-            notifs.clearIcons()
-            rezume.clearIcons()
-        }
+        registerPhoneRebuildableCaches(
+            deck = { deckIconCache.clear() },
+            appList = appListLazy,
+            appListDrop = { appList.clearIcons() },
+            rezume = { rezume.clearIcons() },
+        )
     }
 
     // General › Connections › Prioritize performance over battery life (off): on, the session pings
