@@ -35,6 +35,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
 import android.telephony.TelephonyManager
 import android.accessibilityservice.AccessibilityService
@@ -57,9 +58,7 @@ class DevCtl(core: Core) : Feature(core) {
     private var packagesWatching = false
     private var peerAsks = false
     private var askedUntil = 0L
-    private val topCache = TopCache()
-    private val topLock = Any()
-    @Volatile private var packageSet: Set<String>? = null
+    private val tops = TopLookup()
     private var torchOn = false
     private var ringtone: Ringtone? = null
     private var alarmBefore = -1
@@ -134,7 +133,7 @@ class DevCtl(core: Core) : Feature(core) {
                 computer = m
                 if (m.optInt("asks") == 1) peerAsks = true
                 val asking = m.optBoolean("ask")
-                if (asking) noteAsk(System.currentTimeMillis() + DEV_ASKED_MS)
+                if (asking) noteAsk(SystemClock.elapsedRealtime() + DEV_ASKED_MS)
                 if (asking) sendState()
                 refreshWatch()
                 core.changed()
@@ -185,7 +184,7 @@ class DevCtl(core: Core) : Feature(core) {
             }
         }
         // One result even when the computer is not watching. While it is, the usual debounce applies.
-        if (deviceStateLive(peerAsks, askedUntil, System.currentTimeMillis())) later(250) else sendState()
+        if (deviceStateLive(peerAsks, askedUntil, SystemClock.elapsedRealtime())) later(250) else sendState()
     }
 
     private val audio get() = ctx.getSystemService(AudioManager::class.java)
@@ -201,7 +200,11 @@ class DevCtl(core: Core) : Feature(core) {
         ringtone = null
         if (was && !on) { Notify.cancelRinging(ctx); core.changed() }
         if (alarmBefore >= 0) { runCatching { audio.setStreamVolume(AudioManager.STREAM_ALARM, alarmBefore, 0) }; alarmBefore = -1 }
-        if (!on) { later(0); return }
+        if (!on) {
+            // Stopping on the phone, or at the timeout, still tells the Mac when its window is hidden.
+            if (ringStopPublishesNow(deviceStateLive(peerAsks, askedUntil, SystemClock.elapsedRealtime()))) sendState() else later(0)
+            return
+        }
         val uri = RingtoneManager.getActualDefaultRingtoneUri(ctx, RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE) ?: return
         val r = RingtoneManager.getRingtone(ctx, uri) ?: return
@@ -249,10 +252,14 @@ class DevCtl(core: Core) : Feature(core) {
     }
 
     private fun torch(on: Boolean) {
-        torchOn = on
-        val cm = ctx.getSystemService(CameraManager::class.java) ?: return
-        val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true } ?: return
-        cm.setTorchMode(id, on)
+        var applied = false
+        runCatching {
+            val cm = ctx.getSystemService(CameraManager::class.java) ?: return@runCatching
+            val id = cm.cameraIdList.firstOrNull { cm.getCameraCharacteristics(it).get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true } ?: return@runCatching
+            cm.setTorchMode(id, on)
+            applied = true
+        }
+        torchOn = torchReported(torchOn, on, applied)
     }
 
     // Do not disturb: the notification listener may set it (the full app), else with Do not
@@ -386,16 +393,9 @@ class DevCtl(core: Core) : Feature(core) {
     }
 
     // The most used apps of the last week, with Usage access (wireless debugging grants it).
-    // The 7-day query is cached for five minutes, and dropped when an app is installed or removed.
-    private fun top(): List<String>? {
-        val now = System.currentTimeMillis()
-        val pkgs = packageSet
-        if (pkgs != null) synchronized(topLock) { topCache.get(now, pkgs)?.let { return it } }
-        val result = queryTop()
-        val after = packageSet ?: launchablePackages().also { packageSet = it }
-        if (pkgs == null || pkgs == after) synchronized(topLock) { topCache.put(now, after, result) }
-        return result
-    }
+    // Cached for five minutes. Dropped when an app is installed or removed, or the link closes.
+    // No usage access returns nothing and does not scan the launcher.
+    private fun top(): List<String>? = tops.lookup(SystemClock.elapsedRealtime(), ::queryTop, ::launchablePackages)
 
     private fun queryTop(): List<String>? {
         val ops = ctx.getSystemService(AppOpsManager::class.java)
@@ -418,7 +418,7 @@ class DevCtl(core: Core) : Feature(core) {
     }.getOrDefault(emptySet())
 
     private fun later(ms: Long) {
-        if (!deviceStateLive(peerAsks, askedUntil, System.currentTimeMillis())) return
+        if (!deviceStateLive(peerAsks, askedUntil, SystemClock.elapsedRealtime())) return
         main.removeCallbacks(sendSoon)
         main.postDelayed(sendSoon, ms + 150)
     }
@@ -426,7 +426,7 @@ class DevCtl(core: Core) : Feature(core) {
     private fun noteAsk(until: Long) {
         askedUntil = until
         main.removeCallbacks(askExpired)
-        val delay = until - System.currentTimeMillis()
+        val delay = monotonicAskDelay(until, SystemClock.elapsedRealtime())
         if (delay > 0) main.postDelayed(askExpired, delay) else refreshWatch()
     }
 
@@ -435,7 +435,7 @@ class DevCtl(core: Core) : Feature(core) {
     /** Sensors and the minute poll run only while a build that speaks "asks" still has a fresh one. */
     private fun refreshWatch() {
         val connected = core.link.connected
-        val live = connected && deviceStateLive(peerAsks, askedUntil, System.currentTimeMillis())
+        val live = connected && deviceStateLive(peerAsks, askedUntil, SystemClock.elapsedRealtime())
         if (!live) main.removeCallbacks(sendSoon)
         watch(live)
         if (!connected) watchPackages(false)
@@ -455,7 +455,7 @@ class DevCtl(core: Core) : Feature(core) {
     private val poll = object : Runnable {
         override fun run() {
             // The ask window closed between polls: drop the sensors instead of building another snapshot.
-            if (!deviceStateLive(peerAsks, askedUntil, System.currentTimeMillis())) {
+            if (!deviceStateLive(peerAsks, askedUntil, SystemClock.elapsedRealtime())) {
                 refreshWatch()
                 return
             }
@@ -464,13 +464,12 @@ class DevCtl(core: Core) : Feature(core) {
         }
     }
     private val packageReceiver = object : BroadcastReceiver() {
-        override fun onReceive(c: Context, i: Intent) {
-            packageSet = null
-            synchronized(topLock) { topCache.invalidate() }
-        }
+        override fun onReceive(c: Context, i: Intent) { tops.invalidate() }
     }
 
     private fun watchPackages(on: Boolean) {
+        // Off drops the usage cache too: installs while the link is down must not stay cached.
+        if (!on) tops.invalidate()
         if (on == packagesWatching) return
         packagesWatching = on
         if (on) {
@@ -523,6 +522,19 @@ internal const val TOP_FRESH_MS = 5 * 60_000L
 internal fun deviceStateLive(peerAsks: Boolean, askedUntil: Long, now: Long): Boolean =
     !peerAsks || now < askedUntil
 
+/** Delay until an ask expires. A backward clock does not schedule a negative wait. */
+internal fun monotonicAskDelay(until: Long, now: Long): Long {
+    val delay = until - now
+    return if (delay < 0L) 0L else delay
+}
+
+/** Stop ringing publishes at once when the computer is not watching. A live window keeps the debounce. */
+internal fun ringStopPublishesNow(live: Boolean): Boolean = !live
+
+/** The torch we report is the one the camera accepted. A miss or a throw keeps the previous state. */
+internal fun torchReported(previous: Boolean, requested: Boolean, applied: Boolean): Boolean =
+    if (applied) requested else previous
+
 /** Marks a phone snapshot as one the computer may ask to refresh (shared/devctl.js). */
 internal fun stampDeviceAsks(message: JSONObject): JSONObject = message.put("asks", 1)
 
@@ -534,7 +546,9 @@ internal class TopCache {
     private var have = false
 
     fun get(now: Long, packages: Set<String>): List<String>? {
-        if (!have || packages != this.packages || now - at >= TOP_FRESH_MS) return null
+        if (!have || packages != this.packages) return null
+        val age = now - at
+        if (age < 0L || age >= TOP_FRESH_MS) return null
         return value
     }
 
@@ -547,6 +561,48 @@ internal class TopCache {
 
     fun invalidate() {
         have = false
+    }
+}
+
+/**
+ * The usage-list cache plus the generation of the installed package set.
+ * A package broadcast or a disconnect bumps the generation, and a query that
+ * started before that bump is not stored. No usage access returns nothing and
+ * does not scan the launcher.
+ */
+internal class TopLookup(
+    private val cache: TopCache = TopCache(),
+) {
+    private val lock = Any()
+    private val gen = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var packages: Set<String>? = null
+
+    fun invalidate() {
+        synchronized(lock) {
+            gen.incrementAndGet()
+            packages = null
+            cache.invalidate()
+        }
+    }
+
+    fun lookup(now: Long, query: () -> List<String>?, launchable: () -> Set<String>): List<String>? {
+        val before = synchronized(lock) {
+            val pkgs = packages
+            if (pkgs != null) cache.get(now, pkgs)?.let { return it }
+            pkgs
+        }
+        val start = gen.get()
+        val result = query() ?: return null
+        if (gen.get() != start) return result
+        val after = packages ?: launchable()
+        synchronized(lock) {
+            if (gen.get() != start) return result
+            if (packages == null) packages = after
+            val current = packages ?: return result
+            if (current != after) return result
+            if (before == null || before == current) cache.put(now, current, result)
+        }
+        return result
     }
 }
 
