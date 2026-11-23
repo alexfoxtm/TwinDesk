@@ -88,6 +88,7 @@ class PhoneBridge extends EventEmitter {
     });
     this.phoneInput = false;
     this.kvm = null; // the pointer while the Mac drives the phone: {route, x, y, push}
+    this._cross = null; // one summary for this crossing (take until goHome), not a line per move
     this.keys = new KeyState();
     this.views = null; // phoneview.js sets this
     this.setupDone = new Set(); // serials granted this run
@@ -904,6 +905,7 @@ class PhoneBridge extends EventEmitter {
     const x = side === 'left' ? 0 : side === 'right' ? d.w - 1 : off * (d.w - 1);
     const y = side === 'top' ? 0 : side === 'bottom' ? d.h - 1 : off * (d.h - 1);
     this.kvm = { route: m.route, x, y, side, push: 0, buttons: 0, mouse: m.mouse !== false };
+    this._crossBegin();
     this.keys.clear();
     if (this.inputBlocked) this.emit('popup', 'home', { key: INPUT_BLOCKED });
     // Answer after Kvm's _take returns: it starts its "no answer" timer right after sending kvm.take.
@@ -927,6 +929,7 @@ class PhoneBridge extends EventEmitter {
     }
     this.lastPointer = now;
     this.server.sendToClient(on && k ? { t: T.PHONE_POINTER, on: true, x: Math.round(k.x), y: Math.round(k.y) } : { t: T.PHONE_POINTER, on: false });
+    this._crossSent(now);
   }
 
   _hover() {
@@ -939,6 +942,7 @@ class PhoneBridge extends EventEmitter {
   }
 
   _move(m) {
+    this._crossMove();
     const k = this.kvm;
     const d = this._display();
     if (!k || !d || !k.mouse) return;
@@ -983,8 +987,92 @@ class PhoneBridge extends EventEmitter {
     this.kvm = null;
     clearTimeout(this.pointerTimer);
     this._pointer(false);
+    this._crossEnd();
     if (tellKvm) this.server.inject({ t: T.KVM_HOME, route: k.route });
     this.emit('change');
+  }
+
+  // One line when the pointer goes home. mouse is the take's mouse flag. ctl is
+  // scrcpy (the control session), session (phone input on the session socket),
+  // mixed when both were used, or none. buf is the session socket's high water,
+  // or "-" when that socket is not on this object.
+  _crossBegin() {
+    if (this._cross) this._crossEnd();
+    const k = this.kvm;
+    this._cross = {
+      mouse: !!(k && k.mouse !== false),
+      ctl: 'none',
+      moves: 0,
+      sent: 0,
+      maxMoveGap: 0,
+      maxSendGap: 0,
+      lastMove: 0,
+      lastSend: 0,
+      buf: null,
+    };
+    this._crossCtl();
+    this._crossBuf();
+  }
+
+  _crossMove() {
+    const c = this._cross;
+    if (!c) return;
+    const now = Date.now();
+    if (c.lastMove) {
+      const gap = now - c.lastMove;
+      if (gap > c.maxMoveGap) c.maxMoveGap = gap;
+    }
+    c.lastMove = now;
+    c.moves++;
+    this._crossCtl();
+    this._crossBuf();
+  }
+
+  _crossSent(now) {
+    const c = this._cross;
+    if (!c) return;
+    if (c.lastSend) {
+      const gap = now - c.lastSend;
+      if (gap > c.maxSendGap) c.maxSendGap = gap;
+    }
+    c.lastSend = now;
+    c.sent++;
+    this._crossCtl();
+    this._crossBuf();
+  }
+
+  _crossCtl() {
+    const c = this._cross;
+    if (!c) return;
+    let kind = 'none';
+    if (this.ctl && this.control && this.ctl === this.control) kind = 'scrcpy';
+    else if (this.ctl && this.ctl === this.input) kind = 'session';
+    if (c.ctl === 'none') c.ctl = kind;
+    else if (kind !== 'none' && c.ctl !== kind) c.ctl = 'mixed';
+  }
+
+  _crossBuf() {
+    const c = this._cross;
+    if (!c) return;
+    let n = null;
+    try {
+      const server = this.server;
+      const ws = server && server.current && server.current.ws;
+      if (ws && typeof ws.bufferedAmount === 'number') n = ws.bufferedAmount;
+      else if (server && server.link && typeof server.link.bufferedAmount === 'number') n = server.link.bufferedAmount;
+      else if (server && server.link && server.link.ws && typeof server.link.ws.bufferedAmount === 'number') n = server.link.ws.bufferedAmount;
+    } catch { n = null; }
+    if (typeof n !== 'number' || !Number.isFinite(n)) return;
+    if (c.buf == null || n > c.buf) c.buf = n;
+  }
+
+  _crossEnd() {
+    const c = this._cross;
+    if (!c) return;
+    this._crossBuf();
+    this._cross = null;
+    const buf = c.buf == null ? '-' : String(c.buf);
+    console.log(`[phone] pointer mouse=${c.mouse ? 1 : 0} ctl=${c.ctl} moves=${c.moves} sent=${c.sent} moveGapMs=${c.maxMoveGap} sendGapMs=${c.maxSendGap} buf=${buf}`);
   }
 
   _button(m) {

@@ -11,6 +11,7 @@ package com.twindesk.android
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
@@ -669,6 +670,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
             main.post { taskAlerts.receive(alert, route) }
             return
         }
+        // Still the socket thread. Pointer compares this with the time it runs on main.
+        val pointerAt = if (t == Proto.T.PHONE_POINTER) SystemClock.uptimeMillis() else -1L
         main.post {
             if (t == Proto.T.MEDIA_SAVE_AS) {
                 if (link.photoRoute(source)) hub.savePhotoAs(m, source)
@@ -684,6 +687,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                             screen.onOffer(m, route)
                             true
                         }
+                        pointerAt >= 0L && f === pointer -> pointer.onPointer(m, pointerAt)
                         else -> f.onMessage(t, m)
                     }
                 } catch (e: Exception) { Log.e("TwinDesk", "message $t", e); true }
