@@ -5,6 +5,7 @@ import Cocoa
 
 final class PasteboardWatch {
   private var timer: Timer?
+  private var currentEvery: Double = 0
   private var lastCount = -1     // last count we emitted
   private var seenCount = -1     // count seen on the previous tick (emit once it is stable)
   private var first = true
@@ -23,16 +24,25 @@ final class PasteboardWatch {
             "remote": types.contains("com.apple.is-remote-clipboard")]
   }
 
-  func set(on: Bool) {
+  // every is 0.25 while the link is in use and 1 while the phone is idle. A pace
+  // change keeps lastCount and first: resetting them would re-emit the current item.
+  // Omitted every (mesh sends only on) stays 0.25. Off still stops the timer.
+  func set(on: Bool, every: Double = 0.25) {
+    let interval: Double = every >= 1 ? 1 : 0.25
+    if on && timer != nil && interval == currentEvery { return }
+    let paceOnly = on && timer != nil
     timer?.invalidate()
     timer = nil
-    lastCount = -1
-    seenCount = -1
-    first = true
+    if !paceOnly {
+      lastCount = -1
+      seenCount = -1
+      first = true
+    }
+    currentEvery = interval
     guard on else { return }
-    check()
-    timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.check() }
-    timer?.tolerance = 0.05 // macOS may run it with other wakeups
+    if !paceOnly { check() }
+    timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in self?.check() }
+    timer?.tolerance = interval >= 1 ? 0.2 : 0.05 // macOS may run it with other wakeups
   }
 
   private func check() {

@@ -358,7 +358,8 @@ func handle(_ line: String) {
     injector.releaseAll()
     reply(id)
   case "clipboardWatch":
-    pasteboardWatch.set(on: (msg["on"] as? Bool) ?? false)
+    let every = (msg["every"] as? NSNumber)?.doubleValue ?? 0.25
+    pasteboardWatch.set(on: (msg["on"] as? Bool) ?? false, every: every)
     reply(id)
   case "frontWatch": // ReZume: the app or window in front changed (FrontWatch.swift), so main looks only then
     reply(id, ["ax": FrontWatch.shared.set(on: (msg["on"] as? Bool) ?? false)])

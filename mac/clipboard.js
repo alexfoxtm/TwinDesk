@@ -12,6 +12,7 @@ const P = require('../shared/protocol.js');
 const { ClipImages, trimPictures, itemView } = require('../shared/clipimage.js');
 const { ClipQueue } = require('../shared/clipqueue.js');
 const { keysLabel } = require('../shared/cursorlock.js');
+const Quiet = require('../shared/quiet.js');
 
 // Electron 44's clipboard.readText() returns a Promise in the main process (older: a string).
 const readText = async () => String((await clipboard.readText()) || '');
@@ -96,6 +97,7 @@ class Clipboard extends EventEmitter {
       if (this.cfg.mode === 'instant' && !ev.initial) this.sendIfChanged('instant');
     });
     helper.on('ready', () => setTimeout(() => this.applySettings(), 100));
+    watchPeerIdle(this); // idle {on} is consumed before this hears messages (quiet.js)
   }
 
   get cfg() {
@@ -113,14 +115,24 @@ class Clipboard extends EventEmitter {
     this.emit('change');
   }
 
-  // The helper watches the clipboard (4 checks a second) only while a session could take a copy:
+  // The phone said idle. No socket, or an older phone that never says it, stays at 0.25 s.
+  _peerIdle() {
+    const ws = this.server.current && this.server.current.ws;
+    return !!(ws && ws.quietPeer === true);
+  }
+
+  // The helper watches the clipboard only while a session could take a copy:
   // with nobody connected nothing would be sent (sendIfChanged), so nothing wakes the Mac for it.
+  // 0.25 s while that session is in use (a copy still lands as fast as before). 1 s while the
+  // phone is idle. The queue, with no socket to be idle on, stays at 0.25 s.
   _watch(force = false) {
     const c = this.cfg;
     const on = !!(c.enabled && c.send && (this.server.current || (c.queue !== false && this.queueOwner))); // away: for the queue (shared/clipqueue.js)
-    if (!force && on === this.watching) return;
+    const every = on && this._peerIdle() ? 1 : 0.25;
+    if (!force && on === this.watching && every === this.watchEvery) return;
     this.watching = on;
-    this.helper.send('clipboardWatch', { on });
+    this.watchEvery = every;
+    this.helper.send('clipboardWatch', { on, every });
   }
 
   sendPolicy() {
@@ -362,6 +374,23 @@ class Clipboard extends EventEmitter {
       history: this.history.map((h) => itemView(h, PREVIEW)),
     };
   }
+}
+
+// quiet.js consumes idle before the server emits it. One wrap for the process; each
+// clipboard adds itself. A true return is an idle edge, so the pasteboard pace follows it.
+function watchPeerIdle(clip) {
+  if (!Quiet.seen._paceClips) {
+    const orig = Quiet.seen;
+    const clips = new Set();
+    function seen(ws, msg) {
+      const idle = orig(ws, msg);
+      if (idle) for (const c of clips) c._watch();
+      return idle;
+    }
+    seen._paceClips = clips;
+    Quiet.seen = seen;
+  }
+  Quiet.seen._paceClips.add(clip);
 }
 
 module.exports = { Clipboard };
