@@ -281,24 +281,25 @@ class Server extends EventEmitter {
   }
 
   socketFor(ctx, msg) {
-    if (!ctx || !ctx.ws || ctx.ws.readyState !== ctx.ws.OPEN) return null;
+    if (!ctx || !ctx.ws || ctx.ws.readyState !== (ctx.ws.OPEN ?? 1)) return null;
     // Cursor sharing can use Bluetooth while other traffic stays on the network socket.
     return this.bleInput ? this.bleInput.route(ctx.ws, ctx.alt, msg) : ctx.ws;
   }
 
   send(ctx, msg) {
     const ws = this.socketFor(ctx, msg);
-    if (!ws) return;
+    if (!ws) return false;
     // A phone on the USB cable: its WebRTC goes through the relay too (wired.js).
     if (ctx.ice && ICE_OFFERS.has(msg.t)) msg = { ...msg, ice: ctx.ice };
     Quiet.sent(ws, msg);
     this._raw(ws, msg);
     ctx.lastTx = ws.lastTx;
+    return true;
   }
 
   // Send to the primary client, if any.
   sendToClient(msg) {
-    this.send(this.current, msg);
+    return this.send(this.current, msg);
   }
 
   // Send an error and close the socket(s) of that client.

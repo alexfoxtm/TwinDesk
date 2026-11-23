@@ -152,35 +152,40 @@ class Peer extends EventEmitter {
   }
 
   send(ctx, msg) {
-    if (!ctx) return;
+    if (!ctx) return false;
     // Through Bluetooth, files wait for Wi-Fi (netlink.js); they come back through sendNow.
-    if (this.hold && ctx === this.current && this.hold(msg)) return;
-    this._send(ctx, msg);
+    if (this.hold && ctx === this.current && this.hold(msg)) return true;
+    return this._send(ctx, msg);
   }
 
   sendNow(msg) {
-    this._send(this.current, msg);
+    return this._send(this.current, msg);
   }
 
   _send(ctx, msg) {
-    if (!ctx) return;
+    if (!ctx) return false;
     if (msg.t === P.T.FILE_CHUNK && ctx === this.current) this.fx.sentChunk();
     if (ctx === this.link.ctx) {
-      for (const m of P.swapRole(msg, this.swapOut)) this.link.send(m);
-    } else {
-      this.server.send(ctx, msg);
+      let sent = false;
+      for (const m of P.swapRole(msg, this.swapOut)) sent = this.link.send(m) !== false || sent;
+      return sent;
     }
+    return this.server.send(ctx, msg);
   }
 
-  // The non-input socket this direct peer would send a Save to.
+  // The non-input socket this direct peer would send a Save or pointer update to.
   outbound(ctx) {
     if (!ctx || ctx !== this.current || !ctx.authed || ctx.released) return null;
-    if (ctx === this.link.ctx) return this.link.authed ? this.link.ws : null;
-    return this.server.socketFor(ctx);
+    if (ctx === this.link.ctx) {
+      const ws = this.link.authed ? this.link.ws : null;
+      return ws && ws.readyState === (ws.OPEN ?? 1) && ws.released !== true ? ws : null;
+    }
+    const ws = this.server.socketFor(ctx);
+    return ws && ws.readyState === (ws.OPEN ?? 1) && ws.released !== true ? ws : null;
   }
 
   sendToClient(msg) {
-    this.send(this.current, msg);
+    return this.send(this.current, msg);
   }
 
   // A message as if the peer had sent it (the phone bridge answers for the phone's input).

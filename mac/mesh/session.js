@@ -139,8 +139,7 @@ class Session extends EventEmitter {
       return sent;
     }
     if (this.hostUp && this.server) {
-      this.server.send(this.ctx, obj);
-      return true;
+      return this.server.send(this.ctx, obj) !== false;
     }
     return false;
   }

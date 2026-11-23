@@ -20,6 +20,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
 import android.view.ViewTreeObserver
@@ -27,36 +28,38 @@ import android.view.WindowManager
 import org.json.JSONObject
 
 class Pointer(core: Core) : Feature(core) {
-    private val main = Handler(Looper.getMainLooper())
-    private var view: View? = null
-    private var lp: WindowManager.LayoutParams? = null
-    private var host: Context? = null // whose window the view is in: the service, or the app
-    private var wm: WindowManager? = null
-    private val frames = PointerFrames { x, y ->
-        val v = view ?: return@PointerFrames
-        val p = lp ?: return@PointerFrames
-        placePointer(p, x, y, initial = false, onFailure = { noteLayoutFail(it) }) {
-            val manager = wm ?: return@placePointer
-            // Time from this call until the traversal that actually moves the window.
-            // Later calls before that traversal keep the earlier start, so a stuck
-            // frame is not reset by the next move.
-            val started = !layoutWaiting
-            if (started) {
-                layoutWaiting = true
-                layoutStartedAt = SystemClock.uptimeMillis()
-            }
-            try {
-                manager.updateViewLayout(v, p)
-            } catch (t: Throwable) {
-                if (started) layoutWaiting = false
-                throw t
-            }
-            applied++
+    private inner class Overlay(
+        val view: View,
+        val lp: WindowManager.LayoutParams,
+        val host: Context,
+        val wm: WindowManager,
+        val preDraw: ViewTreeObserver.OnPreDrawListener,
+    ) {
+        var retired = false
+        var layoutWaiting = false
+        var layoutStartedAt = 0L
+        val frames = PointerFrames { x, y -> applyMove(this, x, y) }
+        val frameCb = Choreographer.FrameCallback {
+            if (retired || overlay !== this) return@FrameCallback
+            frames.onFrame()
         }
     }
-    private val moveRunnable = Runnable { frames.flush() }
-    // One line a second while the arrow is up. Counts are for this add-to-remove
-    // session, not reset each second. See preDraw for layoutMs.
+
+    private data class LogSnapshot(
+        val msgs: Int,
+        val applied: Int,
+        val x: Int,
+        val y: Int,
+        val queueMs: Long,
+        val layoutMs: Long,
+        val fails: Int,
+    )
+
+    private val main = Handler(Looper.getMainLooper())
+    private var overlay: Overlay? = null
+    private var view: View? = null
+    // At most one line a second while counters or traversal waits change; idle settled overlays
+    // do not reschedule the timer. Counts span this add-to-remove crossing.
     private var session = false
     private var msgs = 0
     private var applied = 0
@@ -65,30 +68,24 @@ class Pointer(core: Core) : Feature(core) {
     private var maxQueueMs = 0L
     private var maxLayoutMs = 0L
     private var layoutFails = 0
-    private var loggedFails = 0
+    private var addFails = 0
     private var lastLogAt = 0L
     private var lastFailLog = 0L
-    private var layoutWaiting = false
-    private var layoutStartedAt = 0L
+    private var lastAddFailLog = 0L
+    private var lastLogged: LogSnapshot? = null
+    private var logScheduled = false
     private val logRunnable = object : Runnable {
         override fun run() {
+            logScheduled = false
             if (!session) return
-            writeLog()
-            main.postDelayed(this, 1000L)
+            val active = overlay
+            val snap = snapshot(active)
+            if (snap != lastLogged) writeLog(snap)
+            if (active?.layoutWaiting == true) {
+                logScheduled = true
+                main.postDelayed(this, 1000L)
+            }
         }
-    }
-    // updateViewLayout only moves the window. The view's own frame stays put, so
-    // onLayout does not run, and this arrow never invalidates, so onDraw may not
-    // run either. The traversal scheduled for that window move does dispatch
-    // OnPreDraw, on the same Choreographer pass the move waits for. A stalled
-    // vsync shows up as layoutMs climbing after updateViewLayout has returned.
-    private val preDraw = ViewTreeObserver.OnPreDrawListener {
-        if (layoutWaiting) {
-            val waited = (SystemClock.uptimeMillis() - layoutStartedAt).coerceAtLeast(0L)
-            if (waited > maxLayoutMs) maxLayoutMs = waited
-            layoutWaiting = false
-        }
-        true
     }
     val allowed get() = InputService.running != null || Settings.canDrawOverlays(core.ctx)
 
@@ -109,10 +106,17 @@ class Pointer(core: Core) : Feature(core) {
         val service = InputService.running
         val want: Context = service ?: core.ctx
         if (service == null && !Settings.canDrawOverlays(core.ctx)) return remove()
-        if (view != null && host !== want) remove() // the service came or went: move the arrow over
-        if (view == null) {
+        if (overlay != null && overlay?.host !== want) remove() // the service came or went: move the arrow over
+        if (overlay == null) {
             val density = core.ctx.resources.displayMetrics.density
             val size = (22 * density).toInt()
+            var owner: Overlay? = null
+            // updateViewLayout moves the window; OnPreDraw runs on the traversal scheduled for
+            // that move, so layoutMs measures the wait between updateViewLayout and traversal.
+            val preDraw = ViewTreeObserver.OnPreDrawListener {
+                owner?.let { onOverlayPreDraw(it) }
+                true
+            }
             val arrowView = object : View(want) {
                 val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; style = Paint.Style.FILL }
                 val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 1.6f * density; strokeJoin = Paint.Join.ROUND }
@@ -124,7 +128,8 @@ class Pointer(core: Core) : Feature(core) {
                 override fun onDraw(c: Canvas) { c.drawPath(arrow, fill); c.drawPath(arrow, edge) }
                 override fun onAttachedToWindow() {
                     super.onAttachedToWindow()
-                    viewTreeObserver.addOnPreDrawListener(preDraw)
+                    val o = owner ?: return
+                    if (!o.retired) viewTreeObserver.addOnPreDrawListener(preDraw)
                 }
                 override fun onDetachedFromWindow() {
                     val obs = viewTreeObserver
@@ -144,31 +149,86 @@ class Pointer(core: Core) : Feature(core) {
                 title = "TwinDesk pointer"
             }
             val m = want.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            if (!placePointer(p, x, y, initial = true) { m.addView(arrowView, p) }) return
-            lp = p; host = want; wm = m
+            val next = Overlay(arrowView, p, want, m, preDraw)
+            owner = next
+            if (!placePointer(p, x, y, initial = true, onFailure = { noteAddFail(it, service != null) }) { m.addView(arrowView, p) }) {
+                next.retired = true
+                runCatching {
+                    val obs = arrowView.viewTreeObserver
+                    if (obs.isAlive) obs.removeOnPreDrawListener(preDraw)
+                }
+                return
+            }
+            addFails = 0
+            lastAddFailLog = 0L
+            overlay = next
             view = arrowView
             beginSession(x, y, receivedAt)
             return
         }
-        if (lp == null) return
+        val active = overlay ?: return
         noteMessage(x, y, receivedAt)
-        // Posted on the main looper, not on the next frame. This overlay is the app's only
-        // window and it never invalidates, so an adaptive-refresh panel can stop this
-        // process's vsync and a frame callback never runs. The arrow would stay where
-        // addView put it. One runnable is enough: the last position wins.
-        frames.move(x, y) { main.post(moveRunnable) }
+        active.frames.move(x, y) { Choreographer.getInstance().postFrameCallback(active.frameCb) }
+    }
+
+    private fun applyMove(o: Overlay, x: Int, y: Int) {
+        if (o.retired || overlay !== o) return
+        placePointer(o.lp, x, y, initial = false, onFailure = { noteLayoutFail(it) }) {
+            // Time from this call until the traversal that actually moves the window.
+            // Later calls before that traversal keep the earlier start, so a pending
+            // traversal wait is not reset by the next move.
+            val started = !o.layoutWaiting
+            if (started) {
+                o.layoutWaiting = true
+                o.layoutStartedAt = SystemClock.uptimeMillis()
+            }
+            try {
+                o.wm.updateViewLayout(o.view, o.lp)
+            } catch (t: Throwable) {
+                if (started) o.layoutWaiting = false
+                throw t
+            }
+            applied++
+            scheduleLog()
+        }
+    }
+
+    private fun onOverlayPreDraw(o: Overlay) {
+        if (o.retired || overlay !== o || !o.layoutWaiting) return
+        val waited = (SystemClock.uptimeMillis() - o.layoutStartedAt).coerceAtLeast(0L)
+        if (waited > maxLayoutMs) {
+            maxLayoutMs = waited
+            scheduleLog()
+        }
+        o.layoutWaiting = false
     }
 
     // Core delivers onMessage and onClosed on the main thread already. Remove here.
     // A posted remove ran after a show queued behind the same hide, so on:false then
     // on:true deleted the arrow the second message had just kept.
-    fun hide() = remove()
+    fun hide() {
+        addFails = 0
+        lastAddFailLog = 0L
+        remove()
+    }
 
     private fun remove() {
-        frames.hide { main.removeCallbacks(moveRunnable) }
-        endSession()
-        view?.let { v -> runCatching { wm?.removeView(v) } }
-        view = null; lp = null; host = null; wm = null
+        val old = overlay
+        overlay = null
+        view = null
+        if (old != null) {
+            old.retired = true
+            old.frames.retire { cancelPointerFrame(Choreographer.getInstance(), old.frameCb) }
+            endSession(old)
+            old.layoutWaiting = false
+            runCatching {
+                val obs = old.view.viewTreeObserver
+                if (obs.isAlive) obs.removeOnPreDrawListener(old.preDraw)
+            }
+            runCatching { old.wm.removeView(old.view) }
+        } else {
+            endSession(null)
+        }
     }
 
     private fun beginSession(x: Int, y: Int, receivedAt: Long) {
@@ -180,12 +240,12 @@ class Pointer(core: Core) : Feature(core) {
         maxQueueMs = queueDelay(receivedAt)
         maxLayoutMs = 0L
         layoutFails = 0
-        loggedFails = 0
         lastLogAt = 0L
         lastFailLog = 0L
-        layoutWaiting = false
+        lastLogged = null
         main.removeCallbacks(logRunnable)
-        main.postDelayed(logRunnable, 1000L)
+        logScheduled = false
+        scheduleLog()
     }
 
     private fun noteMessage(x: Int, y: Int, receivedAt: Long) {
@@ -195,6 +255,15 @@ class Pointer(core: Core) : Feature(core) {
         lastY = y
         val delay = queueDelay(receivedAt)
         if (delay > maxQueueMs) maxQueueMs = delay
+        scheduleLog()
+    }
+
+    private fun scheduleLog() {
+        if (!session || logScheduled) return
+        val now = SystemClock.uptimeMillis()
+        val delay = if (lastLogAt == 0L || now - lastLogAt >= 1000L) 1000L else 1000L - (now - lastLogAt)
+        logScheduled = true
+        main.postDelayed(logRunnable, delay)
     }
 
     private fun queueDelay(receivedAt: Long): Long {
@@ -202,43 +271,64 @@ class Pointer(core: Core) : Feature(core) {
         return (SystemClock.uptimeMillis() - receivedAt).coerceAtLeast(0L)
     }
 
-    private fun layoutDelay(): Long {
+    private fun layoutDelay(active: Overlay?): Long {
         var delay = maxLayoutMs
-        if (layoutWaiting) {
-            val waited = (SystemClock.uptimeMillis() - layoutStartedAt).coerceAtLeast(0L)
+        if (active != null && active.layoutWaiting) {
+            val waited = (SystemClock.uptimeMillis() - active.layoutStartedAt).coerceAtLeast(0L)
             if (waited > delay) delay = waited
         }
         return delay
     }
 
-    private fun writeLog() {
+    private fun snapshot(active: Overlay?) = LogSnapshot(
+        msgs = msgs,
+        applied = applied,
+        x = lastX,
+        y = lastY,
+        queueMs = maxQueueMs,
+        layoutMs = layoutDelay(active),
+        fails = layoutFails,
+    )
+
+    private fun writeLog(snap: LogSnapshot) {
         lastLogAt = SystemClock.uptimeMillis()
-        loggedFails = layoutFails
+        lastLogged = snap
         Log.i(
             "TwinDesk",
-            "pointer msgs=$msgs applied=$applied x=$lastX y=$lastY queueMs=$maxQueueMs layoutMs=${layoutDelay()} fail=$layoutFails",
+            "pointer msgs=${snap.msgs} applied=${snap.applied} x=${snap.x} y=${snap.y} queueMs=${snap.queueMs} layoutMs=${snap.layoutMs} fail=${snap.fails}",
         )
     }
 
-    private fun endSession() {
+    private fun endSession(active: Overlay?) {
         if (!session) return
         main.removeCallbacks(logRunnable)
-        val now = SystemClock.uptimeMillis()
-        // At most one stats line a second, plus a closing line when this second
-        // had a layout failure the last line did not include.
-        if (lastLogAt == 0L || now - lastLogAt >= 1000L || layoutFails != loggedFails) writeLog()
+        logScheduled = false
+        val snap = snapshot(active)
+        if (snap != lastLogged) writeLog(snap)
         session = false
-        layoutWaiting = false
     }
 
     private fun noteLayoutFail(t: Throwable) {
         layoutFails++
+        scheduleLog()
         val now = SystemClock.uptimeMillis()
-        if (now - lastFailLog < 1000L) return
+        if (lastFailLog != 0L && now - lastFailLog < 1000L) return
         lastFailLog = now
-        val msg = (t.message ?: t.javaClass.simpleName).replace('\n', ' ').take(160)
-        Log.w("TwinDesk", "pointer layout fail: $msg fail=$layoutFails")
+        Log.w("TwinDesk", "pointer layout fail: ${t.javaClass.simpleName} fail=$layoutFails")
     }
+
+    private fun noteAddFail(t: Throwable, a11y: Boolean) {
+        addFails++
+        val now = SystemClock.uptimeMillis()
+        if (lastAddFailLog != 0L && now - lastAddFailLog < 1000L) return
+        lastAddFailLog = now
+        val hostKind = if (a11y) "a11y" else "app"
+        Log.w("TwinDesk", "pointer add fail: ${t.javaClass.simpleName} host=$hostKind fail=$addFails")
+    }
+}
+
+internal fun cancelPointerFrame(choreographer: Choreographer, callback: Choreographer.FrameCallback) {
+    choreographer.removeFrameCallback(callback)
 }
 
 internal fun placePointer(
@@ -264,37 +354,44 @@ internal fun placePointer(
 }
 
 /**
- * One layout per turn of the main looper. Moves that arrive before the posted runnable
- * runs replace the one waiting, and the runnable applies whichever position was last.
- * Hide drops a waiting move and cancels the runnable, so a hidden arrow is not moved.
+ * One layout per display frame. Moves that arrive before the frame replace the one waiting,
+ * and the frame applies whichever position was last. Hide drops a waiting move and cancels
+ * the frame callback; retire permanently disables future moves or callbacks for a retired overlay.
  */
 internal class PointerFrames(private val apply: (Int, Int) -> Unit) {
     private var pending = false
     private var posted = false
+    private var retired = false
     private var x = 0
     private var y = 0
 
-    fun move(x: Int, y: Int, post: () -> Unit) {
+    fun move(x: Int, y: Int, postFrame: () -> Unit) {
+        if (retired) return
         this.x = x
         this.y = y
         pending = true
         if (posted) return
         posted = true
-        post()
+        postFrame()
     }
 
-    fun flush() {
+    fun onFrame() {
         posted = false
-        if (!pending) return
+        if (retired || !pending) return
         pending = false
         apply(x, y)
     }
 
-    fun hide(cancel: () -> Unit = {}) {
+    fun hide(cancelFrame: () -> Unit = {}) {
         pending = false
         if (!posted) return
         posted = false
-        cancel()
+        cancelFrame()
+    }
+
+    fun retire(cancelFrame: () -> Unit = {}) {
+        retired = true
+        hide(cancelFrame)
     }
 }
 

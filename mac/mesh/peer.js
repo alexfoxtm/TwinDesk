@@ -38,8 +38,17 @@ class Peer {
   // Through Bluetooth, files wait for Wi-Fi (netlink.js): `hold` takes them, sendNow sends them later.
   send(ctx, msg) {
     if (!ctx) return false;
+    if (ctx.deviceId && this.route.targetId && ctx.deviceId !== this.route.targetId) return false;
     if (msg && msg.t === P.T.FILE_CHUNK) this.fx.sentChunk(); // Engines in use: the old way
     return this.route.send(msg);
+  }
+
+  // The non-input outbound socket of this route's live session (or null if disconnected/mismatched).
+  outbound(ctx = this.current) {
+    const s = this.route.session;
+    if (!s || !ctx || ctx.deviceId !== s.id) return null;
+    if (typeof s.outbound === 'function') return s.outbound();
+    return typeof ctx.source === 'function' ? ctx.source() : null;
   }
 
   sendNow(msg) {

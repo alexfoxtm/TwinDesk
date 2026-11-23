@@ -904,8 +904,11 @@ class PhoneBridge extends EventEmitter {
     const side = m.side || 'left';
     const x = side === 'left' ? 0 : side === 'right' ? d.w - 1 : off * (d.w - 1);
     const y = side === 'top' ? 0 : side === 'bottom' ? d.h - 1 : off * (d.h - 1);
-    this.kvm = { route: m.route, x, y, side, push: 0, buttons: 0, mouse: m.mouse !== false };
-    this._crossBegin();
+    const owner = this._captureOwner();
+    clearTimeout(this.pointerTimer);
+    this.pointerTimer = null;
+    this.kvm = { route: m.route, x, y, side, push: 0, buttons: 0, mouse: m.mouse !== false, owner };
+    this._crossBegin(owner);
     this.keys.clear();
     if (this.inputBlocked) this.emit('popup', 'home', { key: INPUT_BLOCKED });
     // Answer after Kvm's _take returns: it starts its "no answer" timer right after sending kvm.take.
@@ -917,19 +920,82 @@ class PhoneBridge extends EventEmitter {
     this.emit('change');
   }
 
+  _captureOwner() {
+    const cur = this.server && this.server.current;
+    if (!isPhone(cur)) return null;
+    return { peer: cur, peerId: cur.deviceId || '', epoch: this._epoch };
+  }
+
+  // The pinned crossing phone, only while it is still the live authenticated phone session.
+  _crossingPeer(owner) {
+    if (!owner || owner.epoch !== this._epoch) return null;
+    const cur = this.server && this.server.current;
+    if (!isPhone(cur)) return null;
+    if (owner.peer && cur !== owner.peer) return null;
+    if (owner.peerId && cur.deviceId !== owner.peerId) return null;
+    if (this._boundId && cur.deviceId !== this._boundId) return null;
+    if (cur.released === true || cur.authed === false) return null;
+    return cur;
+  }
+
+  // The actual non-input outbound socket for the pinned crossing phone (respecting BLE split
+  // routing, closed/released sockets and fallback promotion; never sampling server.link).
+  _pointerOutbound(cur) {
+    if (!cur || !this.server) return null;
+    const server = this.server;
+    const open = (ws) => (ws && ws.released !== true && (ws.readyState == null || ws.readyState === (ws.OPEN ?? 1)) ? ws : null);
+    if (typeof server.outbound === 'function') return open(server.outbound(cur));
+    if (typeof cur.source === 'function') return open(cur.source());
+    if (typeof server.socketFor === 'function') return open(server.socketFor(cur, { t: T.PHONE_POINTER }));
+    const ws = open(cur.ws || null);
+    if (!ws) return null;
+    if (server.bleInput && typeof server.bleInput.route === 'function') {
+      return open(server.bleInput.route(ws, cur.alt, { t: T.PHONE_POINTER }));
+    }
+    return ws;
+  }
+
+  // Hand off phone.pointer only to the pinned crossing phone on its live non-input socket.
+  _sendPointer(owner, msg) {
+    const cur = this._crossingPeer(owner);
+    if (!cur) return { ok: false, ws: null };
+    const server = this.server;
+    const hasResolver = typeof server.outbound === 'function'
+      || typeof cur.source === 'function'
+      || typeof server.socketFor === 'function';
+    const ws = this._pointerOutbound(cur);
+    if (hasResolver && !ws) return { ok: false, ws: null };
+    if (!hasResolver && cur.ws && !ws) return { ok: false, ws: null };
+    const result = typeof server.send === 'function' ? server.send(cur, msg) : server.sendToClient(msg);
+    if (result === false) return { ok: false, ws };
+    return { ok: true, ws: this._pointerOutbound(cur) || ws };
+  }
+
   // The pointer is where we say; the app draws it there.
-  _pointer(on) {
+  _pointer(on, owner = this.kvm && this.kvm.owner) {
     const k = this.kvm;
+    if (on && !k) return false;
     const now = Date.now();
     const gap = this.ctl === this.input ? 40 : 8; // through the session (maybe Bluetooth): fewer
     if (on && now - (this.lastPointer || 0) < gap) {
       clearTimeout(this.pointerTimer);
-      this.pointerTimer = setTimeout(() => this._pointer(true), gap);
-      return;
+      this.pointerTimer = setTimeout(() => {
+        this.pointerTimer = null;
+        if (this.kvm === k) this._pointer(true, owner);
+      }, gap);
+      return false;
+    }
+    const msg = on && k
+      ? { t: T.PHONE_POINTER, on: true, x: Math.round(k.x), y: Math.round(k.y) }
+      : { t: T.PHONE_POINTER, on: false };
+    const { ok, ws } = this._sendPointer(owner, msg);
+    if (!ok) {
+      this._crossBuf(owner, ws);
+      return false;
     }
     this.lastPointer = now;
-    this.server.sendToClient(on && k ? { t: T.PHONE_POINTER, on: true, x: Math.round(k.x), y: Math.round(k.y) } : { t: T.PHONE_POINTER, on: false });
-    this._crossSent(now);
+    this._crossSent(now, owner, ws);
+    return true;
   }
 
   _hover() {
@@ -938,7 +1004,7 @@ class PhoneBridge extends EventEmitter {
     if (!k || !d || !this.ctl) return;
     if (k.buttons) this.ctl.mouse(ACTION.MOVE, k.x, k.y, d.w, d.h, 0, k.buttons);
     else this.ctl.mouse(ACTION.HOVER_MOVE, k.x, k.y, d.w, d.h, 0, 0);
-    this._pointer(true);
+    this._pointer(true, k.owner);
   }
 
   _move(m) {
@@ -978,6 +1044,7 @@ class PhoneBridge extends EventEmitter {
     if (this.pan) this.pan.end();
     const k = this.kvm;
     if (!k) return;
+    const owner = k.owner || null;
     this.input.stop();
     const d = this._display();
     if (k.buttons && d && this.ctl) this.ctl.mouse(ACTION.UP, k.x, k.y, d.w, d.h, k.buttons, 0);
@@ -986,20 +1053,23 @@ class PhoneBridge extends EventEmitter {
     for (const code of [...this.keys.held]) this._key({ t: T.K_KEY_UP, code });
     this.kvm = null;
     clearTimeout(this.pointerTimer);
-    this._pointer(false);
-    this._crossEnd();
+    this.pointerTimer = null;
+    this._pointer(false, owner);
+    this.lastPointer = 0;
+    this._crossEnd(owner);
     if (tellKvm) this.server.inject({ t: T.KVM_HOME, route: k.route });
     this.emit('change');
   }
 
   // One line when the pointer goes home. mouse is the take's mouse flag. ctl is
   // scrcpy (the control session), session (phone input on the session socket),
-  // mixed when both were used, or none. buf is the session socket's high water,
-  // or "-" when that socket is not on this object.
-  _crossBegin() {
+  // mixed when both were used, or none. buf is the crossing phone's non-input
+  // outbound socket high water, or "-" when no open outbound socket was observed.
+  _crossBegin(owner) {
     if (this._cross) this._crossEnd();
     const k = this.kvm;
     this._cross = {
+      owner: owner || null,
       mouse: !!(k && k.mouse !== false),
       ctl: 'none',
       moves: 0,
@@ -1011,7 +1081,7 @@ class PhoneBridge extends EventEmitter {
       buf: null,
     };
     this._crossCtl();
-    this._crossBuf();
+    this._crossBuf(owner);
   }
 
   _crossMove() {
@@ -1025,12 +1095,12 @@ class PhoneBridge extends EventEmitter {
     c.lastMove = now;
     c.moves++;
     this._crossCtl();
-    this._crossBuf();
+    this._crossBuf(c.owner);
   }
 
-  _crossSent(now) {
+  _crossSent(now, owner, ws) {
     const c = this._cross;
-    if (!c) return;
+    if (!c || (owner && c.owner !== owner)) return;
     if (c.lastSend) {
       const gap = now - c.lastSend;
       if (gap > c.maxSendGap) c.maxSendGap = gap;
@@ -1038,7 +1108,7 @@ class PhoneBridge extends EventEmitter {
     c.lastSend = now;
     c.sent++;
     this._crossCtl();
-    this._crossBuf();
+    this._crossBuf(c.owner, ws);
   }
 
   _crossCtl() {
@@ -1051,25 +1121,23 @@ class PhoneBridge extends EventEmitter {
     else if (kind !== 'none' && c.ctl !== kind) c.ctl = 'mixed';
   }
 
-  _crossBuf() {
+  _crossBuf(owner = this._cross && this._cross.owner, ws = undefined) {
     const c = this._cross;
-    if (!c) return;
+    if (!c || (owner && c.owner !== owner)) return;
     let n = null;
     try {
-      const server = this.server;
-      const ws = server && server.current && server.current.ws;
-      if (ws && typeof ws.bufferedAmount === 'number') n = ws.bufferedAmount;
-      else if (server && server.link && typeof server.link.bufferedAmount === 'number') n = server.link.bufferedAmount;
-      else if (server && server.link && server.link.ws && typeof server.link.ws.bufferedAmount === 'number') n = server.link.ws.bufferedAmount;
+      const sock = ws !== undefined ? ws : this._pointerOutbound(this._crossingPeer(c.owner));
+      if (sock && typeof sock.bufferedAmount === 'number') n = sock.bufferedAmount;
     } catch { n = null; }
     if (typeof n !== 'number' || !Number.isFinite(n)) return;
     if (c.buf == null || n > c.buf) c.buf = n;
   }
 
-  _crossEnd() {
+  _crossEnd(owner = this._cross && this._cross.owner) {
     const c = this._cross;
     if (!c) return;
-    this._crossBuf();
+    if (owner && c.owner !== owner) return;
+    this._crossBuf(c.owner);
     this._cross = null;
     const buf = c.buf == null ? '-' : String(c.buf);
     console.log(`[phone] pointer mouse=${c.mouse ? 1 : 0} ctl=${c.ctl} moves=${c.moves} sent=${c.sent} moveGapMs=${c.maxMoveGap} sendGapMs=${c.maxSendGap} buf=${buf}`);

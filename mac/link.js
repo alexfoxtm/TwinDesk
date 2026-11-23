@@ -66,9 +66,10 @@ class Link extends EventEmitter {
   }
 
   send(obj) {
-    if (!this.authed || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.authed || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     Quiet.sent(this.ws, obj);
     this.ws.send(JSON.stringify(obj));
+    return true;
   }
 
   startPairing({ address, port, name }) {
