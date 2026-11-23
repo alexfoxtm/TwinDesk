@@ -21,6 +21,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
@@ -30,6 +31,7 @@ import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class Rezume(core: Core) : Feature(core) {
     class Offer(val id: String, val kind: String, val title: String, val url: String, val name: String, val size: Long, val app: String, val appName: String)
@@ -62,16 +64,24 @@ class Rezume(core: Core) : Feature(core) {
     private var detectSaid: Boolean? = null
     private var safety: ScheduledFuture<*>? = null
     private var pendingPackageChange = false
+    private var barFocused = false
     @Volatile private var treePkg = ""
     @Volatile private var treeAt = 0L
     private val tickLock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val debounced = Runnable { onDebounced() }
-    private val watch = RezumeWatch(
-        postDebounce = { delay -> mainHandler.postDelayed(debounced, delay) },
+    private val settleFuture = AtomicReference<ScheduledFuture<*>?>(null)
+    private val settleGate: RezumeSettle = RezumeSettle(::armSettleTask, ::cancelSettleTask)
+    private val watch: RezumeWatch = RezumeWatch(
+        postDebounce = { delay: Long ->
+            // A newer window read replaces a settle that was waiting on the previous tree.
+            settleGate.cancelAll()
+            mainHandler.postDelayed(debounced, delay)
+        },
         cancelDebounce = {
             mainHandler.removeCallbacks(debounced)
             pendingPackageChange = false
+            settleGate.cancelAll()
         },
         startSafety = { period ->
             safety?.cancel(false)
@@ -82,10 +92,23 @@ class Rezume(core: Core) : Feature(core) {
         cancelSafety = {
             safety?.cancel(false)
             safety = null
+            settleGate.cancelAll()
         },
     )
     private val icons = HashMap<String, String>()
     private val dismissed = HashSet<String>()
+
+    private fun armSettleTask(delay: Long, generation: Int) {
+        val task = Runnable {
+            if (!settleGate.fired(generation, watch.live)) return@Runnable
+            runCatching { tick(packageChanged = false, settling = true) }.onFailure { Log.e("TwinDesk", "rezume", it) }
+        }
+        settleFuture.getAndSet(core.bg.schedule(task, delay, TimeUnit.MILLISECONDS))?.cancel(false)
+    }
+
+    private fun cancelSettleTask() {
+        settleFuture.getAndSet(null)?.cancel(false)
+    }
 
     // sync: tell the computer (pair.sync), unless it's the computer's change being taken here.
     fun set(k: String, v: Boolean, sync: Boolean = true) {
@@ -106,15 +129,23 @@ class Rezume(core: Core) : Feature(core) {
 
     override fun onWelcome(host: Host) {
         incoming = null
-        outId = ""; outKey = ""; seenKey = ""
         detectSaid = null
+        synchronized(tickLock) {
+            outId = ""; outKey = ""; seenKey = ""
+            treePkg = ""; treeAt = 0L
+        }
+        settleGate.cancelAll()
         apply()
     }
 
     override fun onClosed() {
         peer = null
         incoming = null
-        outId = ""; outKey = ""
+        synchronized(tickLock) {
+            outId = ""; outKey = ""
+            treePkg = ""; treeAt = 0L
+        }
+        settleGate.cancelAll()
         timers()
         Notify.cancelRezume(core.ctx)
     }
@@ -140,8 +171,11 @@ class Rezume(core: Core) : Feature(core) {
     private fun timers() {
         val p = peer
         val want = on && opt("send") && core.link.connected && p != null && p.optBoolean("on")
-        watch.setInteractive(screenInteractive())
-        watch.setArmed(want)
+        // onWelcome runs on the link thread. The window, the screen and the debounce run on main.
+        synchronized(watch) {
+            watch.setInteractive(screenInteractive())
+            watch.setArmed(want)
+        }
     }
 
     private fun screenInteractive(): Boolean =
@@ -152,54 +186,78 @@ class Rezume(core: Core) : Feature(core) {
 
     // A window event the accessibility service already received. A package change is read; a fresh address is not.
     fun onWindow(packageChanged: Boolean) {
-        if (!watch.live) return
-        if (packageChanged) pendingPackageChange = true
-        val pkg = InputService.running?.activePackage.orEmpty()
-        watch.onWindow(packageChanged, treeFresh(pkg))
+        synchronized(watch) {
+            if (!watch.live) return
+            if (packageChanged) pendingPackageChange = true
+            val pkg = InputService.running?.activePackage.orEmpty()
+            watch.onWindow(packageChanged, treeFresh(pkg))
+        }
     }
 
     private fun onDebounced() {
-        val changed = pendingPackageChange
-        pendingPackageChange = false
-        if (!watch.debounceFired()) return
+        val changed = synchronized(watch) {
+            val c = pendingPackageChange
+            pendingPackageChange = false
+            if (!watch.debounceFired()) return
+            c
+        }
         core.bg.execute { runCatching { tick(changed) }.onFailure { Log.e("TwinDesk", "rezume", it) } }
     }
 
-    private fun treeFresh(pkg: String): Boolean =
-        pkg.isNotEmpty() && pkg == treePkg && System.currentTimeMillis() - treeAt < REZUME_SAFETY_MS
+    private fun treeFresh(pkg: String): Boolean = synchronized(tickLock) {
+        rezumeTreeFresh(pkg, treePkg, SystemClock.elapsedRealtime(), treeAt)
+    }
 
     // ---- offering ----
 
-    private fun tick(packageChanged: Boolean, safety: Boolean = false) {
+    private fun tick(packageChanged: Boolean, safety: Boolean = false, settling: Boolean = false) {
+        val live = watch.live
         synchronized(tickLock) {
-        val det = InputService.running != null
-        if (det != detectSaid) sendPolicy() // Accessibility came or went: the computer asks through wireless debugging or not
-        val p = peer ?: return
-        if (outId.isNotEmpty() && System.currentTimeMillis() - outAt > TTL_MS) clearOut()
-        val svc = InputService.running ?: return
-        if (!screenInteractive()) return // the screen off: what was offered stays
-        val hinted = svc.activePackage
-        // The same app, read a moment ago: the address bar can wait for the safety pass. An app switch cannot.
-        if (!rezumeShouldReadTree(packageChanged, treeFresh(hinted), safety)) return
-        // The window in front, from its own content: the keyboard opening (typing in the address bar) makes
-        // it the "active package", and nothing says so when it closes again; the active window stays the app's.
-        val pkg = runCatching { svc.rootInActiveWindow?.packageName?.toString() }.getOrNull()?.takeIf { it.isNotEmpty() && !NOT_AN_APP.containsMatchIn(it) } ?: hinted
-        val cacheKey = hinted.ifEmpty { pkg }
-        if (cacheKey.isNotEmpty()) {
-            treePkg = cacheKey
-            treeAt = System.currentTimeMillis()
-        }
-        if (pkg.isEmpty() || NOT_AN_APP.containsMatchIn(pkg)) return say("nothing to offer in front ($pkg)")
-        val a = current(svc, pkg, p) ?: return
-        say("")
-        last = JSONObject(a.second.toString())
-        lastAt = System.currentTimeMillis()
-        val now = System.currentTimeMillis()
-        if (a.first == outKey) { outAt = now; return }
-        if (a.first != seenKey) { seenKey = a.first; seenSince = now; return }
-        if (now - seenSince < STABLE_MS) return
-            seenKey = ""
-            send(a.second, false)
+            val det = InputService.running != null
+            if (det != detectSaid) sendPolicy() // Accessibility came or went: the computer asks through wireless debugging or not
+            val p = peer ?: return
+            if (outId.isNotEmpty() && System.currentTimeMillis() - outAt > TTL_MS) clearOut()
+            val svc = InputService.running ?: return
+            if (!screenInteractive()) return // the screen off: what was offered stays
+            val hinted = svc.activePackage
+            // The same app, read a moment ago: the address bar can wait for the safety pass. An app switch cannot.
+            // A settle check is the one-shot that follows a new app or URL, so it cannot wait for that pass either.
+            if (!rezumeShouldReadTree(packageChanged, treeFresh(hinted), safety, settling)) return
+            // The window in front, from its own content: the keyboard opening (typing in the address bar) makes
+            // it the "active package", and nothing says so when it closes again; the active window stays the app's.
+            barFocused = false
+            val pkg = runCatching { svc.rootInActiveWindow?.packageName?.toString() }.getOrNull()?.takeIf { it.isNotEmpty() && !NOT_AN_APP.containsMatchIn(it) } ?: hinted
+            if (!rezumeTreeCacheable(pkg, addressFocused = false)) {
+                treePkg = ""
+                treeAt = 0L
+                return say("nothing to offer in front ($pkg)")
+            }
+            val a = current(svc, pkg, p)
+            if (!rezumeTreeCacheable(pkg, barFocused)) {
+                // The address bar was focused: the next event has to read the page that opened.
+                treePkg = ""
+                treeAt = 0L
+            } else {
+                treePkg = pkg
+                treeAt = SystemClock.elapsedRealtime()
+            }
+            if (a == null) return
+            say("")
+            last = JSONObject(a.second.toString())
+            lastAt = System.currentTimeMillis()
+            val now = SystemClock.elapsedRealtime()
+            if (a.first == outKey) { outAt = System.currentTimeMillis(); return }
+            if (a.first != seenKey || now < seenSince) {
+                seenKey = a.first
+                seenSince = now
+            }
+            if (rezumeOfferStep(a.first, seenKey, now, seenSince) == RezumeOfferStep.SEND) {
+                settleGate.cancelAll()
+                seenKey = ""
+                send(a.second, false)
+                return
+            }
+            settleGate.arm(now, seenSince, live)
         }
     }
 
@@ -222,7 +280,7 @@ class Rezume(core: Core) : Feature(core) {
         if (root.packageName?.toString() != pkg) return null.also { say("the window in front is ${root.packageName}, not $pkg") }
         for (id in ids) {
             val n: AccessibilityNodeInfo = root.findAccessibilityNodeInfosByViewId("$pkg:id/$id").orEmpty().firstOrNull { it.isVisibleToUser } ?: continue
-            if (n.isFocused) return null.also { say("the address bar is being typed in") } // being typed in
+            if (n.isFocused) { barFocused = true; return null.also { say("the address bar is being typed in") } } // being typed in
             return normalize(n.text?.toString() ?: "") ?: null.also { say("not an address in $id") }
         }
         return null.also { say("no address bar found in $pkg") }
@@ -412,9 +470,9 @@ class Rezume(core: Core) : Feature(core) {
 internal const val REZUME_DEBOUNCE_MS = 200L
 internal const val REZUME_SAFETY_MS = 12_000L
 
-/** A window event reads the tree when the front package changed, the last read is stale, or this is the safety pass. */
-internal fun rezumeShouldReadTree(packageChanged: Boolean, addressFresh: Boolean, safety: Boolean = false): Boolean =
-    safety || packageChanged || !addressFresh
+/** A window event reads the tree when the front package changed, the last read is stale, or this is the safety or settle pass. */
+internal fun rezumeShouldReadTree(packageChanged: Boolean, addressFresh: Boolean, safety: Boolean = false, settling: Boolean = false): Boolean =
+    safety || settling || packageChanged || !addressFresh
 
 /**
  * While ReZume is on, a peer is connected and the screen is interactive: window events coalesce into
@@ -434,14 +492,17 @@ internal class RezumeWatch(
     private var safetyOn = false
     private var debounceOn = false
 
-    val live get() = armed && interactive
+    val live: Boolean
+        @Synchronized get() = armed && interactive
 
+    @Synchronized
     fun setArmed(on: Boolean) {
         if (armed == on) return
         armed = on
         sync()
     }
 
+    @Synchronized
     fun setInteractive(on: Boolean) {
         if (interactive == on) return
         interactive = on
@@ -449,6 +510,7 @@ internal class RezumeWatch(
     }
 
     /** @return true when this event is coalesced into a tree read. */
+    @Synchronized
     fun onWindow(packageChanged: Boolean, addressFresh: Boolean): Boolean {
         if (!live) return false
         if (!rezumeShouldReadTree(packageChanged, addressFresh)) return false
@@ -459,6 +521,7 @@ internal class RezumeWatch(
     }
 
     /** The debounced runnable finished. False when the screen or the feature went off while it waited. */
+    @Synchronized
     fun debounceFired(): Boolean {
         debounceOn = false
         return live
@@ -484,4 +547,74 @@ internal class RezumeWatch(
             postDebounce(REZUME_DEBOUNCE_MS)
         }
     }
+}
+
+/** How long until an app or URL that was just seen counts as settled. A backward clock waits the full window. */
+internal fun rezumeSettleDelay(now: Long, seenSince: Long): Long {
+    val waited = now - seenSince
+    if (waited < 0L) return Rezume.STABLE_MS
+    val remain = Rezume.STABLE_MS - waited
+    return if (remain < 0L) 0L else remain
+}
+
+internal enum class RezumeOfferStep { WAIT, SEND }
+
+/** A new key waits. The same key sends once it has been in front for [Rezume.STABLE_MS]. */
+internal fun rezumeOfferStep(key: String, seenKey: String, now: Long, seenSince: Long): RezumeOfferStep {
+    if (key != seenKey) return RezumeOfferStep.WAIT
+    if (rezumeSettleDelay(now, seenSince) > 0L) return RezumeOfferStep.WAIT
+    return RezumeOfferStep.SEND
+}
+
+/**
+ * One follow-up tree read, [rezumeSettleDelay] after the front app or URL was first seen.
+ * A newer sighting or a dead watch replaces it. The generation keeps a cancelled run from
+ * clearing the timer that replaced it.
+ */
+internal class RezumeSettle(
+    private val schedule: (delayMs: Long, generation: Int) -> Unit,
+    private val cancel: () -> Unit,
+) {
+    private val lock = Any()
+    private var generation = 0
+    private var posted = false
+
+    /** @return the delay that was scheduled, or -1 when the watch is not live. */
+    fun arm(now: Long, seenSince: Long, live: Boolean): Long = synchronized(lock) {
+        generation++
+        val gen = generation
+        if (posted) cancel()
+        posted = false
+        if (!live) return -1L
+        val delay = rezumeSettleDelay(now, seenSince)
+        posted = true
+        schedule(delay, gen)
+        delay
+    }
+
+    fun cancelAll() = synchronized(lock) {
+        generation++
+        if (posted) cancel()
+        posted = false
+    }
+
+    /** The one-shot ran. False when a newer settle replaced it, or the watch died while it waited. */
+    fun fired(generation: Int, live: Boolean): Boolean = synchronized(lock) {
+        if (!posted || generation != this.generation) return false
+        posted = false
+        live
+    }
+}
+
+/** A keyboard, a launcher, or a focused address bar is not a tree we can skip for the safety interval. */
+internal fun rezumeTreeCacheable(pkg: String, addressFocused: Boolean): Boolean =
+    pkg.isNotEmpty() && !Rezume.NOT_AN_APP.containsMatchIn(pkg) && !addressFocused
+
+/** True when [pkg] was read recently on the monotonic clock. A backward step is not fresh. */
+internal fun rezumeTreeFresh(pkg: String, treePkg: String, now: Long, treeAt: Long): Boolean {
+    if (!rezumeTreeCacheable(pkg, addressFocused = false)) return false
+    if (pkg != treePkg) return false
+    val age = now - treeAt
+    if (age < 0L) return false
+    return age < REZUME_SAFETY_MS
 }
