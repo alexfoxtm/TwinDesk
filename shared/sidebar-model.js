@@ -39,6 +39,29 @@
     return firstSection(kind, available);
   }
 
+  // A nearby phone was clicked. Remember it so its section opens when it becomes selected.
+  // The timer only forgets the click. It does not open a section: a phone that never
+  // answers must not jump the window onto some other device.
+  const CONNECT_OPEN_MS = 20000;
+  function armConnectOpen(prev, id, hooks) {
+    if (prev && prev.timer) hooks.cancel(prev.timer);
+    const armed = {
+      id: String(id),
+      timer: null,
+      go() {
+        if (armed.timer) hooks.cancel(armed.timer);
+        armed.timer = null;
+        hooks.drop(armed);
+        hooks.open();
+      },
+    };
+    armed.timer = hooks.schedule(() => {
+      armed.timer = null;
+      hooks.drop(armed);
+    }, CONNECT_OPEN_MS);
+    return armed;
+  }
+
   function selectedOf(peers) {
     return (peers || []).find((p) => p && p.selected && p.state !== 'via') || null;
   }
@@ -129,7 +152,7 @@
     return [{ id: peer.id, name: peer.name, os: peer.os, state: connected ? 'connected' : linkState || 'offline', rtt: connected && rtt != null ? rtt : null, selected: true, connected, via: [] }];
   }
 
-  const api = { PHONE_ONLY, COMPUTER_ONLY, GLOBAL, kindOf, sectionVisible, isScoped, firstSection, targetSection, selectedOf, selectedKind, buildTiles, singlePeer };
+  const api = { PHONE_ONLY, COMPUTER_ONLY, GLOBAL, kindOf, sectionVisible, isScoped, firstSection, targetSection, armConnectOpen, CONNECT_OPEN_MS, selectedOf, selectedKind, buildTiles, singlePeer };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SidebarModel = api;
 })(typeof self !== 'undefined' ? self : this);

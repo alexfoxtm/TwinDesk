@@ -117,6 +117,7 @@ function setupIpc(ctx) {
     if (plan.id && up(plan.id)) return report('');
     if (plan.action === 'phone') {
       report('');
+      ctx.hub.wantSelect(String(plan.id));
       return ctx.phone.connect(plan.id);
     }
     if (plan.action === 'invite') {
@@ -161,7 +162,9 @@ function setupIpc(ctx) {
     },
     connectPhone(deviceId) {
       ctx.proximityLock?.cancel();
-      ctx.phone.connect(String(deviceId));
+      const id = String(deviceId);
+      ctx.hub.wantSelect(id);
+      ctx.phone.connect(id);
     },
     disconnectPhone() {
       ctx.proximityLock?.cancel();

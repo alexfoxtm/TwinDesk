@@ -10,7 +10,9 @@
 //
 // Selection: `selectedId` is a string (or null), `selected` is its Session (or null). Never mix them.
 // The first device that connects while nothing is selected is selected; when the selected device
-// drops, another connected one is picked. Every change of the selection tells the facade's handlers
+// drops, another connected one is picked. wantSelect(id) asks for that device when it connects,
+// for 20 s, even if another is already selected. A reconnect the user did not click does not
+// call it, so it does not take the selection. Every change of the selection tells the facade's handlers
 // 'closed' and then, for the new device, 'welcome' with {macId, macName, os}.
 //
 // Events: 'change' (anything the UI shows), 'selected' (id or null), 'peerAdded' (id),
@@ -23,6 +25,7 @@ const { Route } = require('../../shared/hub-route.js');
 const { Sessions } = require('./session.js');
 
 const ROSTER = 'mesh.roster';
+const WANT_SELECT_MS = 20 * 1000; // a clicked phone is still the one to select when it connects
 
 function addTo(map, key, fn) {
   if (!map.has(key)) map.set(key, []);
@@ -41,6 +44,7 @@ class Hub extends EventEmitter {
     this.pairing = null;
     this.mesh = mesh;
     this.selectedId = null;
+    this.pendingSelect = null; // { id, at } | null: the device a click asked to select when it connects
     this.sessions = new Sessions({ links });
     this.bus = this._makeBus();
     this.facade = this._makeFacade();
@@ -126,12 +130,22 @@ class Hub extends EventEmitter {
 
   // Forget a device: its guest link (we dialled it) and its host entry (it dialled us), both.
   forgetPeer(id) {
+    this._forgetPending(id);
     if (this.links.get(id)) this.links.forget(id);
     if (this.pairing && this.pairing.list().some((x) => x.id === id)) this.pairing.forget(id);
   }
 
   forgetGuest(id) {
+    this._forgetPending(id);
     if (this.pairing) this.pairing.forget(id);
+  }
+
+  // The user clicked this device while it was still connecting. For 20 s, that id becomes
+  // the selected device when it comes up, even if another device is selected now.
+  wantSelect(id) {
+    const sid = String(id || '');
+    if (!sid) return;
+    this.pendingSelect = { id: sid, at: Date.now() };
   }
 
   // Sound and microphone (mesh #194): same target rules as mac/mesh/hub.js audioRoute().
@@ -206,6 +220,7 @@ class Hub extends EventEmitter {
   select(id) {
     const s = id ? this.sessions.get(id) : null;
     if (!s || !s.connected) return false;
+    if (this.pendingSelect && this.pendingSelect.id !== String(id)) this.pendingSelect = null;
     this._select(id);
     return true;
   }
@@ -343,8 +358,10 @@ class Hub extends EventEmitter {
     this.mesh.addPeer({ id: s.id, name: s.displayName(), os: s.peerOs, send: (m) => s.send(m), mesh: s.meshCapable });
     this._rosterAll();
     this._peerEvent('welcome', s.id, this._welcomeInfo(s));
+    const wanted = this._pendingHit(s.id);
+    if (wanted) this.pendingSelect = null;
     if (this.selectedId === s.id) this._facadeEmit('welcome', this._welcomeInfo(s)); // the selected device came back (replaced)
-    else if (this.selectedId === null) this._select(s.id);
+    else if (this.selectedId === null || wanted) this._select(s.id);
     if (this._audioRoute) this._audioRoute.refresh();
     this.emit('peerAdded', s.id);
     this._change();
@@ -403,6 +420,21 @@ class Hub extends EventEmitter {
   }
 
   // ---- internals: selection and the facade ----
+
+  // True when a click asked for this id and the ask is still inside 20 s. A stale ask is dropped.
+  _pendingHit(id) {
+    const p = this.pendingSelect;
+    if (!p || p.id !== String(id)) return false;
+    if (Date.now() - p.at > WANT_SELECT_MS) {
+      this.pendingSelect = null;
+      return false;
+    }
+    return true;
+  }
+
+  _forgetPending(id) {
+    if (this.pendingSelect && this.pendingSelect.id === String(id)) this.pendingSelect = null;
+  }
 
   _select(id) {
     const next = id || null;

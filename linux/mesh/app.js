@@ -207,9 +207,20 @@
 
   // A tile was clicked: a connected device becomes the selected one (hub.select) and its sections
   // open (the open one when it exists for it, else its first); a phone nearby connects.
-  let goAfter = null; // { id, kind, timer }: open the sections once the new selection reached this window
+  // A connect click opens that phone's section when it becomes selected. Its timer only
+  // forgets the click, so a phone that never answers does not jump to another device.
+  let goAfter = null; // { id, go, timer }: open the sections once the new selection reached this window
   function pick(t) {
-    if (t.action === 'connect') return api.connectPhone(t.id);
+    if (t.action === 'connect') {
+      const open = () => show(M.targetSection(current && current.def.id, t.kind, availableFor(t.kind)), true);
+      goAfter = M.armConnectOpen(goAfter, t.id, {
+        open,
+        schedule: setTimeout,
+        cancel: clearTimeout,
+        drop: (armed) => { if (goAfter === armed) goAfter = null; },
+      });
+      return api.connectPhone(t.id);
+    }
     if (t.action !== 'select') return;
     const go = () => {
       if (goAfter) clearTimeout(goAfter.timer);

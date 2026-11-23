@@ -301,7 +301,12 @@ function setupIpc(ctx) {
   handle('setPcScreenTarget', (id, choice) => typeof id === 'string' && choice && typeof choice === 'object' ? pcScreen.setTarget(id, choice) : undefined);
   // A phone as the peer (phone.js, phone-bridge.js, phoneview.js; there once our server runs)
   const phone = (name, fn) => handle(name, (...args) => (ctx.phone ? fn(...args) : undefined));
-  phone('connectPhone', (id) => { ctx.proximityLock?.cancel(); return ctx.phone.connect(String(id)); });
+  phone('connectPhone', (id) => {
+    ctx.proximityLock?.cancel();
+    const deviceId = String(id);
+    ctx.hub.wantSelect(deviceId);
+    return ctx.phone.connect(deviceId);
+  });
   phone('disconnectPhone', () => { ctx.proximityLock?.cancel(); return ctx.phone.disconnect(); });
   handle('setPhone', (partial) => change('phone', partial, () => {
     if (partial && 'input' in partial && ctx.phone) ctx.phone.bridge.tellVia();

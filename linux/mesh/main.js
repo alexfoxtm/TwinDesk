@@ -986,6 +986,7 @@ function viaWifi(obj, method, why) {
 let phoneInvite = null; // {id, name, until}
 function connectPhoneDev(d) {
   proximityLock?.cancel();
+  if (hub && d && d.id) hub.wantSelect(String(d.id));
   discovery.clearInvite(d.id);
   const paired = phone && link.pairing && link.pairing.list().some((p) => p.id === d.id);
   if (!paired) {

@@ -10,7 +10,9 @@
 //
 // Selection: `selectedId` is a string (or null), `selected` is its Session (or null). Never mix them.
 // The first device that connects while nothing is selected is selected; when the selected device
-// drops, another connected one is picked. Every change of the selection tells the facade's
+// drops, another connected one is picked. wantSelect(id) asks for that device when it connects,
+// for 20 s, even if another is already selected. A reconnect the user did not click does not
+// call it, so it does not take the selection. Every change of the selection tells the facade's
 // listeners 'closed' and then, for the new device, 'client' with the device's view.
 //
 // The server and the host pairing may arrive later: attachHost(server, pairing).
@@ -25,6 +27,7 @@ const { Route, viewOf } = require('../../shared/hub-route.js');
 const { Sessions } = require('./session.js');
 
 const ROSTER = 'mesh.roster';
+const WANT_SELECT_MS = 20 * 1000; // a clicked phone is still the one to select when it connects
 
 function addTo(map, key, fn) {
   if (!map.has(key)) map.set(key, []);
@@ -42,6 +45,7 @@ class Hub extends EventEmitter {
     this.server = null;
     this.pairing = null;
     this.selectedId = null;
+    this.pendingSelect = null; // { id, at } | null: the device a click asked to select when it connects
     this.sessions = new Sessions({ links });
     this.bus = this._makeBus();
     this._busHandlers = new Map(); // type -> [fn(msg, fromId, source)]
@@ -162,19 +166,30 @@ class Hub extends EventEmitter {
   forgetPeer(id) {
     this._peerEvent('forgotten', id);
     this.forgotten.add(id);
+    this._forgetPending(id);
     if (this.links.get(id)) this.links.forget(id);
     if (this.pairing && this.pairing.list().some((x) => x.id === id)) this.pairing.forget(id);
   }
 
   forgetGuest(id) {
     this._peerEvent('forgotten', id);
+    this._forgetPending(id);
     if (this.pairing) this.pairing.forget(id);
+  }
+
+  // The user clicked this device while it was still connecting. For 20 s, that id becomes
+  // the selected device when it comes up, even if another device is selected now.
+  wantSelect(id) {
+    const sid = String(id || '');
+    if (!sid) return;
+    this.pendingSelect = { id: sid, at: Date.now() };
   }
 
   // Makes `id` the selected device. False when that device is not connected.
   select(id) {
     const s = id ? this.sessions.get(id) : null;
     if (!s || !s.connected) return false;
+    if (this.pendingSelect && this.pendingSelect.id !== String(id)) this.pendingSelect = null;
     this._select(id);
     return true;
   }
@@ -329,7 +344,9 @@ class Hub extends EventEmitter {
     if (this.mesh) this.mesh.addPeer({ id: s.id, name: s.displayName(), os: s.peerOs, send: (m) => s.send(m), mesh: s.meshCapable });
     this._rosterAll();
     this._peerEvent('welcome', s.id, this._welcomeInfo(s));
-    if (this.selectedId === null) this._select(s.id);
+    const wanted = this._pendingHit(s.id);
+    if (wanted) this.pendingSelect = null;
+    if (this.selectedId === null || wanted) this._select(s.id);
     this._refreshRoutes();
     this.emit('peerAdded', s.id);
     this._change();
@@ -398,6 +415,21 @@ class Hub extends EventEmitter {
   }
 
   // ---- internals: selection ----
+
+  // True when a click asked for this id and the ask is still inside 20 s. A stale ask is dropped.
+  _pendingHit(id) {
+    const p = this.pendingSelect;
+    if (!p || p.id !== String(id)) return false;
+    if (Date.now() - p.at > WANT_SELECT_MS) {
+      this.pendingSelect = null;
+      return false;
+    }
+    return true;
+  }
+
+  _forgetPending(id) {
+    if (this.pendingSelect && this.pendingSelect.id === String(id)) this.pendingSelect = null;
+  }
 
   _select(id) {
     const next = id || null;
