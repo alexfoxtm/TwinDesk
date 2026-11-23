@@ -5,6 +5,7 @@
 'use strict';
 
 const assert = require('assert');
+const P = require('../protocol.js');
 const Q = require('../quiet.js');
 
 const realNow = Date.now;
@@ -165,6 +166,119 @@ try {
     assert.equal(Q.keep(), true, 'a change applies on the next tick');
     Q.use(() => { throw new Error('not loaded'); });
     assert.equal(Q.keep(), true);
+  }
+
+  // Prioritize performance and both ends idle: 3 s / 10 s, and only when the peer said perf.
+  // The four combinations of the setting and "both idle". Times are literals so a mutated constant fails.
+  Q._reset();
+  {
+    assert.equal(P.PING_MS_IDLE_PERF, 3000);
+    assert.equal(P.TIMEOUT_MS_IDLE_PERF, 10000);
+    const ws = sock();
+    run(ws, clock);
+    clock += Q.ACTIVE_MS;
+    let r = run(ws, clock);
+    assert.equal(r.quiet, false, 'keep off, peer not idle: the 1 s tier');
+    assert.deepEqual(ws.out, [{ t: 'idle', on: true }]);
+
+    Q.seen(ws, { t: 'idle', on: true });
+    r = run(ws, clock);
+    assert.equal(r.quiet, true, 'keep off, both idle, no perf: the 5 min quiet');
+    const quietAt = clock;
+    clock += 3000;
+    assert.equal(run(ws, quietAt).ping, false, 'the 5 min quiet does not ping at 3 s');
+
+    Q._reset();
+    Q.setKeep(true);
+    const held = sock();
+    run(held, clock);
+    Q.seen(held, { t: 'idle', on: true });
+    clock += Q.ACTIVE_MS;
+    r = run(held, clock);
+    assert.equal(r.quiet, false, 'keep on, peer idle without perf: still the 1 s tier');
+    assert.deepEqual(held.out, [{ t: 'idle', on: false, perf: 1 }], 'capability only; on stays false');
+    clock += 3000;
+    assert.equal(run(held, clock).quiet, false, 'still not the 3 s tier 3 s later');
+
+    Q._reset();
+    Q.setKeep(true);
+    const perf = sock();
+    run(perf, clock);
+    Q.seen(perf, { t: 'idle', on: true, perf: 1, keep: 1 });
+    clock += Q.ACTIVE_MS;
+    const started = clock;
+    r = run(perf, clock);
+    assert.equal(r.quiet, true, 'keep on, both idle, peer said perf: the 3 s tier');
+    assert.equal(r.ping, false, 'no ping on the tick the tier starts');
+    assert.equal(r.dead, false);
+    assert.deepEqual(perf.out[perf.out.length - 1], { t: 'idle', on: true, perf: 1, keep: 1 });
+    clock += 2999;
+    assert.equal(run(perf, started).ping, false, 'no ping before 3 s');
+    clock += 1;
+    assert.equal(run(perf, started).ping, true, 'idle performance: a ping every 3 s');
+    clock = started + 10000;
+    assert.equal(run(perf, started).dead, false, '10 s of silence is inside the limit');
+    clock += 1;
+    assert.equal(run(perf, started).dead, true, 'idle performance: closed after 10 s');
+  }
+
+  // A hold, a busy partner link, or idle {off} is the 1 s tier on this tick.
+  Q._reset();
+  {
+    Q.setKeep(true);
+    const ws = sock();
+    run(ws, clock);
+    Q.seen(ws, { t: 'idle', on: true, perf: 1, keep: 1 });
+    clock += Q.ACTIVE_MS;
+    assert.equal(run(ws, clock).quiet, true);
+    const heard = clock - 9000; // would already be dead on the 8 s limit
+    Q.hold('files', true);
+    let r = run(ws, heard);
+    assert.equal(r.quiet, false, 'a file transfer is the 1 s tier at once');
+    assert.equal(r.rx, clock, 'leaving the 3 s tier raises rx, so 9 s of quiet is not an 8 s timeout');
+    assert.deepEqual(ws.out[ws.out.length - 1], { t: 'idle', on: false });
+    Q.hold('files', false);
+    clock += 1;
+    assert.equal(run(ws, clock, true).quiet, false, 'the input partner stays on the 1 s tier');
+    Q.seen(ws, { t: 'idle', on: false });
+    r = run(ws, heard);
+    assert.equal(r.quiet, false, 'idle {off} is the 1 s tier at once');
+    assert.ok(r.rx > heard, 'idle off keeps the raised baseline, not the 9 s-old silence');
+  }
+
+  // Only the other end has Prioritize performance: 3 s, not the 5 min quiet (that would outlast its 10 s).
+  Q._reset();
+  {
+    const ws = sock();
+    run(ws, clock);
+    Q.seen(ws, { t: 'idle', on: true, perf: 1, keep: 1 });
+    clock += Q.ACTIVE_MS;
+    const started = clock;
+    const r = run(ws, clock);
+    assert.equal(r.quiet, true, 'peer keep: the 3 s tier here too');
+    assert.equal(r.ping, false);
+    clock += 3000;
+    assert.equal(run(ws, started).ping, true, 'peer keep: a ping at 3 s, not at 5 min');
+    assert.deepEqual(ws.out[ws.out.length - 1], { t: 'idle', on: true, perf: 1 });
+  }
+
+  // Into the 3 s tier from a long quiet. The next tick is handed the old last-heard time again.
+  Q._reset();
+  {
+    const ws = sock();
+    run(ws, clock);
+    Q.seen(ws, { t: 'idle', on: true, perf: 1 });
+    clock += Q.ACTIVE_MS;
+    const heard = clock;
+    assert.equal(run(ws, heard).quiet, true, 'full quiet first');
+    clock += 4 * 60 * 1000;
+    Q.setKeep(true);
+    let r = run(ws, heard);
+    assert.equal(r.dead, false, 'the tick that leaves the long quiet does not trip 10 s');
+    clock += 1000;
+    r = run(ws, heard);
+    assert.equal(r.dead, false, 'the next tick, given the old last-heard time, does not trip 10 s either');
+    assert.equal(r.quiet, true);
   }
 
   console.log('quiet: ok');

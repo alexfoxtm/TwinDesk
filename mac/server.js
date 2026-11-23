@@ -209,7 +209,11 @@ class Server extends EventEmitter {
           if (!ws) continue;
           const limit = ws.transport === 'ble' ? P.BLE_TIMEOUT_MS : P.TIMEOUT_MS;
           let rx = Math.max(ws.lastRx, (ws.blePort && this.blePorts.get(ws.blePort)) || 0); // through Bluetooth, bytes of a big message count too
-          // Quiet links (shared/quiet.js): both ends idle, a ping every few minutes. Not through Bluetooth.
+          // Quiet links (shared/quiet.js): both ends idle. A ping every few minutes, or every
+          // PING_MS_IDLE_PERF with TIMEOUT_MS_IDLE_PERF when Prioritize performance is the only
+          // reason and the peer said `idle {perf:1}`. The 1 s / 8 s path below is active use
+          // and an older peer. Not through Bluetooth. One side switching a tick early stays
+          // inside the other's limit: 3 s is under 8 s, and leaving a long quiet raises rx.
           if (ws.transport !== 'ble' && ws.readyState === ws.OPEN) {
             const q = Quiet.tick(ws, now, rx, (m) => ws.send(JSON.stringify(m)));
             if (q.quiet) {

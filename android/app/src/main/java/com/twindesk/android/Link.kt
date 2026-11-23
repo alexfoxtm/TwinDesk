@@ -138,7 +138,12 @@ class Link(
     private var quietReasonAt = 0L
     @Volatile var keepPinging = false
     @Volatile private var peerIdle = false
-    @Volatile private var saidIdle = false
+    @Volatile private var peerPerf = false // peer sent idle {perf:1}: it understands the 3 s tier
+    @Volatile private var peerKeep = false // peer sent idle {keep:1}: Prioritize performance is why it is idle
+    private var saidSig = ""
+    private var idleTrue = false
+    private var idlePerf = false
+    private var beatAlarm = false
     @Volatile private var lastUse = 0L // the session's start: active for QUIET_ACTIVE_MS
     @Volatile private var probeAt = 0L
     private var probed = false
@@ -146,6 +151,9 @@ class Link(
     @Volatile private var quietSince = 0L
     private var quietEnd = 0L
     private var quietPing = 0L
+    private var perfSince = 0L
+    private var perfPing = 0L
+    private var perfEnd = 0L
     val quiet: Boolean get() = quietSince != 0L
 
     // The screen came on, the network changed, the app opened: active again for a while, so a session
@@ -159,8 +167,7 @@ class Link(
         if (state == "connected") runCatching {
             exec.execute {
                 if (state != "connected") return@execute
-                val mine = sayIdle(System.currentTimeMillis())
-                if (quiet && (!mine || !peerIdle || ble || probeAt != 0L)) beat()
+                beat() // activity, idle {off}, or a hold: the 1 s tier on this tick, not at the next 3 s
             }
         }
     }
@@ -172,16 +179,36 @@ class Link(
         }
     }
 
-    private fun sayIdle(now: Long): Boolean {
-        val reason = when {
-            keepPinging -> "performance"
-            else -> runCatching {
-                busyReason?.invoke() ?: if (busyHere()) "feature" else null
-            }.getOrDefault("feature-error")
-        } ?: if (now - maxOf(lastUse, wokeAt) < QUIET_ACTIVE_MS) "recent-wake" else null
-        val mine = reason == null
-        if (mine != saidIdle) { ws?.let { w -> if (!ble && w.send(msg(QUIET_IDLE, "on" to mine).toString())) saidIdle = mine } }
-        val code = reason ?: when {
+    // Same decision as shared/quiet.js tick(). Activity (a stream, input, a transfer, a call, the
+    // app on screen) stays the 1 s tier even when Prioritize performance is on. That setting is its
+    // own tier only when it is the only reason left and the computer has said `idle {perf:1}`.
+    private fun sayIdle(now: Long) {
+        val blocked = runCatching {
+            busyReason?.invoke() ?: if (busyHere()) "feature" else null
+        }.getOrDefault("feature-error") ?: if (now - maxOf(lastUse, wokeAt) < QUIET_ACTIVE_MS) "recent-wake" else null
+        val perfOnly = blocked == null && keepPinging
+        val trueIdle = blocked == null && !keepPinging
+        idleTrue = trueIdle
+        idlePerf = perfOnly
+        val advertiseOn = trueIdle || (perfOnly && peerPerf)
+        val keepFlag = perfOnly && peerPerf
+        val spec = when {
+            advertiseOn && keepFlag -> "on-keep"
+            advertiseOn -> "on"
+            perfOnly && !peerPerf -> "off-perf"
+            saidSig == "on" || saidSig == "on-keep" -> "off"
+            else -> saidSig
+        }
+        if (spec.isNotEmpty() && spec != saidSig) {
+            val body = msg(QUIET_IDLE, "on" to (spec == "on" || spec == "on-keep"))
+            if (spec == "on-keep" || spec == "off-perf" || (spec == "on" && peerPerf)) body.put("perf", 1)
+            if (spec == "on-keep") body.put("keep", 1)
+            ws?.let { w -> if (!ble && w.send(body.toString())) saidSig = spec }
+        }
+        val peerWantsPerf = peerKeep && peerPerf
+        val code = blocked ?: when {
+            perfOnly && !(keepFlag && peerIdle) -> "performance"
+            (peerWantsPerf || (keepFlag && peerIdle)) && !ble -> "idle-perf"
             ble -> "bluetooth"
             !peerIdle -> "peer-not-idle"
             else -> "quiet"
@@ -191,7 +218,6 @@ class Link(
             lastQuietReason = code
             quietReasonAt = now
         }
-        return mine
     }
     var bleRx: () -> Long = { 0L } // Ble.lastDown: bytes arriving through Bluetooth count as alive
     // Fast files (Proto.FX_PATH): the session's token from welcome {fx}; none from a computer that can't.
@@ -694,7 +720,18 @@ class Link(
             }
             Proto.T.PING -> { if (state == "connected") raw(msg(Proto.T.PONG, "ts" to m.opt("ts"))); return }
             Proto.T.PONG -> { if (m.has("ts")) rttMs = maxOf(0, System.currentTimeMillis() - m.optLong("ts")); return }
-            QUIET_IDLE -> { if (state == "connected") { val was = peerIdle; peerIdle = m.optBoolean("on"); if (was != peerIdle) nudge() }; return }
+            QUIET_IDLE -> {
+                if (state == "connected") {
+                    val wasIdle = peerIdle
+                    val wasPerf = peerPerf
+                    val wasKeep = peerKeep
+                    peerIdle = m.optBoolean("on")
+                    if (m.optInt("perf") == 1) peerPerf = true
+                    peerKeep = m.optInt("keep") == 1
+                    if (wasIdle != peerIdle || wasPerf != peerPerf || wasKeep != peerKeep) nudge()
+                }
+                return
+            }
         }
         if (state == "connected") events.onMessage(m, trustedRoute(ingress), ingress)
     }
@@ -795,10 +832,17 @@ class Link(
         ws?.let { lastRxOf[it] = System.currentTimeMillis() }
         // Each of the session's sockets on its own: a quiet fallback goes, the session lives on.
         peerIdle = false
-        saidIdle = false
+        peerPerf = false
+        peerKeep = false
+        saidSig = ""
+        idleTrue = false
+        idlePerf = false
         quietSince = 0L
         quietEnd = 0L
         quietPing = 0L
+        perfSince = 0L
+        perfPing = 0L
+        perfEnd = 0L
         probeAt = 0L
         probed = false
         lastUse = System.currentTimeMillis()
@@ -857,21 +901,51 @@ class Link(
                 Log.e("TwinDesk", "link heartbeat", e)
             }
         } finally {
-            if (state == "connected") scheduleBeat(delay.coerceAtLeast(1L), !failed && delay > Proto.PING_MS)
+            // The 3 s tier must not take the quiet alarm: that alarm is for the multi-minute sleep.
+            if (state == "connected") scheduleBeat(delay.coerceAtLeast(1L), !failed && beatAlarm && delay > Proto.PING_MS)
         }
     }
 
     private fun beatConnected(): Long {
         val now = System.currentTimeMillis()
-        // Quiet (both ends idle): only the network socket's own rule changes; Bluetooth as before.
-        val mine = sayIdle(now)
-        val quietNow = quietLink(mine, peerIdle, ble)
+        beatAlarm = false
+        sayIdle(now)
+        val peerWantsPerf = peerKeep && peerPerf
+        // 3 s / 10 s only when nothing is live, the peer said idle, and one end's only reason is
+        // Prioritize performance, and the peer sent perf:1. Otherwise today's rules.
+        val perfNow = !ble && peerIdle && peerPerf && (idlePerf || (idleTrue && peerWantsPerf))
+        val quietNow = !perfNow && quietLink(idleTrue && !peerWantsPerf, peerIdle, ble)
+        if (perfNow && perfSince == 0L) {
+            if (quietSince != 0L) { quietSince = 0L; quietEnd = now; probeAt = 0L; probed = false }
+            perfSince = now
+            Log.i("TwinDesk", "link idle, performance: pings every ${Proto.PING_MS_IDLE_PERF / 1000} s")
+        }
+        if (!perfNow && perfSince != 0L) {
+            perfSince = 0L
+            perfPing = 0L
+            perfEnd = now
+            Log.i("TwinDesk", "link active: pings every second")
+        }
         if (quietNow && quietSince == 0L) { quietSince = now; Log.i("TwinDesk", "link quiet: pings every ${QUIET_PING_MS / 60000} min") }
         if (!quietNow && quietSince != 0L) { quietSince = 0L; quietEnd = now; probeAt = 0L; probed = false; Log.i("TwinDesk", "link active: pings every second") }
         for (w in listOfNotNull(ws, alt)) {
             val onBle = if (w === ws) ble else altBle
             val limit = if (onBle) Proto.BLE_TIMEOUT_MS else Proto.TIMEOUT_MS
-            val rx = maxOf(lastRxOf[w] ?: lastRx, if (onBle) bleRx() else 0L, if (onBle) 0L else quietEnd)
+            var rx = maxOf(lastRxOf[w] ?: lastRx, if (onBle) bleRx() else 0L, if (onBle) 0L else maxOf(quietEnd, perfEnd))
+            if (!onBle && perfNow) {
+                if (quietEnd == now || perfEnd == now) rx = maxOf(rx, now) // a tier change does not inherit the old silence
+                if (now - rx > Proto.TIMEOUT_MS_IDLE_PERF) {
+                    Log.i("TwinDesk", "network socket silent for ${now - rx} ms on an idle performance link, closing")
+                    if (w === ws && alt == null) message = tr("Not responding")
+                    w.cancel()
+                    continue
+                }
+                if (now - maxOf(perfPing, perfSince) >= Proto.PING_MS_IDLE_PERF) {
+                    perfPing = now
+                    w.send(msg(Proto.T.PING, "ts" to now).toString())
+                }
+                continue
+            }
             if (!onBle && quietNow) {
                 if (w === ws && probeAt != 0L) { // something went out while quiet: is anyone there?
                     if (rx >= probeAt) { probeAt = 0L; probed = false }
@@ -899,10 +973,18 @@ class Link(
                 w.cancel()
             } else w.send(msg(Proto.T.PING, "ts" to now).toString())
         }
-        return if (quietNow && alt == null && probeAt == 0L) {
-            val rx = ws?.let { lastRxOf[it] } ?: lastRx
-            quietBeatDelay(maxOf(quietPing, quietSince) + QUIET_PING_MS, maxOf(rx, quietEnd) + QUIET_TIMEOUT_MS + 1, now)
-        } else Proto.PING_MS
+        beatAlarm = quietNow && alt == null && probeAt == 0L
+        return when {
+            quietNow && alt == null && probeAt == 0L -> {
+                val rx = ws?.let { lastRxOf[it] } ?: lastRx
+                quietBeatDelay(maxOf(quietPing, quietSince) + QUIET_PING_MS, maxOf(rx, quietEnd) + QUIET_TIMEOUT_MS + 1, now)
+            }
+            perfNow && alt == null -> {
+                val rx = maxOf(ws?.let { lastRxOf[it] } ?: lastRx, perfEnd, quietEnd)
+                quietBeatDelay(maxOf(perfPing, perfSince) + Proto.PING_MS_IDLE_PERF, maxOf(rx, perfEnd) + Proto.TIMEOUT_MS_IDLE_PERF + 1, now)
+            }
+            else -> Proto.PING_MS
+        }
     }
 
     private val pairErrors get() = mapOf(

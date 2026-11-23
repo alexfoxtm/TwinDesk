@@ -17,6 +17,8 @@ object Proto {
     const val DEVICE_STALE_MS = 10000L
     const val PING_MS = 1000L
     const val TIMEOUT_MS = 8000L // protocol.js: a busy or throttled computer can miss a ping or two
+    const val PING_MS_IDLE_PERF = 3000L // protocol.js: Prioritize performance, both ends idle
+    const val TIMEOUT_MS_IDLE_PERF = 10000L
     const val BLE_TIMEOUT_MS = 20000L // through Bluetooth, where one big message takes seconds
     const val PHONE_GRACE_MS = 30000L
     const val CLIP_MAX_BYTES = 256 * 1024

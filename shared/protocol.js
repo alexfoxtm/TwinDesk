@@ -25,6 +25,11 @@
     PHONE_GRACE_MS: 30000,
     PING_MS: 1000,
     TIMEOUT_MS: 8000, // close the session after this much silence (8 s: a busy or throttled computer can miss a ping or two, #74)
+    // Prioritize performance, and both ends idle (shared/quiet.js). The peer has to say it understands
+    // this tier (`idle {perf:1}`); an older one never does, and both stay on PING_MS / TIMEOUT_MS.
+    // 3 s is under the 8 s limit, so one side can switch a tick before the other and neither drops.
+    PING_MS_IDLE_PERF: 3000,
+    TIMEOUT_MS_IDLE_PERF: 10000,
     HELLO_TIMEOUT_MS: 4000, // no `welcome` this long after hello = try again (an answer comes at once; not the silence limit)
     // Multi-device only (docs/mesh.md): many devices at once. A link that is selected, driving or being
     // driven keeps PING_MS/TIMEOUT_MS; the others are checked more rarely so ten links cost little.

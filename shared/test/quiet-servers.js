@@ -166,7 +166,9 @@ try {
       from(s, c, { t: 'idle', on: true });
       second(s, 120);
       assert.ok(pings(c) >= 119, `${name}: Prioritize performance: pinged every second`);
-      assert.equal(c.sent.filter((m) => m.t === 'idle').length, 0, `${name}: never says idle`);
+      // An older phone said idle without perf. We answer once so it can learn the tier, and we do
+      // not say on: an older build treats on:true as the 5 min quiet while we would still time out.
+      assert.deepEqual(c.sent.filter((m) => m.t === 'idle'), [{ t: 'idle', on: false, perf: 1 }], `${name}: an older peer stays on the 1 s tier`);
     }
 
     // Through Bluetooth: never quiet (its own limits, as before).
@@ -179,7 +181,184 @@ try {
       second(s, 60);
       assert.equal(pings(c), 60, `${name}: Bluetooth: pinged every second`);
     }
+
+    // Both new, both idle, Prioritize performance: a ping every 3 s, closed after 10 s not 8 s.
+    Q._reset();
+    {
+      const s = server(file);
+      const c = client(s);
+      Q.setKeep(true);
+      from(s, c, { t: 'idle', on: true, perf: 1, keep: 1 });
+      const stamps = [];
+      for (let i = 0; i < 16 + 12; i++) {
+        clock += P.PING_MS;
+        const n = pings(c);
+        s._liveness();
+        if (pings(c) !== n) stamps.push(clock);
+        const last = c.sent[c.sent.length - 1];
+        if (!c.dead && !c.ws.terminated && last && last.t === 'ping') from(s, c, { t: 'pong', ts: 1 });
+      }
+      assert.equal(c.ws.terminated, false, `${name}: switching to 3 s does not drop the link`);
+      assert.ok(stamps.length >= 4, `${name}: pings while the tier changes`);
+      for (let i = 1; i < stamps.length; i++) {
+        const gap = stamps[i] - stamps[i - 1];
+        assert.ok(gap <= 4000, `${name}: tier-change gap ${gap} ms stays under the 8 s limit`);
+      }
+      const tail = stamps.slice(-3);
+      assert.equal(tail[1] - tail[0], 3000, `${name}: once there, a ping every 3 s`);
+      assert.equal(tail[2] - tail[1], 3000, `${name}: the 3 s gap holds`);
+      from(s, c, { t: 'pong', ts: 1 });
+      c.dead = true;
+      second(s, 10);
+      assert.equal(c.ws.terminated, false, `${name}: 10 s of silence is inside the idle performance limit`);
+      second(s, 1);
+      assert.equal(c.ws.terminated, true, `${name}: silent past 10 s: closed`);
+    }
+
+    // The other end has not switched yet (still answering, still on an 8 s limit). Our first 3 s
+    // gap is the case above. Here WE have not switched: the peer already pings every 3 s and does
+    // not pong, which is what an end on the new tier does while we are still at 1 s / 8 s.
+    Q._reset();
+    {
+      const s = server(file);
+      const c = client(s);
+      Q.setKeep(true);
+      from(s, c, { t: 'idle', on: false, perf: 1 });
+      c.dead = true;
+      for (let i = 0; i < 24; i++) {
+        clock += P.PING_MS;
+        if (i % 3 === 2) from(s, c, { t: 'ping', ts: clock });
+        s._liveness();
+      }
+      assert.equal(c.ws.terminated, false, `${name}: a peer that already pings every 3 s does not trip 8 s`);
+      assert.ok(pings(c) >= 20, `${name}: we stay on the 1 s tier until the peer says idle`);
+    }
+
+    // Activity brings the 1 s ping and the 8 s limit back on the next liveness, and at once via onChange.
+    Q._reset();
+    {
+      const s = server(file);
+      const c = client(s);
+      s.tick = true;
+      Q.onChange(() => { if (s.tick) s._liveness(); });
+      Q.setKeep(true);
+      from(s, c, { t: 'idle', on: true, perf: 1, keep: 1 });
+      second(s, Q.ACTIVE_MS / P.PING_MS + 1);
+      assert.equal(c.ws.terminated, false);
+      const before = pings(c);
+      Q.hold('kvm', true);
+      assert.ok(pings(c) > before, `${name}: a hold pings on this tick, not at the next 3 s`);
+      assert.deepEqual(c.sent.filter((m) => m.t === 'idle').pop(), { t: 'idle', on: false }, `${name}: the peer hears busy at once`);
+      from(s, c, { t: 'pong', ts: 1 });
+      c.dead = true;
+      second(s, 8);
+      assert.equal(c.ws.terminated, false, `${name}: back on the 8 s limit, 8 s is not over`);
+      second(s, 1);
+      assert.equal(c.ws.terminated, true, `${name}: back on the 8 s limit, closed at 9 s`);
+      Q.hold('kvm', false);
+    }
+
+    // Minutes of quiet, then Prioritize performance. The idle message is not what refreshes rx:
+    // the setting changes, and the following tick is given the old last-heard time.
+    Q._reset();
+    {
+      const s = server(file);
+      const c = client(s);
+      from(s, c, { t: 'idle', on: true, perf: 1 });
+      second(s, Q.ACTIVE_MS / P.PING_MS + 1);
+      c.dead = true;
+      second(s, 240);
+      assert.equal(c.ws.terminated, false, `${name}: still inside the 5 min quiet`);
+      Q.setKeep(true);
+      second(s, 2);
+      assert.equal(c.ws.terminated, false, `${name}: leaving a long quiet for the 3 s tier does not trip 10 s`);
+    }
+
     console.log(`  ${name}: ok`);
+  }
+
+  // Multi-device (mac/mesh/server.js liveness). Busy stays 1 s / 8 s. An idle link stays on the
+  // mesh 5 s / 15 s cadence until the peer says perf; then the same 3 s / 10 s tier.
+  Q._reset();
+  {
+    const { Server } = require('../../mac/mesh/server.js');
+    const mesh = () => {
+      const s = Object.create(Server.prototype);
+      EventEmitter.call(s);
+      Object.assign(s, {
+        sockets: new Set(), clients: new Map(), busyFlags: new Map(), blePorts: new Map(), primaryId: null,
+        _now: () => clock,
+        _raw(ws, m) { ws.send(JSON.stringify(m)); ws.lastTx = clock; },
+        send(ctx, msg) { this._raw(ctx.ws, msg); ctx.lastTx = ctx.ws.lastTx; },
+      });
+      return s;
+    };
+    const phone = (s) => {
+      const sent = [];
+      const ws = { OPEN: 1, readyState: 1, transport: 'ip', address: '10.0.0.2', lastRx: clock, lastTx: 0, lastPing: 0, send: (m) => sent.push(JSON.parse(m)), terminated: false };
+      ws.terminate = () => { ws.terminated = true; ws.readyState = 3; };
+      const ctx = { ws, alt: null, authed: true, deviceId: 'd1', name: 'Phone', address: '10.0.0.2', transport: 'ip', lastRx: clock, lastTx: 0, connectedAt: clock };
+      ws.ctx = ctx;
+      ws.sent = sent;
+      s.sockets.add(ctx);
+      return { ctx, ws, sent };
+    };
+    // alive: the peer is still answering, so silence does not accumulate. The timeout cases pass false.
+    const step = (s, n, alive = true) => {
+      for (let i = 0; i < n; i++) {
+        clock += P.PING_MS;
+        if (alive) for (const ctx of s.sockets) { ctx.lastRx = clock; if (ctx.ws) ctx.ws.lastRx = clock; }
+        s.liveness(clock);
+      }
+    };
+    const meshPings = (c) => c.sent.filter((m) => m.t === 'ping').length;
+
+    {
+      const s = mesh();
+      const c = phone(s);
+      s.busyFlags.set('d1', true);
+      Q.setKeep(true);
+      s._onMessage(c.ctx, Buffer.from(JSON.stringify({ t: 'idle', on: true, perf: 1, keep: 1 })), false, c.ws);
+      step(s, 16 + 5);
+      const got = meshPings(c);
+      assert.ok(got >= 20, `mesh busy: pinged every second (${got})`);
+      c.ctx.lastRx = c.ws.lastRx = clock;
+      step(s, 8, false);
+      assert.equal(c.ws.terminated, false, 'mesh busy: 8 s is not over');
+      step(s, 1, false);
+      assert.equal(c.ws.terminated, true, 'mesh busy: the 8 s limit is unchanged');
+    }
+    Q._reset();
+    {
+      const s = mesh();
+      const c = phone(s);
+      s.busyFlags.set('d1', false);
+      Q.setKeep(true);
+      s._onMessage(c.ctx, Buffer.from(JSON.stringify({ t: 'idle', on: true })), false, c.ws);
+      step(s, 16);
+      const before = meshPings(c);
+      step(s, 9);
+      const got = meshPings(c) - before;
+      assert.ok(got <= 2, `mesh idle without perf: still the 5 s cadence (${got})`);
+      assert.ok(got >= 1, `mesh idle without perf: still pings (${got})`);
+    }
+    Q._reset();
+    {
+      const s = mesh();
+      const c = phone(s);
+      s.busyFlags.set('d1', false);
+      Q.setKeep(true);
+      s._onMessage(c.ctx, Buffer.from(JSON.stringify({ t: 'idle', on: true, perf: 1, keep: 1 })), false, c.ws);
+      step(s, 16);
+      const before = meshPings(c);
+      step(s, 9);
+      assert.equal(meshPings(c) - before, 3, 'mesh idle with perf: the 3 s tier, not the 5 s cadence');
+      c.ctx.lastRx = c.ws.lastRx = clock;
+      step(s, 10, false);
+      assert.equal(c.ws.terminated, false, 'mesh idle with perf: 10 s is inside the limit');
+      step(s, 1, false);
+      assert.equal(c.ws.terminated, true, 'mesh idle with perf: closed after 10 s');
+    }
   }
   console.log('quiet-servers: ok');
 } finally {

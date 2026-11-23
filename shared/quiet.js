@@ -6,9 +6,12 @@
 //
 // This end is idle when nothing here needs the second-by-second pings: no hold (input shared either way:
 // the KVM silence watch lives on pings; file bytes moving, shared/awake.js), not the multi-device input
-// partner's link, not within ACTIVE_MS of opening or of wake(), and Prioritize performance over battery
-// life off. Messages don't make it busy: clipboard, notifications, a battery level or a volume going by
-// cost one message each, not a burst of pings.
+// partner's link, not within ACTIVE_MS of opening or of wake(). Prioritize performance over battery
+// life used to force the 1 s tier even then. When that is the only reason, and the peer has said
+// `idle {perf:1}` (an older peer never does), both ends use PING_MS_IDLE_PERF / TIMEOUT_MS_IDLE_PERF
+// instead of the 5 min quiet: `idle {on:true, perf:1, keep:1}`. Activity or `idle {off}` from either
+// side is the 1 s tier again on this tick. Messages don't make it busy: clipboard, notifications, a
+// battery level or a volume going by cost one message each, not a burst of pings.
 //
 // Quiet: one ping every QUIET_PING_MS (a safety net: a computer that restarted can't leave a dead
 // session up for good) and closed after QUIET_TIMEOUT_MS of silence. A message sent while quiet is
@@ -26,6 +29,8 @@
 //                            ping/dead from here; else the site's own rule, with rx (its last-heard time,
 //                            raised past a quiet spell).
 'use strict';
+
+const P = require('./protocol.js');
 
 const ACTIVE_MS = 15000;
 const QUIET_PING_MS = 5 * 60 * 1000;
@@ -89,7 +94,14 @@ function counts(msg) {
 function seen(ws, msg) {
   if (!ws) return false;
   if (msg && msg.t === T_IDLE) {
-    ws.quietPeer = msg.on === true;
+    const peer = msg.on === true;
+    const perf = msg.perf === 1;
+    const keep = msg.keep === 1;
+    const differ = ws.quietPeer !== peer || ws.quietPeerKeep !== keep || (perf && ws.quietPeerPerf !== true);
+    ws.quietPeer = peer;
+    if (perf) ws.quietPeerPerf = true; // sticky: an older peer never says it, and never grows it later
+    ws.quietPeerKeep = keep;
+    if (differ) changed(); // every server's liveness runs at once, the same hook a hold uses
     return true;
   }
   return false;
@@ -100,24 +112,68 @@ function sent(ws, msg) {
   if (ws && ws.quietSince && counts(msg) && !ws.quietProbe) ws.quietProbe = Date.now();
 }
 
+// What we last told the peer. Nothing said yet means busy, which is what an older app assumes.
+function announce(ws, raw, spec, peerPerf) {
+  if (!spec || spec === ws.quietSig) return;
+  const msg = { t: T_IDLE, on: spec === 'on' || spec === 'on-keep' };
+  if (spec === 'on-keep' || spec === 'off-perf' || (spec === 'on' && peerPerf)) msg.perf = 1;
+  if (spec === 'on-keep') msg.keep = 1;
+  try { raw(msg); ws.quietSig = spec; } catch (_) { /* closed: the timer sees it */ }
+}
+
 function tick(ws, now, rx, raw, busy = false) {
   if (!ws.quietOpened) ws.quietOpened = now;
-  const reason = busy ? 'session-busy' : keeping() ? 'performance' : holds.size
-    ? ['kvm', 'files', 'lockview'].find((key) => holds.has(key)) || 'feature'
-    : !pastActiveWindow(ws, now) ? 'recent-wake' : null;
-  const mine = reason === null;
-  const code = reason || (ws.quietPeer === true ? 'quiet' : 'peer-not-idle');
+  const held = holds.size ? ['kvm', 'files', 'lockview'].find((key) => holds.has(key)) || 'feature' : null;
+  // Activity wins over Prioritize performance, so a stream, input, a transfer or a call stays at 1 s
+  // even when that setting is on. The setting matters only when it is the only reason left.
+  const blocked = busy ? 'session-busy' : held ? held : !pastActiveWindow(ws, now) ? 'recent-wake' : null;
+  const perfOnly = blocked === null && keeping();
+  const trueIdle = blocked === null && !keeping();
+  const peerPerf = ws.quietPeerPerf === true;
+  const advertiseOn = trueIdle || (perfOnly && peerPerf);
+  const keepFlag = perfOnly && peerPerf;
+  const spec = advertiseOn && keepFlag ? 'on-keep'
+    : advertiseOn ? 'on'
+    : perfOnly && !peerPerf ? 'off-perf'
+    : (ws.quietSig === 'on' || ws.quietSig === 'on-keep') ? 'off'
+    : (ws.quietSig || '');
+  announce(ws, raw, spec, peerPerf);
+  const peerWantsPerf = ws.quietPeerKeep === true && peerPerf;
+  const reason = blocked || ((perfOnly && !(keepFlag && ws.quietPeer === true)) ? 'performance' : null);
+  const code = reason || ((peerWantsPerf || (keepFlag && ws.quietPeer === true)) ? 'idle-perf' : (ws.quietPeer === true ? 'quiet' : 'peer-not-idle'));
   if (code !== ws.quietReason && (!ws.quietReasonAt || now - ws.quietReasonAt >= 5000)) {
     console.log(`[quiet] reason=${code}`);
     ws.quietReason = code;
     ws.quietReasonAt = now;
   }
-  if ((ws.quietSaid || false) !== mine) { // nothing said yet = busy (what an older app assumes)
-    // Only once the other end has shown it knows `idle` (it said it), or to say we're idle: an older
-    // app ignores the type. Saying busy before it ever said idle is pointless but harmless.
-    try { raw({ t: T_IDLE, on: mine }); ws.quietSaid = mine; } catch (_) { /* closed: the timer sees it */ }
+  // 3 s / 10 s: we have nothing live, the peer said idle, and one of us has Prioritize performance
+  // on (keep) while both understand the tier. A peer that only said `idle {on}` stays on the old
+  // rules below, so an older app is unchanged.
+  const usePerf = peerPerf && ws.quietPeer === true && blocked === null && (keepFlag || (trueIdle && peerWantsPerf));
+  if (usePerf) {
+    if (ws.quietSince) { // the 5 min quiet's silence must not trip the 10 s limit on the way in
+      ws.quietSince = 0;
+      ws.quietEnd = now;
+      ws.quietProbe = 0;
+      ws.quietProbed = false;
+    }
+    if (!ws.perfSince) ws.perfSince = now;
+    // The server passes the socket's last-heard time in again next tick and, while quiet, does not
+    // keep the rx we return. quietEnd / perfEnd are that raise, so a long quiet does not look like
+    // ten seconds of silence on the tick after this one either.
+    rx = Math.max(rx, ws.quietEnd || 0, ws.perfEnd || 0);
+    if (now - rx > P.TIMEOUT_MS_IDLE_PERF) return { quiet: true, dead: true, ping: false, rx };
+    const ping = now - Math.max(ws.perfPing || 0, ws.perfSince) >= P.PING_MS_IDLE_PERF;
+    if (ping) ws.perfPing = now;
+    return { quiet: true, dead: false, ping, rx };
   }
-  const quiet = mine && ws.quietPeer === true;
+  if (ws.perfSince) { // back to 1 s or to the 5 min quiet: the short limit counts from now
+    ws.perfSince = 0;
+    ws.perfPing = 0;
+    ws.perfEnd = now;
+    rx = Math.max(rx, now);
+  }
+  const quiet = trueIdle && ws.quietPeer === true && !peerWantsPerf;
   if (quiet) {
     if (!ws.quietSince) ws.quietSince = now;
     if (now - rx > QUIET_TIMEOUT_MS) return { quiet, dead: true, ping: false, rx };
@@ -137,7 +193,7 @@ function tick(ws, now, rx, raw, busy = false) {
     ws.quietProbe = 0; // the second pings find a dead one now
     ws.quietProbed = false;
   }
-  return { quiet: false, dead: false, ping: false, rx: Math.max(rx, ws.quietEnd || 0) };
+  return { quiet: false, dead: false, ping: false, rx: Math.max(rx, ws.quietEnd || 0, ws.perfEnd || 0) };
 }
 
 // main.js: Prioritize performance over battery life (settings.app.keepPinging) from the app's settings (read on every tick, so a change
