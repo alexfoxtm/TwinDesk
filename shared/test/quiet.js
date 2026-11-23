@@ -281,6 +281,132 @@ try {
     assert.equal(r.quiet, true);
   }
 
+  // One side has Prioritize performance, the other does not. The keep=false side must re-announce
+  // {on:true, perf:1} once it hears perf, or both stay on the 1 s tier forever.
+  Q._reset();
+  {
+    function freshQuiet() {
+      const id = require.resolve('../quiet.js');
+      delete require.cache[id];
+      return require('../quiet.js');
+    }
+    function sides(keepA, keepB) {
+      const A = freshQuiet();
+      const B = freshQuiet();
+      A._reset();
+      B._reset();
+      if (keepA) A.setKeep(true);
+      if (keepB) B.setKeep(true);
+      const a = sock();
+      const b = sock();
+      A.tick(a, clock, clock, a.raw);
+      B.tick(b, clock, clock, b.raw);
+      clock += A.ACTIVE_MS;
+      return { A, B, a, b };
+    }
+    function pump(A, B, a, b, rx) {
+      let ia = 0;
+      let ib = 0;
+      let ra;
+      let rb;
+      for (let n = 0; n < 8; n++) {
+        ra = A.tick(a, clock, rx, a.raw);
+        rb = B.tick(b, clock, rx, b.raw);
+        assert.equal(ra.dead, false, 'A did not time out during the handshake');
+        assert.equal(rb.dead, false, 'B did not time out during the handshake');
+        const fromA = a.out.slice(ia).filter((m) => m.t === 'idle');
+        const fromB = b.out.slice(ib).filter((m) => m.t === 'idle');
+        ia = a.out.length;
+        ib = b.out.length;
+        if (!fromA.length && !fromB.length) break;
+        for (const m of fromA) B.seen(b, m);
+        for (const m of fromB) A.seen(a, m);
+      }
+      return { ra, rb };
+    }
+    function lastIdle(ws, pred) {
+      const found = ws.out.filter((m) => m.t === 'idle' && pred(m));
+      assert.ok(found.length, 'expected an idle');
+      return found[found.length - 1];
+    }
+    function assertBothOnPerf(A, B, a, b, heard) {
+      const started = clock;
+      const step = (at) => [A.tick(a, at, heard, a.raw), B.tick(b, at, heard, b.raw)];
+      let [ra, rb] = step(started);
+      assert.equal(ra.quiet, true, 'A on the 3 s tier');
+      assert.equal(rb.quiet, true, 'B on the 3 s tier');
+      assert.equal(ra.dead, false);
+      assert.equal(rb.dead, false);
+      assert.equal(ra.ping, false);
+      assert.equal(rb.ping, false);
+      clock = started + 2999;
+      [ra, rb] = step(clock);
+      assert.equal(ra.ping, false, 'A no ping before 3 s');
+      assert.equal(rb.ping, false, 'B no ping before 3 s');
+      clock = started + 3000;
+      [ra, rb] = step(clock);
+      assert.equal(ra.ping, true, 'A pings at 3 s');
+      assert.equal(rb.ping, true, 'B pings at 3 s');
+      assert.equal(ra.dead, false);
+      assert.equal(rb.dead, false);
+      clock = started + 10000;
+      [ra, rb] = step(clock);
+      assert.equal(ra.dead, false, 'A: 10 s of silence is inside the limit');
+      assert.equal(rb.dead, false, 'B: 10 s of silence is inside the limit');
+      clock = started + 10001;
+      [ra, rb] = step(clock);
+      assert.equal(ra.dead, true, 'A closed after 10 s');
+      assert.equal(rb.dead, true, 'B closed after 10 s');
+    }
+
+    {
+      const { A, B, a, b } = sides(true, false);
+      const heard = clock;
+      pump(A, B, a, b, heard);
+      assert.deepEqual(lastIdle(a, (m) => m.keep === 1), { t: 'idle', on: true, perf: 1, keep: 1 });
+      assert.deepEqual(lastIdle(b, (m) => m.on === true), { t: 'idle', on: true, perf: 1 },
+        'keep=false re-announces perf once it hears it');
+      assertBothOnPerf(A, B, a, b, heard);
+    }
+
+    {
+      const { A, B, a, b } = sides(false, true);
+      const heard = clock;
+      pump(A, B, a, b, heard);
+      assert.deepEqual(lastIdle(b, (m) => m.keep === 1), { t: 'idle', on: true, perf: 1, keep: 1 });
+      assert.deepEqual(lastIdle(a, (m) => m.on === true), { t: 'idle', on: true, perf: 1 },
+        'keep=false re-announces perf once it hears it');
+      assertBothOnPerf(A, B, a, b, heard);
+    }
+
+    {
+      const { A, B, a, b } = sides(false, false);
+      const entered = clock;
+      let r = pump(A, B, a, b, entered);
+      assert.equal(r.ra.quiet, true, 'both keep off: the 5 min quiet');
+      assert.equal(r.rb.quiet, true, 'both keep off: the 5 min quiet');
+      clock += 4 * 60 * 1000;
+      A.setKeep(true);
+      r = pump(A, B, a, b, entered);
+      assert.equal(r.ra.dead, false, 'turning keep on does not trip 10 s');
+      assert.equal(r.rb.dead, false, 'the other side does not trip 10 s');
+      assert.deepEqual(lastIdle(a, (m) => m.keep === 1), { t: 'idle', on: true, perf: 1, keep: 1 });
+      assert.deepEqual(lastIdle(b, (m) => m.on === true && m.perf === 1), { t: 'idle', on: true, perf: 1 });
+      assertBothOnPerf(A, B, a, b, entered);
+    }
+
+    {
+      const { A, B, a, b } = sides(true, false);
+      const heard = clock;
+      pump(A, B, a, b, heard);
+      assert.deepEqual(lastIdle(b, (m) => m.on === true), { t: 'idle', on: true, perf: 1 });
+      const before = b.out.length;
+      B.tick(b, clock, heard, b.raw, true);
+      assert.equal(b.out.length, before + 1, 'leaving on-perf tells the peer idle is off');
+      assert.deepEqual(b.out[b.out.length - 1], { t: 'idle', on: false });
+    }
+  }
+
   console.log('quiet: ok');
 } finally {
   Date.now = realNow;

@@ -113,10 +113,12 @@ function sent(ws, msg) {
 }
 
 // What we last told the peer. Nothing said yet means busy, which is what an older app assumes.
-function announce(ws, raw, spec, peerPerf) {
+// `on` is the older-peer idle (no perf). `on-perf` is that same idle once the peer has said perf,
+// so a keep=false side re-announces `{on:true, perf:1}` instead of staying silent on signature `on`.
+function announce(ws, raw, spec) {
   if (!spec || spec === ws.quietSig) return;
-  const msg = { t: T_IDLE, on: spec === 'on' || spec === 'on-keep' };
-  if (spec === 'on-keep' || spec === 'off-perf' || (spec === 'on' && peerPerf)) msg.perf = 1;
+  const msg = { t: T_IDLE, on: spec === 'on' || spec === 'on-perf' || spec === 'on-keep' };
+  if (spec === 'on-keep' || spec === 'on-perf' || spec === 'off-perf') msg.perf = 1;
   if (spec === 'on-keep') msg.keep = 1;
   try { raw(msg); ws.quietSig = spec; } catch (_) { /* closed: the timer sees it */ }
 }
@@ -133,11 +135,12 @@ function tick(ws, now, rx, raw, busy = false) {
   const advertiseOn = trueIdle || (perfOnly && peerPerf);
   const keepFlag = perfOnly && peerPerf;
   const spec = advertiseOn && keepFlag ? 'on-keep'
+    : advertiseOn && peerPerf ? 'on-perf'
     : advertiseOn ? 'on'
     : perfOnly && !peerPerf ? 'off-perf'
-    : (ws.quietSig === 'on' || ws.quietSig === 'on-keep') ? 'off'
+    : (ws.quietSig === 'on' || ws.quietSig === 'on-perf' || ws.quietSig === 'on-keep') ? 'off'
     : (ws.quietSig || '');
-  announce(ws, raw, spec, peerPerf);
+  announce(ws, raw, spec);
   const peerWantsPerf = ws.quietPeerKeep === true && peerPerf;
   const reason = blocked || ((perfOnly && !(keepFlag && ws.quietPeer === true)) ? 'performance' : null);
   const code = reason || ((peerWantsPerf || (keepFlag && ws.quietPeer === true)) ? 'idle-perf' : (ws.quietPeer === true ? 'quiet' : 'peer-not-idle'));

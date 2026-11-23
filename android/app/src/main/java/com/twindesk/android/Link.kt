@@ -109,7 +109,8 @@ class Link(
     private val resumeTried = HashMap<String, Long>()
     private val lastRxOf = java.util.concurrent.ConcurrentHashMap<WebSocket, Long>()
     // When the computer last pinged this socket. Our own ping is skipped while that is inside the
-    // current interval (the computer keeps pinging, and measures rtt from our pong). Cleared with lastRxOf.
+    // current interval plus a little jitter grace (the computer keeps pinging, and measures rtt
+    // from our pong). Cleared with lastRxOf.
     private val lastPeerPingOf = java.util.concurrent.ConcurrentHashMap<WebSocket, Long>()
     private var helloTimer: ScheduledFuture<*>? = null
     // The next hello is a reclaim (shared/reclaim.js): rc:1 plus a resume string older hosts refuse.
@@ -197,14 +198,15 @@ class Link(
         val keepFlag = perfOnly && peerPerf
         val spec = when {
             advertiseOn && keepFlag -> "on-keep"
+            advertiseOn && peerPerf -> "on-perf"
             advertiseOn -> "on"
             perfOnly && !peerPerf -> "off-perf"
-            saidSig == "on" || saidSig == "on-keep" -> "off"
+            saidSig == "on" || saidSig == "on-perf" || saidSig == "on-keep" -> "off"
             else -> saidSig
         }
         if (spec.isNotEmpty() && spec != saidSig) {
-            val body = msg(QUIET_IDLE, "on" to (spec == "on" || spec == "on-keep"))
-            if (spec == "on-keep" || spec == "off-perf" || (spec == "on" && peerPerf)) body.put("perf", 1)
+            val body = msg(QUIET_IDLE, "on" to (spec == "on" || spec == "on-perf" || spec == "on-keep"))
+            if (spec == "on-keep" || spec == "on-perf" || spec == "off-perf") body.put("perf", 1)
             if (spec == "on-keep") body.put("keep", 1)
             ws?.let { w -> if (!ble && w.send(body.toString())) saidSig = spec }
         }
@@ -940,7 +942,8 @@ class Link(
             perfSince = 0L
             perfPing = 0L
             perfEnd = now
-            Log.i("TwinDesk", "link active: pings every second")
+            // The same beat can enter the 5 min quiet. "link active" would be a lie in front of "link quiet".
+            if (!quietNow) Log.i("TwinDesk", "link active: pings every second")
         }
         if (quietNow && quietSince == 0L) { quietSince = now; Log.i("TwinDesk", "link quiet: pings every ${QUIET_PING_MS / 60000} min") }
         if (!quietNow && quietSince != 0L) { quietSince = 0L; quietEnd = now; probeAt = 0L; probed = false; Log.i("TwinDesk", "link active: pings every second") }
@@ -1013,30 +1016,45 @@ class Link(
         if (alt != null || probeAt != 0L) return Proto.PING_MS
         val peerAt = ws?.let { lastPeerPingOf[it] } ?: 0L
         // The 1 s tier keeps its 1 s timer whenever we sent (or had nothing to skip). A fresh
-        // computer ping is the one case that pushes the next wake out to the end of that second,
-        // still no later than the silence limit. A socket we are already closing stays on 1 s too.
+        // computer ping is the one case that pushes the next wake out to the end of that window
+        // (interval plus jitter grace), still no later than the silence limit. A socket we are
+        // already closing stays on 1 s too.
         if (!perfNow && !quietNow) {
-            val fresh = peerAt != 0L && now - peerAt < Proto.PING_MS
+            val peerWindow = Proto.PING_MS + peerGrace(Proto.PING_MS)
+            val fresh = peerAt != 0L && now >= peerAt && now - peerAt < peerWindow
             if (!fresh) return Proto.PING_MS
             val limit = if (ble) Proto.BLE_TIMEOUT_MS else Proto.TIMEOUT_MS
-            return quietBeatDelay(peerAt + Proto.PING_MS, primaryRx + limit + 1, now)
+            return quietBeatDelay(peerAt + peerWindow, primaryRx + limit + 1, now)
         }
         val interval = if (perfNow) Proto.PING_MS_IDLE_PERF else QUIET_PING_MS
-        val fresh = peerAt != 0L && now - peerAt < interval
-        val pingAt = if (fresh) peerAt + interval else if (perfNow) maxOf(perfPing, perfSince) + interval else maxOf(quietPing, quietSince) + interval
+        val peerWindow = interval + peerGrace(interval)
+        val fresh = peerAt != 0L && now >= peerAt && now - peerAt < peerWindow
+        val pingAt = if (fresh) peerAt + peerWindow else if (perfNow) maxOf(perfPing, perfSince) + interval else maxOf(quietPing, quietSince) + interval
         val expires = if (perfNow) maxOf(primaryRx, perfEnd) + Proto.TIMEOUT_MS_IDLE_PERF + 1
             else maxOf(primaryRx, quietEnd) + QUIET_TIMEOUT_MS + 1
         return quietBeatDelay(pingAt, expires, now)
     }
 
-    // Skip our ping while the computer's is still inside this interval. Once that interval has
+    // A computer ping stays fresh for interval + a little slack, so ordinary Wi-Fi and timer
+    // jitter does not wake the phone to send the ping the computer is about to send. The slack
+    // stays inside the silence timeout (1.5 s < 8 s, 4 s < 10 s, 310 s < 660 s).
+    private fun peerGrace(interval: Long): Long = when (interval) {
+        Proto.PING_MS -> 500L
+        Proto.PING_MS_IDLE_PERF -> 1_000L
+        QUIET_PING_MS -> 10_000L
+        else -> 0L
+    }
+
+    // Skip our ping while the computer's is still inside this window. Once that window has
     // passed, send on this beat (not a beat later), unless we already sent one in the interval.
-    // sentAt 0: the 1 s tier, which sends on every beat when the computer has not just pinged.
+    // A backward wall-clock step (peerAt or sentAt in the future) is not fresh. sentAt 0: the
+    // 1 s tier, which sends on every beat when the computer has not just pinged.
     // A quiet probe does not come through here.
     private fun ownPingWanted(w: WebSocket, now: Long, interval: Long, cadenceDue: Boolean, sentAt: Long): Boolean {
         val peerAt = lastPeerPingOf[w] ?: 0L
-        if (peerAt != 0L && now - peerAt < interval) return false
-        if (sentAt != 0L && now - sentAt < interval) return false
+        val peerWindow = interval + peerGrace(interval)
+        if (peerAt != 0L && now >= peerAt && now - peerAt < peerWindow) return false
+        if (sentAt != 0L && now >= sentAt && now - sentAt < interval) return false
         if (peerAt != 0L) return true
         return cadenceDue
     }

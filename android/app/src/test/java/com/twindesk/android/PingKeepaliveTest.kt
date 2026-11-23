@@ -16,6 +16,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 import java.lang.reflect.Proxy
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
@@ -279,17 +280,17 @@ class PingKeepaliveTest {
             peerPing(h, 400)
             val delay = h.beat()
             assertTrue("a computer ping 400 ms ago covers this 1 s interval", h.pings().isEmpty())
-            assertTrue("delay=$delay", delay in 300..800)
+            assertTrue("delay=$delay", delay in 900..1_300)
             assertEquals(0, h.alarmAdded)
         } finally { h.close() }
     }
 
-    @Test fun phonePingsAtOnceWhenThatComputerPingIsOneIntervalOld() {
+    @Test fun phonePingsAtOnceWhenThatComputerPingIsPastThePeerWindow() {
         val h = Harness(context)
         try {
-            peerPing(h, 1_000)
+            peerPing(h, Proto.PING_MS + 500L)
             val delay = h.beat()
-            assertEquals("one interval with no computer ping: our ping goes on this beat", 1, h.pings().size)
+            assertEquals("the jitter window has run out: our ping goes on this beat", 1, h.pings().size)
             assertTrue("delay=$delay", delay in 800..1_000)
         } finally { h.close() }
     }
@@ -305,8 +306,8 @@ class PingKeepaliveTest {
             h.link.write("perfPing", 0L)
             peerPing(h, 1_500)
             val delay = h.beat()
-            assertTrue("1500 ms is inside the 3 s interval, so the due ping is skipped", h.pings().isEmpty())
-            assertTrue("delay=$delay", delay in 1_000..2_000)
+            assertTrue("1500 ms is inside the 3 s window, so the due ping is skipped", h.pings().isEmpty())
+            assertTrue("delay=$delay", delay in 2_000..3_000)
         } finally { h.close() }
     }
 
@@ -319,9 +320,9 @@ class PingKeepaliveTest {
             h.sent.clear()
             h.link.write("perfSince", System.currentTimeMillis() - 1_000)
             h.link.write("perfPing", 0L)
-            peerPing(h, 3_000)
+            peerPing(h, Proto.PING_MS_IDLE_PERF + 1_000L)
             h.beat()
-            assertEquals("the 3 s cadence is not due, but the computer ping is, so we ping now", 1, h.pings().size)
+            assertEquals("the 3 s cadence is not due, but the computer ping is past the window, so we ping now", 1, h.pings().size)
         } finally { h.close() }
     }
 
@@ -368,6 +369,238 @@ class PingKeepaliveTest {
             h.sent.clear()
             h.beat()
             assertEquals(1, h.pings().size)
+        } finally { h.close() }
+    }
+
+    private class IdleCursor(var a: Int = 0, var b: Int = 0)
+
+    private fun exchange(a: Harness, b: Harness, cursor: IdleCursor = IdleCursor(), rounds: Int = 8): IdleCursor {
+        repeat(rounds) {
+            val aIdles = a.idles()
+            val bIdles = b.idles()
+            if (cursor.a == aIdles.size && cursor.b == bIdles.size) return cursor
+            val fromA = aIdles.drop(cursor.a)
+            val fromB = bIdles.drop(cursor.b)
+            cursor.a = aIdles.size
+            cursor.b = bIdles.size
+            for (m in fromB) a.text(m.toString())
+            for (m in fromA) b.text(m.toString())
+        }
+        return cursor
+    }
+
+    private fun assertOnPerfTier(h: Harness) {
+        assertFalse(h.cancelled)
+        assertFalse(h.link.quiet)
+        assertTrue(h.link.read("perfSince") as Long > 0L)
+        h.sent.clear()
+        h.link.write("perfSince", System.currentTimeMillis() - 3_500)
+        h.link.write("perfPing", 0L)
+        h.link.write("lastRx", System.currentTimeMillis())
+        h.link.write("quietEnd", 0L)
+        h.link.write("perfEnd", 0L)
+        h.beat()
+        assertEquals("a ping at 3 s", 1, h.pings().size)
+        h.link.write("lastRx", System.currentTimeMillis() - 9_000)
+        h.cancelled = false
+        h.beat()
+        assertFalse("9 s of silence stays up on the 10 s limit", h.cancelled)
+        h.link.write("lastRx", System.currentTimeMillis() - 11_000)
+        h.beat()
+        assertTrue("silent past 10 s: closed", h.cancelled)
+    }
+
+    @Test fun asymmetricKeepOnThisSideConvergesOnThreeSeconds() {
+        val a = Harness(context)
+        val b = Harness(context)
+        try {
+            a.link.keepPinging = true
+            a.beat()
+            b.beat()
+            exchange(a, b)
+            val told = b.idles().last { it.optBoolean("on") }
+            assertEquals(1, told.optInt("perf"))
+            assertFalse(told.has("keep"))
+            assertEquals(1, a.idles().last().optInt("keep"))
+            assertOnPerfTier(a)
+            assertOnPerfTier(b)
+        } finally {
+            a.close()
+            b.close()
+        }
+    }
+
+    @Test fun asymmetricKeepOnThePeerConvergesOnThreeSeconds() {
+        val a = Harness(context)
+        val b = Harness(context)
+        try {
+            b.link.keepPinging = true
+            a.beat()
+            b.beat()
+            exchange(a, b)
+            val told = a.idles().last { it.optBoolean("on") }
+            assertEquals(1, told.optInt("perf"))
+            assertFalse(told.has("keep"))
+            assertEquals(1, b.idles().last().optInt("keep"))
+            assertOnPerfTier(a)
+            assertOnPerfTier(b)
+        } finally {
+            a.close()
+            b.close()
+        }
+    }
+
+    @Test fun enablingKeepDuringTheLongQuietConvergesWithoutTimingOut() {
+        val a = Harness(context)
+        val b = Harness(context)
+        try {
+            a.beat()
+            b.beat()
+            val cursor = exchange(a, b)
+            assertTrue(a.link.quiet)
+            assertTrue(b.link.quiet)
+            val old = System.currentTimeMillis() - 240_000
+            a.link.write("quietSince", old)
+            a.link.write("lastRx", old)
+            b.link.write("quietSince", old)
+            b.link.write("lastRx", old)
+            a.link.keepPinging = true
+            a.beat()
+            assertFalse("turning keep on does not close the link", a.cancelled)
+            exchange(a, b, cursor)
+            assertFalse(a.cancelled)
+            assertFalse(b.cancelled)
+            assertFalse(a.link.quiet)
+            assertFalse(b.link.quiet)
+            assertTrue(a.link.read("perfSince") as Long > 0L)
+            assertTrue(b.link.read("perfSince") as Long > 0L)
+            a.link.write("quietEnd", System.currentTimeMillis() - 1_000)
+            a.link.write("lastRx", System.currentTimeMillis() - 240_000)
+            a.cancelled = false
+            a.beat()
+            assertFalse("the next beat is given the old last-heard time and still stays up", a.cancelled)
+            b.link.write("quietEnd", System.currentTimeMillis() - 1_000)
+            b.link.write("lastRx", System.currentTimeMillis() - 240_000)
+            b.cancelled = false
+            b.beat()
+            assertFalse(b.cancelled)
+        } finally {
+            a.close()
+            b.close()
+        }
+    }
+
+    @Test fun leavingOnPerfTellsThePeerIdleIsOff() {
+        val a = Harness(context)
+        val b = Harness(context)
+        try {
+            a.link.keepPinging = true
+            a.beat()
+            b.beat()
+            exchange(a, b)
+            val told = b.idles().last { it.optBoolean("on") }
+            assertEquals(1, told.optInt("perf"))
+            assertFalse(told.has("keep"))
+            b.sent.clear()
+            b.link.busyReason = { "viewer" }
+            b.beat()
+            val idle = b.idles().single()
+            assertFalse(idle.optBoolean("on"))
+            assertFalse(idle.has("perf"))
+            assertFalse(idle.has("keep"))
+        } finally {
+            a.close()
+            b.close()
+        }
+    }
+
+    @Test fun computerPingInsideTheOneSecondGraceStillSuppresses() {
+        val h = Harness(context)
+        try {
+            peerPing(h, Proto.PING_MS + 100L)
+            val delay = h.beat()
+            assertTrue("1100 ms is inside the 1500 ms window", h.pings().isEmpty())
+            assertTrue("delay=$delay", delay in 200..600)
+            assertEquals(0, h.alarmAdded)
+        } finally { h.close() }
+    }
+
+    @Test fun computerPingInsideTheIdlePerformanceGraceStillSuppresses() {
+        val h = Harness(context)
+        try {
+            h.link.keepPinging = true
+            peer(h, on = true, perf = true, keep = true)
+            h.beat()
+            h.sent.clear()
+            h.link.write("perfSince", System.currentTimeMillis() - 3_500)
+            h.link.write("perfPing", 0L)
+            peerPing(h, Proto.PING_MS_IDLE_PERF + 100L)
+            val delay = h.beat()
+            assertTrue("3100 ms is inside the 4000 ms window", h.pings().isEmpty())
+            assertTrue("delay=$delay", delay in 700..1_100)
+        } finally { h.close() }
+    }
+
+    @Test fun quietSafetyPingStaysDownInsideTheJitterGraceAndFiresPastIt() {
+        val h = Harness(context)
+        try {
+            peer(h, on = true)
+            val now = System.currentTimeMillis()
+            h.link.write("quietSince", now - (5 * 60 * 1000 + 1_000))
+            h.link.write("quietPing", 0L)
+            h.link.write("lastRx", now)
+            peerPing(h, 5 * 60 * 1000 + 100L)
+            val delay = h.beat()
+            assertTrue("300100 ms is inside the 310000 ms window", h.pings().isEmpty())
+            assertTrue(h.link.quiet)
+            assertTrue("delay=$delay", delay in 8_000..11_000)
+            h.sent.clear()
+            peerPing(h, 5 * 60 * 1000 + 10_000L)
+            h.beat()
+            assertEquals("past the window: the safety ping goes on this beat", 1, h.pings().size)
+        } finally { h.close() }
+    }
+
+    @Test fun leavingIdlePerformanceForFullQuietDoesNotLogLinkActive() {
+        val h = Harness(context)
+        try {
+            peer(h, on = true, perf = true, keep = true)
+            h.beat()
+            assertTrue(h.link.read("perfSince") as Long > 0L)
+            val before = ShadowLog.getLogsForTag("TwinDesk").size
+            peer(h, on = true, perf = true, keep = false)
+            h.beat()
+            assertTrue(h.link.quiet)
+            assertEquals(0L, h.link.read("perfSince"))
+            val logs = ShadowLog.getLogsForTag("TwinDesk").drop(before).map { it.msg }
+            assertTrue(logs.any { it.startsWith("link quiet:") })
+            assertFalse(logs.any { it == "link active: pings every second" })
+        } finally { h.close() }
+    }
+
+    @Test fun backwardClockStepDoesNotSuppressThePhonePing() {
+        val h = Harness(context)
+        try {
+            peerPing(h, -5_000)
+            val delay = h.beat()
+            assertEquals("a computer ping stamped in the future is not fresh", 1, h.pings().size)
+            assertTrue("delay=$delay", delay in 800..1_000)
+        } finally { h.close() }
+    }
+
+    @Test fun backwardClockStepAfterOurOwnPingDoesNotSuppressTheNext() {
+        val h = Harness(context)
+        try {
+            h.link.keepPinging = true
+            peer(h, on = true, perf = true, keep = true)
+            h.beat()
+            h.sent.clear()
+            val now = System.currentTimeMillis()
+            h.link.write("perfSince", now - 1_000)
+            h.link.write("perfPing", now + 5_000)
+            peerPing(h, Proto.PING_MS_IDLE_PERF + 1_000L)
+            h.beat()
+            assertEquals("our own stamp in the future does not hide a stale computer ping", 1, h.pings().size)
         } finally { h.close() }
     }
 }
