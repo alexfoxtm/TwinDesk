@@ -18,6 +18,7 @@ import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -29,6 +30,12 @@ class Pointer(core: Core) : Feature(core) {
     private var lp: WindowManager.LayoutParams? = null
     private var host: Context? = null // whose window the view is in: the service, or the app
     private var wm: WindowManager? = null
+    private val frames = PointerFrames { x, y ->
+        val v = view ?: return@PointerFrames
+        val p = lp ?: return@PointerFrames
+        placePointer(p, x, y, initial = false) { wm?.updateViewLayout(v, p) }
+    }
+    private val frameCb = Choreographer.FrameCallback { frames.onFrame() }
     val allowed get() = InputService.running != null || Settings.canDrawOverlays(core.ctx)
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
@@ -44,7 +51,7 @@ class Pointer(core: Core) : Feature(core) {
         val want: Context = service ?: core.ctx
         if (service == null && !Settings.canDrawOverlays(core.ctx)) return remove()
         if (view != null && host !== want) remove() // the service came or went: move the arrow over
-        val v = view ?: run {
+        if (view == null) {
             val density = core.ctx.resources.displayMetrics.density
             val size = (22 * density).toInt()
             val arrowView = object : View(want) {
@@ -74,15 +81,17 @@ class Pointer(core: Core) : Feature(core) {
             view = arrowView
             return
         }
-        val p = lp ?: return
-        placePointer(p, x, y, initial = false) { wm?.updateViewLayout(v, p) }
+        if (lp == null) return
+        frames.move(x, y) { Choreographer.getInstance().postFrameCallback(frameCb) }
     }
 
     fun hide() {
+        frames.hide()
         main.post { remove() }
     }
 
     private fun remove() {
+        frames.hide()
         view?.let { v -> runCatching { wm?.removeView(v) } }
         view = null; lp = null; host = null; wm = null
     }
@@ -106,6 +115,37 @@ internal fun placePointer(
         params.x = oldX
         params.y = oldY
     }.isSuccess
+}
+
+/**
+ * One layout per display frame. Moves that arrive before the frame replace the one waiting,
+ * and the frame applies whichever position was last. Hide drops a waiting move.
+ */
+internal class PointerFrames(private val apply: (Int, Int) -> Unit) {
+    private var pending = false
+    private var posted = false
+    private var x = 0
+    private var y = 0
+
+    fun move(x: Int, y: Int, postFrame: () -> Unit) {
+        this.x = x
+        this.y = y
+        pending = true
+        if (posted) return
+        posted = true
+        postFrame()
+    }
+
+    fun onFrame() {
+        posted = false
+        if (!pending) return
+        pending = false
+        apply(x, y)
+    }
+
+    fun hide() {
+        pending = false
+    }
 }
 
 // The computer's shared folder in the phone's Files app (smb.offer). Comes with the drive work.
