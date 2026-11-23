@@ -1501,13 +1501,15 @@ app.whenReady().then(() => {
   readDefaultIf();
   // Addresses change when an interface's address changes (one getifaddrs). The default route
   // is read then, and only then: nothing spawns /sbin/route or pushes while the list is the same.
-  // While nothing is connected and the window is not on screen, the tick returns before that read.
-  // Show, cover and a session each run it once, so a resume is not a tick later than this interval.
+  // The 5 s interval runs only while the settings window is watched. Hidden, it is not running,
+  // even with a peer connected: nothing reads defaultIf until that window is pushed. Show and
+  // cover run one read on that edge, so a resume is not a tick later than this interval.
   let addrKey = '';
+  let addrTimer = null;
+  const addrWatching = () => !!(win && !win.isDestroyed() && controlWatch.watching(win));
   const noteAddresses = () => {
     if (!wakePace.addrShouldPoll({
-      peerConnected: !!(peer && peer.current),
-      windowWatching: !!(win && !win.isDestroyed() && controlWatch.watching(win)),
+      windowWatching: addrWatching(),
     })) return;
     const key = interfaces().map((i) => `${i.name}=${i.address}`).join(',');
     if (key === addrKey) return;
@@ -1515,9 +1517,15 @@ app.whenReady().then(() => {
     readDefaultIf();
     pushState();
   };
-  setInterval(() => {
-    noteAddresses();
-  }, 5000).unref();
+  const addrArm = () => {
+    if (!wakePace.addrShouldPoll({ windowWatching: addrWatching() })) {
+      if (addrTimer) { clearInterval(addrTimer); addrTimer = null; }
+      return;
+    }
+    if (addrTimer) return;
+    addrTimer = setInterval(() => { noteAddresses(); }, 5000);
+    if (addrTimer.unref) addrTimer.unref();
+  };
   // While Setup is on screen and something is missing, notice the grant without waiting for a focus.
   // Hidden, or nothing missing: the interval is not running. Focus still refreshes immediately.
   let permTimer = null;
@@ -1540,12 +1548,13 @@ app.whenReady().then(() => {
   };
   onWatchEdge = () => {
     noteAddresses();
+    addrArm();
     permArm();
     refreshBlePace();
     if (svc && svc.stream && typeof svc.stream.setStatsWindow === 'function') svc.stream.setStatsWindow(!!(win && !win.isDestroyed() && controlWatch.watching(win)));
   };
-  peer.on('client', () => { pctArm(); noteAddresses(); });
-  peer.on('closed', () => { pctArm(); noteAddresses(); }); // a leftover tray title is cleared, then the timer stops
+  peer.on('client', () => { pctArm(); noteAddresses(); addrArm(); });
+  peer.on('closed', () => { pctArm(); noteAddresses(); addrArm(); }); // a leftover tray title is cleared, then the timer stops
   if (peer.current) pctArm();
   // Started at login: in the menu bar only; the window is made when it's first opened.
   if (startHidden) startHidden = false;
@@ -1585,9 +1594,10 @@ function setupNet() {
   // Looked for only while there's no session; Invite asks one to connect.
   svc.bleLook = new BleLook({ helper: svc.helper, self: () => ({ id: id.macId, name: id.macName.slice(0, 40), os: P.OS.MAC }) });
   svc.bleLook.on('change', pushState);
-  // 3 s while a session is up or the window is watched (wifiQuiet is 5 s, the nearby list is on
-  // screen). 20 s otherwise: the only reader left is the iPhone invite, which already waits 20 s.
-  // One tick on the session and window edges, and once at start, so the first invite is not later.
+  // 3 s while the window is watched, or while a Wi-Fi session is still in the 5 s settle
+  // (wifiQuiet, FALLBACK_MS: wantQuiet and Bluetooth not off yet). Once that settles, 20 s,
+  // connected or not: the window is hidden and this tick has nothing that needs 3 s.
+  // One tick on the session, transport, group and window edges, and once at start.
   let bleTimer = null;
   let bleEvery = 0;
   const bleTick = () => {
@@ -1603,6 +1613,7 @@ function setupNet() {
       pushState();
     }
     else if (off) svc.ble.apply(); // an iPhone linked or gone while quiet: held or stopped (hold)
+    armBle(); // bleOff just flipped, or the settle is still open: the wait follows it now
     svc.bleLook.look(settings.net.blePc === true && !peer.current);
     // No session, and an iPhone or iPad linked over Bluetooth (it links only to computers it's paired
     // with): invited now and then, which wakes TwinDesk there to come back (Ble.swift).
@@ -1616,9 +1627,20 @@ function setupNet() {
     }
   };
   const armBle = () => {
+    const c = peer.current;
+    // Same Wi-Fi path wifiQuiet waits on. USB (127.0.0.1), Bluetooth and a Wi-Fi Direct
+    // group are not it, and neither is the switch being off. Settled means that wait is
+    // over, or it was never going to start.
+    const wantQuiet = !!(c
+      && settings.net.bleWifiOff !== false
+      && settings.net.bleInput !== true
+      && c.transport !== 'ble'
+      && !(svc.net && svc.net.onGroup)
+      && !/^(127\.|::1$|::ffff:127\.)/.test(String(c.address || '')));
     const ms = wakePace.bleIntervalMs({
-      peerConnected: !!peer.current,
+      peerConnected: !!c,
       windowWatching: !!(win && !win.isDestroyed() && controlWatch.watching(win)),
+      bleSettled: !wantQuiet || bleOff === true,
     });
     if (bleTimer && bleEvery === ms) return;
     if (bleTimer) clearInterval(bleTimer);
@@ -1629,6 +1651,7 @@ function setupNet() {
   refreshBlePace = () => { bleTick(); armBle(); };
   peer.on('client', refreshBlePace);
   peer.on('closed', refreshBlePace);
+  peer.on('transport', refreshBlePace); // BLE <-> Wi-Fi: the settle starts or ends with the path
   refreshBlePace();
   discovery.extra = {
     list: () => {
@@ -1670,6 +1693,7 @@ function setupNet() {
     if (svc.net.state === 'hotspot') showWindow();
     pushState();
   });
+  svc.net.on('change', refreshBlePace); // joining or leaving a Wi-Fi Direct group reopens the 3 s settle
   svc.net.on('dropped', () => settings.sharing.on && actions.setSharing(false)); // Bluetooth can't carry the screen
   peer.hold = (m) => svc.net.holdOut(m, (x) => peer.sendNow(x));
   peer.tap = (m) => svc.net.onMessage(m);
