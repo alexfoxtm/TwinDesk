@@ -52,7 +52,9 @@ android {
     }
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Sideloaded from GitHub releases: signed with this machine's debug key until a release key exists.
             signingConfig = signingConfigs.getByName("debug")
         }
