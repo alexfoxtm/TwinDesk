@@ -189,10 +189,9 @@ final class Capture {
       hkStage = 0
       hkPending = nil
     }
-    self.dragFiles = dragFiles
     self.sides = sides
     self.resistance = resistance
-    self.edgeEnabled = edgeEnabled
+    noteDragPolicy(edgeEnabled: edgeEnabled, dragFiles: dragFiles)
     self.cfgKeyboard = keyboard
     self.cooldown = cooldown
     edgeBy.removeAll()
@@ -208,15 +207,22 @@ final class Capture {
       hkStage = 0
       hkPending = nil
     }
-    self.dragFiles = dragFiles
     self.side = side
     self.resistance = resistance
-    self.edgeEnabled = edgeEnabled
+    noteDragPolicy(edgeEnabled: edgeEnabled, dragFiles: dragFiles)
     self.cfgKeyboard = keyboard
     self.cooldown = cooldown
     edge.push = 0
   }
 #endif
+
+  /// A drag that starts while crossing is off has no pasteboard baseline. Arm a fresh one when
+  /// either gate opens, so the next real drag is measured from a new left button.
+  private func noteDragPolicy(edgeEnabled: Bool, dragFiles: Bool) {
+    if (edgeEnabled && !self.edgeEnabled) || (dragFiles && !self.dragFiles) { dragPbCount = -1 }
+    self.dragFiles = dragFiles
+    self.edgeEnabled = edgeEnabled
+  }
 
   // MARK: capture
 
@@ -829,7 +835,7 @@ final class Capture {
 
     if noteLocal(type, dx, dy) { return false } // ours again: the event goes on here as it is
     let allowed = !capturing && edgeEnabled ? crossingAllowed(e.flags) : true
-    if type == .leftMouseDown { dragPbCount = NSPasteboard(name: .drag).changeCount }
+    if type == .leftMouseDown && edgeEnabled && dragFiles { dragPbCount = NSPasteboard(name: .drag).changeCount }
     // A file drag pushed through the crossing edge carries the files over.
 #if MULTI
     if type == .leftMouseDragged, !capturing, edgeEnabled, dragFiles, allowed,
