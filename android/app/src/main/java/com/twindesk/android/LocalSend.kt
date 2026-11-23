@@ -68,10 +68,7 @@ class LocalSend(private val core: Core) : LsEvents {
     fun asksPin(id: String): Boolean = synchronized(lock) { again.containsKey(id) }
 
     // With the rest of TwinDesk (Core.start): not after Exit, and not before Core is whole.
-    fun start() {
-        interactive = ctx.getSystemService(PowerManager::class.java)?.isInteractive != false
-        apply()
-    }
+    fun start() { apply() }
 
     // Screen on or off (Core's screen receiver). A wake announces at once so peers list this phone
     // again without waiting out the rest of the 30s period. Runs on `life`, with apply().
@@ -88,66 +85,72 @@ class LocalSend(private val core: Core) : LsEvents {
         core.changed()
     }
 
-    private fun apply() = life.execute {
-        val want = on
-        runCatching {
-            val component = ComponentName(ctx, LocalSendShareActivity::class.java)
-            val state = if (want) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED
-            if (ctx.packageManager.getComponentEnabledSetting(component) != state) {
-                ctx.packageManager.setComponentEnabledSetting(component, state, PackageManager.DONT_KILL_APP)
-            }
-        }.onFailure { Log.w("TwinDesk", "LocalSend share target", it) }
-        if (want && node == null) {
-            starting = true
-            failed = ""
-            core.changed()
-            try {
-                // Android drops multicast for an app without this lock: the others' announces are how they're found.
-                // Held only while the screen is on or a transfer is moving (syncMulticast). Reference
-                // counting stays off, so one release drops it no matter how many times it was taken.
-                multicast = runCatching {
-                    ctx.applicationContext.getSystemService(WifiManager::class.java).createMulticastLock("twindesk-localsend").apply { setReferenceCounted(false) }
-                }.getOrNull()
-                val n = LocalSendCore(File(ctx.filesDir, "localsend"), { core.store.deviceName }, sink, this,
-                    LsOptions(deviceModel = Build.MODEL ?: "", deviceType = "mobile", log = { Log.d("TwinDesk", "localsend: $it") }))
-                node = n
-                syncMulticast() // before start(), so the opening bursts honor a dark screen
-                n.start()
-                showScan() // the core announces for the first two seconds after opening, unless paused
-            } catch (e: Exception) {
-                Log.d("TwinDesk", "localsend: $e")
-                failed = e.message ?: e.javaClass.simpleName
-                val failedNode = node
+    // The screen is read on the caller, before this returns. start() and set() both leave
+    // `interactive` current, including a missing PowerManager (unknown counts as on). The
+    // listener work still runs on `life`, in order with onScreen().
+    private fun apply() {
+        interactive = ctx.getSystemService(PowerManager::class.java)?.isInteractive != false
+        life.execute {
+            val want = on
+            runCatching {
+                val component = ComponentName(ctx, LocalSendShareActivity::class.java)
+                val state = if (want) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                if (ctx.packageManager.getComponentEnabledSetting(component) != state) {
+                    ctx.packageManager.setComponentEnabledSetting(component, state, PackageManager.DONT_KILL_APP)
+                }
+            }.onFailure { Log.w("TwinDesk", "LocalSend share target", it) }
+            if (want && node == null) {
+                starting = true
+                failed = ""
+                core.changed()
+                try {
+                    // Android drops multicast for an app without this lock: the others' announces are how they're found.
+                    // Held only while the screen is on or a transfer is moving (syncMulticast). Reference
+                    // counting stays off, so one release drops it no matter how many times it was taken.
+                    multicast = runCatching {
+                        ctx.applicationContext.getSystemService(WifiManager::class.java).createMulticastLock("twindesk-localsend").apply { setReferenceCounted(false) }
+                    }.getOrNull()
+                    val n = LocalSendCore(File(ctx.filesDir, "localsend"), { core.store.deviceName }, sink, this,
+                        LsOptions(deviceModel = Build.MODEL ?: "", deviceType = "mobile", log = { Log.d("TwinDesk", "localsend: $it") }))
+                    node = n
+                    syncMulticast() // before start(), so the opening bursts honor a dark screen
+                    n.start()
+                    showScan() // the core announces for the first two seconds after opening, unless paused
+                } catch (e: Exception) {
+                    Log.d("TwinDesk", "localsend: $e")
+                    failed = e.message ?: e.javaClass.simpleName
+                    val failedNode = node
+                    node = null
+                    runCatching { failedNode?.stop() }
+                    releaseMulticast()
+                    multicast = null
+                }
+                starting = false
+            } else if (!want && node != null) {
+                val n = node
                 node = null
-                runCatching { failedNode?.stop() }
+                runCatching { n?.stop() }
                 releaseMulticast()
                 multicast = null
+                synchronized(lock) {
+                    for (i in history.indices) if (history[i].live) history[i] = history[i].copy(state = "cancelled")
+                    again.clear()
+                }
+                runCatching {
+                    val manager = Notify.nm(ctx)
+                    manager.activeNotifications.filter { it.tag?.startsWith(TAG_PREFIX) == true }
+                        .forEach { manager.cancel(it.tag, it.id) }
+                }
+                addError = ""
             }
-            starting = false
-        } else if (!want && node != null) {
-            val n = node
-            node = null
-            runCatching { n?.stop() }
-            releaseMulticast()
-            multicast = null
-            synchronized(lock) {
-                for (i in history.indices) if (history[i].live) history[i] = history[i].copy(state = "cancelled")
-                again.clear()
+            if (!want) {
+                endScan?.cancel(false)
+                endScan = null
+                scanning = false
+                failed = ""
             }
-            runCatching {
-                val manager = Notify.nm(ctx)
-                manager.activeNotifications.filter { it.tag?.startsWith(TAG_PREFIX) == true }
-                    .forEach { manager.cancel(it.tag, it.id) }
-            }
-            addError = ""
+            core.changed()
         }
-        if (!want) {
-            endScan?.cancel(false)
-            endScan = null
-            scanning = false
-            failed = ""
-        }
-        core.changed()
     }
 
     // A live history row or an offer still waiting for an answer. `receiving` is the TCP port,
