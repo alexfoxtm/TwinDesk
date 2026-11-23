@@ -258,10 +258,14 @@ class Core private constructor(val ctx: Context) : Link.Events {
             ctx.registerReceiver(object : android.content.BroadcastReceiver() {
                 override fun onReceive(c: Context, i: android.content.Intent) {
                     when (i.action) {
-                        android.content.Intent.ACTION_SCREEN_OFF -> link.nudge()
+                        android.content.Intent.ACTION_SCREEN_OFF -> {
+                            link.nudge()
+                            rezume.onScreen(false)
+                        }
                         android.content.Intent.ACTION_SCREEN_ON, android.content.Intent.ACTION_USER_PRESENT -> {
                             link.wake()
                             timers.execute { retryReturnNow() }
+                            rezume.onScreen(true)
                         }
                     }
                     requestTimers()

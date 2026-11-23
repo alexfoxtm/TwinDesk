@@ -18,6 +18,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Base64
@@ -58,7 +60,30 @@ class Rezume(core: Core) : Feature(core) {
         core.bg.execute { send(JSONObject(a.toString()), false) }
     }
     private var detectSaid: Boolean? = null
-    private var poll: ScheduledFuture<*>? = null
+    private var safety: ScheduledFuture<*>? = null
+    private var pendingPackageChange = false
+    @Volatile private var treePkg = ""
+    @Volatile private var treeAt = 0L
+    private val tickLock = Any()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val debounced = Runnable { onDebounced() }
+    private val watch = RezumeWatch(
+        postDebounce = { delay -> mainHandler.postDelayed(debounced, delay) },
+        cancelDebounce = {
+            mainHandler.removeCallbacks(debounced)
+            pendingPackageChange = false
+        },
+        startSafety = { period ->
+            safety?.cancel(false)
+            safety = core.bg.scheduleWithFixedDelay({
+                runCatching { tick(packageChanged = false, safety = true) }.onFailure { Log.e("TwinDesk", "rezume", it) }
+            }, period, period, TimeUnit.MILLISECONDS)
+        },
+        cancelSafety = {
+            safety?.cancel(false)
+            safety = null
+        },
+    )
     private val icons = HashMap<String, String>()
     private val dismissed = HashSet<String>()
 
@@ -115,25 +140,55 @@ class Rezume(core: Core) : Feature(core) {
     private fun timers() {
         val p = peer
         val want = on && opt("send") && core.link.connected && p != null && p.optBoolean("on")
-        if (want && poll == null) poll = core.bg.scheduleWithFixedDelay({ runCatching { tick() }.onFailure { Log.e("TwinDesk", "rezume", it) } }, 1500, 1500, TimeUnit.MILLISECONDS)
-        else if (!want) {
-            poll?.cancel(false)
-            poll = null
-        }
+        watch.setInteractive(screenInteractive())
+        watch.setArmed(want)
     }
+
+    private fun screenInteractive(): Boolean =
+        core.ctx.getSystemService(PowerManager::class.java)?.isInteractive != false
+
+    // The screen came on or went off. Off cancels the safety read, so a dark screen does not wake the pool.
+    fun onScreen(interactive: Boolean) = watch.setInteractive(interactive)
+
+    // A window event the accessibility service already received. A package change is read; a fresh address is not.
+    fun onWindow(packageChanged: Boolean) {
+        if (!watch.live) return
+        if (packageChanged) pendingPackageChange = true
+        val pkg = InputService.running?.activePackage.orEmpty()
+        watch.onWindow(packageChanged, treeFresh(pkg))
+    }
+
+    private fun onDebounced() {
+        val changed = pendingPackageChange
+        pendingPackageChange = false
+        if (!watch.debounceFired()) return
+        core.bg.execute { runCatching { tick(changed) }.onFailure { Log.e("TwinDesk", "rezume", it) } }
+    }
+
+    private fun treeFresh(pkg: String): Boolean =
+        pkg.isNotEmpty() && pkg == treePkg && System.currentTimeMillis() - treeAt < REZUME_SAFETY_MS
 
     // ---- offering ----
 
-    private fun tick() {
+    private fun tick(packageChanged: Boolean, safety: Boolean = false) {
+        synchronized(tickLock) {
         val det = InputService.running != null
         if (det != detectSaid) sendPolicy() // Accessibility came or went: the computer asks through wireless debugging or not
         val p = peer ?: return
         if (outId.isNotEmpty() && System.currentTimeMillis() - outAt > TTL_MS) clearOut()
         val svc = InputService.running ?: return
-        if (!core.ctx.getSystemService(PowerManager::class.java).isInteractive) return // the screen off: what was offered stays
+        if (!screenInteractive()) return // the screen off: what was offered stays
+        val hinted = svc.activePackage
+        // The same app, read a moment ago: the address bar can wait for the safety pass. An app switch cannot.
+        if (!rezumeShouldReadTree(packageChanged, treeFresh(hinted), safety)) return
         // The window in front, from its own content: the keyboard opening (typing in the address bar) makes
         // it the "active package", and nothing says so when it closes again; the active window stays the app's.
-        val pkg = runCatching { svc.rootInActiveWindow?.packageName?.toString() }.getOrNull()?.takeIf { it.isNotEmpty() && !NOT_AN_APP.containsMatchIn(it) } ?: svc.activePackage
+        val pkg = runCatching { svc.rootInActiveWindow?.packageName?.toString() }.getOrNull()?.takeIf { it.isNotEmpty() && !NOT_AN_APP.containsMatchIn(it) } ?: hinted
+        val cacheKey = hinted.ifEmpty { pkg }
+        if (cacheKey.isNotEmpty()) {
+            treePkg = cacheKey
+            treeAt = System.currentTimeMillis()
+        }
         if (pkg.isEmpty() || NOT_AN_APP.containsMatchIn(pkg)) return say("nothing to offer in front ($pkg)")
         val a = current(svc, pkg, p) ?: return
         say("")
@@ -143,8 +198,9 @@ class Rezume(core: Core) : Feature(core) {
         if (a.first == outKey) { outAt = now; return }
         if (a.first != seenKey) { seenKey = a.first; seenSince = now; return }
         if (now - seenSince < STABLE_MS) return
-        seenKey = ""
-        send(a.second, false)
+            seenKey = ""
+            send(a.second, false)
+        }
     }
 
     // (key, the offer) for what's in front: a browser's tab, else the app.
@@ -185,7 +241,11 @@ class Rezume(core: Core) : Feature(core) {
         pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString().take(100)
     }.getOrDefault("")
 
-    private fun icon(pkg: String): String = icons.getOrPut(pkg) {
+    fun clearIcons() {
+        synchronized(icons) { icons.clear() }
+    }
+
+    private fun icon(pkg: String): String = synchronized(icons) { icons.getOrPut(pkg) {
         if (core.link.ble) return "" // slow there: the computer has the phone's app list
         runCatching {
             val d = core.ctx.packageManager.getApplicationIcon(pkg)
@@ -197,7 +257,7 @@ class Rezume(core: Core) : Feature(core) {
             bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
             "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
         }.getOrDefault("")
-    }
+    } }
 
     private fun send(o: JSONObject, push: Boolean) {
         val id = UUID.randomUUID().toString().replace("-", "").take(16)
@@ -345,6 +405,83 @@ class Rezume(core: Core) : Feature(core) {
             val u = if (s.startsWith("http://", true) || s.startsWith("https://", true)) s else if (HOST.containsMatchIn(s)) "https://$s" else return null
             val p = runCatching { Uri.parse(u) }.getOrNull() ?: return null
             return if ((p.scheme == "http" || p.scheme == "https") && !p.host.isNullOrEmpty() && u.length <= 8192) u else null
+        }
+    }
+}
+
+internal const val REZUME_DEBOUNCE_MS = 200L
+internal const val REZUME_SAFETY_MS = 12_000L
+
+/** A window event reads the tree when the front package changed, the last read is stale, or this is the safety pass. */
+internal fun rezumeShouldReadTree(packageChanged: Boolean, addressFresh: Boolean, safety: Boolean = false): Boolean =
+    safety || packageChanged || !addressFresh
+
+/**
+ * While ReZume is on, a peer is connected and the screen is interactive: window events coalesce into
+ * one read after [REZUME_DEBOUNCE_MS], and one safety read repeats every [REZUME_SAFETY_MS].
+ * Anything else cancels both.
+ */
+internal class RezumeWatch(
+    private val postDebounce: (delayMs: Long) -> Unit,
+    private val cancelDebounce: () -> Unit,
+    private val startSafety: (periodMs: Long) -> Unit,
+    private val cancelSafety: () -> Unit,
+) {
+    var armed = false
+        private set
+    var interactive = true
+        private set
+    private var safetyOn = false
+    private var debounceOn = false
+
+    val live get() = armed && interactive
+
+    fun setArmed(on: Boolean) {
+        if (armed == on) return
+        armed = on
+        sync()
+    }
+
+    fun setInteractive(on: Boolean) {
+        if (interactive == on) return
+        interactive = on
+        sync()
+    }
+
+    /** @return true when this event is coalesced into a tree read. */
+    fun onWindow(packageChanged: Boolean, addressFresh: Boolean): Boolean {
+        if (!live) return false
+        if (!rezumeShouldReadTree(packageChanged, addressFresh)) return false
+        if (debounceOn) return true
+        debounceOn = true
+        postDebounce(REZUME_DEBOUNCE_MS)
+        return true
+    }
+
+    /** The debounced runnable finished. False when the screen or the feature went off while it waited. */
+    fun debounceFired(): Boolean {
+        debounceOn = false
+        return live
+    }
+
+    private fun sync() {
+        if (!live) {
+            if (debounceOn) cancelDebounce()
+            debounceOn = false
+            if (safetyOn) {
+                cancelSafety()
+                safetyOn = false
+            }
+            return
+        }
+        if (!safetyOn) {
+            startSafety(REZUME_SAFETY_MS)
+            safetyOn = true
+        }
+        // The app already in front, without waiting for the next window event or the safety pass.
+        if (!debounceOn) {
+            debounceOn = true
+            postDebounce(REZUME_DEBOUNCE_MS)
         }
     }
 }

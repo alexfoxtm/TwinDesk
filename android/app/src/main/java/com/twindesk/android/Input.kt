@@ -64,6 +64,17 @@ class InputService : AccessibilityService() {
     }.getOrDefault(true)
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val type = event?.eventType
+        val window = type == AccessibilityEvent.TYPE_WINDOWS_CHANGED || type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+        val before = activePackage
+        try {
+            onWindowEvent(event)
+        } finally {
+            if (window) runCatching { Core.get(this).rezume.onWindow(activePackage != before) }
+        }
+    }
+
+    private fun onWindowEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
             val multi = multipleApplications(activePackage)
             if (multi != multipleApps) { multipleApps = multi; resend() }
