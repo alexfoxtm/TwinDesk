@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class PointerFrameTest {
-    @Test fun oneFrameAppliesOnlyTheLatestPosition() {
+    @Test fun onePostedRunAppliesOnlyTheLatestPosition() {
         val applied = mutableListOf<Pair<Int, Int>>()
         val frames = PointerFrames { x, y -> applied += x to y }
         var posts = 0
@@ -13,10 +13,15 @@ class PointerFrameTest {
         frames.move(8, 9) { posts++ }
         assertEquals(0, applied.size)
         assertEquals(1, posts)
-        frames.onFrame()
+        frames.flush()
         assertEquals(listOf(8 to 9), applied)
-        frames.onFrame()
+        frames.flush()
         assertEquals(listOf(8 to 9), applied)
+        frames.move(10, 11) { posts++ }
+        frames.move(12, 13) { posts++ }
+        assertEquals(2, posts)
+        frames.flush()
+        assertEquals(listOf(8 to 9, 12 to 13), applied)
     }
 
     @Test fun hideDropsAWaitingMoveAndTheNextOneStillLands() {
@@ -24,14 +29,14 @@ class PointerFrameTest {
         val frames = PointerFrames { x, y -> applied += x to y }
         frames.move(1, 2) {}
         frames.hide()
-        frames.onFrame()
+        frames.flush()
         assertEquals(emptyList<Pair<Int, Int>>(), applied)
         frames.move(5, 6) {}
-        frames.onFrame()
+        frames.flush()
         assertEquals(listOf(5 to 6), applied)
     }
 
-    @Test fun hideCancelsThePostedFrameCallback() {
+    @Test fun hideCancelsThePostedRunnable() {
         val frames = PointerFrames { _, _ -> }
         var posts = 0
         var cancels = 0
@@ -41,7 +46,7 @@ class PointerFrameTest {
         assertEquals(1, cancels)
         frames.hide { cancels++ }
         assertEquals(1, cancels)
-        frames.onFrame()
+        frames.flush()
         frames.move(3, 4) { posts++ }
         assertEquals(2, posts)
     }

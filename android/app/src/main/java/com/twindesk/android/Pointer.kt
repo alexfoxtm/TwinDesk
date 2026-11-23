@@ -18,7 +18,6 @@ import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.view.Choreographer
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -35,7 +34,7 @@ class Pointer(core: Core) : Feature(core) {
         val p = lp ?: return@PointerFrames
         placePointer(p, x, y, initial = false) { wm?.updateViewLayout(v, p) }
     }
-    private val frameCb = Choreographer.FrameCallback { frames.onFrame() }
+    private val moveRunnable = Runnable { frames.flush() }
     val allowed get() = InputService.running != null || Settings.canDrawOverlays(core.ctx)
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
@@ -82,23 +81,23 @@ class Pointer(core: Core) : Feature(core) {
             return
         }
         if (lp == null) return
-        frames.move(x, y) { Choreographer.getInstance().postFrameCallback(frameCb) }
+        // Posted on the main looper, not on the next frame. This overlay is the app's only
+        // window and it never invalidates, so an adaptive-refresh panel can stop this
+        // process's vsync and a frame callback never runs. The arrow would stay where
+        // addView put it. One runnable is enough: the last position wins.
+        frames.move(x, y) { main.post(moveRunnable) }
     }
 
     fun hide() {
-        frames.hide { cancelPointerFrame(Choreographer.getInstance(), frameCb) }
+        frames.hide { main.removeCallbacks(moveRunnable) }
         main.post { remove() }
     }
 
     private fun remove() {
-        frames.hide { cancelPointerFrame(Choreographer.getInstance(), frameCb) }
+        frames.hide { main.removeCallbacks(moveRunnable) }
         view?.let { v -> runCatching { wm?.removeView(v) } }
         view = null; lp = null; host = null; wm = null
     }
-}
-
-internal fun cancelPointerFrame(choreographer: Choreographer, callback: Choreographer.FrameCallback) {
-    choreographer.removeFrameCallback(callback)
 }
 
 internal fun placePointer(
@@ -122,8 +121,9 @@ internal fun placePointer(
 }
 
 /**
- * One layout per display frame. Moves that arrive before the frame replace the one waiting,
- * and the frame applies whichever position was last. Hide drops a waiting move.
+ * One layout per turn of the main looper. Moves that arrive before the posted runnable
+ * runs replace the one waiting, and the runnable applies whichever position was last.
+ * Hide drops a waiting move and cancels the runnable, so a hidden arrow is not moved.
  */
 internal class PointerFrames(private val apply: (Int, Int) -> Unit) {
     private var pending = false
@@ -131,27 +131,27 @@ internal class PointerFrames(private val apply: (Int, Int) -> Unit) {
     private var x = 0
     private var y = 0
 
-    fun move(x: Int, y: Int, postFrame: () -> Unit) {
+    fun move(x: Int, y: Int, post: () -> Unit) {
         this.x = x
         this.y = y
         pending = true
         if (posted) return
         posted = true
-        postFrame()
+        post()
     }
 
-    fun onFrame() {
+    fun flush() {
         posted = false
         if (!pending) return
         pending = false
         apply(x, y)
     }
 
-    fun hide(cancelFrame: () -> Unit = {}) {
+    fun hide(cancel: () -> Unit = {}) {
         pending = false
         if (!posted) return
         posted = false
-        cancelFrame()
+        cancel()
     }
 }
 
