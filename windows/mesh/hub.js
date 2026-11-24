@@ -21,7 +21,8 @@
 
 const { EventEmitter } = require('events');
 const P = require('../../shared/protocol.js');
-const { Route } = require('../../shared/hub-route.js');
+const { Route, outboundOf } = require('../../shared/hub-route.js');
+const { Heard, Said, activeSocket } = require('../../shared/peerstate.js');
 const { Sessions } = require('./session.js');
 
 const ROSTER = 'mesh.roster';
@@ -52,6 +53,8 @@ class Hub extends EventEmitter {
     this._peerHandlers = new Map(); // 'welcome' | 'closed' -> [fn(peerId, info)]
     this._facadeHandlers = new Map(); // type | 'welcome' | 'closed' -> [fn(arg)]
     this._facadeStateFns = [];
+    this.heard = new Heard(); // each device's last audio/screen policy or state, bound to its live socket (peerstate.js)
+    this._facadeSaid = new Said(); // active outbound policies the facade told the selected device
     this._audioSticky = {};
     this._audioRoute = null;
     this._audioLink = null;
@@ -131,12 +134,16 @@ class Hub extends EventEmitter {
   // Forget a device: its guest link (we dialled it) and its host entry (it dialled us), both.
   forgetPeer(id) {
     this._forgetPending(id);
+    this.heard.forget(id);
+    this._facadeSaid.forget(id);
     if (this.links.get(id)) this.links.forget(id);
     if (this.pairing && this.pairing.list().some((x) => x.id === id)) this.pairing.forget(id);
   }
 
   forgetGuest(id) {
     this._forgetPending(id);
+    this.heard.forget(id);
+    this._facadeSaid.forget(id);
     if (this.pairing) this.pairing.forget(id);
   }
 
@@ -180,7 +187,7 @@ class Hub extends EventEmitter {
       on(type, fn) {
         if (type === 'welcome') route.on('client', (v) => fn(hub._welcomeInfo(hub.sessions.get(v.deviceId))));
         else if (type === 'closed') route.on('closed', (v) => fn(v));
-        else route.on(`t:${type}`, (m) => fn(m));
+        else route.on(`t:${type}`, (m, v) => fn(m, v));
       },
       send: (obj) => route.send(obj),
       get status() {
@@ -333,6 +340,7 @@ class Hub extends EventEmitter {
       if (this.mesh.handle(s.id, msg)) this._change();
       return true;
     }
+    this.heard.note(s, msg, ws);
     // The selected device's messages reach the net hook first (netlink.js: its net.* and file chunks).
     if (this.netTap && s.id === this.selectedId) this.netTap(msg);
     let consumed = false;
@@ -349,7 +357,8 @@ class Hub extends EventEmitter {
     if (this._audioRoute && this._audioRoute.targetId === s.id
       && (this._audioRoute.listenerCount(`t:${msg.t}`) > 0 || this._audioRoute.listenerCount('message') > 0)) {
       consumed = true;
-      this._audioRoute.deliver(msg);
+      if (ws && typeof ws === 'object') this._audioRoute.deliver(msg, ws);
+      else this._audioRoute.deliver(msg);
     }
     return consumed;
   }
@@ -369,6 +378,8 @@ class Hub extends EventEmitter {
 
   // replaced: the device got a new socket, so it is down and up again at once. Its selection stays.
   _down(s, replaced = false) {
+    this.heard.forget(s.id); // its next session announces fresh state
+    this._facadeSaid.forget(s.id);
     this.mesh.removePeer(s.id);
     this._rosterAll();
     this._peerEvent('closed', s.id, {});
@@ -382,6 +393,7 @@ class Hub extends EventEmitter {
   }
 
   _stateOf(s) {
+    this.heard.sync(s); // evict remembered state if the active primary socket changed (e.g. resume)
     const tr = s.transport; // onto Bluetooth or back: the device's features hear 'transport'
     if (tr !== s.lastTransport) {
       s.lastTransport = tr;
@@ -439,17 +451,41 @@ class Hub extends EventEmitter {
   _select(id) {
     const next = id || null;
     if (next === this.selectedId) return;
-    if (this.selectedId !== null) this._facadeEmit('closed', {});
+    if (this.selectedId !== null) {
+      const oldId = this.selectedId;
+      const old = this.sessions.get(oldId);
+      this._facadeEmit('closed', {});
+      // Leaving a still-connected peer: switch off active policies the facade told it.
+      const goodbyes = this._facadeSaid.goodbyes(oldId);
+      if (goodbyes.length && old && old.connected && outboundOf(old)) {
+        for (const m of goodbyes) old.send(m);
+      }
+    }
     this.selectedId = next;
     if (this.server) this.server.setPrimary(next);
     if (next) {
       const s = this.sessions.get(next);
-      if (s) this._facadeEmit('welcome', this._welcomeInfo(s));
+      if (s && s.connected) {
+        this._facadeEmit('welcome', this._welcomeInfo(s));
+        // What it said while unselected on its current live primary socket.
+        for (const { msg, ws } of this.heard.replayEntries(s)) {
+          if (this.selectedId !== next || this.sessions.get(next) !== s) break;
+          if (activeSocket(s) !== ws) break;
+          if (this._facadeHandlers.has(msg.t)) this._facadeEmit(msg.t, msg, ws);
+        }
+      }
     }
     this._facadeState();
     if (this._audioRoute) this._audioRoute.refresh();
     this.emit('selected', next);
     this._change();
+  }
+
+  _facadeSend(obj) {
+    const s = this.selected;
+    const ok = !!s && s.send(obj) === true;
+    if (ok) this._facadeSaid.note(s.id, obj);
+    return ok;
   }
 
   _facadeEmit(type, arg, ws = null) {
@@ -542,13 +578,11 @@ class Hub extends EventEmitter {
       send: (obj) => {
         chunk(obj);
         if (hub.netHold && hub.netHold(obj)) return true;
-        const s = hub.selected;
-        return !!s && s.send(obj) === true;
+        return hub._facadeSend(obj);
       },
       sendNow: (obj) => {
         chunk(obj);
-        const s = hub.selected;
-        return !!s && s.send(obj) === true;
+        return hub._facadeSend(obj);
       },
       // What the one-to-one features see of the selected device's link (netlink.js, the Overview).
       get current() {

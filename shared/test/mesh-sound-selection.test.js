@@ -133,9 +133,105 @@ async function run(platform) {
   }
 }
 
+// #313: C advertises audio.policy {accept: true} while A selects B; switching A to C starts sound
+// to C immediately without another announcement from C, tears down A's audio.policy on B, preserves
+// explicit local consent, and rejects a stale/replaced socket's policy.
+async function runDeferredAdvertisement(platform) {
+  const A = await node('A');
+  const B = await node('B');
+  const C = await node('C');
+  const N = { A, B, C };
+  const TRIANGLE = [['A', 'B'], ['A', 'C'], ['B', 'C']];
+  try {
+    // B: receive on, send off (so audio route is not sticky on B and A sends audio.policy accept:true to B).
+    // C: send on, receive off (explicit local consent to send to C).
+    A.settings = normalize({ audio: { send: false, receive: true } });
+    A.settings.pairSync = {
+      [B.id]: { audio: { out: false, in: true }, values: {} },
+      [C.id]: { audio: { out: true, in: false }, values: {} },
+    };
+    A.sound = new SOUNDS[platform]({ link: A.hub.audioLink(), settings: A.settings, onChange() {}, meshHub: A.hub });
+    A.pairSync = new PairSync({
+      link: A.hub.facade, settings: A.settings, save() {},
+      set: (section, partial) => { Object.assign(A.settings[section], partial); if (section === 'audio') A.sound.apply(); },
+      only: ['clipboard', 'notifs', 'apps', 'audio', 'cursor', 'terminal', 'files'], bus: A.hub.bus,
+      peerRole: (id) => { const s = A.hub.sessions.get(id); return s ? s.role : null; },
+      peerOs: (id) => { const s = A.hub.sessions.get(id); return s ? s.peerOs : null; },
+    });
+    const bPolicies = [];
+    B.hub.bus.on(T.AUDIO_POLICY, (m, from) => { if (from === A.id) bPolicies.push(m.accept); });
+
+    for (const [x, y] of TRIANGLE) await pair(N[x], N[y]);
+    await waitFor(() => TRIANGLE.every(([x, y]) => linked(N[x], N[y])), 'triangle linked');
+
+    // A selects B first; wait until B receives A's audio.policy accept:true.
+    A.hub.select(B.id);
+    assert.strictEqual(A.hub.audioRoute().targetId, B.id);
+    await waitFor(() => bPolicies.includes(true), 'B received A audio.policy accept:true');
+
+    // An older C announces acceptance while A selects B, then moves on without a goodbye.
+    let legacyArrived = false;
+    A.hub.bus.on(T.AUDIO_POLICY, (m, from) => {
+      if (from === C.id && m.accept === true && !m.meshLeave) legacyArrived = true;
+    });
+    C.hub.bus.send(A.id, { t: T.AUDIO_POLICY, accept: true });
+    await waitFor(() => legacyArrived, 'A received legacy acceptance from unselected C');
+    A.hub.select(C.id);
+    assert.strictEqual(A.sound.sending, null, 'legacy C acceptance does not start sound from replay');
+    A.hub.select(B.id);
+    assert.strictEqual(A.hub.audioRoute().targetId, B.id, 'legacy C cannot make the audio route sticky');
+    await waitFor(() => bPolicies.at(-1) === true, 'B receives fresh acceptance before the upgraded C case');
+
+    // A new C can advertise once because the actual audio route sends a goodbye on leave.
+    C.hub.select(A.id);
+    assert.strictEqual(C.hub.audioRoute().send({ t: T.AUDIO_POLICY, accept: true }), true);
+    const peerState = () => A.hub.heard.replay(A.hub.sessions.get(C.id));
+    await waitFor(() => peerState().some((m) => m.t === T.AUDIO_POLICY && m.accept === true), 'A remembered C audio.policy');
+    assert.strictEqual(A.sound.sending, null, 'A does not start sending while B is selected');
+
+    // A selects C: sound starts immediately without C announcing again; B hears accept: false.
+    A.hub.select(C.id);
+    assert.strictEqual(A.hub.audioRoute().targetId, C.id);
+    await waitFor(() => !!A.sound.sending, 'A starts sending sound to C without another announcement');
+    if (platform === 'linux') await waitFor(() => A.sound.sending.loop, 'Linux loopback source up');
+    await waitFor(() => bPolicies[bPolicies.length - 1] === false, 'B receives audio.policy accept:false teardown');
+
+    // Sticky audio on C: selecting B does not stop C's sound.
+    A.hub.select(B.id);
+    assert.strictEqual(A.hub.audioRoute().targetId, C.id, 'sticky audio stays on C');
+    assert.ok(A.sound.sending, 'C sound keeps running');
+
+    // Stop sound to C, return to B, and verify a replaced/stale socket for C does not confer permission.
+    A.hub.select(C.id);
+    A.settings.audio.send = false;
+    A.sound.apply();
+    assert.strictEqual(A.sound.sending, null);
+    A.hub.select(B.id);
+    assert.strictEqual(A.hub.audioRoute().targetId, B.id);
+
+    // Re-enable send consent for C, then terminate C's socket and wait for C to reconnect cleanly.
+    A.settings.pairSync[C.id].audio.out = true;
+    const oldSession = A.hub.sessions.get(C.id);
+    const oldWs = oldSession.linkUp ? oldSession.link.ws : oldSession.ctx.ws;
+    oldWs.terminate();
+    await waitFor(() => !linked(A, C), 'C dropped');
+    await waitFor(() => linked(A, C), 'C reconnected on a new socket');
+    assert.deepStrictEqual(A.hub.heard.replay(A.hub.sessions.get(C.id)), [], 'old socket state forgotten after reconnect');
+
+    A.hub.select(C.id);
+    await new Promise((r) => setTimeout(r, 150));
+    assert.strictEqual(A.sound.sending, null, 'reconnected C does not inherit old socket audio.policy');
+    console.log(`passed: ${platform}/sound.js starts on deferred C audio.policy, tears down B, and rejects replaced socket`);
+  } finally {
+    close(A, B, C);
+  }
+}
+
 (async () => {
   await run('windows');
   await run('linux');
+  await runDeferredAdvertisement('windows');
+  await runDeferredAdvertisement('linux');
 })().catch((e) => {
   console.error(e);
   process.exit(1);
