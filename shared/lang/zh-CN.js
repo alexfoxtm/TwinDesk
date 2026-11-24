@@ -1139,6 +1139,7 @@
   "Screenshot from {name} copied: paste it with {keys}": "来自 {name} 的截图已复制：按 {keys} 粘贴",
   "Screenshots": "截图",
   "Scroll Lock or F13–F24 on its own, or a combination with Ctrl, Alt or Win": "单独使用 Scroll Lock 或 F13–F24，或使用含 Ctrl、Alt、Win 的组合键",
+  "Scroll speed here": "本机滚动速度",
   "Search": "搜索",
   "Search apps": "搜索应用",
   "Search contacts": "搜索联系人",

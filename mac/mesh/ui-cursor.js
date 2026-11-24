@@ -47,6 +47,9 @@ UI.tab({
       },
     });
     const speed = UI.slider({ min: 0.25, max: 4, step: 0.25, format: (v) => `${v.toFixed(2)}×` }, (v) => api.setKvm({ speed: v }));
+    const scrollSpeedLabel = I18n.t('Scroll speed here');
+    const scrollSpeed = UI.slider({ min: 1, max: 4, step: 1, format: (v) => `${v}×` }, (v) => api.setKvm({ scrollSpeed: v }));
+    scrollSpeed.el.querySelector('input').setAttribute('aria-label', scrollSpeedLabel);
     const reverse = UI.switch((v) => api.setKvm({ reverseScroll: v }), { label: I18n.t('Reverse scrolling') });
     const gestures = UI.switch((v) => api.setKvm({ gestures: v }), { label: I18n.t('Trackpad gestures') });
     const gestureRow = UI.row(I18n.t('Trackpad gestures'), I18n.t('Pinch to zoom, swipe between desktops, Mission Control / Task View, back and forward — done the native way on {name}. The same on both'), [gestures]);
@@ -90,6 +93,7 @@ UI.tab({
         UI.row(I18n.t('Edge resistance'), I18n.t('Push a little further to cross'), [resistance]),
         UI.row(I18n.t('Hold key to switch'), I18n.t('Hold this key when this Mac’s own mouse or trackpad leaves it at an edge.'), [crossingModifier.el]),
         UI.row(I18n.t('Pointer speed here'), I18n.t('Another computer’s mouse on this Mac, and this Mac’s on a phone'), [speed]),
+        UI.row(scrollSpeedLabel, '', [scrollSpeed]),
         peerRow(I18n.t('Reverse scrolling from {name}'), '', [reverse]),
         gestureRow,
         syncRow,
@@ -119,6 +123,7 @@ UI.tab({
       crossingModifier.set(k.crossingModifier || '');
       emergencyKey.set((s.keys && s.keys.emergencyKeys) || 'Control+Alt+Command+Escape');
       speed.set(k.speed);
+      scrollSpeed.set(k.scrollSpeed ?? 1);
       reverse.set(k.reverseScroll);
       gestures.set(k.gestures !== false);
       syncPads.set(k.syncPads === true);

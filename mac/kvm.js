@@ -761,7 +761,7 @@ class Kvm extends EventEmitter {
         if (m.t === P.T.K_UP && ev.b === 0) this.drop.release(); // a drag from the PC ends here
         break;
       case P.T.K_WHEEL: {
-        const s = k.reverseScroll ? -1 : 1;
+        const s = store.validScrollSpeed(k.scrollSpeed) * (k.reverseScroll ? -1 : 1);
         ev = { t: m.t, dx: num(m.dx) * s, dy: num(m.dy) * s, mode: m.mode === 'line' ? 'line' : 'pixel' };
         break;
       }

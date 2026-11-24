@@ -43,6 +43,9 @@ UI.tab({
     crossingModifier.el.setAttribute('aria-label', I18n.t('Hold key to switch'));
     let crossingModifierRow;
     const speed = UI.slider({ min: 0.25, max: 4, step: 0.25, format: (v) => `${v.toFixed(2)}×` }, (v) => api.setKvm({ speed: v }));
+    const scrollSpeedLabel = I18n.t('Scroll speed here');
+    const scrollSpeed = UI.slider({ min: 1, max: 4, step: 1, format: (v) => `${v}×` }, (v) => api.setKvm({ scrollSpeed: v }));
+    scrollSpeed.el.querySelector('input').setAttribute('aria-label', scrollSpeedLabel);
     const reverse = UI.switch((v) => api.setKvm({ reverseScroll: v }), { label: I18n.t('Reverse scrolling') });
     const gestures = UI.switch((v) => api.setKvm({ gestures: v }), { label: I18n.t('Trackpad gestures') });
     const gestureRow = UI.row(I18n.t('Trackpad gestures'), I18n.t('Pinch to zoom, swipe between desktops, Mission Control / Task View, back and forward — done the native way on {name}. The same on both'), [gestures]);
@@ -99,6 +102,7 @@ UI.tab({
         UI.row(I18n.t('Edge resistance'), I18n.t('Push a little further to cross'), [resistance]),
         crossingModifierRow = UI.row(I18n.t('Hold key to switch'), I18n.t('Hold this key when leaving this Mac. On return, the other computer needs a compatible version.'), [crossingModifier.el]),
         speedRow = peerRow(I18n.t('Pointer speed here'), '', [speed]),
+        UI.row(scrollSpeedLabel, '', [scrollSpeed]),
         peerRow(I18n.t('Reverse scrolling from {name}'), '', [reverse]),
         gestureRow,
         syncRow,
@@ -133,6 +137,7 @@ UI.tab({
       crossingModifierRow.hidden = !!s.mesh;
       crossingModifier.set(k.crossingModifier || '');
       speed.set(k.speed);
+      scrollSpeed.set(k.scrollSpeed ?? 1);
       // A computer's mouse here is sped up by it; with a phone, it's this Mac's pointer there (phone-bridge.js).
       speedRow.label.dataset.peer = UI.isPhone(s) ? I18n.t('Pointer speed on {name}') : I18n.t('Pointer speed here');
       speedRow.label.textContent = UI.fill(speedRow.label.dataset.peer);

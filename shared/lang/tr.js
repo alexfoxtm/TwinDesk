@@ -1139,6 +1139,7 @@
   "Screenshot from {name} copied: paste it with {keys}": "{name} cihazından ekran görüntüsü kopyalandı. {keys} ile yapıştırın.",
   "Screenshots": "Ekran görüntüleri",
   "Scroll Lock or F13–F24 on its own, or a combination with Ctrl, Alt or Win": "Scroll Lock veya F13 ile F24 arasında tek bir tuş ya da Ctrl, Alt veya Win ile bir kombinasyon",
+  "Scroll speed here": "Buradaki kaydırma hızı",
   "Search": "Ara",
   "Search apps": "Uygulama ara",
   "Search contacts": "Kişi ara",

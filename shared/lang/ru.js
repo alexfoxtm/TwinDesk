@@ -1139,6 +1139,7 @@
   "Screenshot from {name} copied: paste it with {keys}": "Снимок экрана с {name} скопирован. Вставьте его сочетанием {keys}.",
   "Screenshots": "Снимки экрана",
   "Scroll Lock or F13–F24 on its own, or a combination with Ctrl, Alt or Win": "Scroll Lock или одна клавиша от F13 до F24, либо сочетание с Ctrl, Alt или Win",
+  "Scroll speed here": "Скорость прокрутки здесь",
   "Search": "Поиск",
   "Search apps": "Поиск приложений",
   "Search contacts": "Поиск контактов",

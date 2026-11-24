@@ -38,6 +38,7 @@ const SCHEMA = {
   virtual: { enabled: bool, width: (v) => Math.round(clamp(640, 3840, 1920)(v)), height: (v) => Math.round(clamp(480, 2160, 1080)(v)), hiDPI: bool, hz: oneOf([30, 60], 60) },
   kvm: {
     pcSide: oneOf(P.SIDES, 'right'), mouse: bool, keyboard: bool, driveOther: bool, beDriven: bool,
+    scrollSpeed: store.validScrollSpeed,
     resistancePx: (v) => Math.round(clamp(0, 400, 120)(v)), crossingModifier: Crossing.modifier, speed: clamp(0.25, 4, 1), reverseScroll: bool, hotkeySwitch: bool, linked: bool, gestures: bool, ble: bool, syncPads: bool, shakeHome: bool,
   },
   keys: { swapCtrlCmd: bool, hotkey: oneOf(P.HOTKEYS, 'AltRight'), lockKeys: (v) => CL.validKeys(v, CL.DEFAULT_KEYS.mac), emergencyKeys: Crossing.emergency },
