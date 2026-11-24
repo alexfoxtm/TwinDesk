@@ -13,6 +13,8 @@ Everyone who sent code, reported a problem or tested is thanked under their vers
 
 ### New
 
+- **Scroll speed here** (Mac, one-to-one and Multi-device): how fast a scroll from the
+  other device moves on this Mac, from 1× to 4× (#315).
 - **Internet over USB** (Connection page, Android, off until switched on): the phone on the cable
   uses this computer's internet, through a VPN on the phone and USB debugging, with nothing else to
   install. It comes back by itself when the phone is plugged in again; Stop in the phone's
@@ -94,6 +96,12 @@ Everyone who sent code, reported a problem or tested is thanked under their vers
 
 ### Fixes
 
+- **Windows:** a finger dragged on the phone's mirrored screen stays on the picture,
+  instead of the window panning away (#316).
+- **Multi-device:** choosing another computer keeps that computer's sound and
+  screen-sharing settings, instead of dropping them (#313).
+- **Phone pointer** (Android and Mac): the arrow on the phone no longer freezes when its
+  overlay stalls, and crossing the edge to or from the phone still delivers the move.
 - **Typing into a phone** from a French (AZERTY) or other non-US keyboard: letters, AltGr's @ and
   €, accents and Ctrl+A land as typed, and the numpad works (#260).
 - **Several Android phones** (Windows, Linux, Mac): a second phone no longer shows the first one's
