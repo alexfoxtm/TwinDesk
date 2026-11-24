@@ -13,6 +13,9 @@ Everyone who sent code, reported a problem or tested is thanked under their vers
 
 ### New
 
+- **Keep phone screen off while using apps** (Mac, Mirroring, off by default): the
+  Android screen stays dark while Mac app windows are open. Opening an app from sleep may
+  briefly light the phone or require an unlock (#247, #284).
 - **Scroll speed here** (Mac, one-to-one and Multi-device): how fast a scroll from the
   other device moves on this Mac, from 1× to 4× (#315).
 - **Internet over USB** (Connection page, Android, off until switched on): the phone on the cable
@@ -96,6 +99,8 @@ Everyone who sent code, reported a problem or tested is thanked under their vers
 
 ### Fixes
 
+- **Android app windows on Mac:** apps can open while the phone is asleep. Minimized app
+  windows pause painting unless recording, and refresh when restored (#247, #284).
 - **Windows:** a finger dragged on the phone's mirrored screen stays on the picture,
   instead of the window panning away (#316).
 - **Multi-device:** choosing another computer keeps that computer's sound and
