@@ -33,7 +33,7 @@ const { Peer: DirectPeer } = require('../peer.js');
 const { Server: DirectServer } = require('../server.js');
 const { Server: MeshServer } = require('../mesh/server.js');
 const { Hub } = require('../mesh/hub.js');
-const { Peer: MeshPeer } = require('../mesh/peer.js');
+const { ScopedPhonePeer } = require('../mesh/phones.js');
 const bleInput = require('../../shared/bleinput.js');
 
 test.after(() => { Module._load = realLoad; });
@@ -92,8 +92,8 @@ function withPointerTimers(run) {
   const schedule = global.setTimeout;
   const cancel = global.clearTimeout;
   const pending = new Set();
-  global.setTimeout = callback => {
-    const timer = { callback };
+  global.setTimeout = (callback, delay) => {
+    const timer = { callback, delay };
     pending.add(timer);
     return timer;
   };
@@ -138,27 +138,47 @@ test('a move inside the send gap is counted and not sent', () => {
 
 test('direct and Mesh delayed pointer updates send the latest position once', () => {
   for (const Bridge of [PhoneBridge, MeshPhoneBridge]) {
-    const { bridge, sent } = harness({ Bridge });
-    withClock(({ at }) => withPointerTimers(pending => {
-      at(2_100_000);
-      bridge._take({ route: 'phone', side: 'left', offset: 0.2, mouse: true });
-      at(2_100_002);
-      bridge._move({ dx: 3, dy: 1 });
-      at(2_100_004);
-      bridge._move({ dx: 7, dy: 2 });
-      assert.equal(pending.size, 1, 'replaced pointer timer is cancelled');
-      const timer = [...pending][0];
-      pending.delete(timer);
-      at(2_100_012);
-      timer.callback();
-      const visible = sent.filter(m => m.t === 'phone.pointer' && m.on);
-      assert.equal(visible.length, 2, 'entry and one delayed move are handed off');
-      assert.deepEqual(visible[1], {
-        t: 'phone.pointer', on: true, x: 26, y: 488,
-      });
-      assert.equal(bridge.pointerTimer, null);
-      bridge._kvmEnd(false);
-    }));
+    for (const session of [false, true]) {
+      const { bridge, sent } = harness({ Bridge, session });
+      const gap = session ? 40 : 8;
+      withClock(({ at }) => withPointerTimers(pending => {
+        const start = 2_100_000;
+        at(start);
+        bridge._take({ route: 'phone', side: 'left', offset: 0.2, mouse: true });
+        at(start + 2);
+        bridge._move({ dx: 3, dy: 1 });
+        const timer = bridge.pointerTimer;
+        assert.equal(timer.delay, gap - 2);
+        at(start + 4);
+        bridge._move({ dx: 7, dy: 2 });
+        assert.deepEqual([...pending], [timer], 'a later move keeps the original deadline');
+        pending.delete(timer);
+        at(start + gap);
+        timer.callback();
+        const visible = sent.filter(m => m.t === 'phone.pointer' && m.on);
+        assert.equal(visible.length, 2, 'entry and one delayed move are handed off');
+        assert.equal(visible[1].x, Math.round(bridge.kvm.x));
+        assert.equal(visible[1].y, Math.round(bridge.kvm.y));
+        assert.equal(bridge.pointerTimer, null);
+
+        at(start + gap + 2);
+        bridge._move({ dx: 3, dy: 1 });
+        const superseded = bridge.pointerTimer;
+        assert.ok(superseded);
+        at(start + 2 * gap);
+        bridge._move({ dx: 6, dy: 2 });
+        assert.equal(pending.size, 0, 'an immediate update cancels the queued one');
+        const afterMove = sent.filter(m => m.t === 'phone.pointer').length;
+        at(start + 3 * gap);
+        superseded.callback();
+        assert.equal(sent.filter(m => m.t === 'phone.pointer').length, afterMove, 'no duplicate position after the mouse stops');
+        at(start - 60_000);
+        bridge._move({ dx: 3, dy: 1 });
+        assert.equal(sent.filter(m => m.t === 'phone.pointer').length, afterMove + 1, 'a clock step back starts a fresh send interval');
+        assert.equal(pending.size, 0);
+        bridge._kvmEnd(false);
+      }));
+    }
   }
 });
 
@@ -176,11 +196,16 @@ test('direct and Mesh retired pointer timers cannot send into the next crossing'
       assert.equal(pending.size, 0, 'ending a crossing removes its delayed move');
       at(2_200_012);
       bridge._take({ route: 'phone', side: 'right', offset: 0.8, mouse: true });
+      at(2_200_016);
+      bridge._move({ dx: -3, dy: -1 });
+      const active = bridge.pointerTimer;
+      assert.ok(active);
       const sentBeforeLateCallback = sent.length;
       timer.callback();
       assert.equal(sent.length, sentBeforeLateCallback, 'old callback cannot update the new crossing');
-      assert.equal(bridge.pointerTimer, null);
+      assert.equal(bridge.pointerTimer, active, 'old callback cannot clear the new timer handle');
       bridge._kvmEnd(false);
+      assert.equal(pending.size, 0, 'ending the new crossing cancels its timer');
     }));
   }
 });
@@ -304,7 +329,35 @@ test('direct crossing counts only handed-off sends on closed sockets and never h
   }
 });
 
-test('selected Mesh crossing pins non-input outbound socket and never hides replacement selection', () => {
+test('a new authenticated context for the same phone ends the crossing and keeps scrcpy', () => {
+  const { raw, peer, bridge } = directPeerHarness();
+  const original = { os: 'android', deviceId: 'phone', authed: true, transport: 'ip', ws: fakeSocket('ip') };
+  const replacement = { ...original, ws: fakeSocket('ip') };
+  const control = bridge.control;
+  const home = [];
+  peer.on('t:kvm.home', (msg) => home.push(msg));
+  try {
+    raw.current = original;
+    raw.emit('client', original);
+    bridge._take({ route: 123, side: 'left', offset: 0.5 });
+    raw.emit('client', original);
+    assert.ok(bridge.kvm, 'an unchanged context keeps the crossing');
+    original.released = true;
+    raw.current = replacement;
+    raw.emit('client', replacement);
+    raw.emit('closed', original);
+    assert.equal(bridge.kvm, null);
+    assert.equal(bridge.control, control);
+    assert.equal(control.closed, false);
+    assert.deepEqual(home, [{ t: 'kvm.home', route: 123 }]);
+    assert.equal(replacement.ws.sent.filter((msg) => msg.t === 'phone.pointer').length, 0);
+  } finally {
+    clearInterval(bridge.pollTimer);
+    clearTimeout(bridge.kickTimer);
+  }
+});
+
+test('a scoped Mesh phone keeps its crossing across selection and ends it on reconnect', () => {
   const host = Object.assign(new EventEmitter(), {
     clients: new Map(),
     https: new EventEmitter(),
@@ -318,7 +371,7 @@ test('selected Mesh crossing pins non-input outbound socket and never hides repl
   });
   const links = Object.assign(new EventEmitter(), { list: () => [], bindServer() {} });
   const hub = new Hub({ device: { id: 'mac' }, links, mesh: null, server: host });
-  const meshPeer = new MeshPeer(hub.facade, host);
+  const meshPeer = new ScopedPhonePeer(hub, host, 'mesh-a');
   const settings = { phone: { input: 'adb', inputPicked: true }, kvm: {}, audio: {} };
   const phone = Object.assign(new EventEmitter(), {
     info: { display: { w: 1080, h: 2400, dpi: 420 } },
@@ -347,19 +400,28 @@ test('selected Mesh crossing pins non-input outbound socket and never hides repl
       ipA.bufferedAmount = 640;
       at(6_000_040);
       bridge._move({ dx: 6, dy: 0 });
-      // Closed socket drops unhanded-off send.
-      ipA.readyState = 3;
-      bleA.readyState = 3;
+      // A selection change does not retarget the bridge that owns A's crossing.
       at(6_000_080);
-      bridge._move({ dx: 6, dy: 0 });
-      // Selecting Phone B switches the facade route; teardown must not hide Phone B or read its buffer.
       hub.select('mesh-b');
+      assert.ok(bridge.kvm);
+      assert.equal(meshPeer.current.deviceId, 'mesh-a');
+      bridge._kvmEnd(false);
       assert.equal(lines.length, 1);
-      assert.equal(lines[0], '[phone] pointer mouse=1 ctl=scrcpy moves=2 sent=2 moveGapMs=40 sendGapMs=40 buf=640');
+      assert.equal(lines[0], '[phone] pointer mouse=1 ctl=scrcpy moves=1 sent=3 moveGapMs=0 sendGapMs=40 buf=640');
     });
-    assert.equal(ipA.sent.filter((m) => m.t === 'phone.pointer').length, 2);
+    assert.deepEqual(ipA.sent.filter((m) => m.t === 'phone.pointer').map(m => m.on), [true, true, false]);
     assert.equal(bleA.sent.filter((m) => m.t === 'phone.pointer').length, 0);
     assert.equal(ipB.sent.filter((m) => m.t === 'phone.pointer').length, 0, 'selected replacement phone must not be hidden');
+
+    bridge.control = { closed: false, tap() {}, mouse() {}, stop() { this.closed = true; } };
+    bridge._take({ route: 'phone-a', side: 'left', offset: 0.5 });
+    assert.ok(bridge.kvm);
+    ctxA.released = true;
+    const resumed = { ...ctxA, released: false, transport: 'ip', alt: null, ws: fakeSocket('ip') };
+    host.clients.set('mesh-a', resumed);
+    host.emit('client', resumed);
+    assert.equal(bridge.kvm, null, 'reconnecting the same phone ends the retired crossing');
+    assert.equal(resumed.ws.sent.filter((m) => m.t === 'phone.pointer').length, 0);
   } finally {
     clearInterval(bridge.pollTimer);
     clearTimeout(bridge.kickTimer);

@@ -670,7 +670,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
             main.post { taskAlerts.receive(alert, route) }
             return
         }
-        // Still the socket thread. Pointer compares this with the time it runs on main.
+        // Still the socket thread. Pointer compares this with the time it runs on its overlay worker (after the main-thread hop).
         val pointerAt = if (t == Proto.T.PHONE_POINTER) SystemClock.uptimeMillis() else -1L
         main.post {
             if (t == Proto.T.MEDIA_SAVE_AS) {

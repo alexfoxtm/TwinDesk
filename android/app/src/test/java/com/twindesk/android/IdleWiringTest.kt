@@ -537,6 +537,8 @@ class IdleWiringTest {
     @Test fun queuedPointerMoveAndDisconnectLeaveOnlyTheReplacementOverlay() {
         val core = core()
         val pointer = core.pointer
+        Pointer::class.java.getDeclaredField("worker").apply { isAccessible = true }
+            .set(pointer, android.os.Handler.createAsync(Looper.getMainLooper()))
         val host = Host("mac", "Mac", "mac", "192.0.2.1", 8080, "pin", "test", 0)
         val socket = Proxy.newProxyInstance(WebSocket::class.java.classLoader, arrayOf(WebSocket::class.java)) { _, method, _ ->
             error("Pointer dispatch must not use the fixture socket: ${method.name}")

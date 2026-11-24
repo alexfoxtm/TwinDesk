@@ -237,8 +237,8 @@ class PhoneBridge extends EventEmitter {
   }
 
   _stopAll(message) {
-    this._epoch++;
     if (this.kvm) this._kvmEnd(false); // before the control session goes: its button up and hover exit
+    this._epoch++;
     this.views?.releaseAppPanel?.();
     if (this.control) this.control.stop();
     this.control = null;
@@ -765,12 +765,16 @@ class PhoneBridge extends EventEmitter {
     const owner = this._captureOwner();
     clearTimeout(this.pointerTimer);
     this.pointerTimer = null;
+    this.lastPointer = 0;
     this.kvm = { route: m.route, x, y, side, push: 0, buttons: 0, mouse: m.mouse !== false, owner };
     this._crossBegin(owner);
     this.keys.clear();
     if (this.inputBlocked) this.emit('popup', 'home', { key: INPUT_BLOCKED });
     // Answer after Kvm's _take returns: it starts its "no answer" timer right after sending kvm.take.
-    setImmediate(() => this._toKvm({ t: T.KVM_ACCEPT, route: m.route }));
+    const active = this.kvm;
+    setImmediate(() => {
+      if (this.kvm === active) this._toKvm({ t: T.KVM_ACCEPT, route: m.route });
+    });
     // The screen on for the pointer (WAKEUP does nothing when it's on already). Through scrcpy only:
     // the phone's own input (Accessibility) can't press it.
     if (this.control && this.ctl === this.control) this.control.tap(ANDROID.WAKEUP);
@@ -846,7 +850,7 @@ class PhoneBridge extends EventEmitter {
     if (!hasResolver && cur.ws && !ws) return { ok: false, ws: null };
     const result = typeof server.send === 'function' ? server.send(cur, msg) : server.sendToClient(msg);
     if (result === false) return { ok: false, ws };
-    return { ok: true, ws: this._pointerOutbound(cur) || ws };
+    return { ok: true, ws };
   }
 
   // The pointer is where we say; the app draws it there.
@@ -855,14 +859,20 @@ class PhoneBridge extends EventEmitter {
     if (on && !k) return false;
     const now = Date.now();
     const gap = this.ctl === this.input ? 40 : 8; // through the session (maybe Bluetooth): fewer
-    if (on && now - (this.lastPointer || 0) < gap) {
-      clearTimeout(this.pointerTimer);
-      this.pointerTimer = setTimeout(() => {
+    const elapsed = now - this.lastPointer;
+    const remaining = this.lastPointer && elapsed >= 0 ? gap - elapsed : 0;
+    if (on && remaining > 0) {
+      if (this.pointerTimer) return false;
+      const timer = setTimeout(() => {
+        if (this.pointerTimer !== timer || this.kvm !== k) return;
         this.pointerTimer = null;
-        if (this.kvm === k) this._pointer(true, owner);
-      }, gap);
+        this._pointer(true, owner);
+      }, remaining);
+      this.pointerTimer = timer;
       return false;
     }
+    clearTimeout(this.pointerTimer);
+    this.pointerTimer = null;
     const msg = on && k
       ? { t: T.PHONE_POINTER, on: true, x: Math.round(k.x), y: Math.round(k.y) }
       : { t: T.PHONE_POINTER, on: false };

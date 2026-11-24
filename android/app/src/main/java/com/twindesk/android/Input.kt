@@ -38,18 +38,24 @@ class InputService : AccessibilityService() {
 
     override fun onServiceConnected() {
         running = this
-        Core.get(this).input.changed()
+        val core = Core.get(this)
+        core.pointer.onInputServiceChanged()
+        core.input.changed()
     }
 
     override fun onDestroy() {
         if (running === this) running = null
-        Core.get(this).input.changed()
+        val core = Core.get(this)
+        core.pointer.onInputServiceChanged(leaving = this)
+        core.input.changed()
         super.onDestroy()
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
         if (running === this) running = null
-        Core.get(this).input.changed()
+        val core = Core.get(this)
+        core.pointer.onInputServiceChanged(leaving = this)
+        core.input.changed()
         return super.onUnbind(intent)
     }
 
