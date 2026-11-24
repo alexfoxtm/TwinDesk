@@ -16,7 +16,7 @@ const Clip = require('../clip.js');
 const Notifs = require('../notifs.js');
 const { runTests } = require('./lib/run.js');
 const { loadTestCert } = require('./lib/testcert.js');
-const { HOST, close, waitFor, pair, pairPhone, helloPhone, hello, memoryStorage } = require('./lib/mesh.js');
+const { HOST, close, waitFor, pair, pairPhone, helloPhone, hello, rawConnect, memoryStorage } = require('./lib/mesh.js');
 const { FakeHelper, fakeNotificationFor } = require('./support/fake-net.js');
 
 // A computer: Server + Pairing (host side) + LinkManager (guest side) + Mesh + Hub.
@@ -587,6 +587,143 @@ test('three devices: audio route stays on B when selection moves to C until the 
     assert.strictEqual(route.targetId, N.C.id, 'follows selection when the session ends');
     assert.strictEqual(closed.length, 1);
   } finally {
+    close3(N);
+  }
+});
+
+// #313: deferred audio/screen state replay on selection with verified delivery stamps, excluded
+// capability payloads, old-route policy teardown, and active-audio stickiness.
+test('(h) facade and audio route replay deferred audio/screen state on selection, exclude non-media payloads, and tear down old policies on B', async () => {
+  const N = await world(['A', 'B', 'C'], TRIANGLE);
+  const { A, B, C } = N;
+  try {
+    const facadeGot = [];
+    const audioGot = [];
+    const route = A.hub.audioRoute();
+    A.hub.facade.on('welcome', (m) => facadeGot.push(['welcome', m.macId]));
+    A.hub.facade.on(P.T.SCREEN_STATE, (m, ws) => facadeGot.push(['screen.state', m.on, m.ask, ws]));
+    A.hub.facade.on(P.T.SCREEN_POLICY, (m, ws) => facadeGot.push(['screen.policy', m.accept, ws]));
+    A.hub.facade.on(P.T.HUB_STATE, (m) => facadeGot.push(['hub.state', m]));
+    A.hub.facade.on(P.T.CALL_STATE, (m) => facadeGot.push(['call.state', m]));
+    A.hub.facade.on(P.T.CAM_POLICY, (m) => facadeGot.push(['cam.policy', m]));
+    route.on('client', (v) => audioGot.push(['client', v.deviceId]));
+    route.on(`t:${P.T.AUDIO_POLICY}`, (m, v) => audioGot.push(['audio.policy', m.accept, v.conn, v.source()]));
+
+    const atB = { screen: [], audio: [] };
+    B.hub.bus.on(P.T.SCREEN_POLICY, (m, from) => from === A.id && atB.screen.push(m.accept));
+    B.hub.bus.on(P.T.AUDIO_POLICY, (m, from) => from === A.id && atB.audio.push(m.accept));
+
+    assert.strictEqual(A.hub.select(B.id), true);
+    route.refresh();
+    assert.strictEqual(route.targetId, B.id);
+
+    // While B is selected, C advertises audio/screen state plus excluded payloads.
+    C.hub.bus.send(A.id, { t: P.T.AUDIO_POLICY, accept: true, ask: true });
+    C.hub.bus.send(A.id, { t: P.T.SCREEN_STATE, on: false, mode: '' });
+    C.hub.bus.send(A.id, { t: P.T.SCREEN_STATE, on: true, mode: 'extend', remote: true, ask: true });
+    C.hub.bus.send(A.id, { t: P.T.SCREEN_POLICY, accept: true, width: 1920, height: 1080 });
+    C.hub.bus.send(A.id, { t: P.T.HUB_STATE, media: true, files: true });
+    C.hub.bus.send(A.id, { t: P.T.CALL_STATE, state: 'ringing' });
+    C.hub.bus.send(A.id, { t: P.T.CAM_POLICY, share: true });
+    const sC = A.hub.sessions.get(C.id);
+    await waitFor(() => A.hub.heard.replay(sC).length === 3, 'A remembered C audio/screen state');
+    const cWs = sC.linkUp ? sC.link.ws : sC.ctx.ws;
+
+    // A tells B active screen.policy and audio.policy.
+    assert.strictEqual(A.hub.facade.send({ t: P.T.SCREEN_POLICY, accept: true, width: 1440, height: 900 }), true);
+    assert.strictEqual(route.send({ t: P.T.AUDIO_POLICY, accept: true }), true);
+    await waitFor(() => atB.screen.length === 1 && atB.audio.length === 1, 'B received A policies');
+
+    facadeGot.length = 0;
+    audioGot.length = 0;
+    assert.strictEqual(A.hub.select(C.id), true);
+    assert.deepStrictEqual(facadeGot, [
+      ['welcome', C.id],
+      ['screen.state', true, undefined, cWs],
+      ['screen.policy', true, cWs],
+    ], 'facade replays only screen.state (no ask) & screen.policy with C socket stamp');
+    assert.deepStrictEqual(audioGot, [
+      ['client', C.id],
+      ['audio.policy', true, cWs, cWs],
+    ], 'audio route replays C audio.policy with C delivery stamp');
+    await waitFor(() => atB.screen.length === 2 && atB.audio.length === 2, 'B receives policy teardown');
+    assert.deepStrictEqual(atB.screen, [true, false]);
+    assert.deepStrictEqual(atB.audio, [true, false]);
+
+    // Disconnect forgets C's remembered state.
+    const oldWs = sC.linkUp ? sC.link.ws : sC.ctx.ws;
+    oldWs.terminate();
+    await waitFor(() => !up(A, C), 'C down');
+    assert.deepStrictEqual(A.hub.heard.replay(sC), [], 'nothing kept after disconnect');
+    await waitFor(() => up(A, C), 'C back');
+  } finally {
+    close3(N);
+  }
+});
+
+// #313 failure scenario: IP-to-IP resume, fallback socket (ctx.alt), and same-device-ID replacement
+// must NOT confer stale media permission onto the new active connection.
+test('(h2) IP-to-IP resume, fallback socket, and replaced connection reject stale media state', async () => {
+  const N = await world(['A', 'B'], [['A', 'B']]);
+  const { A, B } = N;
+  let c1 = null;
+  let c2 = null;
+  let c3 = null;
+  try {
+    assert.strictEqual(A.hub.select(B.id), true);
+    const route = A.hub.audioRoute();
+    route.refresh();
+
+    const p = await pairPhone(A, { name: 'PeerC' });
+    c1 = p.client;
+    const welcome = await helloPhone(c1, { id: p.id, name: 'PeerC', token: p.token });
+    assert.ok(welcome.resume, 'host issued resume key');
+    await waitFor(() => A.hub.sessions.get(p.id)?.connected, 'C connected on socket 1');
+    const sC = A.hub.sessions.get(p.id);
+
+    // Advertise audio.policy + screen.state on socket 1 while B is selected.
+    c1.send({ t: P.T.AUDIO_POLICY, accept: true });
+    c1.send({ t: P.T.SCREEN_STATE, on: true, mode: 'extend' });
+    await waitFor(() => A.hub.heard.replay(sC).length === 2, 'A remembered socket 1 state');
+
+    // IP-to-IP resume onto socket 2 (socket 1 becomes fallback ctx.alt).
+    c2 = await rawConnect(A.port);
+    c2.send({ t: P.T.HELLO, v: P.PROTOCOL_VERSION, id: p.id, name: 'PeerC', os: P.OS.ANDROID, resume: welcome.resume });
+    const resumed = await c2.until((m) => m.t === P.T.WELCOME && m.resumed === true);
+    assert.strictEqual(resumed.resumed, true);
+    await waitFor(() => sC.ctx && sC.ctx.alt && sC.ctx.ws !== sC.ctx.alt, 'server moved to socket 2 with socket 1 fallback');
+
+    // Message on fallback socket 1 must not be remembered.
+    c1.send({ t: P.T.AUDIO_POLICY, accept: true });
+    await new Promise((r) => setTimeout(r, 80));
+
+    const facadeGot = [];
+    const audioGot = [];
+    A.hub.facade.on('welcome', (m) => facadeGot.push(['welcome', m.macId]));
+    A.hub.facade.on(P.T.SCREEN_STATE, (m) => facadeGot.push(['screen.state', m.on]));
+    route.on('client', (v) => audioGot.push(['client', v.deviceId]));
+    route.on(`t:${P.T.AUDIO_POLICY}`, (m) => audioGot.push(['audio.policy', m.accept]));
+
+    assert.strictEqual(A.hub.select(p.id), true);
+    assert.deepStrictEqual(facadeGot, [['welcome', p.id]], 'pre-resume screen.state does not replay onto socket 2');
+    assert.deepStrictEqual(audioGot, [['client', p.id]], 'pre-resume and fallback audio.policy do not confer permission on socket 2');
+
+    // Socket 2 advertises while B is selected, then same-device-ID replacement arrives on socket 3.
+    assert.strictEqual(A.hub.select(B.id), true);
+    c2.send({ t: P.T.AUDIO_POLICY, accept: true });
+    await waitFor(() => A.hub.heard.replay(sC).length === 1, 'A remembered socket 2 state');
+    const rep = await hello(A.port, { id: p.id, name: 'PeerC', os: P.OS.ANDROID, token: p.token });
+    c3 = rep.client;
+    assert.strictEqual(rep.reply.t, P.T.WELCOME);
+    await waitFor(() => A.hub.heard.replay(sC).length === 0, 'replacement clears socket 2 state');
+
+    audioGot.length = 0;
+    assert.strictEqual(A.hub.select(p.id), true);
+    assert.deepStrictEqual(audioGot, [['client', p.id]], 'replaced connection does not inherit old socket audio.policy');
+  } finally {
+    if (c1) c1.close();
+    if (c2) c2.close();
+    if (c3) c3.close();
     close3(N);
   }
 });

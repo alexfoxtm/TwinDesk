@@ -3,13 +3,14 @@
 'use strict';
 
 const { EventEmitter } = require('events');
+const { Said, activeSocket } = require('./peerstate.js');
 
 // What a feature sees of its device: the one-to-one "client" object (role 'guest' = it connected to
 // this computer, 'host' = this computer is its guest).
 const OPEN = 1; // WebSocket.OPEN
 
 function socketOpen(ws) {
-  return !!ws && typeof ws === 'object' && ws.readyState === OPEN && ws.released !== true;
+  return !!ws && typeof ws === 'object' && ws.readyState === OPEN && ws.released !== true && ws.detached !== true;
 }
 
 // The socket send() writes. The guest link wins when it is up (Mac Session.send, and Windows
@@ -70,6 +71,9 @@ class Route extends EventEmitter {
     this.targetId = null;
     this.lastView = null;
     this.stateFns = [];
+    this.said = new Said(); // active outbound policies this route told its device (shared/peerstate.js)
+    this._refreshing = false;
+    this._refreshAgain = false;
   }
 
   get session() {
@@ -81,25 +85,60 @@ class Route extends EventEmitter {
   }
 
   refresh() {
-    const want = this.pick(this.hub);
-    const s = want ? this.hub.sessions.get(want) : null;
-    const next = s && s.connected ? want : null;
-    if (next === this.targetId) {
-      this._stateChanged();
+    if (this._refreshing) {
+      this._refreshAgain = true;
       return;
     }
-    this.drop();
-    if (next) {
-      this.targetId = next;
-      this.lastView = viewOf(this.hub.sessions.get(next));
-      this.emit('client', this.lastView);
+    this._refreshing = true;
+    try {
+      do {
+        this._refreshAgain = false;
+        const want = this.pick(this.hub);
+        const s = want ? this.hub.sessions.get(want) : null;
+        const next = s && s.connected ? want : null;
+        if (next === this.targetId) {
+          this._stateChanged();
+          continue;
+        }
+        this.drop();
+        if (next) {
+          const target = this.hub.sessions.get(next);
+          if (target && target.connected) {
+            this.targetId = next;
+            this.lastView = viewOf(target);
+            this.emit('client', this.lastView);
+            this._replay(target);
+          }
+        }
+        this._stateChanged();
+      } while (this._refreshAgain);
+    } finally {
+      this._refreshing = false;
     }
-    this._stateChanged();
+  }
+
+  _replay(target) {
+    if (!this.hub.heard || !target) return;
+    for (const { msg, ws } of this.hub.heard.replayEntries(target)) {
+      if (this.targetId !== target.id || this.session !== target) break;
+      if (activeSocket(target) !== ws) break;
+      if (this.listenerCount(`t:${msg.t}`) > 0 || this.listenerCount('message') > 0) {
+        this.deliver(msg, ws);
+      }
+    }
   }
 
   drop(id) {
     if (!this.targetId || (id && id !== this.targetId)) return;
+    const oldId = this.targetId;
+    const s = this.session;
     const v = this.lastView || {};
+    // Leaving a still-connected peer (refresh, no id): switch off policies we told it.
+    // Disconnecting or replaced peer (drop(id) from hub._down): forget without sending.
+    const goodbyes = id ? (this.said.forget(oldId), []) : this.said.goodbyes(oldId);
+    if (goodbyes.length && s && s.connected && outboundOf(s)) {
+      for (const m of goodbyes) s.send(m);
+    }
     this.targetId = null;
     this.lastView = null;
     this.emit('closed', v);
@@ -136,7 +175,9 @@ class Route extends EventEmitter {
 
   sendNow(obj) {
     const s = this.session;
-    return !!s && s.send(obj) === true;
+    const ok = !!s && s.send(obj) === true;
+    if (ok) this.said.note(this.targetId, obj);
+    return ok;
   }
 
   inject(msg) {

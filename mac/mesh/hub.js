@@ -22,6 +22,7 @@
 const { EventEmitter } = require('events');
 const P = require('../../shared/protocol.js');
 const { Route, viewOf } = require('../../shared/hub-route.js');
+const { Heard } = require('../../shared/peerstate.js');
 const { Sessions } = require('./session.js');
 
 const ROSTER = 'mesh.roster';
@@ -48,6 +49,7 @@ class Hub extends EventEmitter {
     this._peerHandlers = new Map(); // 'welcome' | 'closed' -> [fn(peerId, info)]
     this.forgotten = new Set(); // forgetPeer(): not listed as "via" until it connects again
     this.routes = [];
+    this.heard = new Heard(); // each device's last audio/screen policy or state, bound to its live socket (peerstate.js)
     this._audioSticky = {};
     this.facade = this.route(() => this.selectedId);
     this._addFacadeApi(this.facade);
@@ -160,12 +162,14 @@ class Hub extends EventEmitter {
 
   // Forget a device: its guest link (we dialled it) and its host entry (it dialled us), both.
   forgetPeer(id) {
+    this.heard.forget(id);
     this.forgotten.add(id);
     if (this.links.get(id)) this.links.forget(id);
     if (this.pairing && this.pairing.list().some((x) => x.id === id)) this.pairing.forget(id);
   }
 
   forgetGuest(id) {
+    this.heard.forget(id);
     if (this.pairing) this.pairing.forget(id);
   }
 
@@ -293,6 +297,7 @@ class Hub extends EventEmitter {
       if (this.mesh && this.mesh.handle(s.id, msg)) this._change();
       return true;
     }
+    this.heard.note(s, msg, source);
     let consumed = false;
     const fns = this._busHandlers.get(msg.t);
     if (fns) {
@@ -323,6 +328,7 @@ class Hub extends EventEmitter {
 
   // replaced: the device got a new socket, so it is down and up again at once. Its selection stays.
   _down(s, replaced = false) {
+    this.heard.forget(s.id); // its next session announces fresh state
     if (this.mesh) this.mesh.removePeer(s.id);
     this._rosterAll();
     this._peerEvent('closed', s.id, {});
@@ -338,6 +344,7 @@ class Hub extends EventEmitter {
   }
 
   _stateOf(s) {
+    this.heard.sync(s); // evict remembered state if the active primary socket changed (e.g. resume)
     const e = this.mesh && this.mesh.get(s.id);
     if (e) {
       e.mesh = s.meshCapable;
