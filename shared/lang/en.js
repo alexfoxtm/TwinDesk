@@ -1172,6 +1172,7 @@
   "Screenshot from {name} copied: paste it with {keys}": "Screenshot from {name} copied. Paste it with {keys}.",
   "Screenshots": "Screenshots",
   "Scroll Lock or F13–F24 on its own, or a combination with Ctrl, Alt or Win": "Scroll Lock or a single key from F13 to F24, or a combination with Ctrl, Alt or Win",
+  "Scroll speed here": "Scroll speed here",
   "Search": "Search",
   "Search apps": "Search apps",
   "Search contacts": "Search contacts",

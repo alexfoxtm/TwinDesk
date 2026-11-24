@@ -1164,6 +1164,7 @@
   "Screenshot from {name} copied: paste it with {keys}": "Captura de tela de {name} copiada. Cole com {keys}.",
   "Screenshots": "Capturas de tela",
   "Scroll Lock or F13–F24 on its own, or a combination with Ctrl, Alt or Win": "Scroll Lock ou uma única tecla de F13 a F24, ou uma combinação com Ctrl, Alt ou Win",
+  "Scroll speed here": "Velocidade de rolagem aqui",
   "Search": "Pesquisar",
   "Search apps": "Pesquisar apps",
   "Search contacts": "Pesquisar contatos",

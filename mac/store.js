@@ -66,6 +66,7 @@ const DEFAULT_SETTINGS = {
     resistancePx: 120,
     crossingModifier: '', // optional modifier held while leaving this Mac at an edge
     speed: 1.0,
+    scrollSpeed: 1, // incoming scroll on this Mac, with whole steps for line notches
     reverseScroll: false,
     linked: true, // mouse and keyboard sharing on (the hotkey's double-tap switches it); synced with the peer
     linkedBy: {}, // The last `linked` per paired device id, restored on connect
@@ -159,6 +160,10 @@ function cleanPhotoPeers(raw) {
   return peers;
 }
 
+function validScrollSpeed(v) {
+  return Number.isInteger(v) && v >= 1 && v <= 4 ? v : DEFAULT_SETTINGS.kvm.scrollSpeed;
+}
+
 function loadSettings() {
   const s = read('settings.json', {});
   if (s.sharing) s.sharing.on = false; // screen sharing never starts by itself
@@ -169,6 +174,7 @@ function loadSettings() {
   for (const k of ['localsend', 'silence', 'photoBackup']) out[k] = { ...DEFAULT_SETTINGS[k], ...(s[k] || {}) };
   out.photoBackup.peers = cleanPhotoPeers(s.photoBackup && s.photoBackup.peers);
   if (!out.silence.peers || typeof out.silence.peers !== 'object') out.silence.peers = {};
+  out.kvm.scrollSpeed = validScrollSpeed(out.kvm.scrollSpeed);
   out.rezume = require('../shared/rezume.js').normalize(s.rezume);
   out.modules = require('../shared/modules.js').normalize(s.modules); // General › Modules
   out.ui.language = require('../shared/i18n.js').savedLanguage(out.ui.language);
@@ -195,4 +201,4 @@ function saveSettings(s) {
   write('settings.json', s);
 }
 
-module.exports = { init, filePath, read, write, loadSettings, saveSettings, profilePath };
+module.exports = { init, filePath, read, write, loadSettings, saveSettings, profilePath, validScrollSpeed };

@@ -81,4 +81,4 @@ function saveSettings(s) {
   store.write(MULTI, { ...store.read(MULTI, {}), layout, layoutDisplays, mesh: join ? { autoJoin: true } : { autoJoin: false, chosen: true } });
 }
 
-module.exports = { init: store.init, filePath: store.filePath, read, write, loadSettings, saveSettings };
+module.exports = { init: store.init, filePath: store.filePath, read, write, loadSettings, saveSettings, validScrollSpeed: store.validScrollSpeed };
