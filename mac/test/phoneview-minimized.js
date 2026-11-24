@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 const { EventEmitter } = require('node:events');
 const { createRequire } = require('node:module');
+const { TYPE } = require('../scrcpy.js');
 
 const code = fs.readFileSync(path.join(__dirname, '../phoneview-renderer.js'), 'utf8');
 
@@ -322,7 +323,7 @@ test('a terminal status clears pending app frames and ignores late requests unti
   }
 });
 
-function appStartup(dark) {
+function appStartup(dark, adb = null) {
   const name = require.resolve('../phoneview.js');
   const localRequire = createRequire(name);
   const module = { exports: {} };
@@ -330,7 +331,11 @@ function appStartup(dark) {
   let delay, lease = {};
   let unlock = () => Promise.resolve(true);
   class Session extends EventEmitter {
-    start() { return Promise.resolve(); }
+    start() {
+      if (adb) this.log = ['New display: 1080x2400/440 (id=12)'];
+      return Promise.resolve();
+    }
+    startApp() { launches.push(this); }
     stop() { this.closed = true; }
     tap() {}
   }
@@ -338,9 +343,8 @@ function appStartup(dark) {
     module, process, __dirname: path.dirname(name),
     require(request) {
       if (request === 'electron') return { app: { on() {} } };
-      if (request === './scrcpy') return { Session };
+      if (request === './scrcpy') return { Session, TYPE };
       if (request === './dockstub') return {};
-      if (request === '../shared/appstart.js') return { startApp: (session) => launches.push(session) };
       return localRequire(request);
     },
     setTimeout(resolve, ms) {
@@ -350,17 +354,18 @@ function appStartup(dark) {
   });
   const view = { id: 1, app: 'io.example.app', kind: 'app', win: { isDestroyed: () => false } };
   const views = Object.assign(Object.create(module.exports.PhoneViews.prototype), {
-    bridge: { serial: 'adb-phone' },
+    bridge: { serial: 'adb-phone', adb },
+    phone: { info: { maker: adb ? 'Xiaomi' : 'Samsung' } },
     views: new Map([[view.id, view]]),
     appPanel: {
       capture: () => null,
       begin: () => lease,
       owns: (panel) => panel === lease,
       waitUnlocked: () => unlock(),
+      waitForApp: async () => false,
     },
     getSettings: () => ({ phone: { keepPanelOff: dark } }),
     _send() {},
-    _blankAfterAppFrame() {},
   });
   return {
     view, views, launches,
@@ -401,4 +406,54 @@ test('app startup cleans up the session when the view or lease is retired after 
   await open;
   assert.deepEqual(live.launches, [live.view.session]);
   assert.equal(live.view.session.closed, undefined);
+});
+
+test('app startup cleans up if the dark lease is lost during HyperOS activity lookup', async () => {
+  const calls = [];
+  let answer;
+  const activity = new Promise((resolve) => { answer = resolve; });
+  const f = appStartup(true, {
+    shell(_, command) { calls.push(command); return activity; },
+  });
+  const opened = f.start();
+  await new Promise(setImmediate);
+  f.finishDelay();
+  await new Promise(setImmediate);
+  assert.match(calls[0], /^cmd package resolve-activity/);
+  f.releaseLease();
+  answer({ code: 0, out: 'io.example.app/.Main' });
+  await opened;
+  assert.equal(calls.length, 1, 'the revoked activity was never started');
+  assert.deepEqual(f.launches, []);
+  assert.equal(f.view.session.closed, true, 'the unused virtual display must stop');
+});
+
+test('unlock resumes panel blanking when no video preceded the app-frame request', async () => {
+  const renderer = fixture();
+  const { view, views } = appStartup(true);
+  view.panelLease = views.appPanel.begin();
+  view.session = {
+    scid: 'resumed capture',
+    videoStarted: true,
+    simple(type) {
+      assert.equal(type, TYPE.RESET_VIDEO);
+      assert.deepEqual(renderer.sent.filter((m) => m.t === 'appFrame'), []);
+      renderer.recv('video', { key: true, pts: 8, data: Uint8Array.of(8) });
+      renderer.output(renderer.frame(8, 8));
+    },
+  };
+  renderer.config();
+  views._send = (_view, channel, status) => {
+    assert.equal(channel, 'phoneview:status');
+    renderer.recv('status', status);
+  };
+  views.appPanel.retry = () => {};
+  views.appPanel.waitUnlocked = async (_panel, _live, waiting) => {
+    waiting();
+    return true;
+  };
+  views.appPanel.waitForApp = async () => true;
+  await views._resumeDarkApp(view);
+  assert.deepEqual(renderer.painted, [8]);
+  assert.deepEqual(renderer.sent.filter((m) => m.t === 'appFrame'), [{ t: 'appFrame', capture: 'resumed capture' }]);
 });

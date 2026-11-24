@@ -510,6 +510,7 @@ class PhoneViews extends EventEmitter {
     await new Promise((resolve) => setTimeout(resolve, 300));
     if (!live() || (dark && !await waitForUnlock()) || !live()) { s.stop(); return; }
     await startApp(s, { adb, serial, maker, app: v.app, live });
+    if (!live()) { s.stop(); return; }
     if (dark) await this._blankAfterAppFrame(v, s, panel, live);
   }
 
@@ -521,7 +522,7 @@ class PhoneViews extends EventEmitter {
   async _blankAfterAppFrame(v, s, panel, live) {
     if (!live() || this.appPanel.off || !await this.appPanel.waitForApp(s, v.app, live) || !live()) return false;
     v.appFrame = { panel, capture: s.scid };
-    this._send(v, 'phoneview:status', { appFrame: s.scid });
+    this._send(v, 'phoneview:status', { ready: true, appFrame: s.scid });
     s.simple(TYPE.RESET_VIDEO);
     return true;
   }
