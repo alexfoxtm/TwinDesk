@@ -126,7 +126,7 @@
 
   // Keep the phone screen off (phoneview.js appFrame) even though this window is not painting.
   function flushAppFrame() {
-    if (kind !== 'app' || typeof appFrame !== 'string' || !skipMinimized()) return;
+    if (ended || kind !== 'app' || typeof appFrame !== 'string' || !skipMinimized()) return;
     api.send({ t: 'appFrame', capture: appFrame });
     appFrame = null;
   }
@@ -258,10 +258,6 @@
   });
 
   api.on('status', (s) => {
-    if (kind === 'app' && typeof s.appFrame === 'string') {
-      appFrame = s.appFrame;
-      flushAppFrame();
-    }
     if (s.via) {
       const el = document.getElementById('via');
       I.literal(el, s.via === 'usb' ? 'USB' : 'Wi-Fi');
@@ -271,7 +267,13 @@
       el.hidden = false;
     }
     if (s.closed || s.error) { ended = true; appFrame = null; releaseHeldFrame(); stopKeyRetry(); }
-    else if (s.ready) ended = false;
+    else {
+      if (s.ready) ended = false;
+      if (!ended && kind === 'app' && typeof s.appFrame === 'string') {
+        appFrame = s.appFrame;
+        flushAppFrame();
+      }
+    }
     if (s.closed) videoEpoch++;
     if (s.error) {
       closedStatus = null;

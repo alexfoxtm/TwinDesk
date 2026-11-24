@@ -12,13 +12,35 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const starts = [];
+class Control extends EventEmitter {
+  constructor(_adb, serial) {
+    super();
+    this.serial = serial;
+    this.closed = false;
+  }
+  start() {
+    return new Promise((resolve) => starts.push({ session: this, resolve }));
+  }
+  stop() {
+    this.closed = true;
+    this.emit('closed', 'stopped');
+  }
+  mouse() {}
+}
+
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'twindesk-phone-bridge-'));
 const realLoad = Module._load;
 Module._load = function (request, parent, isMain) {
+  if (request === '../scrcpy' && parent.filename.endsWith('/mesh/phone-bridge.js')) {
+    return { Session: Control, ACTION: { HOVER_EXIT: 10 } };
+  }
   if (request === 'electron') return { app: { getPath: () => userData } };
   return realLoad.call(this, request, parent, isMain);
 };
 const { PhoneBridge } = require('../phone-bridge.js');
+const { PhoneBridge: MeshBridge } = require('../mesh/phone-bridge.js');
+const { AppPanel } = require('../app-panel.js');
 process.on('exit', () => fs.rmSync(userData, { recursive: true, force: true }));
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,7 +49,7 @@ function phone(id, address) {
   return { deviceId: id, name: id, os: 'android', transport: 'ip', address };
 }
 
-function harness(input = 'adb') {
+function harness(input = 'adb', Bridge = PhoneBridge) {
   const server = new EventEmitter();
   server.current = null;
   const sent = [];
@@ -55,7 +77,7 @@ function harness(input = 'adb') {
     run: async () => ({ code: 0, out: '', err: '' }),
     pair: async () => ({ ok: false, text: '' }),
   };
-  const bridge = new PhoneBridge({ server, phone: phoneHub, getSettings: () => settings, clipboard: null });
+  const bridge = new Bridge({ server, phone: phoneHub, getSettings: () => settings, clipboard: null, adb });
   bridge.adb = adb;
   bridge.views = {
     closeAll() { calls.views++; },
@@ -183,4 +205,107 @@ test('a device lookup that fails after another phone is selected is not that pho
   } finally {
     h.stop();
   }
+});
+
+function meshHarness() {
+  const h = harness('adb', MeshBridge);
+  const wifi = '10.0.0.2:37000';
+  h.server.current = { ...phone('phone-a', '10.0.0.2'), authed: true, conn: { readyState: 1 } };
+  h.phoneHub.adb = { wifi: true, address: '10.0.0.2', port: 37000 };
+  h.setDevices(async () => [{ serial: wifi, state: 'device' }]);
+  h.bridge.known.add('phone-a');
+  h.bridge.setupDone.add(wifi);
+  h.bridge.tcpipDone.add(wifi);
+  h.bridge.setupDone.add('usb-a');
+  return h;
+}
+
+test('Mesh USB handoff restores the panel on Wi-Fi, drops that controller, and keeps the USB controller', async (t) => {
+  const h = meshHarness();
+  t.after(h.stop);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const firstPoll = h.bridge._poll();
+  await new Promise(setImmediate);
+  const { session: wifi, resolve } = starts.shift();
+  resolve();
+  await firstPoll;
+
+  const panel = new AppPanel(h.bridge, h.server);
+  const view = {};
+  const power = [];
+  wifi.setDisplayPower = (on) => {
+    assert.equal(h.bridge.control, wifi);
+    assert.equal(wifi.closed, false);
+    power.push(on);
+  };
+  assert.equal(panel.blank(panel.begin(view), view), true);
+  h.bridge.views.releaseAppPanel = () => panel.release();
+  wifi.once('closed', () => {
+    assert.equal(h.bridge.control, null, 'the stopping controller no longer owns the bridge');
+    assert.deepEqual(power, [false, true], 'panel power was restored before stop');
+  });
+  const states = [];
+  h.bridge.on('change', () => states.push(h.bridge.state));
+  let kicks = 0;
+  h.bridge._kick = () => kicks++;
+  h.bridge.wired = { serialOf: (id) => id === 'phone-a' ? 'usb-a' : null };
+  h.setDevices(async () => [{ serial: 'usb-a', state: 'device' }]);
+  const secondPoll = h.bridge._poll();
+  await new Promise(setImmediate);
+  const next = starts.shift();
+  next.resolve();
+  await secondPoll;
+  assert.equal(h.bridge.control, next.session);
+  assert.equal(next.session.serial, 'usb-a');
+  assert.deepEqual(states, ['connecting', 'ready']);
+  wifi.emit('clipboard', 'old clipboard');
+  wifi.emit('closed', 'late close');
+  assert.equal(h.bridge.control, next.session);
+  assert.equal(h.bridge.state, 'ready');
+  assert.equal(h.bridge.lastPhoneClip, undefined);
+  next.session.emit('clipboard', 'new clipboard');
+  assert.equal(h.bridge.lastPhoneClip, 'new clipboard');
+  t.mock.timers.tick(2100);
+  assert.equal(kicks, 0, 'deliberately stopping Wi-Fi did not schedule a retry');
+  next.session.closed = true;
+  next.session.emit('closed', 'the connection closed');
+  assert.equal(h.bridge.control, null);
+  assert.equal(h.bridge.state, 'error');
+  t.mock.timers.tick(2000);
+  assert.equal(kicks, 1, 'an unexpected close of the current controller schedules a retry');
+});
+
+test('Mesh discards an in-flight controller when its scoped phone disconnects and retries on reconnect', async (t) => {
+  const h = meshHarness();
+  t.after(h.stop);
+  const scopedPhone = h.server.current;
+  const firstPoll = h.bridge._poll();
+  await new Promise(setImmediate);
+  const abandoned = starts.shift();
+  h.server.current = null;
+  h.server.emit('closed');
+  h.server.current = { ...scopedPhone, conn: { readyState: 1 } };
+  let kicks = 0;
+  h.bridge._kick = () => kicks++;
+  h.server.emit('client', h.server.current);
+  await h.bridge._poll(); // the reconnect's first chance to poll, while the old attempt is still busy
+  abandoned.session.emit('clipboard', 'before install');
+  abandoned.resolve();
+  await firstPoll;
+  assert.equal(abandoned.session.closed, true);
+  assert.equal(h.bridge.control, null);
+  assert.equal(h.bridge.state, 'off');
+  assert.equal(h.bridge.lastPhoneClip, undefined);
+  assert.equal(kicks, 2, 'the reconnect queues a kick and retiring the busy poll queues another');
+
+  const secondPoll = h.bridge._poll();
+  await new Promise(setImmediate);
+  const active = starts.shift();
+  active.resolve();
+  await secondPoll;
+  abandoned.session.emit('closed', 'late close');
+  abandoned.session.emit('clipboard', 'late clipboard');
+  assert.equal(h.bridge.control, active.session);
+  assert.equal(h.bridge.state, 'ready');
+  assert.equal(h.bridge.lastPhoneClip, undefined);
 });

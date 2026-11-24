@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const { SpaceLook } = require('../space-switch');
+const { SpaceLook, meshLookOptions } = require('../space-switch');
 
 const source = fs.readFileSync(require.resolve('../main.js'), 'utf8');
 const send = source.slice(source.indexOf('function sendScreenState()'), source.indexOf('// The viewer asked to mirror'));
@@ -150,7 +150,101 @@ async function check() {
   }
 }
 
-check().then(() => console.log('space-look demand passed')).catch(err => {
+async function checkMesh() {
+  const main = require.resolve('../mesh/main.js');
+  const source = fs.readFileSync(main, 'utf8');
+  const send = source.slice(source.indexOf('function sendScreenState()'), source.indexOf('function updateScreenInputOwner()'));
+  const services = fs.readFileSync(require.resolve('../mesh/services.js'), 'utf8');
+  const wiring = services.slice(services.indexOf('  const spaceLook ='), services.indexOf('  const desktopRefresh ='));
+  const listeners = services.slice(services.indexOf("  displays.on('change'"), services.indexOf('  const exits ='));
+  const helper = new EventEmitter();
+  const displays = new EventEmitter();
+  displays.list = () => [{ id: 1, name: 'Main', primary: true }];
+  displays.applyVirtual = async () => {};
+  const input = { releaseAll() {}, enabled: () => true };
+  const requests = [];
+  helper.request = () => new Promise((resolve) => requests.push(resolve));
+  const sockets = [{}, {}];
+  let selected = { deviceId: 'phone-a', conn: sockets[0], ws: {} };
+  const packets = [];
+  // Route.current produces a new view object each time. conn is the outbound socket.
+  const server = {
+    get current() { return selected && { ...selected }; },
+    sendToClient: (msg) => packets.push({ peer: selected.deviceId, msg }),
+  };
+  let viewA = null;
+  let viewB = { id: '1', generation: 2, session: 1 };
+  const stream = { byId: new Map([
+    ['phone-a', { viewedDisplay: () => viewA }],
+    ['phone-b', { viewedDisplay: () => viewB }],
+  ]), restart() {} };
+  let sendState;
+  let timer;
+  const spaceLook = vm.runInNewContext(wiring + listeners + '\nspaceLook;', {
+    SpaceLook, meshLookOptions, helper, displays, input, server, stream,
+    pushState: () => sendState(),
+    onHelperReady() {},
+    setTimeout(fn) { timer = fn; return fn; },
+    clearTimeout(fn) { if (timer === fn) timer = null; },
+  });
+  sendState = vm.runInNewContext(send + '\nsendScreenState;', {
+    require: require('node:module').createRequire(main),
+    updateScreenInputOwner() {},
+    screenStateKey: '', previewShots: null,
+    displayMode: () => 'mirror', P: { T: { SCREEN_STATE: 'screen.state' } },
+    settings: { sharing: { on: true } }, peer: server,
+    svc: { stream, spaceLook, displays, input },
+  });
+  const flush = () => { const fn = timer; timer = null; if (fn) fn(); };
+  const finish = async (value = look) => { requests.shift()(value); await new Promise(setImmediate); };
+
+  sendState();
+  assert.equal(requests.length, 1);
+  sendState();
+  assert.equal(spaceLook.pendingDemand, null, 'fresh route view wrappers keep the same demand');
+  await finish();
+  spaceLook.at = 0;
+  sendState();
+  assert.equal(requests.length, 0, 'another phone’s live picture does not make this phone poll');
+  assert.equal(packets.at(-1).msg.spaces, false);
+
+  // These lifecycle events must force a read even with no picture and inside the throttle.
+  for (const fire of [() => displays.emit('change'), () => helper.emit('ready'), () => helper.emit('event', 'activeSpaceChanged')]) {
+    spaceLook.at = Date.now();
+    fire();
+    fire();
+    flush();
+    assert.equal(requests.length, 1);
+    await finish();
+  }
+
+  helper.emit('ready');
+  selected = { ...selected, conn: sockets[1] }; // host-side ws can stay the same
+  flush();
+  assert.equal(requests.length, 0, 'an invalidation for the old outbound socket cannot run');
+  sendState();
+  assert.equal(requests.length, 1, 'the same device on a new outbound socket has fresh demand');
+  viewA = { id: '1', generation: 1, session: 1 };
+  sendState();
+  assert.ok(spaceLook.pendingDemand);
+  selected = { deviceId: 'phone-b', conn: {} };
+  await finish({ ...look, spans: true });
+  assert.equal(requests.length, 0, 'neither the old read nor its queued demand can follow selection');
+  assert.equal(spaceLook.current(), look);
+  sendState();
+  assert.equal(requests.length, 1);
+  viewA = null;
+  await finish({ ...look, ax: true });
+  assert.equal(spaceLook.current().ax, true, 'the other phone’s stream change does not cancel the selected viewer’s read');
+  helper.emit('event', 'activeSpaceChanged');
+  flush();
+  assert.equal(requests.length, 1);
+  viewB = { ...viewB, generation: 3 };
+  await finish({ ...look, spans: true });
+  assert.equal(spaceLook.current().spans, undefined, 'the selected stream changing generation cancels its read');
+}
+
+check().then(checkMesh).then(() => console.log('space-look demand passed')).catch(err => {
   console.error(err);
   process.exitCode = 1;
 });

@@ -150,7 +150,7 @@ for (const file of ['mac/services.js', 'mac/mesh/services.js']) {
   assert.ok(src.includes('SCREEN_DESKTOPS'), file);
 }
 assert.ok(read('mac/main.js').includes('spaceLook.demand({'));
-assert.ok(read('mac/mesh/main.js').includes('spaceLook.refresh({'));
+assert.ok(read('mac/mesh/main.js').includes('spaceLook.demand(lookOpts)'));
 
 for (const file of ['windows/main.js', 'windows/mesh/main.js', 'linux/main.js', 'linux/mesh/main.js']) {
   assert.ok(!read(file).includes('desktopCatalog'), file);

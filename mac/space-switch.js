@@ -353,4 +353,19 @@ function spaceFinger(look) {
   });
 }
 
-module.exports = { SpaceSwitch, SpaceLook, DesktopRefresh };
+// A route's current view is rebuilt on every read. Fence the demand to its selected outbound socket.
+function meshLookOptions(peer, stream, current = peer.current) {
+  const session = current?.conn;
+  if (!session) return null;
+  const id = current.deviceId;
+  return {
+    session,
+    view: () => stream.byId.get(id)?.viewedDisplay() ?? null,
+    still: () => {
+      const now = peer.current;
+      return now?.deviceId === id && now.conn === session;
+    },
+  };
+}
+
+module.exports = { SpaceSwitch, SpaceLook, DesktopRefresh, meshLookOptions };

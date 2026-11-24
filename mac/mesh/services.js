@@ -11,7 +11,7 @@ const { Displays } = require('./displays');
 const { Stream } = require('./stream');
 const { StreamSet } = require('./streams');
 const { Input } = require('../input');
-const { SpaceSwitch, SpaceLook, DesktopRefresh } = require('../space-switch');
+const { SpaceSwitch, SpaceLook, DesktopRefresh, meshLookOptions } = require('../space-switch');
 const P = require('../../shared/protocol.js');
 const Spaces = require('../../shared/mac-spaces.js');
 const { Clip } = require('./clipboard');
@@ -65,6 +65,16 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
     offerDisplays: () => false,
   });
   const spaceLook = new SpaceLook(helper, pushState);
+  let lookTimer = null;
+  const invalidateLook = () => {
+    const opts = meshLookOptions(server, stream);
+    if (!opts) return;
+    clearTimeout(lookTimer);
+    lookTimer = setTimeout(() => {
+      if (opts.still()) spaceLook.demand({ ...opts, invalidated: true });
+    }, 100);
+  };
+  helper.on('event', (event) => { if (event === 'activeSpaceChanged') invalidateLook(); });
   const desktopRefresh = new DesktopRefresh({
     listen: (fn) => meshHub.bus.on(P.T.SCREEN_DESKTOPS, (msg, id, source) => fn(msg, { id, source })),
     authorize: (ctx) => Spaces.meshGate(() => meshHub.sessions.get(ctx && ctx.id), ctx && ctx.source),
@@ -109,11 +119,13 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
   for (const x of [stream, clipboard, kvm, terminal, drop, fileSend, smb, apps, sshClient, audio, pcView, pcApps, notifs, fileClip, wake, appSend]) x.on('change', pushState);
   displays.on('change', () => {
     input.releaseAll(); // the shared display moved or changed size mid-press
+    invalidateLook();
     pushState();
   });
 
   // Helper lifecycle: (re)create the virtual display and restart the stream after every start.
   helper.on('ready', () => {
+    invalidateLook();
     displays.applyVirtual().then(() => stream.restart('helper started'));
     onHelperReady();
     pushState();

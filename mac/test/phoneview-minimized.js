@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
+const { EventEmitter } = require('node:events');
+const { createRequire } = require('node:module');
 
 const code = fs.readFileSync(path.join(__dirname, '../phoneview-renderer.js'), 'utf8');
 
@@ -302,4 +304,101 @@ test('background throttling stays off, and every kind hears minimize', () => {
   assert.match(host, /if \(view\.win\.isMinimized\(\)\) view\.win\.restore\(\)/);
   assert.match(host, /win\.on\('minimize', tellMinimized\)/);
   assert.equal(host.includes("if (kind === 'app') this._send"), false);
+});
+
+test('a terminal status clears pending app frames and ignores late requests until a capture is live', () => {
+  for (const terminal of [{ closed: 'stopped' }, { error: 'connection failed' }]) {
+    const f = fixture();
+    f.config();
+    f.recv('status', { appFrame: 'queued while visible' });
+    f.recv('status', { ...terminal, appFrame: 'with terminal status' });
+    f.recv('opts', { minimized: true });
+    f.recv('status', { ...terminal, appFrame: 'with terminal status while minimized' });
+    f.recv('status', { appFrame: 'after terminal status' });
+    assert.deepEqual(f.sent.filter((m) => m.t === 'appFrame'), []);
+
+    f.recv('status', { ready: true, appFrame: 'new capture' });
+    assert.deepEqual(f.sent.filter((m) => m.t === 'appFrame'), [{ t: 'appFrame', capture: 'new capture' }]);
+  }
+});
+
+function appStartup(dark) {
+  const name = require.resolve('../phoneview.js');
+  const localRequire = createRequire(name);
+  const module = { exports: {} };
+  const launches = [];
+  let delay, lease = {};
+  let unlock = () => Promise.resolve(true);
+  class Session extends EventEmitter {
+    start() { return Promise.resolve(); }
+    stop() { this.closed = true; }
+    tap() {}
+  }
+  vm.runInNewContext(fs.readFileSync(name, 'utf8'), {
+    module, process, __dirname: path.dirname(name),
+    require(request) {
+      if (request === 'electron') return { app: { on() {} } };
+      if (request === './scrcpy') return { Session };
+      if (request === './dockstub') return {};
+      if (request === '../shared/appstart.js') return { startApp: (session) => launches.push(session) };
+      return localRequire(request);
+    },
+    setTimeout(resolve, ms) {
+      assert.equal(ms, 300);
+      delay = resolve;
+    },
+  });
+  const view = { id: 1, app: 'io.example.app', kind: 'app', win: { isDestroyed: () => false } };
+  const views = Object.assign(Object.create(module.exports.PhoneViews.prototype), {
+    bridge: { serial: 'adb-phone' },
+    views: new Map([[view.id, view]]),
+    appPanel: {
+      capture: () => null,
+      begin: () => lease,
+      owns: (panel) => panel === lease,
+      waitUnlocked: () => unlock(),
+    },
+    getSettings: () => ({ phone: { keepPanelOff: dark } }),
+    _send() {},
+    _blankAfterAppFrame() {},
+  });
+  return {
+    view, views, launches,
+    start: () => views._start(view, {}),
+    finishDelay: () => delay(),
+    waitForUnlock: () => new Promise((resolve) => { unlock = () => new Promise((done) => resolve(done)); }),
+    releaseLease: () => { lease = null; },
+  };
+}
+
+test('app startup cleans up the session when the view or lease is retired after start', async () => {
+  const ending = appStartup(false);
+  const end = ending.start();
+  await new Promise(setImmediate);
+  ending.view.ending = true;
+  ending.finishDelay();
+  await end;
+  assert.equal(ending.view.session.closed, true);
+  assert.deepEqual(ending.launches, []);
+
+  const locked = appStartup(true);
+  const revoke = locked.start();
+  await new Promise(setImmediate);
+  assert.equal(locked.view.started, true);
+  const waiting = locked.waitForUnlock();
+  locked.finishDelay();
+  const finishUnlock = await waiting;
+  locked.releaseLease();
+  finishUnlock(false);
+  await revoke;
+  assert.equal(locked.view.session.closed, true);
+  assert.deepEqual(locked.launches, []);
+
+  const live = appStartup(true);
+  const open = live.start();
+  await new Promise(setImmediate);
+  live.finishDelay();
+  await open;
+  assert.deepEqual(live.launches, [live.view.session]);
+  assert.equal(live.view.session.closed, undefined);
 });

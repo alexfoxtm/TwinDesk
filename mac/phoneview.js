@@ -492,7 +492,7 @@ class PhoneViews extends EventEmitter {
       const errorKey = 'Wake and unlock the phone to open this app.';
       const waiting = () => this._showUnlock(v);
       if (panel && await this.appPanel.waitUnlocked(panel, live, waiting)) return true;
-      if (current()) throw Object.assign(new Error(errorKey), { messageKey: errorKey });
+      if (panel ? live() : current()) throw Object.assign(new Error(errorKey), { messageKey: errorKey });
       return false;
     };
     if (dark && !await waitForUnlock()) return;
@@ -508,7 +508,7 @@ class PhoneViews extends EventEmitter {
     if (!dark && !v.native && !appOwner) s.tap(ANDROID.WAKEUP);
     const maker = this.phone?.info?.maker;
     await new Promise((resolve) => setTimeout(resolve, 300));
-    if (!live() || (dark && !await waitForUnlock()) || !live()) return;
+    if (!live() || (dark && !await waitForUnlock()) || !live()) { s.stop(); return; }
     await startApp(s, { adb, serial, maker, app: v.app, live });
     if (dark) await this._blankAfterAppFrame(v, s, panel, live);
   }

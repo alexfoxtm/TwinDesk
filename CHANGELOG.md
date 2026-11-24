@@ -101,6 +101,11 @@ Everyone who sent code, reported a problem or tested is thanked under their vers
 
 - **Android app windows on Mac:** apps can open while the phone is asleep. Minimized app
   windows pause painting unless recording, and refresh when restored (#247, #284).
+  Cancelled app launches release their capture, and a stopped window no longer asks to turn
+  off the phone screen.
+- **Multi-device on Mac:** plugging in a phone restores its screen before moving control
+  from Wi-Fi to USB. The desktop list refreshes when the active Space or displays change,
+  or when the Mac helper restarts.
 - **Windows:** a finger dragged on the phone's mirrored screen stays on the picture,
   instead of the window panning away (#316).
 - **Multi-device:** choosing another computer keeps that computer's sound and

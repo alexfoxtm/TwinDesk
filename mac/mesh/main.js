@@ -368,17 +368,11 @@ function sendScreenState() {
   // display has its own other desktop and on-screen windows belong to the current ones.
   // A window still visible from another desktop keeps it false. This read does not open
   // Mission Control or call a space setter (mac-helper Spaces.swift).
-  if (svc.spaceLook) svc.spaceLook.refresh({
-    view: () => {
-      const deviceId = c.deviceId;
-      const row = svc.stream && svc.stream.byId && deviceId != null ? svc.stream.byId.get(deviceId) : null;
-      return row && row.viewedDisplay ? row.viewedDisplay() : null;
-    },
-  });
-  const st = svc.stream && svc.stream.byId && c.deviceId != null ? svc.stream.byId.get(c.deviceId) : null;
+  const lookOpts = require('../space-switch').meshLookOptions(peer, svc.stream, c);
+  if (lookOpts && svc.spaceLook) svc.spaceLook.demand(lookOpts);
   const look = svc.spaceLook ? svc.spaceLook.current() : null;
   const Spaces = require('../../shared/mac-spaces.js');
-  const viewed = st && st.viewedDisplay ? st.viewedDisplay() : null;
+  const viewed = lookOpts?.view() ?? null;
   const spaces = Spaces.offerSpaces(look, viewed);
   // This device's picture only. Another viewer's display is not a choice here.
   const offer = Spaces.catalogOffer(svc.displays.list(), { remote: settings.sharing.remote !== false, held: !!(svc.displays.holds && svc.displays.holds.has('apps-open')), mesh: true });
