@@ -38,7 +38,7 @@ const bleInput = require('../../shared/bleinput.js');
 
 test.after(() => { Module._load = realLoad; });
 
-function harness({ session = false, buffered = 0, socket = true } = {}) {
+function harness({ session = false, buffered = 0, socket = true, Bridge = PhoneBridge } = {}) {
   const sent = [];
   const current = { os: 'android', deviceId: 'phone' };
   if (socket) current.ws = { bufferedAmount: buffered };
@@ -55,7 +55,7 @@ function harness({ session = false, buffered = 0, socket = true } = {}) {
   const phone = new EventEmitter();
   phone.info = { display: { w: 1080, h: 2400, dpi: 420 } };
   phone.adb = null;
-  const bridge = new PhoneBridge({
+  const bridge = new Bridge({
     server,
     phone,
     getSettings: () => settings,
@@ -85,6 +85,22 @@ function withClock(run) {
   } finally {
     Date.now = real;
     console.log = log;
+  }
+}
+
+function withPointerTimers(run) {
+  const schedule = global.setTimeout;
+  const cancel = global.clearTimeout;
+  const pending = new Set();
+  global.setTimeout = callback => {
+    const timer = { callback };
+    pending.add(timer);
+    return timer;
+  };
+  global.clearTimeout = timer => pending.delete(timer);
+  try { run(pending); } finally {
+    global.setTimeout = schedule;
+    global.clearTimeout = cancel;
   }
 }
 
@@ -118,6 +134,55 @@ test('a move inside the send gap is counted and not sent', () => {
     assert.equal(lines.length, 1);
     assert.equal(lines[0], '[phone] pointer mouse=1 ctl=scrcpy moves=1 sent=2 moveGapMs=0 sendGapMs=4 buf=0');
   });
+});
+
+test('direct and Mesh delayed pointer updates send the latest position once', () => {
+  for (const Bridge of [PhoneBridge, MeshPhoneBridge]) {
+    const { bridge, sent } = harness({ Bridge });
+    withClock(({ at }) => withPointerTimers(pending => {
+      at(2_100_000);
+      bridge._take({ route: 'phone', side: 'left', offset: 0.2, mouse: true });
+      at(2_100_002);
+      bridge._move({ dx: 3, dy: 1 });
+      at(2_100_004);
+      bridge._move({ dx: 7, dy: 2 });
+      assert.equal(pending.size, 1, 'replaced pointer timer is cancelled');
+      const timer = [...pending][0];
+      pending.delete(timer);
+      at(2_100_012);
+      timer.callback();
+      const visible = sent.filter(m => m.t === 'phone.pointer' && m.on);
+      assert.equal(visible.length, 2, 'entry and one delayed move are handed off');
+      assert.deepEqual(visible[1], {
+        t: 'phone.pointer', on: true, x: 26, y: 488,
+      });
+      assert.equal(bridge.pointerTimer, null);
+      bridge._kvmEnd(false);
+    }));
+  }
+});
+
+test('direct and Mesh retired pointer timers cannot send into the next crossing', () => {
+  for (const Bridge of [PhoneBridge, MeshPhoneBridge]) {
+    const { bridge, sent } = harness({ Bridge });
+    withClock(({ at }) => withPointerTimers(pending => {
+      at(2_200_000);
+      bridge._take({ route: 'phone', side: 'left', offset: 0.2, mouse: true });
+      at(2_200_004);
+      bridge._move({ dx: 3, dy: 1 });
+      const timer = [...pending][0];
+      assert.ok(timer);
+      bridge._kvmEnd(false);
+      assert.equal(pending.size, 0, 'ending a crossing removes its delayed move');
+      at(2_200_012);
+      bridge._take({ route: 'phone', side: 'right', offset: 0.8, mouse: true });
+      const sentBeforeLateCallback = sent.length;
+      timer.callback();
+      assert.equal(sent.length, sentBeforeLateCallback, 'old callback cannot update the new crossing');
+      assert.equal(bridge.pointerTimer, null);
+      bridge._kvmEnd(false);
+    }));
+  }
 });
 
 test('session input and a mouse-off crossing name themselves, and a missing socket is a dash', () => {

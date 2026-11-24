@@ -13,6 +13,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.robolectric.shadows.ShadowSettings
+import org.robolectric.shadows.ShadowSystemClock
 import android.app.AlarmManager
 import android.content.Context
 import android.net.RouteInfo
@@ -533,16 +534,45 @@ class IdleWiringTest {
         }
     }
 
-    @Test fun firstPointerMessageAddsAnOverlayAtDefaultWindowCoordinates() {
-        val pointer = core().pointer
+    @Test fun queuedPointerMoveAndDisconnectLeaveOnlyTheReplacementOverlay() {
+        val core = core()
+        val pointer = core.pointer
+        val host = Host("mac", "Mac", "mac", "192.0.2.1", 8080, "pin", "test", 0)
+        val socket = Proxy.newProxyInstance(WebSocket::class.java.classLoader, arrayOf(WebSocket::class.java)) { _, method, _ ->
+            error("Pointer dispatch must not use the fixture socket: ${method.name}")
+        } as WebSocket
+        val main = shadowOf(Looper.getMainLooper())
+        fun queuePosition(x: Int, y: Int) {
+            val m = JSONObject().put("t", Proto.T.PHONE_POINTER).put("x", x).put("y", y)
+            core.onMessage(m, null, socket)
+        }
+
         ShadowSettings.setCanDrawOverlays(true)
         try {
-            assertTrue(pointer.onMessage(Proto.T.PHONE_POINTER, JSONObject().put("x", -1).put("y", -1)))
-            val view = pointer.read("view") as View
-            assertNotNull(view.parent)
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(1))
+            queuePosition(-1, -1)
+            assertNull(pointer.read("view"))
+            ShadowSystemClock.advanceBy(Duration.ofMillis(40))
+            main.idle()
+            val first = pointer.read("view") as View
+            assertNotNull(first.parent)
+            assertTrue((pointer.read("maxQueueMs") as Long) >= 40)
+
+            // A queued move must not outlive the disconnect. The next session starts a new
+            // overlay even when its first pointer event is already behind onClosed on main.
+            queuePosition(10, 20)
+            core.onClosed(host, "local")
+            queuePosition(30, 40)
+            main.idleFor(Duration.ofMillis(100))
+            val replacement = pointer.read("view") as View
+            assertNotSame(first, replacement)
+            assertNotNull(replacement.parent)
+            assertEquals(0, pointer.read("applied"))
+            assertEquals(30, pointer.read("lastX"))
+            assertEquals(40, pointer.read("lastY"))
         } finally {
             pointer.hide()
-            shadowOf(Looper.getMainLooper()).idle()
+            main.idle()
             ShadowSettings.setCanDrawOverlays(false)
         }
     }
