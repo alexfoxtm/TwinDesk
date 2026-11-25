@@ -172,10 +172,10 @@ async function hello(port, { id, name, os = P.OS.WIN, token, mesh = 1 }) {
 }
 
 // A phone pairs with `host` (a phone dials, whatever the other side is): resolves {client, token, id}.
-async function pairPhone(host, { id = crypto.randomUUID(), name = 'Phone' } = {}) {
+async function pairPhone(host, { id = crypto.randomUUID(), name = 'Phone', os = P.OS.ANDROID } = {}) {
   const c = await rawConnect(host.port);
   const nw = P.randomHex(16);
-  c.send({ t: P.T.PAIR_START, v: P.PROTOCOL_VERSION, id, name, os: P.OS.ANDROID, commit: P.commitOf(nw) });
+  c.send({ t: P.T.PAIR_START, v: P.PROTOCOL_VERSION, id, name, os, commit: P.commitOf(nw) });
   const nonce = await c.until((m) => m.t === P.T.PAIR_NONCE);
   c.send({ t: P.T.PAIR_REVEAL, nonce: nw });
   const code = P.sasCode(host.fp, nw, nonce.nonce);

@@ -28,6 +28,9 @@ class StreamSet extends EventEmitter {
     hub.bus.onPeer('welcome', (id) => this._ensure(id));
     hub.bus.onPeer('closed', (id) => this._gone(id));
     for (const s of hub.sessions.list()) if (s.connected) this._ensure(s.id);
+    // Publish after the hub settles selection, including a pending user Connect.
+    hub.on('change', () => this.syncScopedScreens());
+    this.syncScopedScreens();
   }
 
   _create() {
@@ -35,7 +38,10 @@ class StreamSet extends EventEmitter {
     const st = this.make(peer);
     st.peer = peer;
     st.audioOk = () => st === this.active;
-    st.on('change', () => this.emit('change'));
+    st.on('change', () => {
+      if (st.scopedScreen) this._syncScopedScreen(st);
+      this.emit('change');
+    });
     this.all.push(st);
     return st;
   }
@@ -51,6 +57,15 @@ class StreamSet extends EventEmitter {
   _gone(id) {
     delete this.table[id];
     this.emit('change');
+  }
+
+  _syncScopedScreen(st) {
+    const selected = this.hub.selectedId;
+    st.syncScopedScreen?.(selected !== null && selected !== st.peer.id);
+  }
+
+  syncScopedScreens() {
+    for (const st of this.all) this._syncScopedScreen(st);
   }
 
   get active() {

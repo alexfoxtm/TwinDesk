@@ -19,6 +19,8 @@ const RETRY_MS = 2000;
 // One display-media handler for the session, shared by every Stream (one per target device): the
 // request tells which capture window asked, so each Stream gives its own source.
 const byCapture = new Map(); // webContents id -> Stream
+const displayOverrideOwner = new WeakMap(); // Displays -> Stream that supplied the phone dimensions
+const screenAudioOwner = new WeakMap(); // AudioHub -> Stream holding its screen consumer
 let handlerSet = false;
 function setHandler() {
   if (handlerSet) return;
@@ -63,6 +65,10 @@ class Stream extends EventEmitter {
 
     this.choice = null; // this target's own choice {mode: 'none'|'mirror'|'virtual', displayId?}; null = the shared settings
     this.audioOk = () => true; // StreamSet: only the active target's stream carries the sound
+    this.scopedScreen = false;
+    this.scopedShare = false;
+    this.scopedStop = false;
+    this.screenState = null;
     setHandler();
 
     // A new peer says within moments whether its viewer is open (screen.policy); an older app never
@@ -77,36 +83,53 @@ class Stream extends EventEmitter {
       }, 1500);
       this._stopWindow(this.getSettings().sharing.on ? 'no viewer' : 'off');
     });
-    server.on(`t:${P.T.SCREEN_POLICY}`, (msg) => {
-      const on = !!msg.accept;
-      // A phone's viewer says how big it is: Extend becomes a screen of that shape.
+    server.on(`t:${P.T.SCREEN_POLICY}`, (msg, ctx) => {
       const c = this.server.current;
-      if (c && P.isPhoneOs(c.os) && on && msg.width > 0 && msg.height > 0) {
-        this.phoneSize = { width: msg.width | 0, height: msg.height | 0 };
-        this.displays.setOverride(this.phoneSize);
+      if (c?.os === P.OS.IOS && !this._currentIosMessage(ctx)) return;
+      const on = !!msg.accept;
+      // A scoped viewer must not resize the shared virtual display.
+      if (c && P.isPhoneOs(c.os) && !this.scopedScreen && on && msg.width > 0 && msg.height > 0) {
+        displayOverrideOwner.set(this.displays, this);
+        this.displays.setOverride({ width: msg.width | 0, height: msg.height | 0 });
       }
       this.waitingPolicy = false;
       clearTimeout(this.policyTimer);
       if (on === this.viewer) return;
       this.viewer = on;
       if (on) this.restart('viewer open');
-      else this._stopWindow(this.getSettings().sharing.on ? 'no viewer' : 'off');
+      else {
+        this.scopedShare = false;
+        this._stopWindow(this._sharing() ? 'no viewer' : 'off');
+      }
     });
+    server.on(`t:${P.T.SCREEN_CTL}`, (msg, ctx) => this._scopedControl(msg, ctx));
     server.on('closed', () => {
-      if (!server.current || !P.isPhoneOs(server.current.os)) {
-        this.phoneSize = null;
+      clearTimeout(this.policyTimer);
+      this.viewer = null;
+      this.waitingPolicy = false;
+      if (displayOverrideOwner.get(this.displays) === this) {
+        displayOverrideOwner.delete(this.displays);
         this.displays.setOverride(null);
       }
       if (!server.current) this._stopWindow('nothing connected');
+      this.scopedScreen = this.scopedShare = this.scopedStop = false;
+      this.screenState = null;
     });
     // The session moved (Bluetooth -> a Wi-Fi Direct link, or back): a session offered on the old
     // path has no candidates for the new one and never connects. Start again on this one.
-    server.on('transport', (c) => {
+    server.on('transport', () => {
+      const c = server.current;
+      if (!c) return;
       const moved = this.active ? this.active.transport !== c.transport : this.view.status === 'waiting for Wi-Fi' && c.transport !== 'ble';
       if (moved) this.restart(`moved to ${c.transport === 'ble' ? 'Bluetooth' : 'Wi-Fi'}`);
     });
-    server.on(`t:${P.T.RTC_ANSWER}`, (msg) => this._toWindow('remote', msg));
-    server.on(`t:${P.T.RTC_ICE}`, (msg) => this._toWindow('remote', msg));
+    for (const type of [P.T.RTC_ANSWER, P.T.RTC_ICE]) {
+      server.on(`t:${type}`, (msg, ctx) => {
+        if (server.current?.os === P.OS.IOS &&
+            (!this._currentIosMessage(ctx) || msg.session !== this.active?.session)) return;
+        this._toWindow('remote', msg);
+      });
+    }
     server.on(`t:${P.T.RTC_DETAIL}`, (msg, ctx) => {
       const owner = this.active?.detailOwner;
       if (!owner || ctx?.source?.() !== owner || server.current?.conn !== owner ||
@@ -118,6 +141,7 @@ class Stream extends EventEmitter {
 
     ipcMain.on('capture:out', (e, msg) => {
       if (!this._fromCapture(e) || !this.active || msg.session !== this.active.session) return;
+      if (!this._sharing()) return;
       if (msg.t === P.T.RTC_OFFER && process.env.TWINDESK_DEBUG_STREAM) console.log(`[stream] offer #${msg.session} -> ${server.current ? server.current.name : 'nobody'}`);
       if (msg.t === P.T.RTC_OFFER || msg.t === P.T.RTC_ICE) server.sendToClient(msg);
     });
@@ -136,23 +160,90 @@ class Stream extends EventEmitter {
     });
   }
 
+  _currentIosMessage(ctx) {
+    const socket = this.server.current?.conn;
+    return !!socket && ctx?.conn === socket;
+  }
+
+  _sharing() {
+    const sharing = this.getSettings().sharing;
+    return !this.scopedStop && (sharing.on || (this.scopedShare && sharing.remote !== false));
+  }
+
+  _scopedMode() {
+    if (this.choice?.mode === 'virtual') return this.displays.virtualTarget() ? 'extend' : null;
+    if (this.getSettings().sharing.on && this._target()?.virtual) return 'extend';
+    return 'mirror';
+  }
+
+  // The selected viewer still uses the facade. An iOS viewer offered scoped controls
+  // keeps them for this connection even if the sidebar selection changes.
+  syncScopedScreen(unselected) {
+    const c = this.server.current;
+    if (c?.os !== P.OS.IOS || !c.conn || (!unselected && !this.scopedScreen)) return;
+    this.scopedScreen = true;
+    const mode = this._scopedMode();
+    const allowed = this.getSettings().sharing.remote !== false && this.choice?.mode !== 'none' && !!mode;
+    if (!allowed && this.scopedShare) {
+      this.stop();
+      return;
+    }
+    const m = {
+      t: P.T.SCREEN_STATE,
+      on: !!this._sharing() && this.choice?.mode !== 'none',
+      mode: this._target()?.virtual ? 'extend' : 'mirror',
+      remote: allowed,
+      modes: mode ? [mode] : [],
+      input: false,
+    };
+    const key = JSON.stringify(m);
+    if (this.screenState?.socket === c.conn && this.screenState.key === key) return;
+    if (this.server.sendToClient(m)) this.screenState = { socket: c.conn, key };
+  }
+
+  _scopedControl(msg, ctx) {
+    if (!this.scopedScreen || !this._currentIosMessage(ctx)) return;
+    const sharing = this.getSettings().sharing;
+    if (msg.share === false) {
+      if (msg.close === true || sharing.remote !== false) this.stop('off', true);
+      return;
+    }
+    const mode = this._scopedMode();
+    if (msg.share !== true || !mode || (msg.mode && msg.mode !== mode) || msg.displayId != null ||
+        sharing.remote === false || this.choice?.mode === 'none' || this.viewer !== true) return;
+    if (this._sharing()) return;
+    this.scopedStop = false;
+    this.scopedShare = !sharing.on;
+    this.restart('viewer start');
+  }
+
   // The display this target gets: its own choice, else what the shared settings say.
   _target() {
     const c = this.choice;
+    if (this.scopedShare && !this.getSettings().sharing.on) {
+      if (c?.mode === 'mirror') return this.displays.byId(c.displayId);
+      if (c?.mode === 'virtual') return this.displays.virtualTarget();
+      return this.displays.list().find((d) => d.primary && !d.virtual) || null;
+    }
     if (c && c.mode === 'mirror') return this.displays.byId(c.displayId) || this.displays.target();
     if (c && c.mode === 'virtual') return this.displays.virtualTarget() || this.displays.target();
     return this.displays.target();
   }
 
   _releaseAudio() {
+    if (screenAudioOwner.get(this.hub) !== this) return;
+    screenAudioOwner.delete(this.hub);
     this.hub.release('screen');
     this.hub.loopback('screen', false);
   }
 
   async _helperAudio(e) {
-    if (!this._fromCapture(e) || !this.active) return false;
+    if (!this._fromCapture(e) || !this.active || !this.audioOk()) return false;
+    const active = this.active;
+    screenAudioOwner.set(this.hub, this);
     this.hub.loopback('screen', false);
     const ok = await this.hub.acquire('screen', this.win.webContents);
+    if (this.active !== active || screenAudioOwner.get(this.hub) !== this) return false;
     this.audio.error = ok ? null : this.hub.error;
     this.audio.on = ok;
     this.emit('change');
@@ -205,7 +296,7 @@ class Stream extends EventEmitter {
 
   _setStatus(status) {
     this.view.status = status;
-    if (status.startsWith('error') && this.server.current && this.getSettings().sharing.on) {
+    if (status.startsWith('error') && this.server.current && this._sharing()) {
       this.server.sendToClient({ t: P.T.STREAM_STOP, reason: 'capture-unavailable' });
     }
     this.emit('change');
@@ -219,9 +310,14 @@ class Stream extends EventEmitter {
   // Start a fresh WebRTC session (or stop, if sharing is off or no PC is connected).
   async restart(reason) {
     clearTimeout(this.retryTimer);
-    if (!this.getSettings().sharing.on) return this.stop('off');
+    if (!this._sharing()) {
+      if (!this.scopedScreen) return this.stop('off');
+      return this._stopWindow('off');
+    }
     if (!this.server.current) return this._stopWindow('nothing connected');
-    if (this.viewer === false || this.waitingPolicy) return this._stopWindow('no viewer');
+    if (this.viewer === false || this.waitingPolicy || (this.scopedScreen && this.viewer !== true)) {
+      return this._stopWindow('no viewer');
+    }
     if (this.choice && this.choice.mode === 'none') return this._stopWindow('off for this device');
     // Bluetooth can't carry the picture: it starts once the session is on Wi-Fi (netlink.js, 'transport').
     if (this.server.current && this.server.current.transport === 'ble') return this._stopWindow('waiting for Wi-Fi');
@@ -235,14 +331,23 @@ class Stream extends EventEmitter {
     // 'loopback' (Chromium captures it; the helper's if it can't), else the helper's capture.
     let audio = false;
     if (this.getSettings().sharing.audio && this.audioOk() && loopback()) {
+      screenAudioOwner.set(this.hub, this);
       this.hub.release('screen');
       this.hub.loopback('screen', true);
       this.audio.error = null;
       audio = 'loopback';
     } else if (this.getSettings().sharing.audio && this.audioOk()) {
       await this._ensureWindow();
-      audio = await this.hub.acquire('screen', this.win.webContents);
-      this.audio.error = audio ? null : this.hub.error;
+      if (this.session !== s || !this._sharing() || !this.server.current) return;
+      if (this.audioOk()) {
+        screenAudioOwner.set(this.hub, this);
+        this.hub.loopback('screen', false);
+        audio = await this.hub.acquire('screen', this.win.webContents);
+        if (this.session !== s) return;
+        if (!this.audioOk()) this._releaseAudio();
+        audio = audio && screenAudioOwner.get(this.hub) === this;
+        this.audio.error = audio ? null : this.hub.error;
+      }
     } else {
       this._releaseAudio();
     }
@@ -258,7 +363,7 @@ class Stream extends EventEmitter {
       await this._ensureWindow();
       if (!this.active || this.active.session !== s) return;
       const src = await this._source(target);
-      if (!this.active || this.active.session !== s || this._target()?.id !== target.id) return;
+      if (!this.active || this.active.session !== s || !this._sharing() || this._target()?.id !== target.id) return;
       const set = this.getSettings();
       this._toWindow('start', {
         session: s, bitrateMbps: set.bitrateMbps, // Share screen › Quality, for phones too
@@ -358,7 +463,9 @@ class Stream extends EventEmitter {
   }
 
   // Sharing off: tell Windows too, so it shows "Mac is not sharing".
-  stop(status = 'off') {
+  stop(status = 'off', scopedStop = false) {
+    this.scopedShare = false;
+    this.scopedStop = scopedStop;
     if (this.server.current) this.server.sendToClient({ t: P.T.STREAM_STOP });
     this._stopWindow(status);
   }

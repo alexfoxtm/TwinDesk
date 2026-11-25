@@ -343,6 +343,7 @@ function setupIpc(ctx) {
     setSharingOpts(partial) {
       const was = { steady: settings.sharing.pace === 'steady', fps: settings.sharing.fps || 0 };
       setGroup('sharing', partial);
+      ctx.stream.syncScopedScreens();
       ctx.pcView.applySettings(); // playback pace in the open viewer
       // Steady is set up per session (the viewer's answer), the frame rate too: a new one.
       if (ctx.stream && ctx.stream.active && (was.steady !== (settings.sharing.pace === 'steady') || was.fps !== (settings.sharing.fps || 0))) ctx.stream.restart('playback changed');

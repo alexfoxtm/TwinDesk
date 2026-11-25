@@ -296,6 +296,7 @@ function publishState() {
     if (svc) state.drive = svc.drive ? svc.drive.view() : { on: false, folder: settings.drive.folder || require('path').join(require('os').homedir(), 'TwinDesk Drive'), custom: !!settings.drive.folder };
     if (updates) state.updates = updates.view;
     if (pairSync) pairSync.check();
+    if (svc) svc.stream.syncScopedScreens();
     sendScreenState();
     if (win && !win.isDestroyed()) win.webContents.send('state', state);
     updateTray();
@@ -357,7 +358,7 @@ function onPreviewWant(m) {
 function sendScreenState() {
   updateScreenInputOwner();
   const c = peer && peer.current;
-  if (!c || !svc) {
+  if (!c || !svc || svc.stream.byId.get(c.deviceId)?.scopedScreen) {
     screenStateKey = '';
     if (previewShots) previewShots.kick();
     return;
@@ -1111,7 +1112,9 @@ app.whenReady().then(() => {
   const blockEdge = svc.kvm.blockEdge;
   svc.kvm.blockEdge = () => blockEdge() || svc.phone.focused; // moving inside the phone window never crosses
   svc.apps.setSharing = (on, by) => actions.setSharing(on, by);
-  peer.on(`t:${P.T.SCREEN_CTL}`, (m) => onScreenCtl(m));
+  peer.on(`t:${P.T.SCREEN_CTL}`, (m, c) => {
+    if (!svc.stream.byId.get(c.deviceId)?.scopedScreen) onScreenCtl(m);
+  });
   peer.on(`t:${P.T.SCREEN_PREVIEW_WANT}`, (m) => onPreviewWant(m));
   // Two-way switches shared with the other computer, per pair (pairsync.js).
   const SYNC_ACTIONS = {
