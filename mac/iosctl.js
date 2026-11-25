@@ -8,9 +8,14 @@ const { startXCTest, RUNNER_ID, WdaInputRejected } = require('./iosctl-xctest');
 const owners = new Map();
 const MAX_QUEUE = 12;
 const MAX_POINTS = 24;
+const MAX_PASTE_BYTES = 16 * 1024;
+const KEYBOARD_INPUT = '/wda/element/0/keyboardInput';
+const COMMAND_FLAG = 1 << 4; // XCUIKeyModifierCommand
+const SHIFT_FLAG = 1 << 1;
+const EDITING_COMMANDS = new Set(['a', 'c', 'v', 'x', 'z']);
 const START_MS = 60000;
 const SPECIAL_KEYS = new Map(Object.entries({
-  Backspace: 'Delete', Delete: 'ForwardDelete', Enter: 'Return', Tab: 'Tab', Escape: 'Escape',
+  Backspace: 'Delete', Delete: 'ForwardDelete', Enter: 'Return', Tab: 'Tab', Escape: 'Escape', ' ': 'Space',
   ArrowUp: 'UpArrow', ArrowDown: 'DownArrow', ArrowLeft: 'LeftArrow', ArrowRight: 'RightArrow',
   PageUp: 'PageUp', PageDown: 'PageDown', Home: 'Home', End: 'End',
 }));
@@ -42,16 +47,35 @@ function actionsFor(points, window, duration, hold) {
   const move = (p, ms) => ({ type: 'pointerMove', origin: 'viewport', duration: ms, ...pointInWindow(p, window) });
   const steps = [move(points[0], 0), { type: 'pointerDown', button: 0 }];
   if (hold) steps.push({ type: 'pause', duration: hold });
-  for (const p of points.slice(1)) steps.push(move(p, Math.max(1, Math.round(duration / (points.length - 1)))));
+  let offset = 0;
+  for (let i = 1; i < points.length; i++) {
+    const next = Math.round(duration * i / (points.length - 1));
+    steps.push(move(points[i], next - offset));
+    offset = next;
+  }
   steps.push({ type: 'pointerUp', button: 0 });
   return { actions: [{ id: 'finger', type: 'pointer', parameters: { pointerType: 'touch' }, actions: steps }] };
 }
 
+function keyboardInput(key, modifierFlags = 0) {
+  return [KEYBOARD_INPUT, { keys: [modifierFlags ? { key, modifierFlags } : key] }];
+}
+
 function keyCommand(m) {
   const key = m.key;
-  if (!m.down || m.composing || m.ctrl || m.meta || typeof key !== 'string') return null;
+  if (m.down !== true || m.composing || m.ctrl || typeof key !== 'string') return null;
+  if (m.meta) {
+    if (m.alt) return null;
+    const lower = key.toLowerCase();
+    if (lower === 'h' && !m.shift) return ['/wda/pressButton', { name: 'home' }];
+    if (key === ' ' && !m.shift) return keyboardInput('XCUIKeyboardKeySpace', COMMAND_FLAG);
+    if (EDITING_COMMANDS.has(lower) && (!m.shift || lower === 'z')) {
+      return keyboardInput(lower, COMMAND_FLAG | (m.shift ? SHIFT_FLAG : 0));
+    }
+    return null;
+  }
   const special = SPECIAL_KEYS.get(key);
-  if (special) return ['/wda/element/0/keyboardInput', { keys: [`XCUIKeyboardKey${special}`] }];
+  if (special && !m.alt) return keyboardInput(`XCUIKeyboardKey${special}`, m.shift ? SHIFT_FLAG : 0);
   if (Array.from(key).length === 1 && !/\p{Cc}/u.test(key)) return ['/wda/keys', { value: [key] }];
   return null;
 }
@@ -61,6 +85,7 @@ class IpadControl {
     Object.assign(this, { udid, owns, canInput, status, log, start, template });
     this.abort = new AbortController();
     this.queue = [];
+    this.inputEpoch = 0;
   }
 
   async connect() {
@@ -129,17 +154,49 @@ class IpadControl {
     return this.transport.request(method, this.session + route, body, this.abort.signal);
   }
 
-  input(m, geometry) {
-    if (!this.session || !this.owns() || this.abort.signal.aborted) return;
+  clearInput() {
+    this.inputEpoch++;
+    this.queue.length = 0;
+  }
+
+  input(m, geometry, readPasteboard) {
+    if (!this.session || !this.owns() || !this.canInput() || this.abort.signal.aborted) return false;
+    if (m.op === 'cancel') return this.clearInput();
+    const epoch = this.inputEpoch;
+    const active = () => epoch === this.inputEpoch && this.canInput() && this.owns() && !this.abort.signal.aborted;
     const key = m.op === 'key' && keyCommand(m);
-    if (key) return this.enqueue('key', () => this.send('POST', ...key));
-    if (m.op === 'home') return this.enqueue('home', () => this.send('POST', '/wda/pressButton', { name: 'home' }));
-    if (m.op !== 'gesture' && m.op !== 'scroll') return;
+    if (key) {
+      if (m.meta && m.repeat) return true;
+      const paste = m.meta && m.key.toLowerCase() === 'v';
+      this.enqueue(paste ? 'paste' : 'key', async () => {
+        if (!active()) return;
+        if (paste && readPasteboard) {
+          let text;
+          try { text = readPasteboard(); } catch { return; }
+          if (!active() || Buffer.byteLength(text, 'utf8') > MAX_PASTE_BYTES) return;
+          if (text) await this.send('POST', '/wda/setPasteboard', {
+            contentType: 'plaintext', content: Buffer.from(text, 'utf8').toString('base64'),
+          });
+        }
+        if (active()) return this.send('POST', ...key);
+      });
+      return true;
+    }
+    if (m.op === 'spotlight') return this.enqueue('spotlight', () => {
+      if (active()) return this.send('POST', ...keyboardInput('XCUIKeyboardKeySpace', COMMAND_FLAG));
+    });
+    if (m.op === 'home' || m.op === 'volumeUp' || m.op === 'volumeDown') {
+      return this.enqueue(m.op, () => {
+        if (active()) return this.send('POST', '/wda/pressButton', { name: m.op });
+      });
+    }
+    if (!['gesture', 'doubleTap', 'longPress', 'scroll'].includes(m.op)) return false;
     const { frame, source } = geometry();
     if (!frame || !source || m.width !== frame.width || m.height !== frame.height) return;
     const scroll = m.op === 'scroll';
     if (scroll && ![m.dx, m.dy].every(Number.isFinite)) return;
-    if (!Array.isArray(m.points) || m.points.length < 1 || m.points.length > MAX_POINTS) return;
+    if (!Array.isArray(m.points) || m.points.length < 1 || m.points.length > MAX_POINTS
+        || (m.op !== 'gesture' && m.points.length !== 1)) return;
     const points = m.points.map((p) => videoPoint(p, m.rect));
     if (points.some((p) => !p)) return;
     if (scroll) {
@@ -150,24 +207,27 @@ class IpadControl {
       points.push(to);
     }
     const ms = scroll ? 130 : Math.min(650, Math.max(55, Number.isFinite(m.duration) ? m.duration : 55));
-    const hold = !scroll && points.length === 1 && ms >= 480 ? 520 : 0;
+    const hold = m.op === 'longPress' || (!scroll && points.length === 1 && ms >= 480) ? 520 : 0;
     let kind = 'tap';
     if (scroll) kind = 'scroll';
+    else if (m.op === 'doubleTap') kind = 'double-tap';
     else if (hold) kind = 'long-press';
     else if (points.length > 1) kind = 'drag';
     this.enqueue(kind, async () => {
-      if (geometry().frame !== frame || geometry().source !== source) return;
+      if (!active() || geometry().frame !== frame || geometry().source !== source) return;
       const { value: window } = await this.send('GET', '/window/rect');
-      if (!this.canInput() || geometry().frame !== frame || geometry().source !== source || !fullDisplay(frame, source, window)) return;
+      if (!active() || geometry().frame !== frame || geometry().source !== source || !fullDisplay(frame, source, window)) return;
+      if (m.op === 'doubleTap') return this.send('POST', '/wda/doubleTap', pointInWindow(points[0], window));
       return this.send('POST', '/actions', actionsFor(points, window, ms, hold));
     });
   }
 
   enqueue(kind, run) {
-    if (this.queue.length >= MAX_QUEUE || this.abort.signal.aborted) return;
+    if (this.abort.signal.aborted) return;
     if (kind === 'heartbeat' && (this.running || this.queue.length)) return;
-    const item = { kind, run, queued: performance.now() };
     if (kind === 'scroll' && this.queue.at(-1)?.kind === 'scroll') this.queue.pop();
+    if (this.queue.length >= MAX_QUEUE) return;
+    const item = { kind, run, queued: performance.now() };
     this.queue.push(item);
     void this.drain();
   }
@@ -206,7 +266,7 @@ class IpadControl {
     }
     this.abort.abort();
     clearInterval(this.heartbeat);
-    this.queue.length = 0;
+    this.clearInput();
     this.session = null;
     this.stopping = (async () => {
       const transport = this.transport;

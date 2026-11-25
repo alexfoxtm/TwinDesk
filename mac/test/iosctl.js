@@ -343,7 +343,7 @@ test('staged XCTest runner discards both envs and rejects executable overrides o
   const build = (manifest) => prepareManifest(manifest, '127.0.0.1', 54000, 'fixture');
   const prepared = build(template).WebDriverAgentRunner;
   assert.deepEqual(prepared.EnvironmentVariables, { USE_IP: '127.0.0.1', USE_PORT: '54000', MJPEG_SERVER_PORT: '0',
-    WDA_PRODUCT_BUNDLE_IDENTIFIER: RUNNER_ID, UPGRADE_TIMESTAMP: 'fixture' });
+    WDA_PRODUCT_BUNDLE_IDENTIFIER: RUNNER_ID, UPGRADE_TIMESTAMP: 'fixture', VERBOSE_LOGGING: '0' });
   assert.deepEqual(prepared.TestingEnvironmentVariables, {});
   assert.deepEqual(prepared.UITargetAppEnvironmentVariables, {});
   assert.equal(prepared.SystemAttachmentLifetime, 'keepNever');
@@ -365,4 +365,120 @@ test('staged XCTest runner discards both envs and rejects executable overrides o
   await fs.rename(stagedSuite, outsideHost);
   await fs.symlink(outsideHost, stagedSuite, 'dir');
   await assert.rejects(stagedRunner(root), /setup/);
+});
+
+test('WDA parity uses the pinned keyboard, pasteboard, coordinate and button commands', async (t) => {
+  const { calls, transport } = wda();
+  const log = [];
+  const controller = new IpadControl({ udid, owns: () => true, status() {}, log: (line) => log.push(line), start: async () => transport });
+  t.after(() => controller.stop());
+  await controller.connect();
+  const key = (key, modifiers = {}, readPasteboard) => controller.input({ op: 'key', key, down: true, ...modifiers }, null, readPasteboard);
+  let index = calls.length;
+  for (const [name, suffix] of Object.entries({ Enter: 'Return', Backspace: 'Delete', Delete: 'ForwardDelete', Tab: 'Tab',
+    Escape: 'Escape', ArrowUp: 'UpArrow', ArrowDown: 'DownArrow', ArrowLeft: 'LeftArrow', ArrowRight: 'RightArrow', ' ': 'Space' })) {
+    assert.equal(key(name), true);
+    await tick();
+    assert.deepEqual(calls.at(-1).body, { keys: [`XCUIKeyboardKey${suffix}`] });
+    assert.match(calls.at(-1).path, /\/wda\/element\/0\/keyboardInput$/);
+  }
+  assert.equal(calls.length - index, 10);
+  key('é');
+  await tick();
+  assert.deepEqual(calls.at(-1).body, { value: ['é'] });
+  key('h', { meta: true });
+  await tick();
+  assert.deepEqual(calls.at(-1).body, { name: 'home' });
+  key(' ', { meta: true });
+  await tick();
+  assert.deepEqual(calls.at(-1).body, { keys: [{ key: 'XCUIKeyboardKeySpace', modifierFlags: 16 }] });
+  for (const name of ['a', 'c', 'x', 'z']) {
+    key(name, { meta: true });
+    await tick();
+    assert.deepEqual(calls.at(-1).body, { keys: [{ key: name, modifierFlags: 16 }] });
+  }
+  key('Z', { meta: true, shift: true });
+  await tick();
+  assert.deepEqual(calls.at(-1).body, { keys: [{ key: 'z', modifierFlags: 18 }] });
+  key('v', { meta: true }, () => 'test-paste-text');
+  await tick();
+  assert.deepEqual(calls.slice(-2).map(({ path: route, body }) => [route.slice('/session/own-session'.length), body]), [
+    ['/wda/setPasteboard', { contentType: 'plaintext', content: Buffer.from('test-paste-text').toString('base64') }],
+    ['/wda/element/0/keyboardInput', { keys: [{ key: 'v', modifierFlags: 16 }] }],
+  ]);
+  index = calls.length;
+  key('v', { meta: true }, () => 'é'.repeat(8193));
+  assert.equal(key('Tab', { meta: true }), false);
+  assert.equal(key('v', { meta: true, repeat: true }, () => assert.fail('repeat reads pasteboard')), true);
+  await tick();
+  assert.equal(calls.length, index);
+  assert.equal(log.some((line) => line.includes('test-paste-text') || line.includes('dGVzdC1wYXN0ZS10ZXh0')), false);
+
+  controller.input({ op: 'volumeUp' });
+  controller.input({ op: 'volumeDown' });
+  await tick();
+  assert.deepEqual(calls.slice(-2).map((call) => call.body), [{ name: 'volumeUp' }, { name: 'volumeDown' }]);
+  const frame = { width: 410, height: 590 }, source = { w: 820, h: 1180 };
+  const rect = { left: 0, top: 0, width: 410, height: 590 };
+  const geometry = () => ({ frame, source });
+  const input = (op, points, options) => controller.input({ op, ...frameArgs(frame, rect), points, ...options }, geometry);
+  input('doubleTap', [{ x: 100, y: 200 }]);
+  await tick();
+  assert.match(calls.at(-1).path, /\/wda\/doubleTap$/);
+  assert.deepEqual(calls.at(-1).body, { x: 200, y: 400 });
+  input('longPress', [{ x: 100, y: 200 }]);
+  input('gesture', [{ x: 100, y: 200 }, { x: 117, y: 190 }, { x: 150, y: 170 }], { duration: 246 });
+  await tick();
+  const [hold, drag] = actions(calls);
+  assert.equal(hold.find((step) => step.type === 'pause')?.duration, 520);
+  assert.equal(drag.filter((step) => step.type === 'pointerMove').reduce((sum, step) => sum + step.duration, 0), 246);
+});
+
+test('blur clears queued scroll momentum and fences a paste or drag between WDA requests', async (t) => {
+  const { calls, transport } = wda();
+  const request = transport.request;
+  let pending;
+  transport.request = async (...args) => {
+    const reply = await request(...args);
+    if (args[1].endsWith('/window/rect') || args[1].endsWith('/wda/setPasteboard')) {
+      await new Promise((resolve) => { pending = resolve; });
+    }
+    return reply;
+  };
+  let focused = true;
+  const controller = new IpadControl({ udid, owns: () => true, canInput: () => focused, status() {}, log() {}, start: async () => transport });
+  t.after(() => controller.stop());
+  await controller.connect();
+  const frame = { width: 410, height: 590 }, source = { w: 820, h: 1180 };
+  const rect = { left: 0, top: 0, width: 410, height: 590 };
+  const geometry = () => ({ frame, source });
+  const scroll = (dy) => controller.input({ op: 'scroll', ...frameArgs(frame, rect), points: [{ x: 203, y: 300 }], dx: 0, dy }, geometry);
+  scroll(30);
+  await tick();
+  for (let i = 1; i <= 5; i++) scroll(i * 30);
+  assert.equal(controller.queue.length, 1);
+  pending();
+  await tick();
+  pending();
+  await tick();
+  const first = actions(calls).map((steps) => steps.filter((step) => step.type === 'pointerMove').at(-1));
+  assert.deepEqual(first.map((last) => last.y), [529, 246], 'latest wheel batch replaces unsent momentum');
+
+  scroll(90);
+  await tick();
+  scroll(120);
+  focused = false;
+  controller.clearInput();
+  focused = true;
+  pending();
+  await tick();
+  assert.equal(actions(calls).length, 2, 'refocus cannot revive the running or queued scroll');
+  const paste = { op: 'key', meta: true, key: 'v', down: true };
+  controller.input(paste, null, () => 'owned paste');
+  await tick();
+  assert.match(calls.at(-1).path, /\/wda\/setPasteboard$/);
+  controller.clearInput();
+  pending();
+  await tick();
+  assert.equal(calls.some((call) => call.path.endsWith('/keyboardInput')), false);
 });

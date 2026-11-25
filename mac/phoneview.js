@@ -14,7 +14,7 @@
 
 const path = require('path');
 const { existsSync } = require('node:fs');
-const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, screen } = require('electron');
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 const I18n = require('../shared/i18n.js');
@@ -520,6 +520,14 @@ class PhoneViews extends EventEmitter {
       for (const ev of ['restore', 'unmaximize', 'leave-full-screen']) win.on(ev, refit);
     }
     if (ipadOwner) {
+      win.on('blur', () => v.ipadLease?.controller?.clearInput());
+      win.webContents.on('before-input-event', (event, input) => {
+        if (quitting || !win.isFocused() || input.type !== 'keyDown' || input.meta !== true || input.alt || input.control || input.isComposing) return;
+        const accepted = v.ipadLease?.controller?.input({
+          op: 'key', down: true, meta: true, key: input.key, shift: input.shift, repeat: input.isAutoRepeat,
+        }, null, () => clipboard.readText());
+        if (accepted) event.preventDefault();
+      });
       win.on('close', () => stopIPad(this, v, 'off', quitting));
       win.webContents.on('did-start-navigation', (_e, _url, inPlace, mainFrame) => {
         if (mainFrame && !inPlace) stopIPad(this, v, 'off', quitting);

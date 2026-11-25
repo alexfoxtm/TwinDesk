@@ -69,7 +69,7 @@ function prepareManifest(run, address, port, marker) {
       DependentProductPaths: expected, CommandLineArguments: [], SystemAttachmentLifetime: 'keepNever',
       TestingEnvironmentVariables: {}, UITargetAppEnvironmentVariables: {},
       EnvironmentVariables: { USE_IP: address, USE_PORT: String(port), MJPEG_SERVER_PORT: '0',
-        WDA_PRODUCT_BUNDLE_IDENTIFIER: RUNNER_ID, UPGRADE_TIMESTAMP: marker },
+        WDA_PRODUCT_BUNDLE_IDENTIFIER: RUNNER_ID, UPGRADE_TIMESTAMP: marker, VERBOSE_LOGGING: '0' },
     },
   };
 }

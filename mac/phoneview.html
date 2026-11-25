@@ -26,10 +26,16 @@
   </header>
   <div id="ipad-controls" hidden>
     <button id="ipad-control" type="button" data-i18n="Control this iPad">Control this iPad</button>
+    <span id="ipad-shortcuts" hidden>
+      <button id="ipad-spotlight" type="button" aria-label="Search" data-i18n-label="Search" title="Search" data-i18n-title="Search"></button>
+      <button id="ipad-volume-down" type="button" aria-label="Volume down" data-i18n-label="Volume down" title="Volume down" data-i18n-title="Volume down">−</button>
+      <button id="ipad-volume-up" type="button" aria-label="Volume up" data-i18n-label="Volume up" title="Volume up" data-i18n-title="Volume up">+</button>
+    </span>
     <span id="ipad-control-status" role="status"></span>
   </div>
   <main id="stage">
     <canvas id="screen" tabindex="0"></canvas>
+    <span id="ipad-pointer" hidden aria-hidden="true"></span>
     <div id="screen-status">
       <div id="status" role="status" data-i18n="Connecting to the phone…">Connecting to the phone…</div>
       <div id="retry-ipad" hidden>

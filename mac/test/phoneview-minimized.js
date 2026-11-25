@@ -17,8 +17,11 @@ function fixture(kind = 'app', { screenOS, actualRail = false, ipad = false } = 
   const controls = new Map(), previewDraws = [], pointers = new Map();
   const timers = [];
   let now = 5000;
+  let capture;
   const canvas = {
-    width: 100, height: 200, style: {}, focus() {}, addEventListener(name, fn) { pointers.set(name, fn); },
+    width: 100, height: 200, style: {}, classList: { toggle() {} }, focus() {},
+    setPointerCapture(id) { capture = id; }, hasPointerCapture(id) { return capture === id; },
+    releasePointerCapture() { capture = null; }, addEventListener(name, fn) { pointers.set(name, fn); },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 300, height: 600 }),
     getContext: () => ({
       fillStyle: '',
@@ -39,7 +42,10 @@ function fixture(kind = 'app', { screenOS, actualRail = false, ipad = false } = 
     const retryButton = element();
     nodes['retry-ipad'] = Object.assign(element(), { querySelector: () => retryButton, retryButton });
   }
-  if (ipad) for (const id of ['ipad-controls', 'ipad-control', 'ipad-control-status']) nodes[id] = element();
+  if (ipad) {
+    for (const id of ['ipad-controls', 'ipad-control', 'ipad-control-status', 'ipad-pointer', 'ipad-shortcuts',
+      'ipad-spotlight', 'ipad-volume-down', 'ipad-volume-up']) nodes[id] = element();
+  }
   let recording = false;
   class Decoder {
     constructor(callbacks) { this.callbacks = callbacks; this.state = 'unconfigured'; this.decodeQueueSize = 0; this.resets = 0; decoders.push(this); }
@@ -543,4 +549,44 @@ test('iPad control waits for a freshly painted frame after a minimized gap', () 
   home();
   assert.equal(inputs().length, 2);
   assert.equal(f.sent.some((m) => m.t === 'nav' || m.t === 'touch'), false);
+  const event = (x, y, button = 0) => ({ clientX: x, clientY: y, pointerId: 1, button, preventDefault() {} });
+  const emit = (type, ...args) => f.pointers.get(type)(event(...args));
+  const click = (button) => { emit('pointerdown', 34, 52, button); emit('pointerup', 34, 52, button); };
+  emit('pointermove', 34, 52);
+  assert.equal(f.nodes['ipad-pointer'].style.transform, 'translate(34px, 52px)');
+  assert.equal(f.nodes['ipad-pointer'].hidden, false);
+  click(0);
+  f.advance(219);
+  assert.equal(inputs().length, 2);
+  click(0);
+  assert.equal(inputs().at(-1).op, 'doubleTap');
+  f.advance(220);
+  assert.equal(inputs().length, 3);
+  click(2);
+  assert.equal(inputs().at(-1).op, 'longPress');
+  emit('pointerdown', 34, 52);
+  f.advance(500);
+  emit('pointerup', 34, 52);
+  assert.equal(inputs().at(-1).op, 'longPress');
+  emit('pointerdown', 34, 52);
+  f.advance(200);
+  emit('pointermove', 54, 92);
+  emit('pointerup', 80, 100);
+  assert.equal(inputs().at(-1).op, 'gesture');
+  assert.equal(inputs().at(-1).duration, 200);
+  const wheel = (deltaY) => f.pointers.get('wheel')({ ...event(34, 52), deltaY, deltaX: 0, deltaMode: 0 });
+  wheel(60);
+  wheel(145);
+  f.advance(40);
+  assert.equal(inputs().at(-1).dy, 175);
+  assert.deepEqual(inputs().at(-1).points, [{ x: 34, y: 52 }]);
+  click(0);
+  wheel(145);
+  const beforeBlur = inputs().length;
+  // Canvas blur sends no pending tap, wheel batch, or stale hover overlay.
+  f.pointers.get('blur')();
+  f.advance(220);
+  assert.equal(inputs().length, beforeBlur + 1);
+  assert.equal(inputs().at(-1).op, 'cancel');
+  assert.equal(f.nodes['ipad-pointer'].hidden, true);
 });
