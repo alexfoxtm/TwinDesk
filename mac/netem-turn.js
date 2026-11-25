@@ -3,6 +3,7 @@
 
 const { TurnThread } = require('../shared/turn.js');
 const P = require('../shared/protocol.js');
+const { startNetemTrace } = require('./netem-trace.js');
 
 // Keep the harness separate from the wired listener and its credentials.
 function netemTurn(listener) {
@@ -19,8 +20,11 @@ function netemTurn(listener) {
   return (ctx) => {
     const owner = ctx.ws;
     const open = () => owner && owner.readyState === (owner.OPEN ?? 1);
-    if (!ready || !ctx.authed || !open() || ctx.released || !ctx.netemRequested || ctx.deviceId !== phone ||
+    if (!ctx.authed || !open() || ctx.released || !ctx.netemRequested || ctx.deviceId !== phone ||
         !P.isPhoneOs(ctx.os) || ctx.transport !== 'ip' || ctx.address !== '127.0.0.1') return;
+    owner.netemTrace = startNetemTrace(ctx, owner);
+    owner.netemTrace.turn(ready);
+    if (!ready) return;
     const ice = { ...turn.ice(), netem: true };
     Object.defineProperty(ctx, 'netemIce', {
       get: () => ready && ctx.ws === owner && open() && !ctx.released ? ice : null,

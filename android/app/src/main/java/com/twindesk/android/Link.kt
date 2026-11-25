@@ -84,7 +84,9 @@ class Link(
 
     private val exec = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "td-link").apply { isDaemon = true } }
     @Volatile private var ws: WebSocket? = null
-    private data class NetemDial(val route: NetemRoute, val socket: WebSocket, val started: Long)
+    private data class NetemDial(val route: NetemRoute, val socket: WebSocket, val started: Long) {
+        val traceRemaining = java.util.concurrent.atomic.AtomicInteger(48)
+    }
     @Volatile private var netemDial: NetemDial? = null
 
     internal fun isNetemPeer(h: Host): Boolean =
@@ -100,6 +102,13 @@ class Link(
 
     internal fun netemElapsed(marker: Any?): Long? =
         netemDial?.takeIf { it.socket === marker && ownsVideoSession(marker) }?.let { SystemClock.elapsedRealtime() - it.started }
+
+    internal fun netemMark(marker: Any?, stage: String, numbers: String = "") {
+        val dial = netemDial?.takeIf { it.socket === marker && ownsVideoSession(marker) } ?: return
+        if (dial.traceRemaining.getAndDecrement() <= 0) return
+        val elapsed = SystemClock.elapsedRealtime() - dial.started
+        Log.i("TwinDeskNetem", "stage=$stage elapsed_ms=$elapsed$numbers")
+    }
 
     private var mode = "" // session | pair
     private var nw = ""
@@ -419,7 +428,7 @@ class Link(
     // connected, gets nothing: the caller keeps the bytes for a later consenting socket of this pair.
     fun sendFor(route: TrustedRoute?, m: JSONObject): Boolean {
         val w = matches(route) ?: return false
-        return w.send(m.toString()).also { if (it) markProbe() }
+        return sendOn(w, m)
     }
 
     private fun matches(route: TrustedRoute?): WebSocket? {
@@ -433,7 +442,22 @@ class Link(
     fun send(m: JSONObject): Boolean {
         val w = ws ?: return false
         if (state != "connected") return false
-        return w.send(m.toString()).also { if (it) markProbe() }
+        return sendOn(w, m)
+    }
+
+    private fun sendOn(w: WebSocket, m: JSONObject): Boolean {
+        val sent = w.send(m.toString())
+        if (sent) markProbe()
+        if (netemDial?.socket !== w) return sent
+        val stage = when (m.optString("t")) {
+            "screen.policy" -> "tx_screen_policy"
+            "screen.ctl" -> "tx_screen_ctl"
+            "rtc.answer" -> "tx_rtc_answer"
+            Proto.T.PHONE_APPS -> "tx_phone_apps"
+            else -> return sent
+        }
+        netemMark(w, stage, " queued=${if (sent) 1 else 0} queued_bytes=${w.queueSize()}")
+        return sent
     }
 
     internal fun photoRoute(source: WebSocket): Boolean =
@@ -504,7 +528,7 @@ class Link(
     internal fun sendFor(marker: Any?, m: JSONObject): Boolean {
         val socket = ws ?: return false
         if (marker == null || socket !== marker || state != "connected" || parting) return false
-        return socket.send(m.toString()).also { if (it) markProbe() }
+        return sendOn(socket, m)
     }
 
     internal fun ownsVideoSession(marker: Any?): Boolean =
@@ -777,7 +801,10 @@ class Link(
                 return
             }
         }
-        if (state == "connected") events.onMessage(m, trustedRoute(ingress), ingress)
+        if (state == "connected") {
+            if (t == "rtc.offer") netemMark(ingress, "rx_rtc_offer")
+            events.onMessage(m, trustedRoute(ingress), ingress)
+        }
     }
 
     private fun onNonce(m: JSONObject) {

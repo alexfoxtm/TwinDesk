@@ -41,7 +41,12 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
   const helper = new Helper();
   const displays = new Displays(helper, s);
   const hub = new AudioHub(helper, s);
-  const stream = new StreamSet({ hub: meshHub, server, displays, make: (peer) => new Stream(peer, displays, s, hub) }); // one Stream per connected device
+  const observeNetem = process.env.TWINDESK_NETEM_PHONE && require('../netem-trace.js').observeNetemStream;
+  const stream = new StreamSet({ hub: meshHub, server, displays, make: (peer) => {
+    const target = new Stream(peer, displays, s, hub);
+    if (observeNetem) observeNetem(target, peer, s, meshHub);
+    return target;
+  } });
   let kvm = null;
   // Stream input only when "Receive input" is on and shared input is home.
   const input = new Input(server, helper, displays, {

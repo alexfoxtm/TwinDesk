@@ -208,6 +208,7 @@ class Server extends EventEmitter {
       if (msg.t === P.T.HELLO || msg.t.startsWith('pair.')) return this.emit('preauth', ctx, msg);
       return this.fail(ctx, P.E.BAD_MESSAGE, `"${msg.t}" is not allowed before welcome`);
     }
+    if (ws?.netemTrace && ws === ctx.ws && this.clients.get(ctx.deviceId) === ctx) ws.netemTrace.control('rx', msg, data);
     if (ws && Quiet.seen(ws, msg)) return; // `idle {on}`: the other end's side of a quiet link
 
     if (msg.t === P.T.PING) return this.send(ctx, { t: P.T.PONG, ts: msg.ts });
@@ -276,7 +277,9 @@ class Server extends EventEmitter {
   }
 
   _raw(ws, msg) {
-    ws.send(JSON.stringify(msg));
+    const raw = JSON.stringify(msg);
+    ws.send(raw);
+    ws.netemTrace?.control('tx', msg, raw);
     ws.lastTx = this._now();
   }
 

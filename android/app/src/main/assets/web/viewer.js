@@ -346,11 +346,16 @@
     const expectedTurn = scopedRelay ? msg._netemTurn : null;
     const ice = expectedTurn ? { iceTransportPolicy: 'relay', iceServers: [{ ...scopedRelay, urls: expectedTurn }] }
       : msg.ice || { iceServers: [] };
+    const generation = msg.viewerGeneration || 0;
+    const note = (kind) => {
+      if (netem) TD.netemStage?.(generation, msg.session, kind, !!expectedTurn);
+    };
+    note(0);
     const my = (pc = new RTCPeerConnection(ice));
     session = msg.session;
     detail = readDetail(msg.detail);
     viewGestures = macViewGestures || !!detail;
-    viewerGeneration = msg.viewerGeneration || 0;
+    viewerGeneration = generation;
     frameAllowed = true;
     const queue = (pending = []);
     setOverlay(t('Connecting to {name}…', { name }));
@@ -363,21 +368,25 @@
         return;
       }
       hidePointerCue();
+      note(5);
       pace(e.receiver);
       const stream = new MediaStream([e.track]);
       videoOwner = { pc: my, stream, generation: viewerGeneration, session: msg.session, netem, expectedTurn };
       video.srcObject = stream;
       video.play().catch(() => {});
     };
+    let notedRelay = false;
     my.onicecandidate = (e) => {
-      if (e.candidate && my === pc) send({ t: 'rtc.ice', session: msg.session, candidate: e.candidate.toJSON() });
+      if (!e.candidate || my !== pc) return;
+      if (netem && !notedRelay && e.candidate.type === 'relay') { notedRelay = true; note(1); }
+      send({ t: 'rtc.ice', session: msg.session, candidate: e.candidate.toJSON() });
     };
     my.onconnectionstatechange = () => {
       if (my !== pc) return;
       if (my.connectionState !== 'connected') hidePointerCue();
       const connection = my.connectionState;
-      if (connection === 'connected') requireCurrentFrame();
-      else if (connection === 'failed') { reportVideo(false); setOverlay(t('Reconnecting…')); }
+      if (connection === 'connected') { note(2); requireCurrentFrame(); }
+      else if (connection === 'failed') { note(3); reportVideo(false); setOverlay(t('Reconnecting…')); }
       else if (connection === 'disconnected') { reportVideo(false); setOverlay(t('The video connection was interrupted…')); }
     };
     try {
@@ -389,6 +398,7 @@
       if (my !== pc) return;
       send({ t: 'rtc.answer', session: msg.session, sdp: my.localDescription.sdp });
     } catch (err) {
+      if (my === pc) note(4);
       const error = netem ? 'WebRTC setup failed' : err.message;
       console.log(`viewer offer failed: ${error}`);
       if (my === pc) setOverlay(t('Couldn’t start the video: {error}', { error }));

@@ -116,6 +116,10 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
             if (!BuildConfig.DEBUG || page != "viewer.html") return
             main.post { core.screen.netemSample(this@WebHost, generation, session, first, fps, kbps, path) }
         }
+        @JavascriptInterface fun netemStage(generation: Int, session: Int, kind: Int, relay: Boolean) {
+            if (!BuildConfig.DEBUG || page != "viewer.html") return
+            main.post { core.screen.netemStage(this@WebHost, generation, session, kind, relay) }
+        }
         @JavascriptInterface fun playing(w: Int, h: Int) = main.post { onEvent("playing", JSONObject().put("w", w).put("h", h)) }.let { }
         @JavascriptInterface fun haptic() = main.post { view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) }.let { }
         // A light tap (a gamepad or touchpad button going down).
@@ -287,6 +291,7 @@ class Screen(core: Core) : Feature(core) {
         host = h
         resetVideo()
         viewing = true
+        core.link.netemMark(core.link.sessionMarker(), "viewer_open")
         viewScale = savedScale
         h.post(opts()) // first: the computer's name for the messages below
         lastInfo?.let { h.post(it) }
@@ -541,9 +546,25 @@ class Screen(core: Core) : Feature(core) {
         core.link.netemRoute(route.marker)?.let {
             netemOfferAt = SystemClock.elapsedRealtime()
             offer.put("_netemTurn", it.turnUrl)
+            core.link.netemMark(route.marker, "native_offer", " viewing=${if (viewing && host != null) 1 else 0}")
         }
         host?.post(offer)
         core.changed()
+    }
+
+    fun netemStage(h: WebHost, generation: Int, session: Int, kind: Int, relay: Boolean) {
+        if (host !== h || !viewing || core.lockView.locked || netemOfferAt == null ||
+            videoGeneration != generation || videoSession != session) return
+        val stage = when (kind) {
+            0 -> "viewer_offer"
+            1 -> "rtc_relay_candidate"
+            2 -> "rtc_connected"
+            3 -> "rtc_failed"
+            4 -> "rtc_setup_error"
+            5 -> "rtc_video_track"
+            else -> return
+        }
+        core.link.netemMark(videoMarker, stage, if (kind == 0) " test_turn=${if (relay) 1 else 0}" else "")
     }
 
     fun netemSample(h: WebHost, generation: Int, session: Int, first: Boolean, fps: Int, kbps: Int, path: String) {
