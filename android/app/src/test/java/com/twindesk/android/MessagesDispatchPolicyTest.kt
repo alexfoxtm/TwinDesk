@@ -261,4 +261,35 @@ class MessagesDispatchPolicyTest {
             core.timers.shutdownNow()
         }
     }
+
+    // The scan fallback has no trustworthy handset line identity, so an inbound group is withheld
+    // and marked unresolved (the computer refuses it) instead of listing a subset or the handset.
+    @Test fun anInboundGroupWithoutHandsetEvidenceIsUnresolvedNeverASubset() {
+        val core = core()
+        val service = Messages(core.hub, core)
+        val sender = "+12025550100"
+        provider("mms-sms") { _, _ -> null }
+        provider("sms") { _, cols -> MatrixCursor(cols) }
+        provider("mms") { uri, cols ->
+            MatrixCursor(cols).apply {
+                when (uri.lastPathSegment) {
+                    null -> addRow(arrayOf(7, 8, 100, 1, 1))
+                    "addr" -> {
+                        addRow(arrayOf<Any>(sender, 137))
+                        for (to in listOf("+12025550101", "+12025550102", "+12025550103")) addRow(arrayOf<Any>(to, 151))
+                    }
+                }
+            }
+        }
+        try {
+            val row = service.threads(10, "US").getJSONObject(0)
+            assertTrue(row.optBoolean("group"))
+            assertTrue("a withheld inbound group is unresolved", row.optBoolean("unresolved"))
+            assertEquals("no recipient subset is published", 0, row.getJSONArray("addrs").length())
+            assertFalse(row.has("e164"))
+        } finally {
+            core.bg.shutdownNow()
+            core.timers.shutdownNow()
+        }
+    }
 }

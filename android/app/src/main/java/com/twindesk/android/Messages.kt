@@ -254,10 +254,18 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
                 if (t != null && t.optLong("at") >= at) continue
                 val incoming = c.getInt(4) == 1
                 val m = mmsDetail(c.getLong(1), incoming)
-                // Inbound TO is normally this handset. Only FROM can establish the sender.
+                // Inbound TO is normally this handset. Only FROM can establish the sender. This app
+                // has no trustworthy line identity for the handset (no phone-number permission), so
+                // an inbound group's members are withheld and it is marked unresolved: the computer
+                // refuses it rather than send to a subset that may still include this handset.
                 val addrs = if (incoming) MessageChat.incomingMmsParticipants(m.from, m.recipients, country) else m.recipients
                 seen[id] = thread(id, addrs, m.text.ifEmpty { if (m.images > 0) "Picture" else "" }, at, c.getInt(3) == 0)
-                    .apply { if (incoming && m.recipients.size > 1) put("group", true) }
+                    .apply {
+                        if (incoming && m.recipients.size > 1) {
+                            put("group", true)
+                            if (addrs.size < 2) put("unresolved", true)
+                        }
+                    }
             }
         }
         return seen.values.sortedByDescending { it.optLong("at") }.take(n)
