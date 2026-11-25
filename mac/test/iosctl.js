@@ -3,10 +3,14 @@
 
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const { readFileSync } = require('node:fs');
 const fs = require('node:fs/promises');
+const { createRequire } = require('node:module');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
+const { promisify } = require('node:util');
+const vm = require('node:vm');
 const { IpadControl } = require('../iosctl');
 const { RUNNER_ID, pairedWifiAddress, wifiSource, prepareManifest, stagedRunner,
   parseWdaResponse, WdaInputRejected } = require('../iosctl-xctest');
@@ -58,6 +62,78 @@ test('attests only the paired iPad’s exact Wi-Fi tunnel host route', () => {
     assert.equal(wifiSource(address, other, interfaces), null);
   }
   assert.equal(wifiSource(address, route, { utun12: interfaces.utun13 }), null);
+});
+
+test('existing network usbmux records use the paired tunnel while genuine USB uses loopback', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'twindesk-wda-route-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const stage = 'Debug-iphoneos/WebDriverAgentRunner-Runner.app';
+  const testBundle = 'PlugIns/WebDriverAgentRunner.xctest';
+  const framework = 'Debug-iphoneos/WebDriverAgentLib.framework';
+  await fs.mkdir(path.join(root, stage, testBundle), { recursive: true });
+  await fs.mkdir(path.join(root, framework));
+  const template = path.join(root, 'fixture.xctestrun');
+  await fs.writeFile(template, JSON.stringify({
+    __xctestrun_metadata__: { FormatVersion: 1 }, WebDriverAgentRunner: {
+      IsUITestBundle: true, IsXCTRunnerHostedTestBundle: true, TestHostBundleIdentifier: `${RUNNER_ID}.xctrunner`,
+      TestHostPath: `__TESTROOT__/${stage}`, TestBundlePath: `__TESTHOST__/${testBundle}`,
+      DependentProductPaths: [framework, stage, `${stage}/${testBundle}`].map((p) => `__TESTROOT__/${p}`),
+      CommandLineArguments: [], EnvironmentVariables: {}, TestingEnvironmentVariables: {},
+    },
+  }));
+  const address = 'fd12:abcd:1234::1';
+  const source = 'fd12:abcd:1234::2';
+  const device = { hardwareProperties: { udid, deviceType: 'iPad' }, deviceProperties: { developerModeStatus: 'enabled' },
+    connectionProperties: { pairingState: 'paired', transportType: 'localNetwork', tunnelState: 'connected', tunnelIPAddress: address } };
+  const record = (connection) => ({ DeviceID: 42, Properties: { SerialNumber: udid, ConnectionType: connection } });
+  const file = require.resolve('../iosctl-xctest');
+  const realRequire = createRequire(file);
+
+  for (const [records, expected] of [[[record('Network')], address], [[], address],
+    [[record('Network'), record('USB')], '127.0.0.1']]) {
+    let attested = false;
+    let bound;
+    class FakeMux extends EventEmitter {
+      constructor() { super(); queueMicrotask(() => this.emit('open')); }
+      send(msg) { assert.equal(msg.MessageType, 'ListDevices'); this.emit('message', { DeviceList: records }); }
+      close() { this.emit('close'); }
+    }
+    const execFile = () => assert.fail('unmocked execFile');
+    execFile[promisify.custom] = async (binary, args) => {
+      if (binary === '/usr/bin/codesign') return { stdout: '' };
+      if (binary === '/usr/bin/plutil') return { stdout: args.includes('json') ? await fs.readFile(template, 'utf8') : '' };
+      if (binary === '/usr/bin/xcrun' && args.includes('list')) return { stdout: JSON.stringify({ result: { devices: [device] } }) };
+      if (binary === '/usr/bin/xcrun' && args.includes('details')) {
+        assert(args.includes(udid));
+        attested = true;
+        return { stdout: JSON.stringify({ result: device }) };
+      }
+      assert.equal(binary, '/sbin/route');
+      assert.equal(args.at(-1), address);
+      return { stdout: `destination: ${address}\ninterface: utun13\nflags: <UP,HOST,IFSCOPE>\n` };
+    };
+    const spawn = (binary, args) => {
+      assert.equal(binary, '/usr/bin/xcrun');
+      assert(args.includes(`platform=iOS,id=${udid}`));
+      const runFile = args[args.indexOf('-xctestrun') + 1];
+      bound = JSON.parse(readFileSync(runFile, 'utf8')).WebDriverAgentRunner.EnvironmentVariables.USE_IP;
+      const child = new EventEmitter();
+      child.kill = () => child.emit('exit');
+      return child;
+    };
+    const module = { exports: {} };
+    vm.runInNewContext(readFileSync(file, 'utf8'), { module, process, Buffer, AbortSignal, AbortController,
+      setTimeout, clearTimeout, require(name) {
+        if (name === 'node:child_process') return { execFile, spawn };
+        if (name === 'node:os') return { networkInterfaces: () => ({ utun13: [{ address: source, cidr: `${source}/64` }] }) };
+        if (name === '../shared/iosnet') return { Mux: FakeMux };
+        return realRequire(name);
+      } });
+    const transport = await module.exports.startXCTest(udid, new AbortController().signal, template);
+    await transport.stop();
+    assert.equal(bound, expected);
+    assert.equal(attested, expected === address);
+  }
 });
 
 test('verified WDA session maps upright portrait and landscape video, gestures, typing and Home', async (t) => {

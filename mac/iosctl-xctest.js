@@ -194,10 +194,10 @@ function muxRequest(message, take, signal) {
   });
 }
 
-async function muxDevice(udid, signal) {
+async function usbMuxDevice(udid, signal) {
   const { DeviceList } = await muxRequest({ MessageType: 'ListDevices' }, () => false, signal);
   return DeviceList?.find((d) => d.Properties?.SerialNumber?.toUpperCase() === udid
-    && ['USB', 'Network'].includes(d.Properties.ConnectionType) && Number.isInteger(d.DeviceID));
+    && d.Properties.ConnectionType === 'USB' && Number.isInteger(d.DeviceID));
 }
 
 function requestWda(agent, method, route, body, signal, timeout) {
@@ -227,8 +227,8 @@ function requestWda(agent, method, route, body, signal, timeout) {
   });
 }
 
-// Xcode owns installation and XCTest. Existing usbmux takes precedence. A Wi-Fi-only device
-// must have a CoreDevice-attested point-to-point route. Each session pins that one address pair.
+// Xcode owns installation and XCTest. Only physical USB can forward to device loopback.
+// Wi-Fi uses a CoreDevice-attested point-to-point route pinned for the session.
 async function startXCTest(udid, signal, template = process.env.TWINDESK_IPAD_WDA_XCTESTRUN) {
   if (!template || !path.isAbsolute(template) || path.extname(template) !== '.xctestrun') throw new Error('setup');
   if (!UDID.test(udid)) throw new Error('device');
@@ -254,7 +254,7 @@ async function startXCTest(udid, signal, template = process.env.TWINDESK_IPAD_WD
     const { stdout } = await exec('/usr/bin/plutil', ['-convert', 'json', '-o', '-', template], { signal, timeout: 3000 });
     run = JSON.parse(stdout);
   } catch { throw new Error('setup'); }
-  const target = await muxDevice(udid, AbortSignal.any([signal, AbortSignal.timeout(2000)])).catch(() => null);
+  const target = await usbMuxDevice(udid, AbortSignal.any([signal, AbortSignal.timeout(2000)])).catch(() => null);
   signal.throwIfAborted();
   const wifi = target ? null : await pairedWifi(udid, signal).catch(() => { throw new Error('route'); });
   const manifest = prepareManifest(run, wifi?.address || '127.0.0.1', port, marker);
@@ -285,7 +285,7 @@ async function startXCTest(udid, signal, template = process.env.TWINDESK_IPAD_WD
     const deadline = AbortSignal.any([closeDial.signal, AbortSignal.timeout(1000)]);
     (async () => {
       if (wifi) return dialWifi(wifi, port, deadline);
-      const live = await muxDevice(udid, deadline);
+      const live = await usbMuxDevice(udid, deadline);
       if (!live || live.DeviceID !== target.DeviceID) throw new Error('route');
       return muxRequest({ MessageType: 'Connect', DeviceID: live.DeviceID, PortNumber: ((port & 255) << 8) | (port >> 8) },
         (reply) => {
