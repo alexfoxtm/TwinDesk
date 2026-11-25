@@ -60,7 +60,7 @@
         const devName = c ? c.name : (s.peer && s.peer.name) || (s.client && s.client.name) || p.name;
         h1.textContent = devName;
         hero.name.textContent = devName;
-        D.phonePic(hero.pic, info);
+        D.phonePic(hero.pic, info, D.iosPreview(ph, c?.id));
         const rtt = c && c.rttMs;
         const via = c && c.usb ? 'USB' : D.viaOf(s);
         desc.textContent = [info.maker && info.model ? `${info.maker} ${info.model}` : info.model, info.release && `${info.platform === 'ipados' ? 'iPadOS' : 'iOS'} ${info.release}`].filter(Boolean).join(' · ');

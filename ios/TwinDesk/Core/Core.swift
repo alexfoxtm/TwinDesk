@@ -485,6 +485,11 @@ final class Core: ObservableObject, LinkEvents {
     }
 
     func linkMessage(_ t: String, _ m: JSON) {
+        if t == "phone.mirror.want" {
+            guard let session = link.sessionID else { return }
+            DispatchQueue.main.async { self.mirror.receiveWant(m, session: session) }
+            return
+        }
         DispatchQueue.main.async {
             if t == "net.need" { return self.computerNeedsNetwork(m) }
             if t.hasPrefix("net.") { return } // the computers' Wi-Fi links (netlink.js): nothing more here

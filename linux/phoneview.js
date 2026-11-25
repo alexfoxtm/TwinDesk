@@ -149,8 +149,13 @@ class PhoneViews extends EventEmitter {
   }
 
   openScreen() {
-    const open = [...this.views.values()].find((v) => v.kind === 'screen');
-    if (open) return open.win.show(), open.win.focus();
+    const open = [...this.views.values()].find((v) => v.kind === 'screen' && !v.ending && !v.win.isDestroyed());
+    if (open) {
+      if (!open.nativeIos || this.server.current?.os !== P.OS.IOS || !(open.failed || open.session?.closed)) {
+        return open.win.show(), open.win.focus();
+      }
+      this.close(open.id);
+    }
     const info = this.phone.info || {};
     const d = info.display || { w: 1080, h: 2400 };
     const work = screen.getPrimaryDisplay().workAreaSize;
@@ -351,7 +356,7 @@ class PhoneViews extends EventEmitter {
       // click never comes: without this its AudioContext stays suspended and silent).
       webPreferences: { preload: path.join(__dirname, 'preload-phoneview.js'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' },
     });
-    const v = { id, kind, app, title, win, sink, native, net, session: null, keys: new KeyState(), eaten: new Set(), size: null, ready: false, queue: [] };
+    const v = { id, kind, app, title, win, sink, native, nativeIos: native && kind === 'screen' && this.server.current?.os === P.OS.IOS, net, session: null, keys: new KeyState(), eaten: new Set(), size: null, ready: false, queue: [] };
     this.views.set(id, v);
     win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
     if (!hidden) win.once('ready-to-show', () => win.show());
@@ -380,6 +385,7 @@ class PhoneViews extends EventEmitter {
     });
     this.emit('change');
     if (kind !== 'netsound' && !net) this._start(v, opts).catch((e) => {
+      if (v.nativeIos) v.failed = true;
       console.log(`[phone] ${kind} window: ${e.message}`);
       this._send(v, 'phoneview:status', { error: e.message, errorKey: e.messageKey, errorVars: e.messageVars });
     });

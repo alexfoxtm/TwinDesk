@@ -30,6 +30,7 @@ class Phone extends EventEmitter {
     super();
     Object.assign(this, { server, raw, discovery, pairing });
     this.info = null; // phone.info
+    this.infoId = null;
     this.adb = null; // adb.state
     this.apps = []; // phone.apps
     this.appsCache = null; // shown again only after the same authenticated pairing returns
@@ -43,6 +44,7 @@ class Phone extends EventEmitter {
     server.on('client', (ctx) => {
       if (this.appsSession && this.appsSession.owner !== socketOf(server.current)) this._endApps();
       if (!isPhone(ctx)) return this._reset();
+      if (ctx.os === P.OS.IOS && this.infoId && this.infoId !== ctx.deviceId) this._reset();
       this._doneConnecting('');
       if (ctx.os === P.OS.ANDROID) this._startApps(ctx);
       this.emit('change');
@@ -59,7 +61,11 @@ class Phone extends EventEmitter {
       }
     });
     const on = (t, fn) => server.on(`t:${t}`, (m, ctx, ws) => isPhone(ctx) && fn(m, ctx, ws));
-    on(T.PHONE_INFO, (m) => {
+    on(T.PHONE_INFO, (m, ctx) => {
+      if (ctx.os === P.OS.IOS && (this.server.route
+        ? !ctx.conn || ctx.deviceId !== this.server.current?.deviceId
+        : ctx !== this.server.current)) return;
+      this.infoId = ctx.deviceId;
       const colors = Array.isArray(m.colors) ? m.colors.filter((c) => /^#[0-9a-f]{6}$/i.test(c)).slice(0, 3) : [];
       const wallpaper = typeof m.wallpaper === 'string' && /^data:image\/(jpeg|png|webp);base64,/.test(m.wallpaper) && m.wallpaper.length < 400000 ? m.wallpaper : (this.info && this.info.wallpaper) || '';
       const prev = this.info;
@@ -242,6 +248,7 @@ class Phone extends EventEmitter {
   _reset() {
     if (!this.info && !this.adb && !this.apps.length) return this.emit('change');
     this.info = null;
+    this.infoId = null;
     this.adb = null;
     this.apps = [];
     this.assets++;
@@ -250,7 +257,8 @@ class Phone extends EventEmitter {
 
   // Big things the state push leaves out (it goes out every second): fetched when `assets` bumps.
   assetsView() {
-    return { wallpaper: (this.info && this.info.wallpaper) || '', apps: this.apps };
+    return { deviceId: this.server.current?.deviceId || null, wallpaper: this.info?.wallpaper || '', apps: this.apps,
+      iosPreviews: this.pairing.previews?.list(true) || [] };
   }
 
   get view() {
@@ -267,6 +275,7 @@ class Phone extends EventEmitter {
       adb: this.adb,
       apps: this.apps.length,
       assets: this.assets,
+      iosPreviews: this.pairing.previews?.list() || [],
       bridge: this.bridge ? this.bridge.view : null,
     };
   }

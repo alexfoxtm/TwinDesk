@@ -141,11 +141,36 @@
     },
 
     // A phone's picture: its wallpaper, else its colours.
-    phonePic(pic, info) {
+    phonePic(pic, info, iosPreview) {
       pic.className = 'device big phone';
+      if (iosPreview !== undefined) return P.iosPic(pic, info, iosPreview);
       if (UI.phoneWall) pic.style.setProperty('--phone-wall', UI.phoneWall);
       else if (info.colors && info.colors.length) pic.style.setProperty('--phone-wall', `linear-gradient(160deg, ${info.colors.join(', ')}${info.colors.length === 1 ? `, ${info.colors[0]}` : ''})`);
       else pic.style.removeProperty('--phone-wall');
+    },
+
+    iosPreview(phone, id) {
+      const meta = phone.iosPreviews?.find((p) => p.id === id);
+      if (!meta) return null;
+      const image = UI.phoneAssets?.iosPreviews?.find((p) => p.id === id && p.revision === meta.revision);
+      return { ...meta, data: image?.data };
+    },
+
+    iosPic(pic, info, preview, longSide = 140) {
+      const display = preview?.display || info.display;
+      const w = display?.w, h = display?.h;
+      const reliable = Number.isInteger(w) && Number.isInteger(h) && w >= 2 && h >= 2
+        && w < 16384 && h < 16384 && w <= 8 * h && h <= 8 * w;
+      const platform = info.platform || preview?.platform;
+      const iphone = platform !== 'ipados' && (platform === 'ios' || /^iPhone/i.test(info.model || ''));
+      const ratio = reliable ? w / h : iphone ? 9 / 19.5 : 3 / 4;
+      pic.classList.add('ios-frame');
+      pic.style.setProperty('--ios-width', Math.round(longSide * Math.min(1, ratio)) + 'px');
+      pic.style.setProperty('--ios-height', Math.round(longSide * Math.min(1, 1 / ratio)) + 'px');
+      const jpeg = preview?.data;
+      if (jpeg) pic.style.setProperty('--phone-wall', `url("${jpeg}")`);
+      else pic.style.removeProperty('--phone-wall');
+      pic.classList.toggle('has-preview', !!jpeg);
     },
 
     // Which TwinDesk it runs (dev.state's app: shared/appinfo.js), red when older than this one.

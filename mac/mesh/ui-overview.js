@@ -213,7 +213,10 @@ UI.tab({
       macName.textContent = s.macName;
       peerName.textContent = c ? c.name : p.Name;
       peerDev.className = `device ${UI.osClass(p.os)}`;
-      if (UI.phoneWall && p.phone) peerDev.style.setProperty('--phone-wall', UI.phoneWall);
+      if (p.os === 'ios') {
+        const ph = s.phone || {};
+        UI.deviceParts.iosPic(peerDev, ph.info || {}, UI.deviceParts.iosPreview(ph, ph.connected?.id), 70);
+      } else if (UI.phoneWall && p.phone) peerDev.style.setProperty('--phone-wall', UI.phoneWall);
       else peerDev.style.removeProperty('--phone-wall');
       linkLine.className = `hero-link ${c ? 'up' : ''}`;
       const connecting = ['connecting', 'reconnecting'].includes(g.status.state);

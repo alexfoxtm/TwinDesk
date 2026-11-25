@@ -177,7 +177,8 @@ class PhoneBridge extends EventEmitter {
     server.on(`t:${T.PHONE_MIRROR_STATE}`, (m, ctx) => {
       if (!ctx || !P.isPhoneOs(ctx.os) || !m) return;
       if (ctx.os === P.OS.ANDROID && !this._currentPhone(ctx)) return;
-      NativeScreen.state(m); // an iPhone's too (its broadcast extension)
+      if (ctx.os === P.OS.IOS && ctx !== server.current) return;
+      NativeScreen.state(m, server); // an iPhone's too (its broadcast extension)
     });
     // The phone's sound without wireless debugging (Sound.kt there): asked for while adb can't carry
     // it; what comes plays in a hidden window (phoneview.js netSound).

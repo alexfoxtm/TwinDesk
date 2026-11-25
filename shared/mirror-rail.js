@@ -39,9 +39,9 @@
     return list.filter(([mime]) => R.isTypeSupported(mime)).map(([mime, ext]) => ({ mime, ext }));
   }
 
-  function MirrorRail({ api, canvas, kind, sound = () => null, i18n = root.PlayerI18n }) {
+  function MirrorRail({ api, canvas, kind, deviceControls = true, sound = () => null, i18n = root.PlayerI18n }) {
     const t = (k) => (i18n && i18n.t ? i18n.t(k) : k);
-    const phone = kind === 'screen' || kind === 'app';
+    const phone = deviceControls && (kind === 'screen' || kind === 'app');
     const LIST = [
       { k: 'shot', title: 'Screenshot (copied, and saved in Pictures › TwinDesk)' },
       { k: 'rec', title: 'Record (saved in Movies › TwinDesk)' },
@@ -51,7 +51,7 @@
         { k: 'rotate', title: kind === 'app' ? 'Rotate the window' : 'Rotate' },
         { k: 'autoRotate', title: kind === 'app' ? 'Auto-rotate: the window turns with the app' : 'Auto-rotate: the window turns with the phone', toggle: 'autoRotate' },
       ] : []),
-      ...(kind === 'screen' ? [{ k: 'power', title: 'Power (lock or wake the phone)' }] : []),
+      ...(phone && kind === 'screen' ? [{ k: 'power', title: 'Power (lock or wake the phone)' }] : []),
       ...(phone ? [{ k: 'screenOff', title: 'Phone screen off (it keeps showing here, and saves the battery)', toggle: 'screenOff' }] : []),
     ];
 
@@ -184,7 +184,7 @@
       const btn = document.createElement('button');
       btn.id = 'b-rail';
       btn.innerHTML = svg('rail');
-      const label = () => { const s = t('Side rail: screenshot, record, volume'); btn.title = s; btn.setAttribute('aria-label', s); };
+      const label = () => { const s = t(deviceControls ? 'Side rail: screenshot, record, volume' : 'Side rail: screenshot and record'); btn.title = s; btn.setAttribute('aria-label', s); };
       label();
       if (i18n && i18n.onChange) i18n.onChange(label);
       btn.onclick = () => { set(!on); canvas.focus(); };

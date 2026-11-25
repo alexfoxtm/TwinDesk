@@ -59,6 +59,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
             return (DispatchTime.now().uptimeNanoseconds - dial.started) / 1_000_000
         }
     }
+    private(set) var sessionID: UUID? // link queue; survives a transport move, never a new welcome
     private var mode = "" // session | pair
     private var nw = ""
     private var pairNonce = ""
@@ -264,9 +265,13 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     }
 
     @discardableResult
-    func send(_ m: JSON) -> Bool {
+    func send(_ m: JSON, session expected: UUID? = nil) -> Bool {
         guard state == "connected", let text = encodeJSON(m) else { return false }
-        q.async { if self.quietSince != nil && self.probeAt == nil { self.probeAt = Date() }; self.write(text) }
+        q.async {
+            if let expected, self.sessionID != expected { return }
+            if self.quietSince != nil && self.probeAt == nil { self.probeAt = Date() }
+            self.write(text)
+        }
         return true
     }
 
@@ -559,6 +564,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         }
         t.resume()
         pinger = t
+        sessionID = UUID()
         setState("connected", "")
         if let dial = netemDial {
             NSLog("TwinDeskNetem welcome_ms=%llu", (DispatchTime.now().uptimeNanoseconds - dial.started) / 1_000_000)
@@ -603,6 +609,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         helloTimer?.cancel()
         ws = nil
         netemDial = nil
+        sessionID = nil
         fxToken = ""
         fx2Port = 0
         resumeKey = ""
@@ -629,6 +636,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         let w = ws
         ws = nil
         netemDial = nil
+        sessionID = nil
         fxToken = ""
         fx2Port = 0
         resumeKey = ""

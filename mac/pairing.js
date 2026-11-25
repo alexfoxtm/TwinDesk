@@ -6,6 +6,7 @@
 'use strict';
 
 const { EventEmitter } = require('events');
+const { PhonePreviews } = require('./phone-preview.js');
 const P = require('../shared/protocol.js');
 const { PairFails } = require('../shared/pairfail.js');
 const { reclaimDecision } = require('../shared/reclaim.js');
@@ -23,6 +24,7 @@ class Pairing extends EventEmitter {
     this.server = server;
     this.id = identity;
     this.paired = store.read('paired.json', []);
+    this.previews = new PhonePreviews(this);
     this.pending = null; // {ctx, id, name, commit, nm, nw, code, confirmed, allowed, timer}
     this.fails = new PairFails(); // failed pairings per address: a lockout after too many (#136)
     // Positive consent only: missing/unreadable/corrupt state cannot enable an automatic return.
@@ -266,6 +268,7 @@ class Pairing extends EventEmitter {
     ctx.photoBackupPair = P.sha256Hex('photo backup:' + e.tokenHash);
     ctx.photoBackup = msg.pb === 1; // camera photo backup (shared/photobackup.js); missing: an older phone
     if (e.os === P.OS.ANDROID && msg.pa === 1) ctx.appsPair = P.sha256Hex(`phone apps:${e.id}:${e.tokenHash}`);
+    this.previews.authorize(ctx, e);
     this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN }, {
       t: P.T.WELCOME, v: P.PROTOCOL_VERSION, macId: this.id.macId, macName: this.id.macName, os: P.OS.MAC,
       ...(ctx.photoBackup && e.os === P.OS.ANDROID && this.photoBackupOn?.() === true ? { pb: 1 } : {}),

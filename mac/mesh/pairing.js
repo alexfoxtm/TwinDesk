@@ -6,6 +6,7 @@
 'use strict';
 
 const { EventEmitter } = require('events');
+const { PhonePreviews } = require('../phone-preview.js');
 const P = require('../../shared/protocol.js');
 const { PairFails } = require('../../shared/pairfail.js');
 const store = require('./store');
@@ -21,6 +22,7 @@ class Pairing extends EventEmitter {
     this.server = server;
     this.id = identity;
     this.paired = this.store.read('paired.json', []);
+    this.previews = new PhonePreviews(this);
     this.pending = null; // {ctx, id, name, commit, nm, nw, code, confirmed, allowed, timer}
     this.fails = new PairFails(); // failed pairings per address: a lockout after too many (#136)
     server.on('preauth', (ctx, msg) => this._onMessage(ctx, msg));
@@ -187,6 +189,7 @@ class Pairing extends EventEmitter {
     if (e.os === P.OS.ANDROID && msg.pa === 1) ctx.appsPair = P.sha256Hex(`phone apps:${e.id}:${e.tokenHash}`);
     ctx.fxWanted = msg.fx === 1; // fast files (shared/fastfile.js): the bytes over HTTPS, a token of this session
     ctx.mesh = !!msg.mesh; // the device speaks the mesh (docs/mesh.md): it gets the roster
+    this.previews.authorize(ctx, e);
     this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN }, {
       t: P.T.WELCOME, v: P.PROTOCOL_VERSION, macId: this.id.macId, macName: this.id.macName, os: P.OS.MAC, mesh: 1,
       ...(ctx.appsPair ? { pa: 1 } : {}),

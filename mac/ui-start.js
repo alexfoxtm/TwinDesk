@@ -258,7 +258,8 @@
   // Paired phones nearby, above Overview: the phone's wallpaper, its name and the link. Clicking
   // one connects it (the computer steps aside); the connected one opens its page.
   let phonesKey = '';
-  let assetsSeen = -1;
+  let assetsSeen = '';
+  let assetsDevice = null;
   // Paired computers nearby, under the phones (shared/ui-look.js): click to connect.
   function renderPcs(s) {
     const g = s.guest || { hosts: [] };
@@ -283,9 +284,16 @@
 
   function renderPhones(s) {
     const ph = s.phone || { nearby: [] };
-    if (ph.assets !== assetsSeen) {
-      assetsSeen = ph.assets;
+    const deviceId = ph.connected?.id || null;
+    const assetKey = JSON.stringify([deviceId, ph.assets, ph.iosPreviews]);
+    if (assetKey !== assetsSeen) {
+      assetsSeen = assetKey;
+      if (deviceId !== assetsDevice) {
+        assetsDevice = deviceId;
+        UI.phoneWall = '';
+      }
       api.phoneAssets().then((a) => {
+        if (assetKey !== assetsSeen || ('deviceId' in a && a.deviceId !== deviceId)) return;
         UI.phoneAssets = a;
         UI.phoneWall = a.wallpaper ? `url("${a.wallpaper}")` : '';
         phonesKey = '';
@@ -301,7 +309,7 @@
         : connecting ? tr('Connecting…') : tr('Nearby · Click to connect');
     };
     // rtt is not in the key: rebuilding the tile every second restarts the connected dot.
-    const key = JSON.stringify([UI.webDev, ph.nearby, ph.connecting, ph.connected && ph.connected.id, ph.held, info.battery, info.charging, colors, UI.phoneWall ? UI.phoneWall.length : 0, current && current.def.id]);
+    const key = JSON.stringify([UI.webDev, ph.nearby, ph.connecting, ph.connected && ph.connected.id, ph.held, info.battery, info.charging, colors, info.platform, info.display, ph.iosPreviews, UI.phoneWall ? UI.phoneWall.length : 0, current && current.def.id]);
     if (key === phonesKey) {
       const sub = $('phones').querySelector('.phone-tile.connected .phone-sub');
       const d = (ph.nearby || []).find((x) => x.connected);
@@ -311,7 +319,8 @@
     phonesKey = key;
     $('phones').replaceChildren(...ph.nearby.map((d) => {
       const wall = el('span', { class: 'phone-wall' }, [UI.icon('phone')]);
-      if (d.connected && UI.phoneWall) wall.style.backgroundImage = UI.phoneWall;
+      if (d.os === 'ios') UI.deviceParts.iosPic(wall, d.id === deviceId ? info : {}, UI.deviceParts.iosPreview(ph, d.id), 46);
+      else if (d.connected && UI.phoneWall) wall.style.backgroundImage = UI.phoneWall;
       else if (d.connected && colors) wall.style.backgroundImage = `linear-gradient(160deg, ${colors.join(', ')}${colors.length === 1 ? `, ${colors[0]}` : ''})`;
       const sub = phoneSub(d);
       const b = el('button', { class: `phone-tile${d.connected ? ' connected' : ''}`, title: d.connected ? `${d.name}` : tr('Connect to {name}', { name: d.name }) }, [
