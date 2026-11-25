@@ -24,6 +24,14 @@ html, body { margin: 0; height: 100%; background: #000; color: var(--text); font
 #retry-ipad button { margin-top: 12px; padding: 6px 12px; border: 1px solid var(--muted); border-radius: 6px; background: var(--bar); color: var(--text); font: inherit; pointer-events: auto; }
 #retry-ipad button:hover { background: var(--hover); }
 #retry-ipad p { margin: 8px 0 0; line-height: 1.4; }
+#ipad-controls:not([hidden]) { position: absolute; inset: 32px 0 auto; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; background: var(--bar); }
+#ipad-control { flex: none; border: 0; border-radius: 6px; padding: 4px 7px; color: var(--text); background: var(--hover); font: inherit; }
+#ipad-control:hover { background: rgba(255, 255, 255, 0.16); }
+#ipad-control:focus-visible { outline: 2px solid #0a84ff; outline-offset: 1px; }
+#ipad-control-status { font-size: 11px; line-height: 13px; color: var(--muted); max-height: 26px; overflow: hidden; }
+body.ipad #stage { top: 64px; }
+body.ipad:not(.ipad-connected) #b-home { display: none; }
+body.ipad-connected #screen { cursor: crosshair; }
 body.app #b-recents, body.app #b-notifs, body.app #b-rotate { display: none; }
 #b-torch, #b-flip, #b-zoomin, #b-zoomout { display: none; }
 body.camera #b-torch, body.camera #b-flip, body.camera #b-zoomin, body.camera #b-zoomout { display: grid; }

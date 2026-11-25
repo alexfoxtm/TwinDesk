@@ -238,4 +238,4 @@ class IosNet extends EventEmitter {
   }
 }
 
-module.exports = { IosNet, APP_PORT };
+module.exports = { IosNet, APP_PORT, Mux };
