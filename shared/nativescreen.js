@@ -65,39 +65,54 @@ function macAirplay() {
 
 class NativeScreen extends EventEmitter {
   // server: the session's (sendToClient, current); opts: {maxSize, videoBitRate, maxFps, audio}
-  constructor(server, opts = {}) {
+  constructor(server, opts = {}, owns = null) {
     super();
     this.server = server;
     this.opts = opts;
+    this.owns = owns;
     this.closed = false;
     this.secret = crypto.randomBytes(16).toString('hex');
     this.size = null; // the picture's
+    this.packetSized = false;
     this.screen = null; // the phone's screen, for phone.in: {w, h}
     this.on_ = false;
-    this.input = new PhoneInput((m) => this.server.sendToClient(m));
+    this.input = new PhoneInput((m) => this._send(m));
     this.req = null;
+  }
+
+  _send(m) {
+    if (!this.owns || this.owns()) return this.server.sendToClient(m);
+    return false;
   }
 
   // Resolves once the phone shares its screen (after Start there), rejects if it can't.
   start() {
     const c = this.server.current;
-    if (!c || !P.isPhoneOs(c.os)) return Promise.reject(err('the connection closed'));
-    if (c.transport === 'ble') return Promise.reject(err('Screens need Wi-Fi: the phone is connected through Bluetooth'));
+    const unavailable = !c || !P.isPhoneOs(c.os) || (this.owns && !this.owns());
+    if (unavailable || c.transport === 'ble') {
+      const error = err(unavailable ? 'the connection closed' : 'Screens need Wi-Fi: the phone is connected through Bluetooth');
+      this._close(error.message, { messageKey: error.messageKey });
+      return Promise.reject(error);
+    }
     live.set(this.secret, this);
     let airplay = '';
     macAirOff = false;
     if (c.os === 'ios') {
       try { airplay = NativeScreen.airplay ? NativeScreen.airplay() : process.platform === 'darwin' ? macAirplay() : ''; } catch (_) { airplay = ''; }
     }
-    this.server.sendToClient({
-      t: T.PHONE_MIRROR_WANT, on: true, key: this.secret,
-      maxSize: this.opts.maxSize || 0, bitrate: this.opts.videoBitRate || 8000000, fps: this.opts.maxFps || 60,
-      ...(airplay ? { airplay: String(airplay).slice(0, 100) } : {}),
-      ...(airplay && macAirOff ? { airplayOff: true } : {}),
-    });
     return new Promise((resolve, reject) => {
       this._started = { resolve, reject };
-      this._timer = setTimeout(() => this._fail(err('Start wasn’t tapped on the phone')), START_MS);
+      this._timer = setTimeout(() => {
+        if (this.owns) this._send({ t: T.PHONE_MIRROR_WANT, on: false, key: this.secret });
+        this._fail(err('Start wasn’t tapped on the phone'));
+      }, START_MS);
+      const sent = this._send({
+        t: T.PHONE_MIRROR_WANT, on: true, key: this.secret,
+        maxSize: this.opts.maxSize || 0, bitrate: this.opts.videoBitRate || 8000000, fps: this.opts.maxFps || 60,
+        ...(airplay ? { airplay: String(airplay).slice(0, 100) } : {}),
+        ...(airplay && macAirOff ? { airplayOff: true } : {}),
+      });
+      if (this.owns && sent === false) this._fail(err('the connection closed'));
     });
   }
 
@@ -112,19 +127,29 @@ class NativeScreen extends EventEmitter {
   // phone.mirror.state, for this window (phone-bridge.js hands it to the open native screen).
   state(m) {
     if (this.closed) return;
-    if (num(m.sw) && num(m.sh)) this.screen = { w: num(m.sw), h: num(m.sh) };
+    const display = screenSize(m.sw, m.sh);
+    if (display) this.screen = { w: display.width, h: display.height };
     if (m.waiting) this.emit('waiting');
     if (m.airplay && !m.on) return this._fail(err('Mirroring over AirPlay instead'));
     if (typeof m.error === 'string' && m.error && !m.on) return this._fail(err(m.error.slice(0, 200)));
     if (m.on) {
       this.on_ = true;
+      // Start with ReplayKit's announcement. Once packets arrive, their session header is ordered
+      // with the video, while the separate state message may arrive late during rotation.
+      if (this.owns && !this.packetSized) this._size(screenSize(m.w, m.h) || display);
       if (this._started) {
         const s = this._started;
         this._started = null;
         clearTimeout(this._timer);
         s.resolve();
       }
-    } else if (this.on_) this._close('stopped');
+    } else if (this.on_ || (this.owns && !m.waiting)) this._close('stopped');
+  }
+
+  _size(size) {
+    if (!size || (size.width === this.size?.width && size.height === this.size?.height)) return;
+    this.size = size;
+    this.emit('size', size);
   }
 
   // The stream arrived (request()).
@@ -135,6 +160,7 @@ class NativeScreen extends EventEmitter {
     let need = 12;
     let head = null;
     req.on('data', (chunk) => {
+      if (this.closed || this.req !== req || (this.owns && !this.owns())) return req.destroy();
       buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
       while (buf.length >= need) {
         if (!head) {
@@ -143,9 +169,10 @@ class NativeScreen extends EventEmitter {
           if (h[0] & 0x80) {
             const w = h.readUInt32BE(4);
             const ht = h.readUInt32BE(8);
-            if (w > 0 && ht > 0 && w < 16384 && ht < 16384) {
-              this.size = { width: w, height: ht };
-              this.emit('size', this.size);
+            const size = screenSize(w, ht);
+            if (size) {
+              this.packetSized = true;
+              this._size(size);
             }
             continue;
           }
@@ -176,6 +203,9 @@ class NativeScreen extends EventEmitter {
   _close(why, metadata) {
     if (this.closed) return;
     this.closed = true;
+    const started = this._started;
+    this._started = null;
+    if (started) started.reject(err(why));
     live.delete(this.secret);
     clearTimeout(this._timer);
     if (this.req) this.req.destroy();
@@ -184,7 +214,7 @@ class NativeScreen extends EventEmitter {
   }
 
   stop() {
-    if (!this.closed && this.server.current && P.isPhoneOs(this.server.current.os)) this.server.sendToClient({ t: T.PHONE_MIRROR_WANT, on: false, key: this.secret });
+    if (!this.closed && this.server.current && P.isPhoneOs(this.server.current.os)) this._send({ t: T.PHONE_MIRROR_WANT, on: false, key: this.secret });
     this._close('stopped');
   }
 
@@ -219,7 +249,7 @@ class NativeScreen extends EventEmitter {
   text() {} // typing goes key by key
 
   simple(type) {
-    if (type === TYPE.RESET_VIDEO) this.server.sendToClient({ t: T.PHONE_MIRROR_WANT, on: true, key: this.secret, sync: true });
+    if (type === TYPE.RESET_VIDEO) this._send({ t: T.PHONE_MIRROR_WANT, on: true, key: this.secret, sync: true });
     else if (type === TYPE.EXPAND_NOTIFICATIONS) this.tap(KEYCODE_NOTIFICATION);
   }
 
@@ -233,7 +263,7 @@ class NativeScreen extends EventEmitter {
   static request(req, res) {
     if (!String(req.url || '').startsWith(PATH)) return false;
     const s = live.get(String(req.headers[HEADER] || ''));
-    if (req.method !== 'POST' || !s || s.closed) {
+    if (req.method !== 'POST' || !s || s.closed || (s.owns && !s.owns())) {
       res.writeHead(403);
       res.end();
       return true;
@@ -245,10 +275,10 @@ class NativeScreen extends EventEmitter {
   }
 
   // phone.mirror.state from the phone: to the window it's for (the newest asked).
-  static state(m) {
-    const all = [...live.values()];
-    const s = all.find((x) => x.secret === m.key) || all[all.length - 1];
-    if (s) s.state(m);
+  static state(m, server) {
+    const all = [...live.values()].filter((s) => !server || s.server === server);
+    const s = m.key ? all.find((x) => x.secret === m.key) : all.at(-1);
+    if (s && (!s.owns || (s.secret === m.key && s.owns()))) s.state(m);
   }
 
   // The session ended: every native screen with it.
@@ -257,12 +287,14 @@ class NativeScreen extends EventEmitter {
   }
 }
 
-function num(v) {
-  return Number.isFinite(v) && v > 0 && v < 100000 ? Math.round(v) : 0;
+function screenSize(width, height) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2
+      || width >= 16384 || height >= 16384 || width > 8 * height || height > 8 * width) return null;
+  return { width, height };
 }
 
 function err(messageKey, messageVars) {
   return Object.assign(new Error(messageKey), { messageKey, messageVars });
 }
 
-module.exports = { NativeScreen, PATH, HEADER };
+module.exports = { NativeScreen, PATH, HEADER, screenSize };

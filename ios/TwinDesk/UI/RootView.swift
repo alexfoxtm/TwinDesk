@@ -172,9 +172,9 @@ struct RootView: View {
             .overlay { if dropping { DropOverlay(name: core.host?.name, connected: core.connected) } }
             .background(shortcuts)
             .modifier(Covers(ui: ui))
-            .sheet(isPresented: Binding(get: { _ = core.tick; return core.mirror.asking && core.pair == nil && ui.cover == nil },
-                                        set: { if !$0 && core.mirror.asking { core.mirror.decline() } })) {
-                MirrorAskSheet().environmentObject(core).presentationDetents([.large])
+            .sheet(item: Binding(get: { _ = core.tick; return core.pair == nil && ui.cover == nil ? core.mirror.prompt : nil },
+                                 set: { _ in })) { request in
+                MirrorAskSheet(request: request).environmentObject(core).environmentObject(ui).presentationDetents([.large])
             }
             .modifier(PairPrompts())
             .sheet(isPresented: $ui.searching) {

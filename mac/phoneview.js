@@ -18,7 +18,7 @@ const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 const I18n = require('../shared/i18n.js');
 const { Session, ACTION, TYPE } = require('./scrcpy');
-const { NativeScreen } = require('../shared/nativescreen.js');
+const { NativeScreen, screenSize } = require('../shared/nativescreen.js');
 const iosusb = require('./iosusb.js'); // an iPhone's screen over its cable
 const { uhidKey } = require('../shared/uhidkbd.js');
 const { KeyState, ANDROID } = require('./android-keys');
@@ -29,6 +29,7 @@ const { AppPanel } = require('./app-panel.js');
 const { startApp } = require('../shared/appstart.js');
 
 const T = P.T;
+const PHONEVIEW_BAR = 32; // #stage inset in phoneview.css
 const NOTIFIED_MS = 60000; // how long a clicked notification waits for the unlock and wireless debugging
 let nextId = 1;
 let quitting = false; // a camera's window hides on close, but not on quit
@@ -74,10 +75,17 @@ class PhoneViews extends EventEmitter {
         for (const v of this.list()) if (v.kind === 'camera') this.close(v.id);
       } else this.openCamera({ facing: m && m.facing });
     });
-    server.on(`t:${T.PHONE_MIRROR}`, (m) => {
+    server.on(`t:${T.PHONE_MIRROR}`, (m, ctx) => {
+      if (ctx?.os === P.OS.IOS && !this._currentIosMessage(ctx)) return;
       if (m && m.open === false) {
-        for (const v of this.list()) this.close(v.id);
-      } else this.openScreen();
+        this.openingIos = null;
+        // ReplayKit sends a keyed state before this legacy close message.
+        for (const v of this.views.values()) {
+          if (['sound', 'netsound', 'mic'].includes(v.kind)) continue;
+          if (ctx?.os === P.OS.IOS && (!v.ios || !v.session?.closed)) continue;
+          this.close(v.id);
+        }
+      } else this.openScreen(ctx?.os === P.OS.IOS);
     });
     bridge.on('change', () => {
       if (this.appPanel.current && !this.appPanel.owns(this.appPanel.current)) this.releaseAppPanel();
@@ -165,9 +173,43 @@ class PhoneViews extends EventEmitter {
     return [...this.views.values()].some((v) => v.win && !v.win.isDestroyed() && v.win.isFocused());
   }
 
-  openScreen() {
-    const open = [...this.views.values()].find((v) => v.kind === 'screen');
-    if (open) return open.win.show(), open.win.focus();
+  _iosOwner(c = this.server.current) {
+    if (c?.os !== P.OS.IOS || !c.authed || c.released) return null;
+    const routed = this.server.route?.session;
+    if (!this.server.route) return c;
+    // The hosting context survives a transport resume. A newly authenticated context replaces it.
+    return c.conn ? (routed?.linkUp ? c.conn : routed?.ctx) || null : null;
+  }
+
+  _currentIosMessage(ctx) {
+    const c = this.server.current;
+    return !!this._iosOwner(c) && (this.server.route ? !!ctx.conn && ctx.deviceId === c.deviceId : ctx === c);
+  }
+
+  _focusScreen(o = {}) {
+    const v = [...this.views.values()].find((v) => v.kind === 'screen' && !v.ending && !v.win.isDestroyed());
+    if (!v) return false;
+    if (v.ios && (v.failed || v.session?.closed || v.ios.owner !== this._iosOwner())) {
+      const owner = this._iosOwner();
+      this.close(v.id);
+      if (!owner) return false;
+      this._openIosNative(o, owner);
+    } else {
+      v.win.show();
+      v.win.focus();
+    }
+    return true;
+  }
+
+  openScreen(fromIos = false) {
+    if (this._focusScreen()) return;
+    const current = this.server.current;
+    if (current?.os === P.OS.IOS) {
+      const owner = this._iosOwner(current);
+      if (!owner) return;
+      if (fromIos === true) return this._openIosNative({}, owner);
+      return void this.openIosScreen();
+    }
     const info = this.phone.info || {};
     const d = info.display || { w: 1080, h: 2400 };
     const work = screen.getPrimaryDisplay().workAreaSize;
@@ -175,25 +217,51 @@ class PhoneViews extends EventEmitter {
     const w = Math.round(h * Math.min(d.w, d.h) / Math.max(d.w, d.h));
     const name = (this.server.current && this.server.current.name) || this._i18n().t('Phone');
     const titleKey = (this.server.current && this.server.current.name) ? '' : 'Phone';
-    // An iPhone: its cable when it's on one (macOS's own capture, nothing to tap), else its Share Screen.
-    if (this.server.current && this.server.current.os === 'ios') return void this.openIosScreen({ title: name, titleKey, width: w, height: h });
     // Mirroring › Native (or Automatic without wireless debugging): the phone shares it itself.
     const native = this.bridge.mirrorVia === 'native';
     this._open({ kind: 'screen', native, title: name, titleKey, width: w, height: h, opts: this.bridge.sessionOpts('screen') });
   }
 
-  // An iPhone's or iPad's screen: over USB when one is on the cable (any, paired or not: it needs no
-  // app), else asked of the connected iPhone (its Share Screen, Meet-style).
+  // A direct open can use a cable. ReplayKit notifications and retries stay with their exact peer.
   async openIosScreen(o = {}) {
-    if ([...this.views.values()].some((v) => v.kind === 'screen')) return this.openScreen();
+    if (this._focusScreen(o) || this.openingIos) return;
+    const owner = this._iosOwner();
+    const pending = this.openingIos = {};
     const usb = await iosusb.list();
-    const work = screen.getPrimaryDisplay().workAreaSize;
-    const h = o.height || Math.min(860, work.height - 80);
-    const pad = ((this.phone && this.phone.info) || {}).platform === 'ipados'; // an iPad: 3:4 until its picture says (the window takes its shape)
-    const w = o.width || Math.round(h * (pad ? 3 / 4 : 9 / 19.5));
-    const opts = { maxSize: 0, videoBitRate: 12000000 };
-    if (usb.length) return void this._open({ kind: 'screen', usb: usb[0].id, title: o.title || usb[0].name, titleKey: '', width: w, height: h, opts });
-    if (this.server.current && this.server.current.os === 'ios') this._open({ kind: 'screen', native: true, title: o.title || this.server.current.name, titleKey: o.titleKey || '', width: w, height: h, opts: this.bridge.sessionOpts('screen') });
+    if (this.openingIos !== pending) return;
+    this.openingIos = null;
+    if (this._iosOwner() !== owner || this._focusScreen(o)) return;
+    if (usb.length) {
+      const { width, height } = this._iosSize(o, usb[0].model);
+      return void this._open({ kind: 'screen', usb: usb[0].id, title: o.title || usb[0].name, width, height, opts: { maxSize: 0, videoBitRate: 12000000 } });
+    }
+    if (owner) this._openIosNative(o, owner);
+  }
+
+  _iosSize(o, usbModel = '') {
+    const height = o.height || Math.min(860, screen.getPrimaryDisplay().workAreaSize.height - 80);
+    const info = this.phone.info;
+    const pad = info?.platform === 'ipados' || /^iPad/i.test(info?.model || usbModel);
+    const iphone = !pad && (info?.platform === 'ios' || /^iPhone/i.test(info?.model || usbModel));
+    const display = screenSize(info?.display?.w, info?.display?.h);
+    const aspect = display ? display.width / display.height : iphone ? 9 / 19.5 : 3 / 4;
+    return { pad, height, width: o.width || Math.round((height - PHONEVIEW_BAR) * aspect) };
+  }
+
+  _openIosNative(o, owner) {
+    const c = this.server.current;
+    if (!owner || owner !== this._iosOwner(c)) return;
+    this.openingIos = null;
+    const { pad, width, height } = this._iosSize(o);
+    return this._open({ kind: 'screen', native: true, ios: { owner, pad, deviceId: c.deviceId }, title: c.name || this._i18n().t('Phone'),
+      width, height, opts: this.bridge.sessionOpts('screen') });
+  }
+
+  _retryIos(v) {
+    if (!v.ios?.pad || v.ending || v.ios.owner !== this._iosOwner() || !(v.failed || v.session?.closed)) return;
+    const owner = v.ios.owner;
+    this.close(v.id);
+    this._openIosNative({}, owner);
   }
 
   // The phone's camera (Camera's switch, or the phone's Camera page; scrcpy's camera source, Android
@@ -372,6 +440,7 @@ class PhoneViews extends EventEmitter {
   }
 
   closeAll() {
+    this.openingIos = null;
     this.releaseAppPanel();
     for (const v of [...this.views.values()]) this.close(v.id);
   }
@@ -385,7 +454,7 @@ class PhoneViews extends EventEmitter {
     return I18n.create(I18n.resolveLanguage(settings.ui && settings.ui.language, app.getLocale()));
   }
 
-  _open({ kind, app, title, titleKey = '', titleName = '', width, height, opts, hidden = false, sink = '', native = false, net = false, usb = '' }) {
+  _open({ kind, app, title, titleKey = '', titleName = '', width, height, opts, hidden = false, sink = '', native = false, net = false, usb = '', ios = null }) {
     if (!this.bridge.serial && kind !== 'netsound' && !net && !native && !usb) {
       // Through Bluetooth: the phone's hotspot first (main.js), then this window.
       if (kind !== 'mic' && this.onNoAdb && this.onNoAdb({ kind, app, title, titleKey, titleName, width, height, opts, hidden })) return;
@@ -399,12 +468,12 @@ class PhoneViews extends EventEmitter {
       titleBarStyle: 'hiddenInset', backgroundColor: '#000000',
       webPreferences: { preload: path.join(__dirname, 'preload-phoneview.js'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
     });
-    const v = { id, kind, app, title, win, sink, native, net, usb, session: null, keys: new KeyState(), size: null, ready: false, queue: [], screenOff: false, eaten: new Set() };
+    const v = { id, kind, app, title, win, sink, native, net, usb, ios, session: null, keys: new KeyState(), size: null, ready: false, queue: [], screenOff: false, eaten: new Set() };
     this._send(v, 'phoneview:opts', this._opts(v));
     this.views.set(id, v);
     if (kind === 'app') setImmediate(() => this._stubs());
     const tellMinimized = () => this._send(v, 'phoneview:opts', { minimized: win.isMinimized() });
-    win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
+    win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, ...(ios || usb ? { screenOS: P.OS.IOS } : {}), ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
     if (!hidden) win.once('ready-to-show', () => win.show());
     win.webContents.once('did-finish-load', () => {
       v.ready = true;
@@ -414,6 +483,12 @@ class PhoneViews extends EventEmitter {
     win.on('minimize', tellMinimized);
     win.on('restore', tellMinimized);
     win.on('show', tellMinimized);
+    if (kind === 'screen') {
+      const refit = () => {
+        if (v.size && (v.ios || v.usb || require('../shared/appturn.js').autoRotate(this.getSettings()))) this._fitScreen(v, v.size);
+      };
+      for (const ev of ['restore', 'unmaximize', 'leave-full-screen']) win.on(ev, refit);
+    }
     // A camera's window: closed, it only hides (the camera stops with Camera's switch).
     if (kind === 'camera') {
       win.on('close', (e) => {
@@ -438,10 +513,13 @@ class PhoneViews extends EventEmitter {
     });
     this.emit('change');
     if (kind !== 'netsound' && !net) this._start(v, opts).catch((e) => {
+      if (v.ios && (v.ending || this.views.get(v.id) !== v || v.win.isDestroyed())) return;
       if (this.appPanel.remove(v)) this._sendOpts();
       if (v.kind === 'app') v.session?.stop();
+      if (v.ios) v.failed = true;
       console.log(`[phone] ${kind} window: ${e.message}`);
-      this._send(v, 'phoneview:status', { error: e.message, errorKey: e.messageKey, errorVars: e.messageVars });
+      this._send(v, 'phoneview:status', { error: e.message, errorKey: e.messageKey, errorVars: e.messageVars,
+        retryIpad: !!v.ios?.pad && v.ios.owner === this._iosOwner() });
     });
     return v;
   }
@@ -457,20 +535,25 @@ class PhoneViews extends EventEmitter {
     const dark = v.kind === 'app' && !v.native && this.getSettings().phone?.keepPanelOff === true;
     const appOwner = v.app && !v.native && !dark ? this.appPanel.capture() : null;
     v.keepPanelOff = dark;
-    const s = v.usb ? new iosusb.IosUsbScreen({ ...opts, id: v.usb }) : v.native ? new NativeScreen(this.server, opts)
+    const owns = v.ios ? () => v.ios.owner === this._iosOwner() : null;
+    const s = v.usb ? new iosusb.IosUsbScreen({ ...opts, id: v.usb }) : v.native ? new NativeScreen(this.server, opts, owns)
       : new Session(adb, serial, dark ? { ...opts, powerOn: false, keepActive: true } : opts);
     const current = () => this.views.get(v.id) === v && v.session === s && !v.ending && !s.closed
       && this.bridge.serial === serial && !v.win.isDestroyed();
     const via = v.native || v.usb ? null : this.bridge.via;
     if (v.native && !v.usb) setImmediate(() => this.bridge._sound()); // its sound, when it plays it
-    if (v.native) s.on('waiting', () => this._send(v, 'phoneview:status', { error: 'Tap Start on the phone to share its screen', errorKey: 'Tap Start on the phone to share its screen' }));
+    if (v.native) s.on('waiting', () => {
+      const errorKey = v.ios?.pad ? 'On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected' : 'Tap Start on the phone to share its screen';
+      this._send(v, 'phoneview:status', { error: errorKey, errorKey });
+    });
     v.session = s;
     s.on('size', (size) => {
       v.size = size;
       this._send(v, 'phoneview:size', size);
       const auto = require('../shared/appturn.js').autoRotate(this.getSettings());
       if (v.kind === 'app') require('../shared/appturn.js').appSized(v, size, auto); // the app turned its display round (#258)
-      else if ((v.kind === 'camera' || auto || !v.shaped) && v.win && !v.win.isDestroyed()) v.win.setAspectRatio(size.width / size.height); // Auto-rotate off: the window keeps its shape
+      else if (v.kind === 'screen' && (v.ios || v.usb || auto)) this._fitScreen(v, size);
+      else if ((v.kind === 'camera' || !v.shaped) && v.win && !v.win.isDestroyed()) v.win.setAspectRatio(size.width / size.height); // Auto-rotate off: the window keeps its shape
       v.shaped = true;
     });
     s.on('video', (p) => this._send(v, 'phoneview:video', p));
@@ -479,7 +562,9 @@ class PhoneViews extends EventEmitter {
       if (v.session !== s) return; // one a flip replaced
       v.appFrame = null;
       if (this.appPanel.remove(v)) this._sendOpts();
-      this._send(v, 'phoneview:status', { closed: why, closedKey: metadata && metadata.messageKey, closedVars: metadata && metadata.messageVars });
+      if (v.ios) v.failed = true;
+      this._send(v, 'phoneview:status', { closed: why, closedKey: metadata && metadata.messageKey, closedVars: metadata && metadata.messageVars,
+        retryIpad: !!v.ios?.pad && !v.ending && v.ios.owner === this._iosOwner() });
       if (v.kind === 'camera' && why !== 'stopped') {
         v.error = why;
         this.emit('change');
@@ -499,6 +584,7 @@ class PhoneViews extends EventEmitter {
     if (v.app && !live()) return;
     if (appOwner && !this.appPanel.wake(appOwner)) { s.stop(); return; }
     await s.start();
+    if (v.ios && (v.ending || v.session !== s || s.closed || !owns() || v.win.isDestroyed())) return;
     if (v.app && !live()) { s.stop(); return; }
     v.started = true;
     this._send(v, 'phoneview:status', { ready: true, via });
@@ -512,6 +598,35 @@ class PhoneViews extends EventEmitter {
     await startApp(s, { adb, serial, maker, app: v.app, live });
     if (!live()) { s.stop(); return; }
     if (dark) await this._blankAfterAppFrame(v, s, panel, live);
+  }
+
+  _fitScreen(v, size) {
+    const win = v.win;
+    if (!screenSize(size.width, size.height) || v.ending || win.isDestroyed() || !win.isNormal()) return;
+    const aspect = size.width / size.height;
+    // The encoder rounds scaled dimensions to even pixels.
+    if (v.videoAspect && Math.abs(aspect / v.videoAspect - 1) < 0.01) return;
+    const bounds = win.getBounds();
+    const content = win.getContentBounds();
+    const work = screen.getDisplayMatching(bounds).workArea;
+    const extraW = bounds.width - content.width;
+    const extraH = bounds.height - content.height + PHONEVIEW_BAR;
+    const [minW, minH] = win.getMinimumSize();
+    const long = Math.max(content.width, content.height - PHONEVIEW_BAR);
+    const w = aspect >= 1 ? long : long * aspect;
+    const h = w / aspect;
+    const maxScale = Math.min((work.width - extraW) / w, (work.height - extraH) / h);
+    const minScale = Math.max((minW - extraW) / w, (minH - extraH) / h);
+    const scale = Math.min(maxScale, Math.max(1, minScale));
+    const width = Math.min(work.width, Math.max(minW, Math.round(w * scale + extraW)));
+    const height = Math.min(work.height, Math.max(minH, Math.round(h * scale + extraH)));
+    const x = Math.max(work.x, Math.min(work.x + work.width - width, bounds.x + Math.round((bounds.width - width) / 2)));
+    const y = Math.max(work.y, Math.min(work.y + work.height - height, bounds.y + Math.round((bounds.height - height) / 2)));
+    v.videoAspect = aspect;
+    win.setAspectRatio(aspect, { width: 0, height: PHONEVIEW_BAR });
+    if (bounds.x !== x || bounds.y !== y || bounds.width !== width || bounds.height !== height) {
+      win.setBounds({ x, y, width, height });
+    }
   }
 
   _showUnlock(v) {
@@ -557,7 +672,8 @@ class PhoneViews extends EventEmitter {
   // The window's switches as they are now (its buttons light up).
   _opts(v) {
     const ph = this.getSettings().phone || {};
-    return { enterSends: ph.enterSends !== false, autoRotate: ph.autoRotate !== false, arrowSwipe: ph.arrowSwipe === true, screenOff: !!v.screenOff || (!v.native && (v.kind === 'app' || v.kind === 'screen') && this.appPanel?.off === true), pinned: !!(v.win && !v.win.isDestroyed() && v.win.isAlwaysOnTop()) };
+    const mirrorPreview = v.ios && this.phone.pairing?.previews?.owner(v.ios.owner) ? v.id : null;
+    return { mirrorPreview, enterSends: ph.enterSends !== false, autoRotate: ph.autoRotate !== false, arrowSwipe: ph.arrowSwipe === true, screenOff: !!v.screenOff || (!v.native && (v.kind === 'app' || v.kind === 'screen') && this.appPanel?.off === true), pinned: !!(v.win && !v.win.isDestroyed() && v.win.isAlwaysOnTop()) };
   }
 
   // Return sends / Arrow keys swipe changed (here, or on the Phone page): every window shows it.
@@ -608,7 +724,21 @@ class PhoneViews extends EventEmitter {
     return done;
   }
 
+  _saveIosPreview(v, m) {
+    const s = v.session;
+    if (!v.ios || v.ending || v.id !== m.capture || !v.started || !s?.on_ || !s.req || s.closed || !s.owns?.()) return;
+    const size = s.size;
+    if (!size) return;
+    const sw = s.screen?.w, sh = s.screen?.h;
+    const display = sw && sh && Math.abs((sw / sh) / (size.width / size.height) - 1) < 0.01
+      ? { width: sw, height: sh } : size;
+    const info = this.phone.infoId === v.ios.deviceId ? this.phone.info : null;
+    if (this.phone.pairing?.previews?.save(v.ios.owner, m.jpeg, display, info)) this.phone.emit('change');
+  }
+
   _input(v, m) {
+    if (m.t === 'mirrorPreview') return this._saveIosPreview(v, m);
+    if (m.t === 'retryIpad') return this._retryIos(v);
     // Keep on top (the title bar's pin): the window's own, no phone needed. 'floating': over other
     // apps' windows, under menus and the Dock.
     if (m.t === 'pin') {
