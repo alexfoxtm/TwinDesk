@@ -5,9 +5,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function fixture() {
+function fixture(netemOnly = false) {
   const events = new Map(), documentEvents = new Map(), videoEvents = new Map();
-  const timers = new Map(), frames = [], peers = [], metrics = [];
+  const timers = new Map(), frames = [], peers = [], metrics = [], netem = [];
   let now = 5000, timerId = 0;
   const video = { videoWidth: 1920, videoHeight: 1080, style: {}, currentTime: 0,
     play: async () => {}, requestVideoFrameCallback: callback => frames.push(callback),
@@ -19,12 +19,17 @@ function fixture() {
     TD: { send() {}, ready() {}, playing() {}, videoState() {},
       videoMetrics: (generation, session, width, height, fps, kbps, dropped) =>
         metrics.push({ generation, session, width, height, fps, kbps, dropped }) } };
+  if (netemOnly) {
+    delete window.TD.videoState;
+    delete window.TD.videoMetrics;
+    window.TD.netemSample = (...sample) => netem.push(sample);
+  }
   const document = { hidden: false, getElementById: id => elements[id],
     addEventListener: (event, callback) => documentEvents.set(event, callback),
     documentElement: { addEventListener() {} }, body: { appendChild() {}, classList: { toggle() {} } },
     createElement: () => ({ style: {}, getContext: () => ({ setTransform() {}, clearRect() {} }) }) };
   class Peer {
-    constructor() { peers.push(this); this.connectionState = 'connected'; this.localDescription = { sdp: '' }; }
+    constructor(config) { peers.push(this); this.config = config; this.connectionState = 'connected'; this.localDescription = { sdp: '' }; }
     close() { this.connectionState = 'closed'; }
     async setRemoteDescription() {}
     async addIceCandidate() {}
@@ -45,14 +50,14 @@ function fixture() {
     for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.callback();
   };
   const decodedFrame = () => { for (const callback of frames.splice(0)) callback(); };
-  const connect = async (session = 1) => {
-    receive({ t: 'rtc.offer', session, viewerGeneration: session + 100, sdp: '' });
+  const connect = async (session = 1, extra = {}) => {
+    receive({ t: 'rtc.offer', session, viewerGeneration: session + 100, sdp: '', ...extra });
     await new Promise(resolve => setImmediate(resolve));
     peers.at(-1).ontrack({ track: { kind: 'video' }, receiver: {} });
     videoEvents.get('playing')();
     decodedFrame();
   };
-  return { peers, metrics, receive, advance, decodedFrame, connect, document, documentEvents };
+  return { peers, metrics, netem, receive, advance, decodedFrame, connect, document, documentEvents };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
@@ -108,6 +113,55 @@ async function transientDisconnectRecovers() {
   f.advance(2000); await tick();
   assert.equal(f.metrics.length, 1, 'polling resumes after transient non-connected getStats');
 }
-measuredRates().then(retiredReports).then(transientDisconnectRecovers).then(() => {
+
+async function scopedNetem() {
+  const f = fixture(true);
+  const expected = 'turn:100.64.0.77:43199?transport=tcp';
+  const issued = 'turn:127.0.0.1:43200?transport=tcp';
+  const ice = { netem: true, iceTransportPolicy: 'relay',
+    iceServers: [{ urls: issued, username: 'fixture', credential: 'fixture' }] };
+  await f.connect(1, { ice, _netemTurn: expected });
+  assert.equal(f.peers[0].config.iceServers[0].urls, expected);
+  assert.equal(f.peers[0].config.iceTransportPolicy, 'relay');
+  assert.deepEqual(f.netem[0], [101, 1, true, -1, -1, 'unverified']);
+
+  let url = expected, clock = 0, selected = 'pair';
+  f.peers[0].stats = async () => {
+    clock += 2000;
+    return new Map([
+      ['in', { id: 'video', type: 'inbound-rtp', kind: 'video', transportId: 'transport',
+        timestamp: clock, framesDecoded: clock * 0.06, bytesReceived: clock * 125 }],
+      ['transport', { selectedCandidatePairId: selected }],
+      ['pair', { type: 'candidate-pair', state: 'succeeded', nominated: true, localCandidateId: 'local', remoteCandidateId: 'remote' }],
+      ['local', { candidateType: 'relay', relayProtocol: 'tcp', url }],
+      ['remote', { candidateType: 'relay' }],
+    ]);
+  };
+  f.advance(2000); await tick();
+  assert.equal(f.netem.at(-1)[5], 'proxy-turn-tcp');
+  url = 'turn:100.64.0.77:43197?transport=tcp';
+  f.advance(2000); await tick();
+  assert.deepEqual(f.netem.at(-1), [101, 1, false, 60, 1000, 'bypass']);
+  url = expected;
+  selected = 'missing';
+  f.advance(2000); await tick();
+  assert.equal(f.netem.at(-1)[5], 'unverified', 'a different nominated pair cannot stand in for the selected pair');
+
+  let finish;
+  f.peers[0].stats = () => new Promise(resolve => { finish = resolve; });
+  f.advance(2000);
+  f.receive({ t: 'stream.stop' });
+  const reported = f.netem.length;
+  finish(new Map([['in', { type: 'inbound-rtp', kind: 'video' }]]));
+  await tick();
+  assert.equal(f.netem.length, reported, 'Stop retires an in-flight netem sample');
+
+  await f.connect(2, { ice: { ...ice, netem: false }, _netemTurn: expected });
+  assert.equal(f.peers[1].config.iceServers[0].urls, issued, 'unnegotiated TURN credentials are never redirected');
+  delete ice.netem;
+  await f.connect(3, { ice });
+  assert.equal(f.netem.at(-1)[1], 2, 'no scoped samples from a normal offer');
+}
+measuredRates().then(retiredReports).then(transientDisconnectRecovers).then(scopedNetem).then(() => {
   console.log('viewer metrics: decoded frame rates, capture retirement and foreground ownership passed');
 }).catch(error => { console.error(error); process.exitCode = 1; });

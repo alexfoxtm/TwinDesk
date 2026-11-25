@@ -12,6 +12,8 @@ android {
         targetSdk = 36
         versionCode = 30201
         versionName = "3.2.1"
+        buildConfigField("String", "NETEM_PEER", "\"\"")
+        buildConfigField("String", "NETEM_ADDRESS", "\"\"")
     }
     // Two builds of the same app (same id and signature, so one installs over the other):
     //   standard — what people download: no notification access, SMS or Accessibility service, which
@@ -51,6 +53,13 @@ android {
         getByName("fdroid").kotlin.srcDir("src/noshizuku/java")
     }
     buildTypes {
+        debug {
+            val peer = providers.gradleProperty("twNetemPeer").getOrElse("")
+            val address = providers.gradleProperty("twNetemAddress").getOrElse("")
+            require(peer.matches(Regex("[A-Za-z0-9._-]{0,64}")) && address.matches(Regex("[0-9.]{0,15}")))
+            buildConfigField("String", "NETEM_PEER", "\"$peer\"")
+            buildConfigField("String", "NETEM_ADDRESS", "\"$address\"")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true

@@ -42,6 +42,23 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
 
     private var session: URLSession!
     private var ws: URLSessionWebSocketTask?
+    private var netemSerial = 0
+    private var netemDial: (route: NetemRoute, started: UInt64, serial: Int)?
+
+    func pairedNetemHost(_ h: Computer) -> Computer? {
+        guard list == "hosts", h.os == "mac", NetemRoute.configured?.peer == h.id,
+              let saved = store.host(h.id, list), saved.os == "mac", saved.fp == h.fp,
+              saved.token == h.token else { return nil }
+        return saved
+    }
+
+    // Viewer callbacks call this on the main thread. Only the current authenticated dial can report.
+    func netemElapsed(_ serial: Int) -> UInt64? {
+        q.sync {
+            guard connected, ws != nil, let dial = netemDial, dial.serial == serial else { return nil }
+            return (DispatchTime.now().uptimeNanoseconds - dial.started) / 1_000_000
+        }
+    }
     private var mode = "" // session | pair
     private var nw = ""
     private var pairNonce = ""
@@ -123,12 +140,20 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     // force: even when already on this computer (moving onto the cable, or off it).
     func connect(_ h: Computer, force: Bool = false, ble: Bool = false) {
         q.async {
-            if !force, self.ws != nil, self.host?.id == h.id, self.address == h.address, self.viaBle == ble, self.state == "connecting" || self.state == "connected" { return }
+            let saved = self.pairedNetemHost(h)
+            let route = saved == nil ? nil : NetemRoute.configured
+            if route != nil && ble { return }
+            let address = route?.address ?? h.address
+            if !force, self.ws != nil, self.host?.id == h.id, self.address == address, self.viaBle == ble, self.state == "connecting" || self.state == "connected" { return }
             self.closeSocket()
             self.viaBle = ble
             self.pair = nil
-            self.host = h
-            self.open("session", h.address, h.port, h.fp)
+            self.host = saved ?? h
+            if let route {
+                self.netemSerial += 1
+                self.netemDial = (route, DispatchTime.now().uptimeNanoseconds, self.netemSerial)
+            }
+            self.open("session", address, route == nil ? h.port : NetemRoute.controlPort, h.fp)
             self.setState("connecting", "")
         }
     }
@@ -137,7 +162,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     // done(false): it stays where it was (the path didn't open in time, or nothing to resume).
     func move(to address: String, port: UInt16, ble: Bool, _ done: @escaping (Bool) -> Void) {
         q.async {
-            guard self.state == "connected", self.mode == "session", !self.resumeKey.isEmpty, self.host != nil else {
+            guard self.netemDial == nil, self.state == "connected", self.mode == "session", !self.resumeKey.isEmpty, self.host != nil else {
                 return DispatchQueue.main.async { done(false) }
             }
             self.dropPending(false)
@@ -360,8 +385,10 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
 
     private func hello() {
         guard let h = host else { return }
-        raw(msg(Proto.T.hello, ["v": Proto.version, "id": store.deviceId, "name": store.deviceName, "os": Proto.os,
-                                "token": h.token, "fx": 1, "fx2": 1]))
+        var hello = msg(Proto.T.hello, ["v": Proto.version, "id": store.deviceId, "name": store.deviceName, "os": Proto.os,
+                                        "token": h.token, "fx": 1, "fx2": 1])
+        if netemDial != nil { hello["netem"] = 1 }
+        raw(hello)
         helloTimer?.cancel()
         let w = DispatchWorkItem { [weak self] in
             guard let self = self, self.state != "connected" else { return }
@@ -393,7 +420,16 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
             return
         default: break
         }
-        if state == "connected" { events?.linkMessage(t, m) }
+        if state == "connected" {
+            if t == "rtc.offer" {
+                var offer = m
+                offer["_netemDial"] = netemDial?.serial
+                offer["_netemTurn"] = netemDial?.route.turnURL
+                events?.linkMessage(t, offer)
+            } else {
+                events?.linkMessage(t, m)
+            }
+        }
     }
 
     private func onNonce(_ m: JSON) {
@@ -449,10 +485,15 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     private func onWelcome(_ m: JSON) {
         guard mode == "session", state != "connected", var h = host else { return }
         helloTimer?.cancel()
+        if netemDial != nil, m.str("macId") != h.id {
+            lastCode = "identity"
+            ws?.cancel(with: .policyViolation, reason: nil)
+            return
+        }
         let name = m.str("macName", max: 64)
         if !name.isEmpty { h.name = name }
         h.lastSeen = Date().timeIntervalSince1970
-        if address != "127.0.0.1" { h.address = address }
+        if netemDial == nil, address != "127.0.0.1" { h.address = address }
         host = h
         store.putHost(findable(h), list)
         if list == "hosts" { store.lastHostId = h.id }
@@ -518,6 +559,9 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         t.resume()
         pinger = t
         setState("connected", "")
+        if let dial = netemDial {
+            NSLog("TwinDeskNetem welcome_ms=%llu", (DispatchTime.now().uptimeNanoseconds - dial.started) / 1_000_000)
+        }
         events?.linkWelcome(h, m)
     }
 
@@ -557,6 +601,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         pinger?.cancel(); pinger = nil
         helloTimer?.cancel()
         ws = nil
+        netemDial = nil
         fxToken = ""
         fx2Port = 0
         resumeKey = ""
@@ -582,6 +627,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         helloTimer?.cancel()
         let w = ws
         ws = nil
+        netemDial = nil
         fxToken = ""
         fx2Port = 0
         resumeKey = ""

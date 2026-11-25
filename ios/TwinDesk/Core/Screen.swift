@@ -19,6 +19,8 @@ final class Screen: Feature {
     private var lastInfo: JSON?
     private var wantStart = false
     private var startedByUs = false
+    private var netemGeneration = 0
+    private var netemOffer: (dial: Int, session: Int, started: UInt64, presented: Bool)?
     // The computer started sharing by itself while we're in front: the page opens the viewer.
     var autoOpen = false
 
@@ -52,8 +54,9 @@ final class Screen: Feature {
     func attach(_ h: WebHost) {
         host = h
         viewing = true
-        h.onEvent = { [weak self] ev, data in
+        h.onEvent = { [weak self, weak h] ev, data in
             if ev == "playing", let d = data { self?.size = (d.int("w"), d.int("h")); self?.core.changed() }
+            if ev == "netemSample", let h, let data { self?.netemSample(h, data) }
         }
         h.post(opts())
         if let i = lastInfo { h.post(i) }
@@ -68,6 +71,7 @@ final class Screen: Feature {
     func detach(_ h: WebHost) {
         guard host === h else { return }
         host = nil
+        netemOffer = nil
         viewing = false
         size = nil
         wantStart = false
@@ -93,7 +97,7 @@ final class Screen: Feature {
         if let s = share { m["share"] = s }
         if let md = mode { m["mode"] = md }
         if close { m["close"] = true }
-        if share == false { startedByUs = false }
+        if share == false { startedByUs = false; netemOffer = nil }
         core.send(m)
     }
 
@@ -104,6 +108,7 @@ final class Screen: Feature {
 
     override func onClosed() {
         state = nil
+        netemOffer = nil
         lastInfo = nil
         startedByUs = false
         host?.post(msg("stream.stop"))
@@ -124,15 +129,45 @@ final class Screen: Feature {
                 if UIApplication.shared.applicationState == .active { autoOpen = true }
                 else { Notifier.shared.screen(core.host?.name ?? tr("Your computer")) }
             }
-            if !on { Notifier.shared.cancel("screen") }
+            if !on { netemOffer = nil; Notifier.shared.cancel("screen") }
             if wantStart { startIfNeeded() }
             core.changed()
         case "stream.input": inputOn = (m["on"] as? Bool) ?? true; core.changed()
         case "stream.info": lastInfo = m; host?.post(m)
-        case "rtc.offer", "rtc.ice", "stream.stop": host?.post(m)
+        case "rtc.offer":
+            netemOffer = nil
+            if let dial = m["_netemDial"] as? Int {
+                guard host != nil, viewing, core.link.netemElapsed(dial) != nil else { return true }
+                var offer = m
+                offer.removeValue(forKey: "_netemDial")
+                netemGeneration += 1
+                netemOffer = (dial, m.int("session"), DispatchTime.now().uptimeNanoseconds, false)
+                offer["viewerGeneration"] = netemGeneration
+                host?.post(offer)
+            } else { host?.post(m) }
+        case "stream.stop": netemOffer = nil; host?.post(m)
+        case "rtc.ice": host?.post(m)
         default: return false
         }
         return true
+    }
+
+    private func netemSample(_ sender: WebHost, _ sample: JSON) {
+        guard host === sender, viewing, sharing, UIApplication.shared.applicationState == .active,
+              var offer = netemOffer, sample.int("generation") == netemGeneration,
+              sample.int("session") == offer.session, let elapsed = core.link.netemElapsed(offer.dial) else { return }
+        if sample.bool("first") {
+            guard !offer.presented else { return }
+            offer.presented = true
+            netemOffer = offer
+            let fromOffer = (DispatchTime.now().uptimeNanoseconds - offer.started) / 1_000_000
+            NSLog("TwinDeskNetem first_presented_ms=%llu offer_to_presented_ms=%llu", elapsed, fromOffer)
+        } else {
+            let fps = sample.int("fps", -1), kbps = sample.int("kbps", -1), path = sample.str("path", max: 24)
+            guard (-1...240).contains(fps), (-1...1_000_000).contains(kbps),
+                  ["unverified", "bypass", "proxy-turn-tcp"].contains(path) else { return }
+            NSLog("TwinDeskNetem receiver_fps=%d receiver_kbps=%d media_path=%@", fps, kbps, path)
+        }
     }
 
     // ---- the keyboard (KeyProxy): characters as the keys that type them, US layout ----

@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import android.os.SystemClock
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -110,6 +111,11 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
             onEvent("videoMetrics", msg("videoMetrics", "generation" to generation, "session" to session,
                 "w" to w, "h" to h, "fps" to fps, "kbps" to kbps, "dropped" to dropped))
         }.let { }
+
+        @JavascriptInterface fun netemSample(generation: Int, session: Int, first: Boolean, fps: Int, kbps: Int, path: String) {
+            if (!BuildConfig.DEBUG || page != "viewer.html") return
+            main.post { core.screen.netemSample(this@WebHost, generation, session, first, fps, kbps, path) }
+        }
         @JavascriptInterface fun playing(w: Int, h: Int) = main.post { onEvent("playing", JSONObject().put("w", w).put("h", h)) }.let { }
         @JavascriptInterface fun haptic() = main.post { view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS) }.let { }
         // A light tap (a gamepad or touchpad button going down).
@@ -225,6 +231,8 @@ class Screen(core: Core) : Feature(core) {
     private var videoGeneration = 0
     private var videoSession: Int? = null
     private var videoMarker: Any? = null
+    private var netemOfferAt: Long? = null
+    private var netemPresented = false
     @Volatile var videoPlaying = false; private set
     private data class DoctorReading(val marker: Any, val sample: StreamDoctorSample)
     @Volatile private var doctorReading: DoctorReading? = null
@@ -434,6 +442,8 @@ class Screen(core: Core) : Feature(core) {
         videoGeneration++
         videoSession = null
         videoMarker = null
+        netemOfferAt = null
+        netemPresented = false
         videoPlaying = false
         decodedSize = null
         videoUnavailable = false
@@ -526,8 +536,29 @@ class Screen(core: Core) : Feature(core) {
         resetVideo()
         videoSession = m.optInt("session", -1)
         videoMarker = route.marker
-        host?.post(JSONObject(m.toString()).put("viewerGeneration", videoGeneration))
+        val offer = JSONObject(m.toString()).put("viewerGeneration", videoGeneration)
+        offer.remove("_netemTurn")
+        core.link.netemRoute(route.marker)?.let {
+            netemOfferAt = SystemClock.elapsedRealtime()
+            offer.put("_netemTurn", it.turnUrl)
+        }
+        host?.post(offer)
         core.changed()
+    }
+
+    fun netemSample(h: WebHost, generation: Int, session: Int, first: Boolean, fps: Int, kbps: Int, path: String) {
+        val offerAt = netemOfferAt ?: return
+        if (host !== h || !viewing || !sharing || !videoPlaying || core.lockView.locked ||
+            videoGeneration != generation || videoSession != session) return
+        val elapsed = core.link.netemElapsed(videoMarker) ?: return
+        if (first) {
+            if (netemPresented) return
+            netemPresented = true
+            Log.i("TwinDeskNetem", "first_presented_ms=$elapsed offer_to_presented_ms=${SystemClock.elapsedRealtime() - offerAt}")
+        } else if (fps in -1..240 && kbps in -1..1_000_000 &&
+            path in listOf("unverified", "bypass", "proxy-turn-tcp")) {
+            Log.i("TwinDeskNetem", "receiver_fps=$fps receiver_kbps=$kbps media_path=$path")
+        }
     }
 
     fun videoMetrics(h: WebHost, generation: Int, session: Int, width: Int, height: Int, fps: Int, kbps: Int, dropped: Long) {

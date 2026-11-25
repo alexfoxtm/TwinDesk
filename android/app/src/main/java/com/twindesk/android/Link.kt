@@ -84,6 +84,21 @@ class Link(
 
     private val exec = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "td-link").apply { isDaemon = true } }
     @Volatile private var ws: WebSocket? = null
+    private data class NetemDial(val route: NetemRoute, val socket: WebSocket, val started: Long)
+    @Volatile private var netemDial: NetemDial? = null
+
+    internal fun pairedNetemHost(h: Host): Host? {
+        val route = NetemRoute.configured ?: return null
+        if (hostsKey != "hosts" || route.peer != h.id || h.os != "mac") return null
+        return store.hosts(hostsKey).firstOrNull { it.id == h.id && it.fp == h.fp && it.token == h.token && it.os == "mac" }
+    }
+
+    internal fun netemRoute(marker: Any?): NetemRoute? =
+        netemDial?.takeIf { it.socket === marker && ownsVideoSession(marker) }?.route
+
+    internal fun netemElapsed(marker: Any?): Long? =
+        netemDial?.takeIf { it.socket === marker && ownsVideoSession(marker) }?.let { SystemClock.elapsedRealtime() - it.started }
+
     private var mode = "" // session | pair
     private var nw = ""
     private var pairNonce = "" // pairing through the cable: the nonce the computer sent us over adb
@@ -252,18 +267,26 @@ class Link(
         val viaUsb = usbPort > 0
         val viaBle = blePort > 0
         val wantReclaim = reclaim && !viaUsb && !viaBle
+        val saved = pairedNetemHost(h)
+        val testRoute = NetemRoute.configured?.takeIf { saved != null && !viaUsb && !viaBle }
+        if (saved != null && testRoute == null) return@run // Keep the opted-in pair on the test endpoint.
         if (ws != null && host?.id == h.id && wired == viaUsb && ble == viaBle && reclaimHello == wantReclaim && (state == "connecting" || state == "connected")) return@run
         closeSocket()
         dialAdmit = if (wantReclaim) admit else null
         reclaimHello = wantReclaim
         pair = null
         connectionObservations.select(h.id, h.fp)
-        host = h
+        host = saved ?: h
         wired = viaUsb
         ble = viaBle
         when {
             viaUsb -> open("session", "127.0.0.1", usbPort, h.fp)
             viaBle -> open("session", "127.0.0.1", blePort, h.fp)
+            testRoute != null -> {
+                val start = SystemClock.elapsedRealtime()
+                open("session", testRoute.address, NetemRoute.CONTROL_PORT, h.fp)
+                ws?.let { netemDial = NetemDial(testRoute, it, start) }
+            }
             else -> open("session", h.address, h.port, h.fp)
         }
         setState("connecting", "")
@@ -692,6 +715,7 @@ class Link(
         // rc and resume together: an older host treats hello+resume
         // as a socket move and refuses it. A plain phone hello would take whatever session it holds.
         raw(msg(Proto.T.HELLO, "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "os" to Proto.OS, "token" to h.token, "fx" to 1, "fxPlain" to 1).apply {
+            if (netemDial?.let { it.socket === ws } == true) put("netem", 1)
             if (offerPhotoBackup() && h.os == "mac") put("pb", 1)
             if (!wired) put("fx2", 1)
             if (reclaimHello) { put("rc", 1); put("resume", "0") }
@@ -820,7 +844,7 @@ class Link(
         }
         // Reclaim must be the paired Mac we dialed. A welcome for anyone else is refused, and the
         // pairing is kept (BAD_TOKEN is what forgets it).
-        if (reclaimHello && m.optString("macId") != h.id) {
+        if ((reclaimHello || netemDial != null) && m.optString("macId") != h.id) {
             lastCode = "reclaim"
             message = tr("{name} didn’t confirm this pairing. Use Connect to try again.", "name" to h.name)
             reclaimHello = false
@@ -866,6 +890,7 @@ class Link(
         lastUse = System.currentTimeMillis()
         scheduleBeat(Proto.PING_MS)
         setState("connected", "")
+        netemElapsed(ws)?.let { Log.i("TwinDeskNetem", "welcome_ms=$it") }
         peerBackup = m.opt("pb") == 1
         events.onWelcome(h)
     }
@@ -1112,6 +1137,7 @@ class Link(
         dialAdmit = null
         helloSent = false
         ws = null
+        netemDial = null
         fxToken = ""
         fxPlain = null
         fx2Port = 0
@@ -1147,6 +1173,7 @@ class Link(
         helloSent = false
         val w = ws
         ws = null
+        netemDial = null
         fxToken = ""
         fxPlain = null
         fx2Port = 0

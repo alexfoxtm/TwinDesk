@@ -209,8 +209,28 @@
     doctorRevision++;
   }
 
+  function netemPath(report, inbound, expectedTurn) {
+    const transport = report.get(inbound.transportId);
+    const nominated = [...report.values()].filter(row =>
+      row.type === 'candidate-pair' && row.nominated && row.state === 'succeeded' &&
+      inbound.transportId && row.transportId === inbound.transportId);
+    const pair = transport?.selectedCandidatePairId ? report.get(transport.selectedCandidatePairId)
+      : nominated.length === 1 ? nominated[0] : null;
+    if (pair?.state !== 'succeeded') return 'unverified';
+    const local = report.get(pair.localCandidateId), remote = report.get(pair.remoteCandidateId);
+    if (!local?.candidateType || !remote?.candidateType) return 'unverified';
+    if (local.candidateType !== 'relay') return 'bypass';
+    if (!expectedTurn || !local.url) return 'unverified';
+    if (local.url !== expectedTurn && local.url !== expectedTurn.split('?')[0]) return 'bypass';
+    return local.relayProtocol === 'tcp' && remote.candidateType === 'relay' ? 'proxy-turn-tcp' : 'unverified';
+  }
+
+  function reportsNetem(owner) {
+    return owner?.netem && typeof TD.netemSample === 'function';
+  }
+
   function scheduleDoctor(owner = videoOwner) {
-    if (doctorTimer !== null || typeof TD.videoMetrics !== 'function' || !owner?.playing ||
+    if (doctorTimer !== null || (typeof TD.videoMetrics !== 'function' && !reportsNetem(owner)) || !owner?.playing ||
         document.hidden || !frameAllowed) return;
     const revision = doctorRevision;
     const current = () => revision === doctorRevision && owner === videoOwner && owner.pc === pc &&
@@ -233,8 +253,10 @@
             ? Math.round((inbound[key] - last[key]) * factor / elapsed) : -1;
           const dropped = Number.isSafeInteger(inbound.framesDropped) && inbound.framesDropped >= 0
             ? inbound.framesDropped : -1;
-          TD.videoMetrics(owner.generation, owner.session, video.videoWidth, video.videoHeight,
-            rate('framesDecoded', 1000), rate('bytesReceived', 8), dropped);
+          const fps = rate('framesDecoded', 1000), kbps = rate('bytesReceived', 8);
+          TD.videoMetrics?.(owner.generation, owner.session, video.videoWidth, video.videoHeight, fps, kbps, dropped);
+          if (reportsNetem(owner)) TD.netemSample(owner.generation, owner.session, false, fps, kbps,
+            netemPath(report, inbound, owner.expectedTurn));
           doctorLast = inbound;
         }
       } catch { /* Statistics can be unavailable while the receiver changes tracks. */ }
@@ -249,21 +271,31 @@
     if (!playing) { frameProbe++; cancelDetail(); hidePointerCue(); stopDoctor(); if (owner) owner.playing = false; }
     else if (!frameAllowed) return;
     if (owner && owner === videoOwner && owner.pc === pc && video.srcObject === owner.stream &&
-        (!playing || owner.pc.connectionState === 'connected') && typeof TD.videoState === 'function' && Number.isInteger(owner.generation) && owner.generation > 0 && Number.isInteger(owner.session)) {
+        (!playing || owner.pc.connectionState === 'connected') &&
+        (typeof TD.videoState === 'function' || reportsNetem(owner)) &&
+        Number.isInteger(owner.generation) && owner.generation > 0 && Number.isInteger(owner.session)) {
       owner.playing = playing;
-      TD.videoState(owner.generation, owner.session, playing, video.videoWidth, video.videoHeight);
+      TD.videoState?.(owner.generation, owner.session, playing, video.videoWidth, video.videoHeight);
       if (playing) scheduleDetail();
       if (playing) scheduleDoctor(owner);
     }
   }
 
   function requireCurrentFrame(owner = videoOwner) {
-    if (typeof TD.videoState !== 'function') return;
+    if (typeof TD.videoState !== 'function' && !reportsNetem(owner)) return;
     if (!frameAllowed || !owner || owner !== videoOwner || owner.pc !== pc || video.srcObject !== owner.stream) return;
     const probe = ++frameProbe;
     const current = () => probe === frameProbe && owner === videoOwner && owner.pc === pc && video.srcObject === owner.stream;
     if (typeof video.requestVideoFrameCallback === 'function') {
-      video.requestVideoFrameCallback(() => { if (current()) reportVideo(true, owner); });
+      video.requestVideoFrameCallback(() => {
+        if (!current()) return;
+        reportVideo(true, owner);
+        if (owner.playing && reportsNetem(owner) && !owner.presented && frameAllowed &&
+            owner.pc.connectionState === 'connected' && !document.hidden) {
+          owner.presented = true;
+          TD.netemSample(owner.generation, owner.session, true, -1, -1, 'unverified');
+        }
+      });
     } else {
       const started = video.currentTime;
       let left = 60;
@@ -307,7 +339,14 @@
     closePc();
     captureUnavailable = false;
     // On a USB cable the computer sends its relay (msg.ice): the picture goes through adb.
-    const my = (pc = new RTCPeerConnection(msg.ice || { iceServers: [] }));
+    const netem = typeof TD.netemSample === 'function' && typeof msg._netemTurn === 'string';
+    const scopedRelay = netem && msg.ice?.netem === true && msg.ice.iceTransportPolicy === 'relay' &&
+      Array.isArray(msg.ice.iceServers) &&
+      msg.ice.iceServers.find(server => server?.urls === 'turn:127.0.0.1:43200?transport=tcp');
+    const expectedTurn = scopedRelay ? msg._netemTurn : null;
+    const ice = expectedTurn ? { iceTransportPolicy: 'relay', iceServers: [{ ...scopedRelay, urls: expectedTurn }] }
+      : msg.ice || { iceServers: [] };
+    const my = (pc = new RTCPeerConnection(ice));
     session = msg.session;
     detail = readDetail(msg.detail);
     viewGestures = macViewGestures || !!detail;
@@ -326,7 +365,7 @@
       hidePointerCue();
       pace(e.receiver);
       const stream = new MediaStream([e.track]);
-      videoOwner = { pc: my, stream, generation: viewerGeneration, session: msg.session };
+      videoOwner = { pc: my, stream, generation: viewerGeneration, session: msg.session, netem, expectedTurn };
       video.srcObject = stream;
       video.play().catch(() => {});
     };
@@ -350,8 +389,9 @@
       if (my !== pc) return;
       send({ t: 'rtc.answer', session: msg.session, sdp: my.localDescription.sdp });
     } catch (err) {
-      console.log(`viewer offer failed: ${err.message}`);
-      if (my === pc) setOverlay(t('Couldn’t start the video: {error}', { error: err.message }));
+      const error = netem ? 'WebRTC setup failed' : err.message;
+      console.log(`viewer offer failed: ${error}`);
+      if (my === pc) setOverlay(t('Couldn’t start the video: {error}', { error }));
     }
   }
 

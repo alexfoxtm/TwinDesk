@@ -420,6 +420,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // skipNet: the network just failed to reach it (a stale address after the Wi-Fi went): Bluetooth first.
     private fun connect(h: Host, skipNet: Boolean) {
         resumeUntil = 0
+        link.pairedNetemHost(h)?.let {
+            triedNet = true
+            link.connect(it)
+            return
+        }
         // The computer's screen, input and sound through ADB need wireless debugging: switch it on as
         // we connect (unless that computer said it doesn't use it: all through Native there).
         if (adb.canEnable && !adb.wifiDebugging && adb.neededBy(h) && !bank.pending) adb.enable(true)
@@ -822,18 +827,20 @@ class Core private constructor(val ctx: Context) : Link.Events {
         returnAfter = now + 5000L
         // Without a matching LAN beacon, alternate the paired Tailscale address and stored one.
         // Both keep the same certificate pin and non-takeover hello, including on mobile data.
+        val testRoute = link.pairedNetemHost(h)?.let { NetemRoute.configured }
         var dial = if (seen != null) h.copy(address = seen.address, port = seen.port) else h
         val onTailnet = tailscale && Tailnet.onIt()
-        if (seen == null && onTailnet) {
+        if (testRoute == null && seen == null && onTailnet) {
             val tail = Tailnet.address(h)
             if (tail != null) {
                 returnTailTurn = !returnTailTurn
                 if (returnTailTurn) dial = h.copy(address = tail)
             }
         }
-        val address = dial.address.lowercase().removeSurrounding("[", "]")
+        val address = testRoute?.address ?: dial.address.lowercase().removeSurrounding("[", "]")
+        val port = if (testRoute != null) NetemRoute.CONTROL_PORT else dial.port
         if (Tailnet.isTailnet(address) && !onTailnet) return
-        if (dial.port !in 1..65535 || address.isBlank() || address == "localhost" || address == "::1" || address.startsWith("127.") || address.startsWith("::ffff:127.") || address.startsWith("ble:") || address.startsWith("blp:")) return
+        if (port !in 1..65535 || address.isBlank() || address == "localhost" || address == "::1" || address.startsWith("127.") || address.startsWith("::ffff:127.") || address.startsWith("ble:") || address.startsWith("blp:")) return
         // With any usable route the Mac can come back without a network event. Keep polling it.
         val away = !interactive && seen == null && !onTailnet &&
             (!bleOn || (ble.get(h.id) == null && serve.get(h.id) == null)) && !routeAvailable(address)

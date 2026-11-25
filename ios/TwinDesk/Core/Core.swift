@@ -171,6 +171,10 @@ final class Core: ObservableObject, LinkEvents {
     // One session at a time: a phone's (Peer) ends when this one is welcomed (linkWelcome), and
     // nothing brings a computer back by itself while a phone holds it (resume, invites, the cable).
     func connect(_ h: Computer) {
+        if let paired = link.pairedNetemHost(h) {
+            resumeUntil = .distantPast
+            return link.connect(paired)
+        }
         if usb.computerId == h.id { return connectWired(h, user: true) } // on the cable to it: through the cable
         resumeUntil = .distantPast
         var h = h
@@ -192,6 +196,7 @@ final class Core: ObservableObject, LinkEvents {
 
     // Through a Bluetooth pipe (Ble): the computer's port reached on 127.0.0.1 here.
     func connectBle(_ h: Computer) {
+        if link.pairedNetemHost(h) != nil { return }
         resumeUntil = .distantPast
         ble.openPipe(h.id) { [weak self] port in
             guard let self = self else { return }
@@ -318,6 +323,7 @@ final class Core: ObservableObject, LinkEvents {
 
     // Onto the USB cable (Usb): the same computer at 127.0.0.1, the session moved there.
     func connectWired(_ h: Computer, user: Bool = false) {
+        if link.pairedNetemHost(h) != nil { return }
         if peer.connected && !user { NSLog("TwinDesk: USB: a phone holds the session"); return }
         resumeUntil = .distantPast
         var w = h

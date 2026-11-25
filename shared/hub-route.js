@@ -43,6 +43,7 @@ function ingressOf(s, sock) {
 function viewOf(s) {
   if (!s) return null;
   const c = s.hostUp ? s.ctx : null;
+  const netemIce = c?.netemIce;
   return {
     deviceId: s.id,
     name: s.displayName(),
@@ -55,6 +56,7 @@ function viewOf(s) {
     authed: true,
     ws: c ? c.ws : (s.link ? s.link.ws : null),
     ice: c ? c.ice : null,
+    ...(netemIce ? { netemIce } : {}),
     // Save binds this: the outbound socket. Route.deliver replaces it with the ingress socket
     // when a message names the one it arrived on. Not a protocol field.
     conn: outboundOf(s),

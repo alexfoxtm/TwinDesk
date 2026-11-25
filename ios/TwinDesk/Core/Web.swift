@@ -41,6 +41,13 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKU
     })();
     """
 
+    #if DEBUG
+    private static let netemShim = """
+    window.TD.netemSample = (generation, session, first, fps, kbps, path) =>
+      window.webkit.messageHandlers.td.postMessage({k: 'netemSample', generation, session, first, fps, kbps, path});
+    """
+    #endif
+
     // dir: "web" (the Android app's pages) or "WebIOS" (this app's own: the camera).
     init(_ page: String, core: Core, dir: String = "web") {
         self.page = page
@@ -51,6 +58,11 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKU
         cfg.allowsPictureInPictureMediaPlayback = false
         let uc = WKUserContentController()
         uc.addUserScript(WKUserScript(source: Self.shim, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        #if DEBUG
+        if page == "viewer.html", NetemRoute.configured != nil {
+            uc.addUserScript(WKUserScript(source: Self.netemShim, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
+        #endif
         uc.addUserScript(WKUserScript(source: I18n.shared.webScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         cfg.userContentController = uc
         view = WKWebView(frame: CGRect(x: 0, y: 0, width: 10, height: 10), configuration: cfg)
@@ -122,6 +134,10 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKU
             onEvent("ready", nil)
         case "playing":
             onEvent("playing", ["w": (o["w"] as? NSNumber)?.intValue ?? 0, "h": (o["h"] as? NSNumber)?.intValue ?? 0])
+        #if DEBUG
+        case "netemSample":
+            if page == "viewer.html", message.frameInfo.isMainFrame, NetemRoute.configured != nil { onEvent(k, o) }
+        #endif
         case "haptic": UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         case "tick": UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.6)
         case "event": onEvent((o["name"] as? String) ?? "", nil)

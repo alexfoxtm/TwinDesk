@@ -100,9 +100,10 @@ function u32(n) {
 }
 
 class Turn {
-  constructor({ port, host = '127.0.0.1', password }) {
+  constructor({ port, host = '127.0.0.1', password, allocationsOnly = false }) {
     this.port = port;
     this.host = host;
+    this.allocationsOnly = allocationsOnly;
     this.username = 'td';
     this.password = password || crypto.randomBytes(12).toString('hex');
     this.key = crypto.createHash('md5').update(`${this.username}:${REALM}:${this.password}`).digest();
@@ -176,7 +177,18 @@ class Turn {
 
   _channelData(c, frame) {
     const peer = c.channels.get(frame.readUInt16BE(0));
-    if (peer && c.relay) c.relay.send(frame.subarray(4, 4 + frame.readUInt16BE(2)), peer.port, peer.ip);
+    if (peer && c.relay && this._peerAllowed(peer.ip, peer.port)) {
+      c.relay.send(frame.subarray(4, 4 + frame.readUInt16BE(2)), peer.port, peer.ip);
+    }
+  }
+
+  _peerAllowed(ip, port) {
+    if (!this.allocationsOnly) return true;
+    if (ip !== '127.0.0.1') return false;
+    for (const other of this.conns) {
+      if (other.relay && !other.sock.destroyed && other.relay.address().port === port) return true;
+    }
+    return false;
   }
 
   _send(c, b) {
@@ -261,7 +273,9 @@ class Turn {
         const ch = m.attrs.get(A.CHANNEL_NUMBER);
         const peer = unXorAddr(m.attrs.get(A.XOR_PEER_ADDRESS));
         const num = ch && ch.length >= 2 ? ch.readUInt16BE(0) : 0;
-        if (!peer || num < 0x4000 || num > 0x4fff) return this._error(c, m, 400, 'Bad Request');
+        if (!peer || num < 0x4000 || num > 0x4fff || !this._peerAllowed(peer.ip, peer.port)) {
+          return this._error(c, m, 400, 'Bad Request');
+        }
         c.channels.set(num, peer);
         c.peers.set(`${peer.ip}:${peer.port}`, num);
         return this._ok(c, m, []);
@@ -269,7 +283,7 @@ class Turn {
       case M.SEND: {
         const peer = unXorAddr(m.attrs.get(A.XOR_PEER_ADDRESS));
         const data = m.attrs.get(A.DATA);
-        if (peer && data && c.relay) c.relay.send(data, peer.port, peer.ip);
+        if (peer && data && c.relay && this._peerAllowed(peer.ip, peer.port)) c.relay.send(data, peer.port, peer.ip);
         return;
       }
       default:
@@ -280,6 +294,7 @@ class Turn {
   // From a peer to this allocation's client: ChannelData if the peer has a channel, else a Data
   // indication (no integrity: indications never carry it).
   _fromPeer(c, data, from) {
+    if (!this._peerAllowed(from.address, from.port)) return;
     const num = c.peers.get(`${from.address}:${from.port}`);
     if (num) {
       const h = Buffer.alloc(4);
@@ -293,16 +308,18 @@ class Turn {
 
 // The relay in a worker thread: the same start / ice / stop as Turn.
 class TurnThread {
-  constructor({ port, host = '127.0.0.1' }) {
+  constructor({ port, host = '127.0.0.1', allocationsOnly = false }) {
     this.port = port;
     this.host = host;
+    this.allocationsOnly = allocationsOnly;
     this.password = crypto.randomBytes(12).toString('hex');
     this.worker = null;
   }
 
   start() {
     return new Promise((resolve, reject) => {
-      const w = new Worker(__filename, { workerData: { turn: { port: this.port, host: this.host, password: this.password } } });
+      const w = new Worker(__filename, { workerData: { turn: { port: this.port, host: this.host,
+        password: this.password, allocationsOnly: this.allocationsOnly } } });
       this.worker = w;
       w.once('message', (m) => (m && m.ok ? resolve() : reject(new Error((m && m.error) || 'relay failed'))));
       w.once('error', reject);

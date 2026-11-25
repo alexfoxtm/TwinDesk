@@ -6,7 +6,8 @@
 const assert = require('assert');
 const P = require('../../../shared/protocol.js');
 const { runTests } = require('../../../windows/mesh/test/lib/run.js');
-const { node, close, waitFor, pair, linked, socketCount } = require('./lib/mesh.js');
+const { node, close, waitFor, pair, linked, socketCount, pairPhone, rawConnect } = require('./lib/mesh.js');
+const { Wired } = require('../wired.js');
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -78,6 +79,64 @@ test('two computers that hold each other keep one socket between them (tie-break
     assert.strictEqual(socketCount(small, large), 1, 'exactly one socket between them (never two)');
   } finally {
     close(small, large);
+  }
+});
+
+test('scoped media offer follows only the configured paired WSS session', async () => {
+  const mac = await node('Fixture Mac');
+  const phoneId = 'fixture-netem-phone';
+  const saved = process.env.TWINDESK_NETEM_PHONE;
+  process.env.TWINDESK_NETEM_PHONE = phoneId;
+  const wired = new Wired({ raw: mac.server, peer: mac.hub.facade, adb: { available: false } });
+  let relay;
+  const clients = [];
+  try {
+    const { startRelay } = await import('../../../tools/netem/relay.mjs');
+    relay = await startRelay({ protocol: 'tcp', port: 43196, targetPort: mac.port, rtt: 0, loss: 0, jitter: 0 });
+    const phone = await pairPhone(mac, { id: phoneId });
+    clients.push(phone.client);
+    phone.client.close();
+    await waitFor(() => {
+      const ctx = { authed: true, ws: {}, netemRequested: true,
+        deviceId: phoneId, os: P.OS.ANDROID, transport: 'ip', address: '127.0.0.1' };
+      mac.server.netemIceFor(ctx);
+      return !!ctx.netemIce;
+    }, 'test TURN readiness');
+
+    async function dial(token, requested) {
+      const client = await rawConnect(43196);
+      clients.push(client);
+      assert.equal(P.normFingerprint(client.ws._socket.getPeerCertificate().fingerprint256), mac.fp);
+      client.send({ t: P.T.HELLO, v: P.PROTOCOL_VERSION, id: phoneId, name: 'Fixture Phone',
+        os: P.OS.ANDROID, token, ...(requested ? { netem: 1 } : {}) });
+      return { client, reply: await client.until(m => m.t === P.T.WELCOME || m.t === P.T.ERROR) };
+    }
+
+    const refused = await dial('invalid-fixture-token', true);
+    assert.equal(refused.reply.t, P.T.ERROR);
+    assert.equal(mac.server.clients.has(phoneId), false);
+    const accepted = await dial(phone.token, true);
+    assert.equal(accepted.reply.t, P.T.WELCOME);
+    assert.equal(accepted.reply.macId, mac.id);
+    const peer = mac.server.clients.get(phoneId);
+    assert.equal(peer.ice, null, 'the test media path does not label Wi-Fi as USB');
+    mac.server.send(peer, { t: P.T.RTC_OFFER, session: 1 });
+    const offer = await accepted.client.until(m => m.t === P.T.RTC_OFFER);
+    assert.equal(offer.ice.netem, true);
+    assert.equal(offer.ice.iceServers[0].urls, 'turn:127.0.0.1:43200?transport=tcp');
+    mac.server.send(peer, { t: P.T.AUDIO_OFFER });
+    assert.equal((await accepted.client.until(m => m.t === P.T.AUDIO_OFFER)).ice, undefined);
+
+    const normal = await dial(phone.token, false);
+    assert.equal(normal.reply.t, P.T.WELCOME);
+    assert.equal(mac.server.clients.get(phoneId).ice, null);
+  } finally {
+    if (saved === undefined) delete process.env.TWINDESK_NETEM_PHONE;
+    else process.env.TWINDESK_NETEM_PHONE = saved;
+    clearInterval(wired.timer);
+    for (const client of clients) client.close();
+    await relay?.close();
+    close(mac);
   }
 });
 

@@ -246,7 +246,8 @@ class Server extends EventEmitter {
     const ws = this.socketFor(ctx, msg);
     if (!ws) return false;
     // A phone on the USB cable: its WebRTC goes through the relay too (wired.js).
-    if (ctx.ice && ICE_OFFERS.has(msg.t)) msg = { ...msg, ice: ctx.ice };
+    const ice = (msg.t === P.T.RTC_OFFER && ctx.netemIce) || ctx.ice;
+    if (ice && ICE_OFFERS.has(msg.t)) msg = { ...msg, ice };
     Quiet.sent(ws, msg);
     ws.send(JSON.stringify(msg));
     return true;
@@ -316,7 +317,8 @@ class Server extends EventEmitter {
     ctx.deviceId = deviceId;
     ctx.name = name;
     ctx.os = os;
-    ctx.ice = this.iceFor ? this.iceFor(ctx) : null; // a phone through adb reverse: the relay's RTCConfiguration
+    this.netemIceFor?.(ctx);
+    ctx.ice = !ctx.netemIce && this.iceFor ? this.iceFor(ctx) : null; // USB's RTCConfiguration
     ctx.resumeKey = P.randomHex(16);
     // Fast files (shared/fastfile.js): when its hello asked and this app serves them, a token for them.
     ctx.fx = ctx.fxWanted && this.fxOn ? P.randomHex(16) : '';

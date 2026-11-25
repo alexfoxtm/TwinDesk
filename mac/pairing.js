@@ -257,6 +257,7 @@ class Pairing extends EventEmitter {
     if (Object.values(P.OS).includes(msg.os)) e.os = msg.os;
     e.lastSeen = Date.now();
     this._save();
+    if (msg.netem === 1) ctx.netemRequested = true;
     ctx.fxWanted = msg.fx === 1;
     ctx.fx2Wanted = msg.fx2 === 1; // fast files v2 (shared/fx2.js)
     ctx.fxPlainWanted = msg.fxPlain === 1; // unencrypted file transfers allowed (shared/fastfile.js plainOffer)

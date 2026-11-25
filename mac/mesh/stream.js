@@ -264,7 +264,7 @@ class Stream extends EventEmitter {
         session: s, bitrateMbps: set.bitrateMbps, // Share screen › Quality, for phones too
         sourceId: src.id, width, height, audio,
         detailSource: detailOwner ? { width: target.pixelWidth, height: target.pixelHeight } : null,
-        ice: (this.server.current && this.server.current.ice) || null, // a phone on the USB cable: through the relay
+        ice: this.server.current?.netemIce || this.server.current?.ice || null,
         fps: ScreenCodec.fps(target.hz, set.sharing && set.sharing.fps), // Share screen › Frame rate
         steady: !!(set.sharing && set.sharing.pace === 'steady'), // Playback › Steady (shared/screencodec.js)
       });
