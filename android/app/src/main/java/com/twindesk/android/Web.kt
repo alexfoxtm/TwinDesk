@@ -223,6 +223,9 @@ class Screen(core: Core) : Feature(core) {
     private var refreshFollowups = 0
     private var decodedCapture: Long? = null
     private val pendingTimer = Handler(Looper.getMainLooper())
+    private val viewerRetry = ViewerRetry(SystemClock::elapsedRealtime)
+    private var viewerSize: Pair<Int, Int>? = null
+    private var sharingRoute: Any? = null
     private val pendingTick = Runnable { onPendingClock() }
     @Volatile var viewing = false; private set
     @Volatile var size: Pair<Int, Int>? = null; private set
@@ -289,6 +292,7 @@ class Screen(core: Core) : Feature(core) {
     // ViewerActivity opened: stream to us, at our screen's size (the Mac sizes Extend to it).
     fun attach(h: WebHost, w: Int, hpx: Int) {
         host = h
+        viewerSize = w to hpx
         resetVideo()
         viewing = true
         core.link.netemMark(core.link.sessionMarker(), "viewer_open")
@@ -310,15 +314,43 @@ class Screen(core: Core) : Feature(core) {
     // The same viewer resized: update Extend's shape without restarting sharing or its controls.
     fun resize(h: WebHost, w: Int, hpx: Int) {
         if (host !== h || !viewing || w <= 0 || hpx <= 0) return
+        viewerSize = w to hpx
         if (core.link.ble) waitWifi = w to hpx
         else core.send(msg("screen.policy", "accept" to true, "width" to w, "height" to hpx))
     }
 
     private fun policy(w: Int, hpx: Int) {
-        core.send(msg("screen.policy", "accept" to true, "width" to w, "height" to hpx))
+        val route = core.link.currentTrustedRoute()
+        if (route != null && core.link.sendFor(route, acceptance(w, hpx))) {
+            val h = host
+            pendingTimer.post { if (h != null) watchPresentation(h, route) }
+        }
         // Show the Mac's screen = the Mac starts sharing, in the mode used last.
         if (state == null) wantStart = true else startIfNeeded()
         core.changed()
+    }
+
+    private fun acceptance(w: Int, h: Int) = msg("screen.policy", "accept" to true, "width" to w, "height" to h)
+
+    internal fun noteSharingRoute(m: JSONObject, route: Link.TrustedRoute?) {
+        if (route == null || !core.link.accepts(route)) return
+        sharingRoute = if (m.optBoolean("on")) route.marker else null
+        if (sharingRoute == null) viewerRetry.cancel()
+    }
+
+    private fun watchPresentation(h: WebHost, route: Link.TrustedRoute) {
+        if (host !== h || !viewing || core.link.ble || core.host?.os != "mac" || !core.link.accepts(route)) return
+        viewerRetry.schedule({ after, task -> pendingTimer.postDelayed({ task() }, after) }, {
+            host === h && viewing && !videoPlaying && sharing && sharingRoute === route.marker &&
+                !core.lockView.locked && !core.link.ble && core.link.accepts(route)
+        }) {
+            val (w, height) = viewerSize ?: return@schedule
+            // A repeated true can be only a resize to the Mac. Renew this viewer's policy
+            // without sending screen.ctl or turning host sharing back on.
+            if (core.link.sendFor(route, msg("screen.policy", "accept" to false))) {
+                core.link.sendFor(route, acceptance(w, height))
+            }
+        }
     }
 
     @Volatile private var waitWifi: Pair<Int, Int>? = null
@@ -362,6 +394,8 @@ class Screen(core: Core) : Feature(core) {
 
     fun detach(h: WebHost) {
         if (host !== h) return
+        viewerRetry.cancel()
+        viewerSize = null
         previewSheet(false)
         host = null
         resetVideo(keepDoctor = true)
@@ -510,11 +544,20 @@ class Screen(core: Core) : Feature(core) {
         previewEpoch++
         core.changed()
         val session = previewSession
+        val viewer = this.host
+        val route = core.link.currentTrustedRoute()
         pendingTimer.post {
             decodedCapture = null
             refreshFollowups = 0
             cancelDesktopWait()
             if (previewSession == session) desktopPreviews = DesktopPreview.empty(session)
+            // ViewerActivity can survive a dropped socket without another attach/resize.
+            // Reassert its acceptance on the new authenticated socket only.
+            val (w, h) = viewerSize ?: return@post
+            if (viewer != null && this.host === viewer && viewing && route != null &&
+                !core.link.ble && !core.lockView.locked && core.link.sendFor(route, acceptance(w, h))) {
+                watchPresentation(viewer, route)
+            }
         }
     }
 
@@ -522,6 +565,7 @@ class Screen(core: Core) : Feature(core) {
         if (host !== h || !viewing || videoGeneration != generation || videoSession != session ||
             !core.link.ownsVideoSession(videoMarker)) return
         if (playing && decodedCapture != session.toLong() && w > 0 && height > 0 && !core.lockView.locked) {
+            viewerRetry.cancel()
             core.link.appsViewerReady(videoMarker)
         }
         if (playing) decodedCapture = session.toLong() else if (decodedCapture == session.toLong()) decodedCapture = null
@@ -621,6 +665,8 @@ class Screen(core: Core) : Feature(core) {
         if (close) m.put("close", true)
         if (displayId != null) m.put("displayId", displayId)
         if (share == false) {
+            sharingRoute = null
+            viewerRetry.cancel()
             startedByUs = false
             resetVideo(keepDoctor = true)
             cancelDesktopWait()
@@ -902,6 +948,9 @@ class Screen(core: Core) : Feature(core) {
     override fun onClosed() {
         Notify.cancelScreen(core.ctx)
         state = null
+        sharingRoute = null
+        viewerRetry.cancel()
+        wantStart = false
         resetVideo()
         lastInfo = null
         startedByUs = false

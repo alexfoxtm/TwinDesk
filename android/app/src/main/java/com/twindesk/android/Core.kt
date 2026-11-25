@@ -695,6 +695,10 @@ class Core private constructor(val ctx: Context) : Link.Events {
                             screen.onOffer(m, route)
                             true
                         }
+                        f === screen && t == "screen.state" -> {
+                            screen.noteSharingRoute(m, route)
+                            screen.onMessage(t, m)
+                        }
                         pointerAt >= 0L && f === pointer -> pointer.onPointer(m, pointerAt)
                         else -> f.onMessage(t, m)
                     }
