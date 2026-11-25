@@ -21,16 +21,29 @@ final class Mirror: Feature {
     private var listener: NWListener?
     private var ext: NWConnection? // the broadcast extension, while it shares
     private var rx = Data()
-    private(set) var sharing = false { didSet { if sharing { asking = false } } } // the extension is running
-    var asking = false // the computer asked to see this screen: the app asks how (MirrorAskSheet)
+    struct Request: Identifiable {
+        let id = UUID()
+        fileprivate let session: UUID
+        fileprivate let want: JSON
+        fileprivate var key: String { want.str("key", max: 64) }
+    }
+
+    private(set) var sharing = false // the extension is running
+    private var asking = false
+    var prompt: Request? { asking ? request : nil }
     private(set) var airplayTo: String? // the computer's AirPlay receiver (Screen Mirroring lists it so)
     // A Mac whose AirPlay Receiver is off (want.airplayOff): the sheet says where to turn it on there.
     private(set) var airplayOff = false
     // Where Screen Mirroring goes: the receiver the computer named, else the computer's own name.
     var airplayName: String { airplayTo ?? core.link.host?.name ?? tr("the computer") }
     private(set) var size: (w: Int, h: Int, sw: Int, sh: Int)?
-    private var want: JSON? // the computer's phone.mirror.want, while its window is open
-    private var key = ""
+    private var request: Request?
+    private var pickerRequest: UUID? // a ReplayKit picker opened for this exact request
+    private var want: JSON? { request?.want }
+
+    private func owns(_ session: UUID) -> Bool {
+        core.link.q.sync { core.link.sessionID == session }
+    }
     private var upload: NWConnection? // io only: the stream to the computer, while it goes
     private var uploadGen = 0 // main: which stream is current (an old one's end restarts nothing)
     private var inflight = 0 // io only: bytes handed to the connection, not sent yet
@@ -43,7 +56,14 @@ final class Mirror: Feature {
     // Wi-Fi meanwhile (Core.networkBusy), so the picture has a way once the broadcast starts.
     var starting: Bool { startUntil > Date() }
     private var startUntil = Date.distantPast
-    func willStart() { startUntil = Date().addingTimeInterval(30) }
+    func willStart(for id: UUID?) -> Bool {
+        if let id {
+            guard let request, request.id == id, !asking, !sharing, owns(request.session) else { return false }
+        }
+        pickerRequest = id
+        startUntil = Date().addingTimeInterval(30)
+        return true
+    }
     private var openPending = false // shared while the session was on Bluetooth: told once it's on the network
     private var uploadPending = false // asked for while on Bluetooth: the stream starts once on the network
     private var graceWork: DispatchWorkItem? // the session dropped while sharing: the broadcast waits this long
@@ -69,6 +89,10 @@ final class Mirror: Feature {
     }
 
     private func accept(_ c: NWConnection) {
+        if let id = pickerRequest {
+            pickerRequest = nil
+            guard let request, request.id == id, !sharing, owns(request.session) else { c.cancel(); return }
+        }
         ext?.cancel()
         ext = c
         rx = Data()
@@ -80,6 +104,8 @@ final class Mirror: Feature {
         }
         c.start(queue: .main)
         sharing = true
+        if asking { Notifier.shared.cancel("share") }
+        asking = false
         startUntil = .distantPast
         sendExt(["ack": 1]) // the extension knows the app has it (else it ends the broadcast, never recording for nothing)
         Background.shared.apply() // the app stays up while it relays the screen
@@ -176,10 +202,11 @@ final class Mirror: Feature {
         ext = nil
         size = nil
         endUpload()
-        if core.connected {
-            core.send(msg("phone.mirror.state", ["on": false, "key": key]))
-            core.send(msg("phone.mirror", ["open": false]))
+        if let request {
+            core.link.send(msg("phone.mirror.state", ["on": false, "key": request.key]), session: request.session)
+            core.link.send(msg("phone.mirror", ["open": false]), session: request.session)
         }
+        request = nil
         core.changed()
         // Shared off screen and done: onto Bluetooth now (Core.backgrounded waited for it).
         DispatchQueue.main.async { if !self.core.inFront { self.core.backgrounded() } }
@@ -208,64 +235,70 @@ final class Mirror: Feature {
 
     // ---- the computer ----
 
-    override func onMessage(_ t: String, _ m: JSON) -> Bool {
-        guard t == "phone.mirror.want" else { return false }
+    func receiveWant(_ m: JSON, session: UUID) {
+        guard owns(session) else { return }
+        let next = Request(session: session, want: m)
         if !m.bool("on") {
+            guard let request, request.session == session, next.key.isEmpty || request.key == next.key else { return }
+            self.request = nil
             asking = false
+            Notifier.shared.cancel("share")
             core.changed()
-            want = nil
             endUpload()
             if sharing { sendExt(["stop": 1]) }
-            return true
+            return
         }
         if m.bool("sync") {
-            sendExt(["sync": 1])
-            return true
+            if request?.session == session && (next.key.isEmpty || request?.key == next.key) {
+                sendExt(["sync": 1])
+            }
+            return
         }
-        want = m
-        key = m.str("key", max: 64)
+        if !sharing, let request, request.session == session, request.key == next.key { return }
+        request = next
         let air = m.str("airplay", max: 100)
-        if !air.isEmpty { airplayTo = air }
+        airplayTo = air.isEmpty ? nil : air
         airplayOff = m.bool("airplayOff")
         if sharing { configure() }
         else {
             // The computer asked first (its Show Phone Screen): Start is the person's, on this iPhone.
-            core.send(msg("phone.mirror.state", ["on": false, "waiting": true, "key": key]))
+            core.link.send(msg("phone.mirror.state", ["on": false, "waiting": true, "key": next.key]), session: session)
             asking = true
             core.changed()
             Notifier.shared.shareAsk(core.link.host?.name ?? tr("The computer"), airplay: airplayTo)
         }
-        return true
     }
 
-    // Screen Mirroring (AirPlay) in place of Share Screen: the computer's waiting window closes,
-    // its AirPlay receiver shows the screen.
-    func useAirPlay() {
+    private func finishPrompt(_ id: UUID) -> Request? {
+        guard let prompt, prompt.id == id, !sharing, owns(prompt.session) else { return nil }
         asking = false
-        if want != nil && !sharing {
-            core.send(msg("phone.mirror.state", ["on": false, "airplay": true, "key": key]))
-            want = nil
-        }
         Notifier.shared.cancel("share")
         core.changed()
+        return prompt
     }
 
-    // Not now: the computer's window says so and closes.
-    func decline() {
-        asking = false
-        if want != nil && !sharing {
-            core.send(msg("phone.mirror.state", ["on": false, "error": "Not shared from the \(Device.word)", "key": key]))
-            want = nil
-        }
-        Notifier.shared.cancel("share")
-        core.changed()
+    // Leave the request in place for ReplayKit's eventual broadcast connection.
+    func acceptPrompt(_ id: UUID) -> Bool { finishPrompt(id) != nil }
+
+    // Screen Mirroring (AirPlay) in place of Share Screen.
+    func useAirPlay(_ id: UUID) {
+        guard let prompt = finishPrompt(id) else { return }
+        request = nil
+        core.link.send(msg("phone.mirror.state", ["on": false, "airplay": true, "key": prompt.key]), session: prompt.session)
+    }
+
+    func decline(_ id: UUID) {
+        guard let prompt = finishPrompt(id) else { return }
+        request = nil
+        core.link.send(msg("phone.mirror.state", ["on": false, "error": "Not shared from the \(Device.word)", "key": prompt.key]), session: prompt.session)
     }
 
     // The session dropped (a Wi-Fi blip, the computer restarting): the broadcast waits a little for it
     // to come back (onWelcome) before it stops, and encodes nothing meanwhile.
     override func onClosed() {
         asking = false
-        want = nil
+        request = nil
+        Notifier.shared.cancel("share")
         openPending = false
         uploadPending = false
         endUpload()
@@ -279,7 +312,8 @@ final class Mirror: Feature {
     }
 
     private func configure() {
-        guard let w = want else { return }
+        guard let request, owns(request.session) else { return }
+        let w = request.want
         sendExt(["maxSize": w.int("maxSize"), "bitrate": w.int("bitrate", 8_000_000), "fps": min(60, w.int("fps", 30)), "want": 1, "sync": 1])
         if core.link.viaBle { uploadPending = true; core.needNetwork() } // no picture through Bluetooth (networkBack)
         else { startUpload() }
@@ -287,8 +321,8 @@ final class Mirror: Feature {
     }
 
     private func sendState() {
-        guard want != nil, let s = size else { return }
-        core.send(msg("phone.mirror.state", ["on": true, "key": key, "w": s.w, "h": s.h, "sw": s.sw, "sh": s.sh]))
+        guard let request, let s = size else { return }
+        core.link.send(msg("phone.mirror.state", ["on": true, "key": request.key, "w": s.w, "h": s.h, "sw": s.sw, "sh": s.sh]), session: request.session)
     }
 
     // ---- the stream: one long POST, its body fed as packets come ----
@@ -300,12 +334,17 @@ final class Mirror: Feature {
 
     private func startUpload() {
         endUpload()
-        guard let req = core.link.sessionRequest("/twindesk/mirror", method: "POST"), let u = req.url, let host = u.host, let port = u.port,
+        guard let request else { return }
+        let link = core.link
+        let target: (URLRequest, String)? = link.q.sync {
+            guard link.sessionID == request.session, let req = link.sessionRequest("/twindesk/mirror", method: "POST") else { return nil }
+            return (req, link.seenFp.isEmpty ? (link.host?.fp ?? "") : link.seenFp)
+        }
+        guard let (req, pin) = target, let u = req.url, let host = u.host, let port = u.port,
               let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
-            core.send(msg("phone.mirror.state", ["on": false, "error": "the connection closed", "key": key]))
+            link.send(msg("phone.mirror.state", ["on": false, "error": "the connection closed", "key": request.key]), session: request.session)
             return
         }
-        let pin = core.link.seenFp.isEmpty ? (core.link.host?.fp ?? "") : core.link.seenFp
         let tls = NWProtocolTLS.Options()
         sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, trust, done in
             let fp = Link.leafFingerprint(sec_trust_copy_ref(trust).takeRetainedValue())
@@ -317,7 +356,7 @@ final class Mirror: Feature {
         uploadGen += 1
         let gen = uploadGen
         let head = "POST /twindesk/mirror HTTP/1.1\r\nHost: \(host):\(port)\r\nContent-Type: application/octet-stream\r\n"
-            + "x-twindesk-mirror: \(key)\r\nTransfer-Encoding: chunked\r\n\r\n"
+            + "x-twindesk-mirror: \(request.key)\r\nTransfer-Encoding: chunked\r\n\r\n"
         let first = [sessionPacket, configPacket].compactMap { $0 }
         c.stateUpdateHandler = { [weak self] st in
             guard let self = self else { return }

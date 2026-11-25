@@ -10,8 +10,9 @@ enum ShareScreen {
     private static var picker: RPSystemBroadcastPickerView?
 
     // The sheet, as if its own button was tapped (it has no API to open it).
-    static func open() {
-        Core.shared.mirror.willStart() // the sheet takes the app out of focus: stay on Wi-Fi meanwhile
+    static func open(for request: UUID? = nil) {
+        // The sheet takes the app out of focus: stay on Wi-Fi meanwhile.
+        guard Core.shared.mirror.willStart(for: request) else { return }
         let p = picker ?? RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 44, height: 44))
         p.preferredExtension = extensionId
         p.showsMicrophoneButton = false

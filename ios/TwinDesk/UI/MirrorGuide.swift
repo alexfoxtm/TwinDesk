@@ -7,7 +7,9 @@ import SwiftUI
 import UIKit
 
 struct MirrorAskSheet: View {
+    let request: Mirror.Request
     @EnvironmentObject var core: Core
+    @EnvironmentObject private var ui: AppUI
     @Environment(\.dismiss) private var dismiss
     @State private var how = false
 
@@ -25,15 +27,16 @@ struct MirrorAskSheet: View {
                 }
                 VStack(spacing: 10) {
                     Button {
+                        guard core.mirror.acceptPrompt(request.id) else { return }
                         dismiss()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { ShareScreen.open() }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { ShareScreen.open(for: request.id) }
                     } label: {
                         Label(tr("Share Screen"), systemImage: "record.circle").frame(maxWidth: .infinity)
                     }
                     .primaryButton().controlSize(.large)
                     Button {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) { how = true }
-                        core.mirror.useAirPlay()
+                        core.mirror.useAirPlay(request.id)
                     } label: {
                         Label(tr("Screen Mirroring"), systemImage: "airplayvideo").frame(maxWidth: .infinity)
                     }
@@ -50,7 +53,7 @@ struct MirrorAskSheet: View {
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                     Button(tr("Done")) { dismiss() }.secondaryButton()
                 } else {
-                    Button(tr("Not Now"), role: .cancel) { core.mirror.decline(); dismiss() }
+                    Button(tr("Not Now"), role: .cancel) { core.mirror.decline(request.id); dismiss() }
                         .foregroundStyle(.secondary)
                 }
             }
@@ -59,7 +62,10 @@ struct MirrorAskSheet: View {
             .frame(maxWidth: .infinity)
         }
         .background(Backdrop())
-        .onDisappear { if core.mirror.asking { core.mirror.decline() } }
+        .onDisappear {
+            // Covers and pairing can temporarily take precedence over this sheet.
+            if core.pair == nil && ui.cover == nil { core.mirror.decline(request.id) }
+        }
     }
 }
 
