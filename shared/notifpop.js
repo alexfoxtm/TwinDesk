@@ -6,7 +6,7 @@
 // One window per notification, stacked in the corner the system's use (top right on a Mac and
 // Linux, bottom right on Windows), at most MAX; they never take the keyboard until Reply is clicked.
 //
-//   const pop = new NotifPop({ corner, getLanguage, act(id, i), reply(id, text), dismiss(id), open(item), copy(code) })
+//   const pop = new NotifPop({ corner, getLanguage, act(id, i), reply(item, text), dismiss(id), open(item), copy(code) })
 //   pop.show(item, { icon, from, code })   new, or the same id again: changed in place
 //   pop.gone(id)                           gone from the phone: its window goes
 //   pop.closeAll()
@@ -74,7 +74,7 @@ class NotifPop {
     ipcMain.on('notifpop:reply', (e, text) => {
       const w = of(e);
       if (!w || !this.opts.reply || typeof text !== 'string' || !text.trim()) return;
-      this.opts.reply(w.id, text.slice(0, 5000));
+      this.opts.reply(w.item, text.slice(0, 5000));
       this._close(w);
     });
     ipcMain.on('notifpop:copy', (e) => {

@@ -9,7 +9,7 @@ const path = require('path');
 const P = require('../shared/protocol.js');
 const { IconsIn } = require('../shared/notificon.js');
 const { otpOf } = require('../shared/otp.js');
-const { actionsOf, messageIdentityOf, withPhoneActions, hidden, present } = require('../shared/notifacts.js');
+const { actionsOf, messageIdentityOf, bindReply, replyHistory, withPhoneActions, hidden, present } = require('../shared/notifacts.js');
 const { richOf, popupOn } = require('../shared/notifpop.js');
 
 const xmlEsc = (t) => String(t).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
@@ -50,7 +50,7 @@ class Notifs extends EventEmitter {
       this._watch();
       this.onChange();
     });
-    link.on(T.NOTIF, (m) => this._show(m));
+    link.on(T.NOTIF, (m, ws) => this._show(m, this.link.current?.deviceId, ws));
     link.on('notif.gone', (m) => this.gone(m.id)); // gone from the phone (shared/notifacts.js)
     this.helper.on('ready', () => this._watch());
     this.helper.on('event', (name, ev) => name === 'notif' && this._local(ev));
@@ -126,7 +126,7 @@ class Notifs extends EventEmitter {
   }
 
   // Windows toasts have no subtitle: the first line is "<appName> · <peer>".
-  _show(m) {
+  _show(m, from, socket) {
     if (!this.cfg.receive || hidden(this, m)) return; // an app set to Hide: not kept either
     const peer = this.peerName();
     const appName = str(m.appName, 100);
@@ -141,13 +141,15 @@ class Notifs extends EventEmitter {
       at: Math.round(Number(m.at)) || Date.now(),
       reply: m.reply === true, // a phone chat's: answered with reply() (notif.reply)
       actions: actionsOf(m), // its buttons, clicked from Overview (act())
-      ...messageIdentityOf(m, this.link.current?.deviceId), ...richOf(m), // a picture, the sender's picture, a progress bar (TwinDesk's window shows them)
+      ...messageIdentityOf(m, socket && socket === this.replySocket(from) && from), ...richOf(m), // a picture, the sender's picture, a progress bar (TwinDesk's window shows them)
     };
     if (item.app && typeof m.icon === 'string' && m.icon.startsWith('data:image/') && m.icon.length < 200000) {
       this.historyIcons.delete(item.app);
       this.historyIcons.set(item.app, m.icon);
       if (this.historyIcons.size > 60) this.historyIcons.delete(this.historyIcons.keys().next().value);
     }
+    if (from) item.from = from;
+    bindReply(item, from, socket && socket === this.replySocket(from) ? socket : null, m);
     this.history = [item, ...(this.history || []).filter((x) => x.id !== item.id)].slice(0, 50);
 
     // TwinDesk's window (Reply, buttons, picture, progress), the system's toast, or none (quiet).
@@ -179,15 +181,11 @@ class Notifs extends EventEmitter {
     this.onChange();
   }
 
-  // An answer to a phone's notification (a chat's Reply), typed here: the phone sends it with the app.
-  reply(id, text) {
-    const item = (this.history || []).find((h) => h.id === id);
-    if (!item || !item.reply || typeof text !== 'string' || !text.trim()) return false;
-    this.link.send({ t: 'notif.reply', id: str(id, 200), text: text.slice(0, 5000) });
-    item.replies = [...(item.replies || []), { text: text.slice(0, 5000), at: Date.now() }].slice(-20); // shown under it here
-    this.onChange();
-    return true;
+  replySocket(from) {
+    return this.link.current?.deviceId === from ? this.link.outbound() : null;
   }
+
+  sendReply(_item, m) { return this.link.send(m); }
 
   send(m) { this.link.send(m); }
   changed() { this.onChange(); }
@@ -204,7 +202,7 @@ class Notifs extends EventEmitter {
       sent: this.sent,
       shown: this.shown,
       apps: [...this.apps.values()].sort((a, b) => b.at - a.at).slice(0, 40),
-      history: this.history || [],
+      history: replyHistory(this),
       historyIcons: Object.fromEntries([...new Set(this.history.map((h) => h.app))]
         .filter((a) => this.historyIcons.has(a)).map((a) => [a, this.historyIcons.get(a)])),
     };

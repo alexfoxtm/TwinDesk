@@ -8,7 +8,7 @@ const { test } = require('node:test');
 
 const source = fs.readFileSync(require.resolve('../ui-messages.js'), 'utf8');
 
-function inbox(state, api = {}) {
+function inbox(state, api = {}, globals = {}) {
   const received = new Map();
   const asked = [];
   const replies = [];
@@ -38,7 +38,7 @@ function inbox(state, api = {}) {
     onShown() {},
     onDeviceChange() {},
   };
-  vm.runInNewContext(source, { UI, window: {}, clearTimeout, setTimeout, localStorage: { getItem() {} } });
+  vm.runInNewContext(source, { UI, window: {}, clearTimeout, setTimeout, localStorage: { getItem() {} }, ...globals });
   const body = el('section');
   const paint = tab.build(body, {});
   const [, pills, , texts, chat] = body.children.slice(api.googleMessages ? 1 : 0);
@@ -262,7 +262,7 @@ test('one reply uses its exact Google conversation or an independently verified 
   assert.equal(texts().length, 1);
   assert.equal(texts()[0].to, dest);
   assert.equal(texts()[0].phone.session, 1);
-  state.googleMessages = { owner: phone, enabled: true, state: 'helper-error', rows: [] };
+  state.googleMessages = { owner: phone, enabled: true, state: 'keychain-error', rows: [] };
   paint(state);
   await reply();
   assert.equal(google.length, 3);
@@ -277,4 +277,128 @@ test('one reply uses its exact Google conversation or an independently verified 
   paint(state);
   await reply();
   assert.equal(texts().length, 2, 'carrier permission still gates the fallback');
+});
+
+test('live notification and structured Reply precede SMS, with unverified titles scoped to device and app', async () => {
+  const phone = 'fixture-phone';
+  const dest = '+12025550100';
+  const app = 'com.google.android.apps.messaging';
+  const active = { id: 'notice', app, title: 'Fixture', at: 200, body: 'Fixture body',
+    from: phone, messagePhone: phone, messagePeer: dest, messageAt: 100, reply: true, replySession: 'session-one' };
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: phone, session: 1, messages: true, perm: { messages: { missing: [] } } },
+    notifs: { history: [active,
+      { ...active, id: 'unknown-1', messagePeer: null, reply: false },
+      { ...active, id: 'unknown-2', messagePeer: null, reply: false },
+      { ...active, from: 'other-phone', id: 'unknown-3', messagePeer: null, reply: false },
+    ] },
+  };
+  const { received, asked, replies, paint, chat, rows } = inbox(state);
+  paint(state);
+  received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [dest], at: 100 }] });
+  assert.equal(rows().length, 3, 'one verified contact and one unverified title per device');
+  rows().at(-1).onclick();
+  const composer = chat.children[1].children[3];
+  async function reply() {
+    composer.children[2].children[1].value = 'Fixture reply';
+    await composer.children[3].onclick();
+  }
+  const texts = () => asked.filter((x) => x.t === 'sms.send');
+  await reply();
+  assert.equal(replies.length, 1);
+  assert.ok(replies[0].id === active.id && replies[0].from === phone && replies[0].replySession === active.replySession);
+  assert.equal(texts().length, 0);
+  state.chatsMessaging = true;
+  state.chats = [{ key: 'structured', app, name: 'Fixture', messagePeer: dest, from: phone,
+    replySession: 'r:fixture', reply: true, at: 200, items: [{ text: 'Fixture body', at: 100 }] }];
+  paint(state);
+  await reply();
+  assert.equal(replies.length, 2);
+  assert.ok(replies[1].chat === 'structured' && replies[1].from === phone && replies[1].replySession === 'r:fixture');
+  assert.equal(texts().length, 0);
+  state.chats[0].reply = false;
+  paint(state);
+  await reply();
+  assert.equal(texts().length, 1);
+});
+
+test('a not-dispatched result for a replaced Google conversation does not send by SMS', async () => {
+  const phone = 'fixture-phone';
+  const dest = '+12025550100';
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: phone, session: 1, messages: true, perm: { messages: {} } },
+    googleMessages: {
+      owner: phone, state: 'connected', enabled: true,
+      rows: [{ id: 'first', addrs: [dest], reply: true, at: 100 }],
+      history: { chat: 'first', loaded: true, items: [] },
+    },
+  };
+  let settle;
+  const { asked, paint, chat, rows } = inbox(state, {
+    googleMessages: (msg) => msg.op === 'send' ? new Promise((resolve) => { settle = resolve; }) : Promise.resolve(true),
+  });
+  paint(state);
+  rows()[0].onclick();
+  const composer = chat.children[1].children[3];
+  composer.children[2].children[1].value = 'Fixture draft';
+  const sending = composer.children[3].onclick();
+  state.googleMessages.rows[0].id = 'replacement';
+  state.googleMessages.history.chat = 'replacement';
+  paint(state);
+  settle('not-dispatched');
+  await sending;
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0);
+  assert.ok(composer.children[2].children[1].value);
+});
+
+test('late photo conversion cannot populate or send in another conversation or replacement phone session', async () => {
+  const phone = 'fixture-phone';
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: phone, session: 1, messages: true, perm: { messages: { mms: true } } },
+  };
+  let finish;
+  class FileReader {
+    readAsDataURL() { finish = () => { this.result = 'data:image/jpeg;base64,AA=='; this.onload(); }; }
+  }
+  class Image {
+    constructor() { this.naturalWidth = this.naturalHeight = 1; }
+    set src(_) { this.onload(); }
+  }
+  const document = { createElement: () => ({
+    getContext: () => ({ fillRect() {}, drawImage() {} }), toDataURL: () => 'data:image/jpeg;base64,AA==',
+  }) };
+  const { received, asked, paint, chat, rows } = inbox(state, {}, { FileReader, Image, document });
+  const load = () => received.get('sms.threads')({ items: [
+    { id: 'first', addrs: ['+12025550100'], at: 200 },
+    { id: 'second', addrs: ['+12025550101'], at: 100 },
+  ] });
+  paint(state);
+  load();
+  rows()[0].onclick();
+  const composer = chat.children[1].children[3];
+  const input = composer.children[4];
+  const chip = composer.children[2].children[0];
+  const start = () => { input.files = [{ type: 'image/jpeg' }]; input.onchange(); };
+  const end = async () => { finish(); await Promise.resolve(); };
+  start();
+  rows()[1].onclick();
+  await end();
+  assert.equal(chip.hidden, true);
+  start();
+  state.hub.session++;
+  paint(state);
+  load();
+  rows()[1].onclick();
+  await end();
+  assert.equal(chip.hidden, true);
+  await composer.children[3].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0);
+  start();
+  await end();
+  assert.equal(chip.hidden, false);
+  await composer.children[3].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 1);
 });

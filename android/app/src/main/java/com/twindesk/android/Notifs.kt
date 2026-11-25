@@ -88,7 +88,7 @@ class Notifs(core: Core) : Feature(core) {
     @Volatile private var chatsWanted = false
     @Volatile private var messageChatRoute: Link.TrustedRoute? = null
     private val messageReplies = LinkedHashMap<String, MessageReply>() // Android notification key -> current offer
-    private class MessageReply(val id: String, val pkg: String, val postedAt: Long, val bind: ReplyBind, val input: android.app.RemoteInput)
+    private class MessageReply(val id: String, val pkg: String, val postedAt: Long, val peer: String?, val bind: ReplyBind, val input: android.app.RemoteInput)
     private val chatApps = setOf(
         "com.whatsapp", "com.whatsapp.w4b", "com.instagram.android", "org.telegram.messenger", "org.telegram.messenger.web",
         "org.thunderdog.challegram", "com.facebook.orca", "org.thoughtcrime.securesms",
@@ -99,7 +99,7 @@ class Notifs(core: Core) : Feature(core) {
         override fun removeEldestEntry(e: MutableMap.MutableEntry<String, ActionBind>?) = size > 80
     }
     private class ActionBind(val ticket: SensitiveNotif.ActionTicket, val actions: List<Notification.Action>)
-    private class ReplyBind(val ticket: SensitiveNotif.ActionTicket, val action: Notification.Action)
+    private class ReplyBind(val ticket: SensitiveNotif.ActionTicket, val action: Notification.Action, val version: String = "")
     private val recentSent = object : LinkedHashMap<String, Long>(32, 0.75f, true) {
         override fun removeEldestEntry(e: MutableMap.MutableEntry<String, Long>?) = size > 64
     }
@@ -246,9 +246,9 @@ class Notifs(core: Core) : Feature(core) {
         )
     }
 
-    private fun rememberActions(key: String, ticket: SensitiveNotif.ActionTicket, buttons: List<Notification.Action>, reply: Notification.Action?) {
+    private fun rememberActions(key: String, ticket: SensitiveNotif.ActionTicket, buttons: List<Notification.Action>, reply: Notification.Action?, version: String) {
         synchronized(actions) { actions[key] = ActionBind(ticket, buttons) }
-        if (reply != null) synchronized(replies) { replies[key] = ReplyBind(ticket, reply) }
+        if (reply != null) synchronized(replies) { replies[key] = ReplyBind(ticket, reply, version) }
         else synchronized(replies) { replies.remove(key) }
     }
 
@@ -416,6 +416,7 @@ class Notifs(core: Core) : Feature(core) {
         fun address(person: android.app.Person?) = messageAddress(person)?.let { MessageChat.e164(it, country) ?: it }
         val peer = if (group) null else entries.filter { people[it] != null || it.getCharSequence("sender") != null }
             .map { address(people[it]) }.distinct().singleOrNull()
+        val verifiedPeer = if (canMatch) currentMessagePeer(sbn, country) else null
         val occurrences = mutableMapOf<String, Int>()
         val items = JSONArray()
         for (entry in entries) {
@@ -448,7 +449,7 @@ class Notifs(core: Core) : Feature(core) {
         val payload = msg("chat.conv", "key" to key, "app" to pkg, "appName" to appNameOf(pkg), "source" to "messaging",
             "name" to name.take(200), "group" to group, "id" to id, "reply" to (reply != null), "items" to items)
             .apply {
-                if (canMatch) MessageChat.e164(peer, country)?.let { put("messagePeer", it) }
+                verifiedPeer?.let { put("messagePeer", it) }
                 avatarOf(n)?.let { put("avatar", it) }
             }
         synchronized(messageReplies) {
@@ -459,7 +460,7 @@ class Notifs(core: Core) : Feature(core) {
                     val old = messageReplies.remove(messageReplies.keys.first())!!
                     core.link.sendFor(old.bind.ticket.marker, msg("chat.gone", "id" to old.id))
                 }
-                messageReplies[sbn.key] = MessageReply(id, pkg, sbn.postTime, ReplyBind(SensitiveNotif.ticket(plan), reply.first), reply.second)
+                messageReplies[sbn.key] = MessageReply(id, pkg, sbn.postTime, verifiedPeer, ReplyBind(SensitiveNotif.ticket(plan), reply.first), reply.second)
             }
             if (!messageChatAllowed(pkg) || !commit(plan) || !core.link.sendFor(plan.recipient.marker, payload)) {
                 messageReplies.remove(sbn.key)
@@ -470,6 +471,14 @@ class Notifs(core: Core) : Feature(core) {
     private fun messageAddress(person: android.app.Person?) =
         person?.uri?.takeIf { it.startsWith("tel:", ignoreCase = true) }
             ?.substring(4)?.let { MessageChat.destination(android.net.Uri.decode(it)) }
+
+    private fun currentMessagePeer(sbn: StatusBarNotification, country: String = MessageChat.simCountry(core.ctx)): String? {
+        val x = sbn.notification.extras
+        if (sbn.user != android.os.Process.myUserHandle() || x.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION, true)) return null
+        return messages(x)?.filterIsInstance<Bundle>().orEmpty()
+            .filter { senderOf(it) != null || it.getCharSequence("sender") != null }
+            .map { MessageChat.e164(messageAddress(senderOf(it)), country) }.distinct().singleOrNull()
+    }
 
     // Another app's conversation (Viber, LINE, Discord, Slack…): a message notification in Android's
     // conversation style, from anything but a texting app (those are Messages' texts).
@@ -541,7 +550,7 @@ class Notifs(core: Core) : Feature(core) {
         // a progress bar instead: once a second, and always its end. Claimed before the picture
         // is built, and given back when the send is dropped, so the next peer is not suppressed.
         val nowMs = System.currentTimeMillis()
-        val hash = "$pkg|$title|$text"
+        val hash = if (MessageChat.isApp(pkg)) "${sbn.key}|${sbn.postTime}|$title|$text" else "$pkg|$title|$text"
         if (live != null) {
             synchronized(liveAt) {
                 if (!live.optBoolean("done") && nowMs - (liveAt[sbn.key] ?: 0L) < 1000L) return
@@ -567,23 +576,24 @@ class Notifs(core: Core) : Feature(core) {
 
         val icon = if (synchronized(iconsSent) { pkg in iconsSent }) null else appIcon(pkg)
         val actionTitles = out.actions
+        val replyVersion = if (MessageChat.isApp(pkg) && reply != null && !out.redacted) {
+            java.util.UUID.randomUUID().toString()
+        } else ""
         val payload = msg(
             Proto.T.NOTIF, "id" to sbn.key.take(200), "app" to pkg, "appName" to appName,
             "title" to title.take(300), "subtitle" to out.subtitle.take(200),
             "body" to text.take(1000), "at" to sbn.postTime,
         ).apply {
             if (chatsWanted && !hide && !out.redacted && plan.includeSensitive && core.hub.messagesOn &&
+                core.link.currentTrustedRoute()?.marker === captured.marker &&
                 sbn.user == android.os.Process.myUserHandle() && MessageChat.projects(pkg, n, sbn.isOngoing || live != null) &&
                 !x.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION, true)) {
                 val entries = messages(x)?.filterIsInstance<Bundle>().orEmpty()
                 val last = entries.lastOrNull()
-                val country = MessageChat.simCountry(core.ctx)
-                val addresses = entries.filter { senderOf(it) != null || it.getCharSequence("sender") != null }
-                    .map { MessageChat.e164(messageAddress(senderOf(it)), country) }.distinct()
                 val at = last?.getLong("time") ?: 0
                 if (last != null && at > 0 && last.getCharSequence("text")?.toString() == text && text.length <= 1000 &&
                     !last.containsKey("uri") && !last.containsKey("type") && senderOf(last) != null) {
-                    addresses.singleOrNull()?.let {
+                    currentMessagePeer(sbn)?.let {
                         put("messagePeer", it)
                         put("messageAt", at)
                     }
@@ -591,6 +601,7 @@ class Notifs(core: Core) : Feature(core) {
             }
             if (icon != null) put("icon", icon)
             if (reply != null && !out.redacted) put("reply", true) // the computer may answer it (notif.reply)
+            if (replyVersion.isNotEmpty()) put("replyVersion", replyVersion)
             if (actionTitles.isNotEmpty()) put("actions", jsonArray(actionTitles))
             if (live != null) put("live", live)
             if (out.pictures) {
@@ -605,7 +616,7 @@ class Notifs(core: Core) : Feature(core) {
         if (!commit(plan)) return releaseClaim()
         val ticket = SensitiveNotif.ticket(plan)
         val replyBind = if (reply != null && !out.redacted) reply else null
-        rememberActions(sbn.key, ticket, if (out.redacted) emptyList() else kept, replyBind)
+        rememberActions(sbn.key, ticket, if (out.redacted) emptyList() else kept, replyBind, replyVersion)
         // Checked again after the buttons are stored and immediately before the socket write.
         if (!chatsWanted || !core.hub.messagesOn || core.store.flag("notifs.hideText", false)) {
             payload.remove("messagePeer")
@@ -663,7 +674,7 @@ class Notifs(core: Core) : Feature(core) {
             runCatching {
                 val action = offer.bind.action
                 val current = listener.getActiveNotifications(arrayOf(key)).singleOrNull() ?: return
-                if (current.postTime != offer.postedAt || current.packageName != offer.pkg) return
+                if (current.postTime != offer.postedAt || current.packageName != offer.pkg || currentMessagePeer(current) != offer.peer) return
                 val n = current.notification
                 if (!MessageChat.projects(offer.pkg, n, current.isOngoing || liveOf(n) != null)) return
                 val (currentAction, input) = MessageChat.reply(n) ?: return
@@ -729,7 +740,8 @@ class Notifs(core: Core) : Feature(core) {
                     return true
                 }
                 val bind = synchronized(replies) { replies[key] } ?: return true
-                if (text.isEmpty() || !allowAction(bind.ticket)) return true
+                if (text.isEmpty() || !allowAction(bind.ticket) ||
+                    (m.has("replyVersion") && m.optString("replyVersion") != bind.version)) return true
                 val a = bind.action
                 runCatching {
                     val intent = android.content.Intent()

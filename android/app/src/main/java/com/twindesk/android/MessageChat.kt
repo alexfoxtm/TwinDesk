@@ -100,6 +100,11 @@ internal object MessageChat {
     fun incomingMmsAddress(from: String?, threadPeer: String?, country: String = ""): String? =
         from?.takeIf { sameDestination(it, threadPeer, country) }
 
+    fun incomingMmsParticipants(from: String, recipients: List<String>, country: String): List<String> {
+        if (from.isBlank() || recipients.any { sameDestination(from, it, country) }) return emptyList()
+        return if (recipients.size <= 1) listOf(from) else (listOf(from) + recipients).distinct()
+    }
+
     data class Candidate(val id: String, val at: Long, val match: String)
     data class Row(val at: Long, val match: String, val mms: Boolean, val normalizedMatch: String? = null)
 

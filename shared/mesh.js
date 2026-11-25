@@ -26,6 +26,13 @@ function plain(msg) {
   return out;
 }
 
+// Android exposes these fields for local thread assembly and its own Reply only.
+function relayItem(msg) {
+  if (msg.t !== P.T.NOTIF) return msg;
+  const { messagePeer, messageAt, messagePhone, replyVersion, ...relay } = msg;
+  return relay;
+}
+
 // Pool: fan-out, dedupe and relay of pooled items (clipboard, notifications).
 //
 //   new Pool({ name, selfId, peers, seenLimit, maxHops, start })
@@ -56,7 +63,7 @@ class Pool {
   publish(msg) {
     this._seq += 1;
     const peers = this._peers();
-    const stamped = Object.assign({}, plain(msg), {
+    const stamped = Object.assign({}, plain(relayItem(msg)), {
       o: this.selfId,
       s: this._seq,
       d: peers.map((p) => p.id),
@@ -67,7 +74,7 @@ class Pool {
     const sent = [];
     for (const p of peers) {
       if (p.pool === false) continue;
-      const ok = p.send(p.mesh ? stamped : plain(msg));
+      const ok = p.send(p.mesh ? stamped : plain(stamped));
       if (ok) sent.push(p.id);
     }
     return { msg: stamped, sent };
@@ -111,12 +118,13 @@ class Pool {
     const relayed = [];
     const hops = (m.h || 0) + 1;
     if (hops <= this.maxHops) {
-      const out = Object.assign({}, m, { h: hops });
+      const relay = relayItem(m);
+      const out = Object.assign({}, relay, { h: hops });
       for (const p of this._peers()) {
         if (p.id === fromId || p.id === m.o || p.id === this.selfId) continue;
         if (p.pool === false) continue;
         if (m.d && m.d.includes(p.id)) continue;
-        const ok = p.send(p.mesh ? out : plain(m));
+        const ok = p.send(p.mesh ? out : plain(relay));
         if (ok) {
           relayed.push(p.id);
           this._stats.relayed += 1;

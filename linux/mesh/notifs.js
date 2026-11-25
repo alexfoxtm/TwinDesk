@@ -15,7 +15,7 @@ const { IconsIn } = require('../../shared/notificon.js');
 
 const electronNotification = electron.Notification; // undefined under plain node (tests inject one)
 const { NotifGuard, isOwn } = require('../../shared/notif-guard.js');
-const { withMeshPhoneActions, hidden, present } = require('../../shared/notifacts.js');
+const { noticeScope, withMeshPhoneActions, hidden, present } = require('../../shared/notifacts.js');
 
 const T = P.T;
 const str = (v, n = 500) => (typeof v === 'string' ? v.slice(0, n) : '');
@@ -67,7 +67,7 @@ class Notifs extends EventEmitter {
     this.mon = null; // the dbus-monitor process while watching
 
     const bus = this.bus;
-    bus.on(T.NOTIF, (m, from) => this._show(m, from));
+    bus.on(T.NOTIF, (m, from, ws) => this._show(m, from, ws));
     bus.on('notif.gone', (m, from) => { const h = (this.history || []).find((x) => x.id === m.id); if (h && h.from === from) this.gone(m.id); }); // gone from the phone (shared/notifacts.js)
     bus.on(T.NOTIF_POLICY, (m, from) => {
       const e = this.mesh.get(from);
@@ -244,16 +244,17 @@ class Notifs extends EventEmitter {
   }
 
   // A notification from another device: relayed by the pool, shown here once when fresh.
-  _show(m, from) {
+  _show(m, from, ws) {
     if (!this.cfg.receive) return;
     const r = this.pool.receive(from, m);
     if (!r.fresh || !this.Notification.isSupported()) return;
-    if (this.guard.repeat('in', m.app, m.title, m.body)) return; // a repeat of what was just shown
+    if (this.guard.repeat('in', m.app, m.title, m.body, noticeScope(m, r.msg.o))) return; // a repeat of what was just shown
     if (hidden(this, m)) return; // an app set to Hide (Notifications): not kept either
     const origin = this._nameOf(r.msg.o, m.on, from);
     const appName = str(m.appName, 100);
     // The recent ones, for Overview and Messages' chat apps; buttons and Reply go back to the device.
-    const item = this.remember(m, { from, origin: r.msg.o || from, on: origin, direct: !r.msg.o || r.msg.o === from });
+    const socket = ws && ws === this.replySocket(from) ? ws : null;
+    const item = this.remember(m, { from, origin: r.msg.o || from, on: origin, direct: r.msg.o === from, socket: this.mesh.get(from)?.os === P.OS.ANDROID ? socket : null });
     const title = item.title;
     const body = str(m.body);
     // TwinDesk's window (Reply, buttons, picture, progress), the system's, or none (quiet).

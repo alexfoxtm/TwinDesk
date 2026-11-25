@@ -206,7 +206,8 @@ func summarize(c *gmproto.Conversation) conversation {
 		}
 	}
 	return conversation{c.GetConversationID(), name, addrs, group,
-		!c.GetReadOnly() && c.GetDefaultOutgoingID() != "", c.GetLastMessageTimestamp() / 1000,
+		isRCS(c) && c.GetSendMode() == gmproto.ConversationSendMode_SEND_MODE_AUTO &&
+			!c.GetReadOnly() && c.GetDefaultOutgoingID() != "", c.GetLastMessageTimestamp() / 1000,
 		c.GetLatestMessage().GetDisplayContent(), direction(c.GetLatestMessage().GetLatestMessageStatus().GetStatus())}
 }
 
@@ -281,17 +282,48 @@ func (b *inbox) offline() {
 	b.out.send(event{"type": "offline"})
 }
 
+func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error)) (map[string]*gmproto.Conversation, error) {
+	const maxPages = 20
+	next := make(map[string]*gmproto.Conversation)
+	type position struct {
+		id string
+		at int64
+	}
+	seen := make(map[position]bool)
+	var cursor *gmproto.Cursor
+	for page := 0; page < maxPages; page++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		resp, err := list(ctx, &gmproto.ListConversationsRequest{
+			Count: 100, Folder: gmproto.ListConversationsRequest_INBOX, Cursor: cursor,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range resp.GetConversations() {
+			if id := c.GetConversationID(); isRCS(c) && id != "" && next[id] == nil {
+				next[id] = c
+			}
+		}
+		cursor = resp.GetCursor()
+		pos := position{cursor.GetLastItemID(), cursor.GetLastItemTimestamp()}
+		if cursor == nil || seen[pos] {
+			break
+		}
+		seen[pos] = true
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
 func (b *inbox) sync(ctx context.Context) {
-	resp, err := b.client.ListConversations(ctx, &gmproto.ListConversationsRequest{Count: 100, Folder: gmproto.ListConversationsRequest_INBOX})
+	next, err := listRCS(ctx, b.client.ListConversations)
 	if err != nil {
 		b.offline()
 		return
-	}
-	next := make(map[string]*gmproto.Conversation)
-	for _, c := range resp.GetConversations() {
-		if isRCS(c) && c.GetConversationID() != "" {
-			next[c.GetConversationID()] = c
-		}
 	}
 	b.convs = next
 	b.ready = true

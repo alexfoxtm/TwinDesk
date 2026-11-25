@@ -132,9 +132,11 @@ const shrink = (file) => new Promise((resolve, reject) => {
 const imageOf = (list) => [...(list || [])].find((f) => f && /^image\//.test(f.type || ''));
 
 // A compose row's picture: the Attach button, the picture waiting to go (with ×), and drops and
-// pastes onto `zone`. enabled(): whether a picture can go to this conversation now.
-function attacher({ el, button }, zone, box, enabled) {
+// pastes onto `zone`. The target is checked again after the picture is converted.
+function attacher({ el, button }, zone, box, target) {
   let data = '';
+  let attachedTo = '';
+  let revision = 0;
   const input = el('input', { type: 'file', attrs: { accept: 'image/*', hidden: '' } });
   const thumb = el('img', { class: 'hub-attach-img', alt: '' });
   const remove = el('button', { class: 'hub-attach-x', text: '×', attrs: { 'aria-label': tr('Remove picture') } });
@@ -145,17 +147,26 @@ function attacher({ el, button }, zone, box, enabled) {
   btn.title = tr('Attach a picture');
   btn.setAttribute('aria-label', tr('Attach a picture'));
   const set = (d) => { data = d || ''; thumb.src = data; chip.hidden = !data; };
+  const clear = () => { revision++; attachedTo = ''; set(''); };
   const take = (file) => {
-    if (!file || !enabled()) return;
-    shrink(file).then((d) => { set(d); box.focus(); }).catch(() => {});
+    const selected = target();
+    if (!file || !selected) return;
+    const started = ++revision;
+    shrink(file).then((d) => {
+      if (started !== revision || selected !== target()) return;
+      attachedTo = selected;
+      set(d);
+      box.focus();
+    }).catch(() => {});
   };
   input.onchange = () => { take(imageOf(input.files)); input.value = ''; };
-  remove.onclick = () => set('');
-  zone.addEventListener('dragover', (e) => { if (enabled() && [...(e.dataTransfer.items || [])].some((i) => /^image\//.test(i.type))) { e.preventDefault(); zone.classList.add('hub-drop'); } });
+  remove.onclick = clear;
+  zone.addEventListener('dragover', (e) => { if (target() && [...(e.dataTransfer.items || [])].some((i) => /^image\//.test(i.type))) { e.preventDefault(); zone.classList.add('hub-drop'); } });
   zone.addEventListener('dragleave', (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('hub-drop'); });
-  zone.addEventListener('drop', (e) => { zone.classList.remove('hub-drop'); const f = imageOf(e.dataTransfer.files); if (f && enabled()) { e.preventDefault(); take(f); } });
-  box.addEventListener('paste', (e) => { const f = imageOf(e.clipboardData && e.clipboardData.files); if (f && enabled()) { e.preventDefault(); take(f); } });
-  return { btn, chip, input, get: () => data, clear: () => set(''), show(on) { btn.hidden = !on; if (!on) set(''); } };
+  zone.addEventListener('drop', (e) => { zone.classList.remove('hub-drop'); const f = imageOf(e.dataTransfer.files); if (f && target()) { e.preventDefault(); take(f); } });
+  box.addEventListener('paste', (e) => { const f = imageOf(e.clipboardData && e.clipboardData.files); if (f && target()) { e.preventDefault(); take(f); } });
+  return { btn, chip, input, get: () => attachedTo && attachedTo === target() ? data : '', clear,
+    show(on) { btn.hidden = !on; if (!on || (attachedTo && attachedTo !== target())) clear(); } };
 }
 
 UI.tab({
@@ -221,7 +232,11 @@ UI.tab({
     simPick.el.hidden = true;
     const conv = el('div', { class: 'hub-conv' });
     const mmsOk = () => !!(UI.state && UI.state.hub && UI.state.hub.perm && UI.state.hub.perm.messages && UI.state.hub.perm.messages.mms);
-    const pic = attacher(UI, conv, box, () => mmsOk() && !box.disabled);
+    const pic = attacher(UI, conv, box, () => {
+      const hub = UI.state?.hub;
+      return pill === 'texts' && openId !== null && carrierSend(UI.state) && mmsOk()
+        ? JSON.stringify([hub.deviceId, hub.session, openId, thread()?.addrs]) : '';
+    });
     const compose = el('div', { class: 'hub-compose-row' }, [simPick.el, pic.btn, el('div', { class: 'hub-compose-col' }, [pic.chip, box]), send, pic.input]);
     conv.append(head, scroll, groupNote, compose);
     const empty = el('div', { class: 'hub-empty hub-conv-empty', text: tr('Choose a conversation') });
@@ -231,6 +246,7 @@ UI.tab({
       if (!t) return;
       forget('sms:' + t.id, t.at);
       openId = null;
+      pic.clear();
       renderList();
       renderConv();
     }, 'small');
@@ -288,8 +304,12 @@ UI.tab({
     chatBox.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); chatReply(); } });
     const chatNote = el('div', { class: 'hint hub-group-note' });
     const chatConv = el('div', { class: 'hub-conv' });
-    const chatPicOk = () => { const t = selectedChat(); return !!t && (t.dest ? !!googleOf(t)?.reply || (carrierSend(UI.state) && mmsOk()) : !!(t.msgs && t.pic)); };
-    const chatPic = attacher(UI, chatConv, chatBox, chatPicOk);
+    const chatPic = attacher(UI, chatConv, chatBox, () => {
+      const t = selectedChat();
+      const hub = UI.state?.hub;
+      return t && chatPictureAllowed(t)
+        ? JSON.stringify([chatEpoch, hub?.deviceId, hub?.session, t.key, googleOf(t)?.id || (openContact?.key === t.key ? openContact.googleId : null)]) : '';
+    });
     const chatSim = UI.select([{ value: '', label: tr('Default SIM') }], () => {});
     chatSim.el.hidden = true;
     chatSim.el.setAttribute('aria-label', tr('SIM'));
@@ -311,6 +331,7 @@ UI.tab({
     let carrierHistory = new Map();
     let nanp = false;
     let phoneSession;
+    let phoneDevice;
     const carrierReady = (s) => UI.hubReady(s, 'messages') && !s.hub.perm.messages.missing?.includes('read');
     const carrierSend = (s) => UI.hubReady(s, 'messages') && !s.hub.perm.messages.missing?.includes('send');
     let chatKey = '';
@@ -335,6 +356,9 @@ UI.tab({
       paintAccount(UI.state?.googleMessages);
     }, 'small');
     const gmDisconnect = UI.button(tr('Disconnect'), async () => {
+      openContact = null;
+      chatEpoch++;
+      chatPic.clear();
       gmBusy = true;
       paintAccount(UI.state?.googleMessages);
       gmWipeError = !(await gmAct('disconnect'));
@@ -394,7 +418,7 @@ UI.tab({
       if (chatOpen !== t.key) closeChat();
       chatOpen = t.key;
       if (t.dest && t.googleSource && UI.state.hub?.deviceId && UI.state.hub.deviceId === UI.state.googleMessages?.owner) {
-        openContact = { key: t.key, dest: t.dest, deviceId: UI.state.hub.deviceId, session: UI.state.hub.session };
+        openContact = { key: t.key, dest: t.dest, deviceId: UI.state.hub.deviceId, session: UI.state.hub.session, googleId: t.googleSource.id };
       }
       paintChats(UI.state);
     }
@@ -413,7 +437,7 @@ UI.tab({
       const google = paired(s);
       const own = synced(s) ? s.chats.map((c) => ({ key: c.key, pkg: c.app, avatar: c.avatar || '', app: appOf(c.app) || 'other',
         name: appOf(c.app) ? c.name || c.appName : [c.name, c.appName].filter(Boolean).join(' · '),
-        group: !!c.group, reply: !!c.reply, pic: !!c.pic, at: c.at, msgs: c.items || [], messagePeer: c.messagePeer })) : [];
+        group: !!c.group, reply: !!c.reply, pic: !!c.pic, at: c.at, msgs: c.items || [], messagePeer: c.messagePeer, from: c.from, replySession: c.replySession })) : [];
       const by = new Map();
       for (const h of s.notifs?.history || []) {
         const app = appOf(h.app);
@@ -421,7 +445,9 @@ UI.tab({
         if (!app || (app !== 'rcs' && synced(s)) || (app === 'rcs' && s.chatsMessaging)) continue;
         if (h.live || BUSY.test(h.body || '') || BUSY.test(h.title || '')) continue;
         const peer = app === 'rcs' && h.messagePhone && h.messagePhone === s.hub?.deviceId ? h.messagePeer : '';
-        const key = app === 'rcs' && h.id ? JSON.stringify([app, h.from || h.messagePhone, h.app, h.id])
+        // A title groups unverified notifications for display only. It never supplies a destination.
+        const key = app === 'rcs'
+          ? JSON.stringify([app, h.from || h.messagePhone || '', h.app, peer ? 'peer' : 'title', peer || h.title || h.appName])
           : app + '|' + (h.title || h.appName);
         const t = by.get(key) || { key, pkg: h.app, avatar: h.avatar || '', app, name: h.title || h.appName,
           messagePeer: peer, items: [], at: 0 };
@@ -432,6 +458,7 @@ UI.tab({
       return google.concat(own, [...by.values()]).filter((t) => (t.app !== 'rcs' || !!s.hub?.messages) &&
         !hiddenApps.has(t.app) && !isGone(t.key, t.at)).sort((a, b) => b.at - a.at);
     }
+    const googleUnavailable = (gm) => ['offline', 'helper-error', 'connection-error', 'keychain-error'].includes(gm?.state);
     function inboxThreads(s, chats = chatThreads(s)) {
       const carrier = carrierReady(s) ? threads.filter((t) => !isGone('sms:' + t.id, t.at))
         .map((t) => ({ ...t, name: t.name || t.addrs?.join(', '), key: 'sms:' + t.id, avatar: t.photo, carrier: true })) : [];
@@ -439,7 +466,7 @@ UI.tab({
       const gm = s.googleMessages;
       if (openContact && openContact.deviceId === gm?.owner && openContact.deviceId === s.hub?.deviceId &&
           openContact.session === s.hub?.session && !hiddenApps.has('rcs') && carrierSend(s) &&
-          ['offline', 'helper-error', 'connection-error'].includes(gm.state) &&
+          googleUnavailable(gm) &&
           !rows.some((c) => c.key === openContact.key)) {
         // Keep the selected address available for Text through a helper outage.
         // All paired content is removed by the helper's owner/session boundary.
@@ -492,74 +519,76 @@ UI.tab({
       chatPic.clear();
       paintChats(UI.state, true);
     }
+    function notificationReply(t, image) {
+      if (!api.notifReply) return null;
+      const candidates = t.dest ? t.sources : [t];
+      for (const c of candidates) {
+        if (c.carrier || c.google) continue;
+        if (c.msgs) {
+          if (image ? c.pic : c.reply) return { chat: c.key, from: c.from, replySession: c.replySession };
+        } else {
+          const h = !image && c.items.find((h) => h.reply && h.from && h.replySession);
+          if (h) return { id: h.id, from: h.from, replySession: h.replySession };
+        }
+      }
+      return null;
+    }
+    const chatPictureAllowed = (t) => !!googleOf(t)?.reply || !!notificationReply(t, true) || canText(t, true);
+    function sendFallback(t, text, image) {
+      const offer = notificationReply(t, image);
+      if (offer) {
+        api.notifReply({ ...offer, text, ...(image ? { image } : {}) });
+        chatBox.value = '';
+        chatPic.clear();
+        return true;
+      }
+      if (!canText(t, image)) return false;
+      sendContactText(t, text, image);
+      return true;
+    }
     async function chatReply() {
       const t = selectedChat();
       const text = chatBox.value.trim();
       const image = chatPic.get();
       if (!t || (!text && !image) || gmSend?.key === t.key) return;
       const google = googleOf(t);
-      if (google?.reply) {
-        if (!google.loaded || gmSend || gmBusy) return;
-        const gm = UI.state.googleMessages;
-        const epoch = chatEpoch;
-        const session = UI.state.hub?.session;
-        const allowCarrier = canText(t, image);
-        const request = { key: t.key };
-        gmSend = request;
-        gmError = '';
-        paintChats(UI.state, true);
-        const ok = await gmAct('send', { chat: google.id, text: image ? '' : text, image, allowCarrier }, gm);
-        if (gmSend !== request) return;
-        gmSend = null;
-        if (epoch !== chatEpoch || chatOpen !== t.key || UI.state.googleMessages?.owner !== gm.owner) {
-          paintChats(UI.state, true);
-          return;
-        }
-        const current = selectedChat();
-        if (ok === 'not-dispatched' && allowCarrier && session === UI.state.hub?.session && !gmBusy &&
-            UI.state.googleMessages?.enabled && UI.state.googleMessages?.state !== 'disconnected' &&
-            sameDestination(current?.dest, t.dest) && canText(current, image) &&
-            chatBox.value.trim() === text && chatPic.get() === image) {
-          sendContactText(current, text, image);
-          return;
-        }
-        if (ok === true) {
-          if (image && chatPic.get() === image) chatPic.clear();
-          if (!image && chatBox.value.trim() === text) chatBox.value = '';
-        } else gmError = ok === 'not-dispatched' ? tr('Google Messages is unavailable. Check the reply options and try again.')
-          : tr('Google Messages could not confirm the send. Check the conversation before retrying.');
+      if (!google?.reply) {
+        sendFallback(t, text, image);
+        return;
+      }
+      if (!google.loaded || gmSend || gmBusy) return;
+      const gm = UI.state.googleMessages;
+      const epoch = chatEpoch;
+      const { deviceId, session } = UI.state.hub || {};
+      const allowCarrier = !!t.dest && (!!notificationReply(t, image) || canText(t, image));
+      const request = { key: t.key };
+      gmSend = request;
+      gmError = '';
+      paintChats(UI.state, true);
+      const ok = await gmAct('send', { chat: google.id, text: image ? '' : text, image, allowCarrier }, gm);
+      if (gmSend !== request) return;
+      gmSend = null;
+      const currentGM = UI.state.googleMessages;
+      const hub = UI.state.hub;
+      if (epoch !== chatEpoch || chatOpen !== t.key || currentGM?.owner !== gm.owner ||
+          hub?.deviceId !== deviceId || hub?.session !== session) {
         paintChats(UI.state, true);
         return;
       }
-      if (canText(t, image)) {
-        sendContactText(t, text, image);
-        return;
-      }
-      if (t.dest) {
-        const sources = t.sources.filter((c) => !c.carrier && !c.google &&
-          (c.msgs ? c.reply : c.items.some((h) => h.reply)));
-        if (sources.length !== 1 || image || !text || !api.notifReply) return;
-        const c = sources[0];
-        api.notifReply(c.msgs ? { chat: c.key, text } : { id: c.items.find((h) => h.reply).id, text });
-        chatBox.value = '';
-        return;
-      }
-      if (t && t.msgs && t.pic && image && api.notifReply) {
-        api.notifReply({ chat: t.key, text, image });
-        chatBox.value = '';
-        chatPic.clear();
-        return;
-      }
-      if (!t || !text || !api.notifReply) return;
-      if (t.msgs) {
-        if (!t.reply) return;
-        api.notifReply({ chat: t.key, text });
-      } else {
-        const last = t.items.find((h) => h.reply);
-        if (!last) return;
-        api.notifReply({ id: last.id, text });
-      }
-      chatBox.value = '';
+      const current = selectedChat();
+      const currentGoogle = current && googleOf(current);
+      const sameGoogle = currentGM.state === 'connected'
+        ? currentGoogle?.id === google.id && currentGoogle.reply
+        : googleUnavailable(currentGM) && !currentGoogle && openContact?.googleId === google.id;
+      if (ok === 'not-dispatched' && allowCarrier && !gmBusy && currentGM.enabled && sameGoogle &&
+          sameDestination(current?.dest, t.dest) && chatBox.value.trim() === text && chatPic.get() === image &&
+          sendFallback(current, text, image)) return;
+      if (ok === true) {
+        if (image && chatPic.get() === image) chatPic.clear();
+        if (!image && chatBox.value.trim() === text) chatBox.value = '';
+      } else gmError = ok === 'not-dispatched' ? tr('Google Messages is unavailable. Check the reply options and try again.')
+        : tr('Google Messages could not confirm the send. Check the conversation before retrying.');
+      paintChats(UI.state, true);
     }
     const threadRow = (name, at, snippet, active, onClick, photo, pkg) => {
       const b = el('button', { class: `hub-thread${active ? ' active' : ''}`, attrs: { 'data-literal': '' } }, [avatar(name, photo, pkg), el('span', { class: 'hub-thread-text' }, [
@@ -606,10 +635,15 @@ UI.tab({
         t.sources?.some((c) => matches(c.name, snippetOf(c))) || t.key === chatOpen);
       const t = shown.find((x) => x.key === chatOpen);
       const google = t && googleOf(t);
+      if (openContact && openContact.key === t?.key && gm?.state === 'connected' && openContact.googleId !== google?.id) {
+        openContact.googleId = google?.id;
+        chatEpoch++;
+        chatPic.clear();
+      }
       const messages = t?.dest ? projectContact(t) : t?.msgs || [];
       const k = JSON.stringify([pill, chatOpen, query, shown.map((row) => [row.key, row.at, row.name, snippetOf(row), row.sources?.map((c) => c.key), !!row.avatar]),
         messages.map(({ image, ...m }) => m), t?.items, t?.reply, t?.pic,
-        t?.sources?.map((c) => [c.reply, c.items?.some((h) => h.reply)]), google?.reply, google?.loaded,
+        t?.sources?.map((c) => [c.replySession, c.items?.map((h) => h.reply && h.replySession)]), google?.id, google?.reply, google?.loaded,
         google?.more, google?.typing, ready, carrierSend(s), mmsOk(), s.hub?.perm?.messages?.sims, (s.notifs || {}).receive, synced(s),
         Object.keys((s.notifs || {}).historyIcons || {}).length]);
       if (k === chatKey) return;
@@ -629,7 +663,10 @@ UI.tab({
       if (!rows.length) chatList.append(el('div', { class: 'hub-empty', text: query ? tr('Nothing found') : !synced(s) && !s.notifs?.receive && !ready ? tr('Turn on Notifications to see chats here') : tr('No chats yet. They show here as messages arrive.') }));
       chatConv.hidden = !t;
       chatEmpty.hidden = !!t;
-      if (!t) return;
+      if (!t) {
+        chatPic.clear();
+        return;
+      }
       if (t.dest) {
         for (const c of t.textThreads) {
           if (carrierHistory.has(c.id)) continue;
@@ -720,17 +757,15 @@ UI.tab({
       const wasAtBottom = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 40;
       chatBubbles.replaceChildren(...msgs);
       if ((!google && !t.dest) || wasAtBottom) chatScroll.scrollTop = chatScroll.scrollHeight;
-      const notificationReply = (c) => !c.carrier && !c.google && (c.msgs ? c.reply || c.pic : c.items.some((h) => h.reply));
-      const canReply = google?.reply ? google.loaded : t.dest
-        ? carrierSend(s) || !!api.notifReply && t.sources.filter(notificationReply).length === 1
-        : !google && !!api.notifReply && notificationReply(t);
+      const canReply = google?.reply ? google.loaded
+        : canText(t, false) || !!notificationReply(t, false) || !!notificationReply(t, true);
       chatCompose.hidden = !canReply;
       chatNote.hidden = canReply;
       chatSend.disabled = !!gmSend && (!!google?.reply || gmSend.key === t.key);
-      chatPic.show(t.dest ? !!google?.reply || (carrierSend(s) && mmsOk()) : !!(t.msgs && t.pic));
+      chatPic.show(chatPictureAllowed(t));
       const sims = simOptions(s);
       chatSim.options(sims);
-      chatSim.el.hidden = !t.dest || !!google?.reply || sims.length < 3;
+      chatSim.el.hidden = !t.dest || !!google?.reply || !!notificationReply(t, !!chatPic.get()) || sims.length < 3;
       if (google) {
         chatNote.textContent = google.loaded ? tr('This conversation is read-only.') : gmError ? '' : tr('Loading conversation…');
       } else chatNote.textContent = t.msgs || t.dest ? tr('Reply here once the phone shows this chat’s notification again.') : tr('Answer this one on the phone: its notification has no Reply.');
@@ -831,6 +866,7 @@ UI.tab({
 
     let loadingFirst = false;
     function openThread(id) {
+      pic.clear();
       openId = id;
       items = [];
       hasMore = false;
@@ -842,6 +878,7 @@ UI.tab({
     }
 
     function openNew() {
+      pic.clear();
       openId = '';
       items = [];
       hasMore = false;
@@ -1037,8 +1074,14 @@ UI.tab({
 
     return (s) => {
       top.render(s);
-      if (phoneSession !== s.hub?.session || (!carrierReady(s) && (loaded || threads.length))) {
+      const phoneChanged = phoneSession !== s.hub?.session || phoneDevice !== s.hub?.deviceId;
+      if (phoneChanged || (!carrierReady(s) && (loaded || threads.length))) {
         phoneSession = s.hub?.session;
+        phoneDevice = s.hub?.deviceId;
+        if (phoneChanged) {
+          closeChat();
+          box.value = '';
+        }
         resetCarrier();
         renderList();
         renderConv();

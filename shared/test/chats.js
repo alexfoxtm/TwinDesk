@@ -63,10 +63,12 @@ const googleView = () => c.view().find((x) => x.app === google.app);
 assert.deepStrictEqual(googleView().items.map((x) => x.at), [30000, 30010], 'snapshot repeats merge by ID, distinct messages survive');
 assert.strictEqual(c.view().find((x) => x.app === 'com.samsung.android.messaging').reply, false);
 assert.strictEqual(googleView().pic, false);
-assert.strictEqual(c.reply(googleView().key, 'Fixture reply'), true);
+const offer = googleView();
+const answer = (row) => c.reply(row.key, 'Fixture reply', '', false, row.from, row.replySession);
+assert.strictEqual(answer(offer), true);
 assert.deepStrictEqual(sent.at(-1), { t: 'notif.reply', id: 'r:one', text: 'Fixture reply' });
 on['chat.gone']({ id: 'r:one' }, socket);
-assert.strictEqual(c.reply(googleView().key, 'Stale reply'), false);
+assert.strictEqual(answer(offer), false);
 const request = sent.findLast((m) => m.t === 'chat.match');
 on['chat.match']({ ref: request.ref, ids: [first.id] }, socket);
 assert.deepStrictEqual(googleView().items.map((x) => x.id), [second.id], 'only the exact confirmed item is hidden');
@@ -75,8 +77,9 @@ assert.strictEqual(googleView(), undefined, 'the last matching item removes the 
 on['chat.match']({ ref: request.ref, ids: [first.id] }, socket);
 assert.deepStrictEqual(googleView().items.map((x) => x.id), [second.id], 'late ambiguity restores the unmatched item');
 on['chat.conv'](messages(google.app, [second], { id: 'r:three' }), socket);
+const laterOffer = googleView();
 socket = {};
-assert.strictEqual(c.reply(googleView().key, 'Retired transport'), false);
+assert.strictEqual(answer(laterOffer), false);
 
 link.current = { deviceId: 'phone2' };
 assert.deepStrictEqual(c.view(), [], 'another phone: its own');
@@ -89,9 +92,24 @@ assert.strictEqual(c.view()[0].reply, false, 'no Reply without a session');
 on.welcome();
 assert.strictEqual(c.messaging(), true, 'reconnect does not require a fresh projection to keep the flag');
 assert.strictEqual(googleView().reply, false, 'cached history cannot offer Reply after reconnect');
+// A reused Android notification/shortcut key retains both peers' own histories.
+const peers = ['+12025550100', '+12025550101'];
+for (const [i, messagePeer] of peers.entries()) {
+  const item = { ...first, id: String(i + 1).repeat(64), at: 40000 + i };
+  on['chat.conv'](messages(google.app, [item], { messagePeer, id: 'r:peer' + i }), socket);
+}
+const byPeer = new Map(c.view().filter((row) => row.messagePeer).map((row) => [row.messagePeer, row]));
+assert.equal(byPeer.size, 2);
+assert.ok(byPeer.get(peers[0]).items.every((m) => m.at === 40000));
+assert.ok(byPeer.get(peers[1]).items.every((m) => m.at === 40001));
+assert.equal(byPeer.get(peers[0]).reply, false);
+const current = byPeer.get(peers[1]);
+assert.equal(answer(current), true);
+assert.equal(c.reply(current.key, 'Fixture reply', '', false, 'phone2', current.replySession), false);
+assert.equal(c.reply(current.key, 'Fixture reply', '', false, current.from, 'r:peer0'), false);
 c.stop();
 const again = new Chats({ link, dir, want: () => false });
-assert.strictEqual(again.view().length, 4, 'kept after a restart');
+assert.strictEqual(again.view().length, 6, 'kept after a restart');
 assert.strictEqual(again.messaging(), false, 'a client without a socket never claims structured messaging');
 const againWithSocket = new Chats({ link, dir, want: () => false, socket: () => socket });
 assert.strictEqual(againWithSocket.messaging(), true, 'the stored mark survives a process restart');

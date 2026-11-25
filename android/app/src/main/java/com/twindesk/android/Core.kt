@@ -690,7 +690,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 hub.matchChat(m, route)
                 return@post
             }
-            if (t == "notif.reply" && m.optString("id").startsWith("r:") && !link.accepts(route)) return@post
+            if (t == "notif.reply" && !link.accepts(route)) return@post
             if (t == Proto.T.MEDIA_SAVE_AS) {
                 if (link.photoRoute(source)) hub.savePhotoAs(m, source)
                 return@post
@@ -701,6 +701,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                     when {
                         f === clip -> clip.onMessage(t, m, route)
                         f === tether -> tether.onMessage(t, m, route)
+                        f === hub -> hub.onMessage(t, m, route)
                         f === apps -> apps.onMessage(t, m, route)
                         f === screen && t == "rtc.offer" -> {
                             screen.onOffer(m, route)

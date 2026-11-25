@@ -12,7 +12,7 @@ const P = require('../../shared/protocol.js');
 const { Pool } = require('../../shared/mesh.js');
 const { NotifGuard, isOwn } = require('../../shared/notif-guard.js');
 const { IconsOut, IconsIn } = require('../../shared/notificon.js');
-const { actionsOf, withMeshPhoneActions, hidden, present } = require('../../shared/notifacts.js');
+const { actionsOf, noticeScope, withMeshPhoneActions, hidden, present } = require('../../shared/notifacts.js');
 const { otpOf } = require('../../shared/otp.js');
 
 const T = P.T;
@@ -69,7 +69,7 @@ class Notifs extends EventEmitter {
     this.echoes = []; // {title, body, until}: shown here from another device, never sent back
 
     const bus = this.bus;
-    bus.on(T.NOTIF, (m, from) => this._show(m, from));
+    bus.on(T.NOTIF, (m, from, _conn, ws) => this._show(m, from, ws));
     bus.on('notif.gone', (m, from) => this._goneFrom(m.id, from));
     bus.on(T.NOTIF_POLICY, (m, from) => {
       const e = this.mesh.get(from);
@@ -253,7 +253,7 @@ class Notifs extends EventEmitter {
   }
 
   // A notification from another device: relayed by the pool, shown here once when fresh.
-  _show(m, from) {
+  _show(m, from, ws) {
     if (!this.cfg.receive) return;
     const r = this.pool.receive(from, m);
     if (!r.fresh || !this.Notification || !this.Notification.isSupported()) return;
@@ -268,13 +268,14 @@ class Notifs extends EventEmitter {
         this.live.delete(old);
       }
     }
-    if (this.guard.repeat('in', m.app, m.title, m.body) && !updated) return; // a repeat of what was just shown
+    if (this.guard.repeat('in', m.app, m.title, m.body, noticeScope(m, r.msg.o)) && !updated) return; // a repeat of what was just shown
     const origin = this._nameOf(r.msg.o, m.on, from);
     const appName = str(m.appName, 100);
     // The recent ones, for Overview and Messages' chat apps; buttons and Reply go back to the device.
     const peer = this.mesh.get(from);
     const direct = (!r.msg.o || r.msg.o === from) && peer && peer.os === P.OS.ANDROID;
-    const item = this.remember(m, { from, origin: r.msg.o || from, on: origin, direct: !!direct });
+    const socket = ws && ws === this.replySocket(from) ? ws : null;
+    const item = this.remember(m, { from, origin: r.msg.o || from, on: origin, direct: !!direct, socket });
     Object.defineProperty(item, 'actionPeer', { value: direct ? peer : null, writable: true });
     const title = item.title;
     const body = str(m.body);
@@ -337,6 +338,9 @@ class Notifs extends EventEmitter {
 }
 
 withMeshPhoneActions(Notifs);
+Notifs.prototype.sendReply = function (item, message) {
+  return this._sendCurrent(item, message);
+};
 Notifs.prototype.send = function (message) {
   const items = (this.history || []).filter((item) => item.id === message.id);
   return items.length === 1 && this._sendCurrent(items[0], message);

@@ -8,11 +8,15 @@
 // An older phone app sends no actions and no notif.gone, and ignores the other two.
 'use strict';
 
+const { randomUUID } = require('crypto');
+
 const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+
+const isMessagingApp = (app) => /^(?:com\.google\.android\.apps\.messaging|com\.samsung\.android\.messaging)$/.test(app);
 
 // Optional identity from Android's one-to-one MessagingStyle projection.
 function messagePeerOf(m) {
-  return /^(?:com\.google\.android\.apps\.messaging|com\.samsung\.android\.messaging)$/.test(m.app) &&
+  return isMessagingApp(m.app) &&
     typeof m.messagePeer === 'string' && /^\+[1-9][0-9]{6,14}$/.test(m.messagePeer) ? m.messagePeer : '';
 }
 
@@ -22,9 +26,34 @@ function messageIdentityOf(m, phone) {
     ? { messagePeer, messageAt: m.messageAt, messagePhone: phone } : {};
 }
 
+// Different phone messages with identical text must still show their own recent Reply.
+function noticeScope(m, origin) {
+  return isMessagingApp(m.app) ? JSON.stringify([origin, m.id, m.messageAt || m.at, m.replyVersion]) : '';
+}
+
 // The buttons of a notif message: up to 3 short titles.
 function actionsOf(m) {
   return Array.isArray(m && m.actions) ? m.actions.filter((a) => typeof a === 'string' && a.trim()).slice(0, 3).map((a) => a.slice(0, 40)) : [];
+}
+
+// The renderer carries an opaque offer ID. The socket stays in the main process.
+function bindReply(item, from, socket, message) {
+  item.reply = !!(item.reply && message.id && from && socket);
+  if (!item.reply) return;
+  item.from = from;
+  item.replySession = randomUUID();
+  Object.defineProperties(item, {
+    replySocket: { value: socket },
+    replyVersion: { value: str(message.replyVersion, 40) },
+  });
+}
+
+function replyIsCurrent(n, item) {
+  return !!(item.reply && item.replySocket && n.replySocket(item.from) === item.replySocket);
+}
+
+function replyHistory(n) {
+  return (n.history || []).map((item) => item.reply && !replyIsCurrent(n, item) ? { ...item, reply: false } : item);
 }
 
 // Adds gone(id), act(id, i) and dismiss(id) to a notifs.js class. Its instances have history
@@ -46,6 +75,16 @@ function withPhoneActions(Cls) {
         else this.live = this.live.filter((x) => x !== n);
       }
       if (this.history.length !== had) this.changed();
+    },
+    reply(id, text, from, session) {
+      const item = (this.history || []).find((h) => h.id === id && h.from === from && h.replySession === session);
+      if (!item || !this.cfg.receive || !replyIsCurrent(this, item) || typeof text !== 'string' || !text.trim()) return false;
+      const msg = { t: 'notif.reply', id, text: text.slice(0, 5000) };
+      if (item.replyVersion) msg.replyVersion = item.replyVersion;
+      if (this.sendReply(item, msg) === false) return false;
+      item.replies = [...(item.replies || []), { text: msg.text, at: Date.now() }].slice(-20);
+      this.changed();
+      return true;
     },
     act(id, i) {
       const item = (this.history || []).find((h) => h.id === id);
@@ -72,7 +111,7 @@ function withMeshPhoneActions(Cls) {
   Object.assign(Cls.prototype, {
     // A notification just shown: into the list (newest first, 50 kept). `direct` = it came from the
     // device it started on. Returns the item.
-    remember(m, { from, origin, on, direct }) {
+    remember(m, { from, origin, on, direct, socket }) {
       if (!this.history) this.history = [];
       if (!this.historyIcons) this.historyIcons = new Map();
       const appName = str(m.appName, 100);
@@ -85,8 +124,9 @@ function withMeshPhoneActions(Cls) {
         on: str(on, 100), from: str(origin || from, 200),
         reply: direct && m.reply === true,
         actions: direct ? actionsOf(m) : [],
-        ...messageIdentityOf(m, direct && from),
+        ...messageIdentityOf(m, direct && socket && from),
       };
+      bindReply(item, direct && from, socket, m);
       if (item.app && typeof m.icon === 'string' && m.icon.startsWith('data:image/') && m.icon.length < 200000) {
         this.historyIcons.delete(item.app);
         this.historyIcons.set(item.app, m.icon);
@@ -102,21 +142,15 @@ function withMeshPhoneActions(Cls) {
       this.bus.send(item.from, m);
       return true;
     },
-    reply(id, text) {
-      const item = (this.history || []).find((h) => h.id === id);
-      if (!item || !item.reply || typeof text !== 'string' || !text.trim()) return false;
-      if (!this.send({ t: 'notif.reply', id: item.id, text: text.slice(0, 5000) })) return false;
-      item.replies = [...(item.replies || []), { text: text.slice(0, 5000), at: Date.now() }].slice(-20);
-      this.changed();
-      return true;
-    },
+    replySocket(from) { return this.bus.replySocket?.(from); },
+    sendReply(item, msg) { return this.bus.send(item.from, msg); },
     clearHistory() {
       this.history = [];
       this.changed();
     },
     // For view(): the list and the icons of its apps.
     historyView() {
-      const h = this.history || [];
+      const h = replyHistory(this);
       const icons = this.historyIcons || new Map();
       return {
         history: h,
@@ -150,7 +184,7 @@ function present(n, item, m, { from, code, icon } = {}) {
         corner: process.platform === 'win32' ? 'bottom' : 'top',
         getLanguage: () => languageOf(n),
         act: (id, i) => n.act(id, i),
-        reply: (id, text) => n.reply(id, text),
+        reply: (it, text) => n.reply(it.id, text, it.from, it.replySession),
         dismiss: (id) => n.dismiss(id),
         open: (it) => { const c = { app: it.app, appName: it.appName, ...(it.from ? { originId: it.from } : {}) }; if (n.onClick) n.onClick(c); else if (n.emit) n.emit('click', c); },
         copy: (c) => require('electron').clipboard.writeText(c),
@@ -182,4 +216,4 @@ function languageOf(n) {
   }
 }
 
-module.exports = { actionsOf, messagePeerOf, messageIdentityOf, withPhoneActions, withMeshPhoneActions, hidden, present, popGone };
+module.exports = { actionsOf, noticeScope, messagePeerOf, messageIdentityOf, bindReply, replyHistory, withPhoneActions, withMeshPhoneActions, hidden, present, popGone };

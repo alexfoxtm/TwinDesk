@@ -47,7 +47,7 @@ class Hub(core: Core) : Feature(core) {
     fun appCallPosted(sbn: android.service.notification.StatusBarNotification, appName: String, title: String): Boolean =
         callsOn && (calls?.appPosted(sbn, appName, title) ?: false)
     fun appCallRemoved(key: String) { calls?.appRemoved(key) }
-    private var messages: Messages? = null
+    @Volatile private var messages: Messages? = null
     private var media: Media? = null
     private var alerts: MediaAlerts? = null
     private var fs: FsBrowse? = null
@@ -79,7 +79,9 @@ class Hub(core: Core) : Feature(core) {
 
     override fun onClosed() = reset()
 
-    override fun onMessage(t: String, m: JSONObject): Boolean {
+    override fun onMessage(t: String, m: JSONObject): Boolean = onMessage(t, m, null)
+
+    internal fun onMessage(t: String, m: JSONObject, route: Link.TrustedRoute?): Boolean {
         when (t) {
             Proto.T.HUB_POLICY -> {
                 peer = true
@@ -105,13 +107,16 @@ class Hub(core: Core) : Feature(core) {
             Proto.T.CALL_DO -> calls?.act(m) ?: core.send(msg(Proto.T.CALL_DONE, "a" to m.str("a", 20), "ok" to false, "error" to "off"))
             Proto.T.CALL_LOG -> calls?.let { c -> run { core.send(msg(Proto.T.CALL_LOG, "items" to c.log(m.optInt("n", 100)))) } }
             Proto.T.CONTACTS -> calls?.let { c -> val q = m.str("q", 80); run { core.send(msg(Proto.T.CONTACTS, "q" to q, "items" to c.contacts(q))) } }
-            Proto.T.SMS_THREADS -> messages?.let { s -> run {
+            Proto.T.SMS_THREADS -> carrierRead(route) { s ->
                 val country = MessageChat.simCountry(core.ctx)
-                core.send(msg(Proto.T.SMS_THREADS, "items" to s.threads(m.optInt("n", 60), country),
-                    "nanp" to (country == "US" || country == "CA")))
-            } }
-            Proto.T.SMS_THREAD -> messages?.let { s -> run { core.send(s.thread(m)) } }
-            Proto.T.SMS_PART -> messages?.let { s -> val id = m.str("id", 40); run { core.send(msg(Proto.T.SMS_PART, "id" to id, "data" to s.part(id))) } }
+                msg(Proto.T.SMS_THREADS, "items" to s.threads(m.optInt("n", 60), country),
+                    "nanp" to (country == "US" || country == "CA"))
+            }
+            Proto.T.SMS_THREAD -> carrierRead(route) { it.thread(m) }
+            Proto.T.SMS_PART -> carrierRead(route) { s ->
+                val id = m.str("id", 40)
+                msg(Proto.T.SMS_PART, "id" to id, "data" to s.part(id))
+            }
             Proto.T.SMS_SEND -> messages?.send(m) ?: core.send(msg(Proto.T.SMS_SENT, "ref" to m.str("ref", 60), "ok" to false, "error" to "off"))
             // Pictures never go through Bluetooth (they held up everything else): USB, Wi-Fi, Wi-Fi Direct.
             Proto.T.MEDIA_ALBUMS -> if (mediaOn && !core.link.ble) media().let { md -> run { core.send(md.albums()) } }
@@ -127,6 +132,17 @@ class Hub(core: Core) : Feature(core) {
             else -> return false
         }
         return true
+    }
+
+    private fun carrierRead(route: Link.TrustedRoute?, query: (Messages) -> JSONObject) {
+        val service = messages ?: return
+        fun current() = messages === service && messagesOn && core.link.accepts(route)
+        if (!current()) return
+        run {
+            if (!current()) return@run
+            val result = query(service)
+            if (current()) core.link.sendFor(route, result)
+        }
     }
 
     internal fun matchChat(m: JSONObject, route: Link.TrustedRoute?) {

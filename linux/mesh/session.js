@@ -134,6 +134,11 @@ class Session extends EventEmitter {
     return this.link ? this.link.bufferedAmount : 0;
   }
 
+  outbound() {
+    const ws = this.hosting ? this.ctx.ws : this.linkUp ? this.link.ws : null;
+    return ws && ws.readyState === 1 && !ws.released ? ws : null;
+  }
+
   // Plain data for the UI. Never throws.
   snapshot() {
     try {

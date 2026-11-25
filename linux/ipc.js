@@ -65,9 +65,9 @@ function setupIpc(ctx) {
   handle('iosSignIpa', () => require('../shared/iossign-host.js').pickIpa(ctx.iosSign && ctx.iosSign(), dialog));
   handle('deviceDo', (c) => c && typeof c === 'object' && ctx.devctl() && ctx.devctl().do(c)); // Overview: ring, lock, quick settings… (shared/devctl.js)
   // A chat's answer (Messages' chat apps: shared/chats.js) or a notification's.
-  handle('notifReply', (r) => r && typeof r === 'object' && (r.chat ? !!(ctx.chats && ctx.chats() && ctx.chats().reply(String(r.chat), r.text, r.image, r.remove === true))
+  handle('notifReply', (r) => r && typeof r === 'object' && (r.chat ? !!(ctx.chats && ctx.chats() && ctx.chats().reply(String(r.chat), r.text, r.image, r.remove === true, r.from, r.replySession))
     : !ctx.notifs ? false : r.dismiss ? ctx.notifs.dismiss(String(r.id || '')) : Number.isInteger(r.act) ? ctx.notifs.act(String(r.id || ''), r.act) // Overview's × and buttons (shared/notifacts.js)
-      : ctx.notifs.reply && ctx.notifs.reply(String(r.id || ''), r.text))); // a phone chat's Reply, typed here
+      : ctx.notifs.reply && ctx.notifs.reply(String(r.id || ''), r.text, r.from, r.replySession))); // a phone chat's Reply, typed here
   handle('qrPair', () => ctx.qrPair()); // Connection: the phone pairing QR code's link
   handle('adbQr', (on) => ctx.adbQr(on === true)); // wireless debugging: pair with a QR code
   handle('copyText', (text) => typeof text === 'string' && text.length < 1000 && clipboard.writeText(text));

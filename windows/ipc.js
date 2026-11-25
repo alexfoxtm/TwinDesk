@@ -62,9 +62,9 @@ function setupIpc(ctx) {
   });
   handle('refreshFound', () => discovery.refresh());
   // A chat's answer (Messages' chat apps: shared/chats.js) or a notification's.
-  handle('notifReply', (r) => r && typeof r === 'object' && (r.chat ? !!(ctx.chats && ctx.chats() && ctx.chats().reply(String(r.chat), r.text, r.image, r.remove === true))
+  handle('notifReply', (r) => r && typeof r === 'object' && (r.chat ? !!(ctx.chats && ctx.chats() && ctx.chats().reply(String(r.chat), r.text, r.image, r.remove === true, r.from, r.replySession))
     : r.dismiss ? notifs.dismiss(String(r.id || '')) : Number.isInteger(r.act) ? notifs.act(String(r.id || ''), r.act) // Overview's × and buttons (shared/notifacts.js)
-      : notifs.reply(String(r.id || ''), r.text))); // a phone chat's Reply, typed here
+      : notifs.reply(String(r.id || ''), r.text, r.from, r.replySession))); // a phone chat's Reply, typed here
   handle('qrPair', () => ctx.qrPair());
   handle('adbQr', (on) => ctx.adbQr(on === true)); // wireless debugging: pair with a QR code // Connection: the phone pairing QR code's link
   handle('importCancel', () => ctx.explorer() && ctx.explorer().cancel()); // Phone Files: stop importing into Explorer's folder

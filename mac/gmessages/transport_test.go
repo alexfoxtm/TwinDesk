@@ -3,6 +3,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,6 +23,50 @@ func TestProjectUsesMessageTransport(t *testing.T) {
 		if got := project(&gmproto.Message{Type: kind}).Transport; got != want {
 			t.Errorf("transport for type %d = %q, want %q", kind, got, want)
 		}
+	}
+}
+
+func TestPairedReplyRespectsConversationSendMode(t *testing.T) {
+	for _, mode := range []gmproto.ConversationSendMode{
+		gmproto.ConversationSendMode_SEND_MODE_AUTO,
+		gmproto.ConversationSendMode_SEND_MODE_XMS,
+		gmproto.ConversationSendMode_SEND_MODE_XMS_LATCH,
+	} {
+		c := &gmproto.Conversation{Type: gmproto.ConversationType_RCS, SendMode: mode, DefaultOutgoingID: "fixture"}
+		if summarize(c).Reply != (mode == gmproto.ConversationSendMode_SEND_MODE_AUTO) {
+			t.Fatal("reply availability did not follow the send mode")
+		}
+	}
+}
+
+func TestListRCSFollowsCursorAndStopsOnRepeatedCursorOrCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cursor := &gmproto.Cursor{LastItemID: "page-two", LastItemTimestamp: 100}
+	calls := 0
+	list := func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+		calls++
+		if calls == 1 && req.GetCursor() != nil || calls == 2 && req.GetCursor() != cursor {
+			t.Fatal("unexpected request cursor")
+		}
+		return &gmproto.ListConversationsResponse{
+			Cursor: cursor,
+			Conversations: []*gmproto.Conversation{
+				{Type: gmproto.ConversationType_RCS, ConversationID: []string{"first", "second"}[calls-1]},
+			},
+		}, nil
+	}
+	rows, err := listRCS(ctx, list)
+	if err != nil || calls != 2 || len(rows) != 2 {
+		t.Fatal("did not collect both pages and stop on a repeated cursor")
+	}
+	calls = 0
+	_, err = listRCS(ctx, func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+		cancel()
+		return list(ctx, req)
+	})
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatal("canceled listing fetched additional pages")
 	}
 }
 

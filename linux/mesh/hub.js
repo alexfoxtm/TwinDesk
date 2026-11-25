@@ -522,6 +522,7 @@ class Hub extends EventEmitter {
         const s = this.sessions.get(peerId);
         return !!s && s.connected && s.send(msg) === true;
       },
+      replySocket: (peerId) => this.sessions.get(peerId)?.outbound() || null,
       selectedId: () => this.selectedId,
       connectedIds: () => this._connectedIds(),
     };

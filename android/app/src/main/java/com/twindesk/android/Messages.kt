@@ -164,8 +164,12 @@ class Messages(private val hub: Hub, private val core: Core) {
                 val out = c.getInt(2) == 2
                 val detail = mmsDetail(c.getLong(0), !out)
                 if (!detail.attachment) {
-                    val address = if (out) detail.addrs.singleOrNull()
-                    else MessageChat.incomingMmsAddress(detail.from, threadPeer(c.getLong(3), peers), country)
+                    val peer = threadPeer(c.getLong(3), peers)
+                    val address = if (out) detail.recipients.singleOrNull()
+                        ?.takeIf { MessageChat.sameDestination(it, peer, country) }
+                    else if (MessageChat.incomingMmsParticipants(detail.from, detail.recipients, country).size == 1)
+                        MessageChat.incomingMmsAddress(detail.from, peer, country)
+                    else null
                     addRow(c.getLong(1) * 1000, address, out, detail.text, mms = true)
                 }
             }
@@ -179,7 +183,7 @@ class Messages(private val hub: Hub, private val core: Core) {
     // Conversations, newest first: {id, addrs, name, snippet, at, unread}.
     fun threads(n: Int, country: String? = null): JSONArray {
         val want = n.coerceIn(1, 300)
-        val out = runCatching { conversations(want, country != null) }.getOrNull() ?: scan(want)
+        val out = runCatching { conversations(want, country != null) }.getOrNull() ?: scan(want, country.orEmpty())
         if (country != null) out.forEach { row ->
             val addrs = row.getJSONArray("addrs")
             if (!row.optBoolean("group") && addrs.length() == 1) {
@@ -209,7 +213,7 @@ class Messages(private val hub: Hub, private val core: Core) {
     }
 
     // Where that list isn't offered (some Samsung phones): the newest message of each thread.
-    private fun scan(n: Int): List<JSONObject> {
+    private fun scan(n: Int, country: String): List<JSONObject> {
         val seen = LinkedHashMap<Long, JSONObject>()
         cr.query(Uri.parse("content://sms"), arrayOf("thread_id", "address", "body", "date", "read"), "type != 3", null, "date DESC")?.use { c ->
             var rows = 0
@@ -219,15 +223,19 @@ class Messages(private val hub: Hub, private val core: Core) {
                 seen[id] = thread(id, listOf(c.getString(1) ?: ""), c.getString(2) ?: "", c.getLong(3), c.getInt(4) == 0)
             }
         }
-        cr.query(Uri.parse("content://mms"), arrayOf("thread_id", "_id", "date", "read"), "msg_box != 3", null, "date DESC")?.use { c ->
+        cr.query(Uri.parse("content://mms"), arrayOf("thread_id", "_id", "date", "read", "msg_box"), "msg_box != 3", null, "date DESC")?.use { c ->
             var rows = 0
             while (c.moveToNext() && rows++ < 500) {
                 val id = c.getLong(0)
                 val at = c.getLong(2) * 1000
                 val t = seen[id]
                 if (t != null && t.optLong("at") >= at) continue
-                val m = mmsDetail(c.getLong(1), false)
-                seen[id] = thread(id, m.addrs.ifEmpty { listOf("") }, m.text.ifEmpty { if (m.images > 0) "Picture" else "" }, at, c.getInt(3) == 0)
+                val incoming = c.getInt(4) == 1
+                val m = mmsDetail(c.getLong(1), incoming)
+                // Inbound TO is normally this handset. Only FROM can establish the sender.
+                val addrs = if (incoming) MessageChat.incomingMmsParticipants(m.from, m.recipients, country) else m.recipients
+                seen[id] = thread(id, addrs, m.text.ifEmpty { if (m.images > 0) "Picture" else "" }, at, c.getInt(3) == 0)
+                    .apply { if (incoming && m.recipients.size > 1) put("group", true) }
             }
         }
         return seen.values.sortedByDescending { it.optLong("at") }.take(n)
@@ -292,7 +300,7 @@ class Messages(private val hub: Hub, private val core: Core) {
             .put("status", when (box) { 4 -> "sending"; 5 -> "failed"; else -> "" }).put("parts", parts)
     }
 
-    private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val addrs: List<String>, val attachment: Boolean) {
+    private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val recipients: List<String>, val attachment: Boolean) {
         val images get() = parts.size
     }
 
@@ -331,17 +339,17 @@ class Messages(private val hub: Hub, private val core: Core) {
                 }
             }
         }
-        var from = ""
-        val addrs = ArrayList<String>()
+        val senders = linkedSetOf<String>()
+        val recipients = linkedSetOf<String>()
         cr.query(Uri.parse("content://mms/$id/addr"), arrayOf("address", "type"), null, null, null)?.use { c ->
             while (c.moveToNext()) {
                 val a = c.getString(0) ?: continue
-                if (a == "insert-address-token") continue
-                if (c.getInt(1) == 137) from = a else addrs.add(a) // 137: from; 151: to
+                if (a.isBlank() || a == "insert-address-token") continue
+                if (c.getInt(1) == 137) senders.add(a) else recipients.add(a) // 137: from; 151: to
             }
         }
-        if (!incoming) from = ""
-        return Mms(text.toString(), parts, from, (listOf(from) + addrs).filter { it.isNotEmpty() }.distinct(), attachment)
+        val from = if (incoming) senders.singleOrNull().orEmpty() else ""
+        return Mms(text.toString(), parts, from, recipients.toList(), attachment)
     }
 
     // An MMS picture, at most 1024 px, as a data: URL.

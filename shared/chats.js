@@ -128,7 +128,13 @@ class Chats {
       this.messagingPhones[dev] = true;
     }
     const convs = (this.phones[dev] = this.phones[dev] || {});
-    const k = app + '|' + key;
+    const routeKey = app + '|' + key;
+    const peer = messaging && !m.group ? messagePeerOf(m) : '';
+    const previous = convs[routeKey];
+    const split = messaging && previous &&
+      ((previous.messagePeer || '') !== peer || !!previous.group !== (m.group === true));
+    const variant = JSON.stringify([routeKey, m.group === true, peer]);
+    const k = messaging && (split || convs[variant]) ? variant : routeKey;
     const c = convs[k] || { key: k, app, items: [] };
     c.appName = str(m.appName, 60) || c.appName || app;
     c.name = str(m.name, 200) || c.name || '';
@@ -136,12 +142,12 @@ class Chats {
     c.pic = !messaging && m.pic === true;
     if (typeof m.avatar === 'string' && m.avatar.length < 60000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(m.avatar)) c.avatar = m.avatar; // the contact's or group's picture
     if (messaging) {
-      c.messagePeer = c.group ? '' : messagePeerOf(m);
+      c.messagePeer = peer;
       for (const [id, bind] of this.messageReplies) {
-        if (bind.dev === dev && bind.key === k) this.messageReplies.delete(id);
+        if (bind.dev === dev && bind.routeKey === routeKey) this.messageReplies.delete(id);
       }
       if (m.reply === true && typeof m.id === 'string' && /^r:[\w-]{1,100}$/.test(m.id)) {
-        this.messageReplies.set(m.id, { dev, key: k });
+        this.messageReplies.set(m.id, { dev, key: k, routeKey });
       }
     } else if (typeof m.id === 'string' && m.id) {
       c.id = str(m.id, 200);
@@ -218,13 +224,13 @@ class Chats {
 
   // An answer typed here: through the conversation's notification Reply; shown at once, the
   // phone's own copy (its notification updates with it) replaces it.
-  reply(key, text, image, remove) {
+  reply(key, text, image, remove, from, session) {
     if (remove) return this.remove(key); // Messages › Delete chat (from this list; a new message brings it back)
     const c = (this.phones[this.who()] || {})[key];
     const t = typeof text === 'string' ? text.trim().slice(0, 5000) : '';
     if (c && MESSAGING.test(c.app)) {
       const id = this._messageReply(key);
-      return !!(id && t && !image && c.items.some((i) => !i.carrier) && this.link.send({ t: 'notif.reply', id, text: t }) !== false);
+      return !!(id && from === this.who() && session === id && t && !image && c.items.some((i) => !i.carrier) && this.link.send({ t: 'notif.reply', id, text: t }) !== false);
     }
     if (image) return this.picture(c, t, image);
     if (!c || !c.id || !c.reply || !t || !this.sessionUp) return false;
@@ -308,10 +314,12 @@ class Chats {
       const messaging = MESSAGING.test(c.app);
       const items = messaging ? c.items.filter((i) => !i.carrier) : c.items;
       if (messaging && !items.length) return [];
-      const reply = messaging ? !!this._messageReply(c.key) : !!(c.reply && this.sessionUp);
+      const replySession = messaging ? this._messageReply(c.key) : '';
+      const reply = messaging ? !!replySession : !!(c.reply && this.sessionUp);
       const at = messaging ? items[items.length - 1].at : c.at;
       const shown = items.slice(-VIEW_ITEMS);
       return [{ key: c.key, app: c.app, appName: c.appName, name: c.name, group: c.group, reply, pic: !!(c.pic && this.sessionUp), avatar: c.avatar || '', at,
+        ...(replySession ? { from: this.who(), replySession } : {}),
         ...(messaging && c.messagePeer && !c.group ? { messagePeer: c.messagePeer } : {}),
         items: messaging ? shown.map(({ id, at, from, text, me, match, attachment }) => ({
           id, at, from, text, me, ...(includeMatches && match ? { match } : {}), ...(attachment ? { attachment } : {}),

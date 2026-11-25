@@ -67,9 +67,9 @@ function setupIpc(ctx) {
   handle('history', (r) => { if (r && typeof r === 'object' && ctx.history) ctx.history(r); });
   handle('qrPair', () => ctx.qrPair()); // Connection: the phone pairing QR code's link
   handle('adbQr', (on) => ctx.adbQr(on === true)); // wireless debugging: pair with a QR code
-  handle('notifReply', (r) => r && typeof r === 'object' && (r.chat ? !!(ctx.chats && ctx.chats() && ctx.chats().reply(String(r.chat), r.text, r.image, r.remove === true))
+  handle('notifReply', (r) => r && typeof r === 'object' && (r.chat ? !!(ctx.chats && ctx.chats() && ctx.chats().reply(String(r.chat), r.text, r.image, r.remove === true, r.from, r.replySession))
     : !ctx.notifs ? false : r.dismiss ? ctx.notifs.dismiss(String(r.id || '')) : Number.isInteger(r.act) ? ctx.notifs.act(String(r.id || ''), r.act) // Overview's × and buttons (shared/notifacts.js)
-      : ctx.notifs.reply(String(r.id || ''), r.text))); // a phone chat's Reply, typed here
+      : ctx.notifs.reply(String(r.id || ''), r.text, r.from, r.replySession))); // a phone chat's Reply, typed here
   handle('copyText', (text) => typeof text === 'string' && text.length < 1000 && clipboard.writeText(text));
   // Activity copies a notification or a call. Text only, capped, never a path and never a shell.
   handle('copyLiteral', (text) => {

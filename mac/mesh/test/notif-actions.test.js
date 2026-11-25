@@ -8,12 +8,15 @@ const { Mesh } = require('../../../shared/mesh.js');
 const P = require('../../../shared/protocol.js');
 
 const copied = [];
+const ipcMain = new EventEmitter();
+ipcMain.handle = () => {};
 const load = Module._load;
 Module._load = function (name) {
-  if (name === 'electron') return { clipboard: { writeText: (text) => copied.push(text) } };
+  if (name === 'electron') return { ipcMain, clipboard: { writeText: (text) => copied.push(text) } };
   return load.apply(this, arguments);
 };
 const { Notifs } = require('../notifs.js');
+const { setupIpc } = require('../ipc.js');
 
 function fixture() {
   const sent = [];
@@ -26,6 +29,8 @@ function fixture() {
   bus.onPeer = () => {};
   bus.connectedIds = () => [...connected];
   bus.send = (id, msg) => { sent.push({ id, msg }); return connected.has(id); };
+  const sockets = new Map([['phone', {}], ['other', {}]]);
+  bus.replySocket = (id) => connected.has(id) ? sockets.get(id) : null;
   bus.selectedId = () => 'other';
   class Notification extends EventEmitter {
     static isSupported() { return true; }
@@ -34,7 +39,7 @@ function fixture() {
   }
   const settings = { notifs: { receive: true, send: false } };
   const notifs = new Notifs({ bus, mesh, helper: new EventEmitter(), getSettings: () => settings, Notification });
-  return { notifs, bus, mesh, shown, sent, connected, settings };
+  return { notifs, bus, mesh, shown, sent, connected, settings, sockets };
 }
 
 function actionsStayWithOrigin() {
@@ -146,8 +151,44 @@ function goneClosesPopupAfterHistoryCleared() {
   assert.deepStrictEqual(closed, ['n1', 'left'], 'a popup that does not expose origins is left alone');
 }
 
+function exactReplyAndPrivateRelay() {
+  const f = fixture();
+  const relay = [];
+  f.mesh.get('other').notifPool = true;
+  f.mesh.get('other').send = (m) => { relay.push(m); return true; };
+  f.connected.add('second-phone');
+  f.sockets.set('second-phone', {});
+  f.mesh.addPeer({ id: 'second-phone', os: P.OS.ANDROID, send: () => true });
+  const notice = { t: P.T.NOTIF, id: 'reused', app: 'com.google.android.apps.messaging',
+    title: 'Fixture', reply: true, messagePeer: '+12025550100', messageAt: 100, replyVersion: 'fixture-1' };
+  const show = (m, id) => f.bus.emit(P.T.NOTIF, m, id, {}, f.sockets.get(id));
+  show(notice, 'phone');
+  const old = f.notifs.history[0];
+  show(notice, 'second-phone');
+  const other = f.notifs.history[0];
+  setupIpc({ state: { connect: {}, permissions: {} }, server: new EventEmitter(), notifs: f.notifs });
+  const send = ({ id, from, replySession }) => ipcMain.emit('notifReply', {}, { id, from, replySession, text: 'Fixture reply' });
+  send(old);
+  send(other);
+  assert.deepStrictEqual(f.sent.map((x) => x.id), ['phone', 'second-phone']);
+  assert.equal(f.sent[0].msg.replyVersion, notice.replyVersion);
+  assert.ok(old.messagePeer && old.messageAt);
+  assert.ok(relay.length > 0);
+  assert.ok(relay.every((m) => !('messagePeer' in m) && !('messageAt' in m) && !('replyVersion' in m)));
+  f.sockets.set('phone', {});
+  send(old);
+  assert.equal(f.sent.length, 2);
+  show({ ...notice, replyVersion: 'fixture-2' }, 'phone');
+  send(old);
+  assert.equal(f.sent.length, 2);
+  send(f.notifs.history[0]);
+  assert.equal(f.sent.length, 3);
+}
+
+
 try {
   actionsStayWithOrigin();
+  exactReplyAndPrivateRelay();
   refusesRelayAndDisconnectedActions();
   goneClosesOnlyThatSessionsPopup();
   goneClosesPopupAfterHistoryCleared();

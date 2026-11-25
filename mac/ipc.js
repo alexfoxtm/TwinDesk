@@ -794,11 +794,11 @@ function setupIpc(ctx) {
     },
     // A phone chat's notification answered here (its own Reply).
     notifReply(r) {
-      if (r && typeof r === 'object' && r.chat) return void (ctx.chats && ctx.chats.reply(String(r.chat), r.text, r.image, r.remove === true)); // a chat app's conversation (shared/chats.js)
+      if (r && typeof r === 'object' && r.chat) return void (ctx.chats && ctx.chats.reply(String(r.chat), r.text, r.image, r.remove === true, r.from, r.replySession)); // a chat app's conversation (shared/chats.js)
       if (!r || typeof r !== 'object' || !ctx.notifs) return;
       if (r.dismiss) return void ctx.notifs.dismiss(String(r.id || '')); // Overview's × (shared/notifacts.js)
       if (Number.isInteger(r.act)) return void ctx.notifs.act(String(r.id || ''), r.act); // one of its buttons
-      if (ctx.notifs.reply) ctx.notifs.reply(String(r.id || ''), r.text);
+      if (ctx.notifs.reply) ctx.notifs.reply(String(r.id || ''), r.text, r.from, r.replySession);
     },
     // Connection › Wireless debugging › Pair with a QR code: on while shown.
     adbQr(on) {
