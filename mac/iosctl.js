@@ -62,8 +62,11 @@ function keyboardInput(key, modifierFlags = 0) {
 }
 
 function shortcutKey(m) {
-  if (m.code === 'Space') return ' ';
-  return typeof m.code === 'string' && /^Key[A-Z]$/.test(m.code) ? m.code[3].toLowerCase() : m.key.toLowerCase();
+  // Latin layouts already carry the user's shortcut letter, even when the physical key differs.
+  if (/^\p{L}$/u.test(m.key) && !/\p{Script=Latin}/u.test(m.key) && typeof m.code === 'string' && /^Key[A-Z]$/.test(m.code)) {
+    return m.code[3].toLowerCase();
+  }
+  return m.key.toLowerCase();
 }
 
 function keyCommand(m, hardwareKeys) {

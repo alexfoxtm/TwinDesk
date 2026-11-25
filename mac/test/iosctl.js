@@ -406,6 +406,14 @@ test('WDA parity uses the pinned keyboard, pasteboard, coordinate and button com
   await tick();
   assert.equal(calls.length, index + 1);
   assert.deepEqual(calls.at(-1).body, { keys: [{ key: 'v', modifierFlags: 16 }] });
+  index = calls.length;
+  assert.equal(key('q', { code: 'KeyA', meta: true }), false, 'AZERTY Cmd+Q remains a Mac shortcut');
+  assert.equal(key('K', { code: 'KeyV', meta: true, shift: true },
+    () => assert.fail('Dvorak Cmd+Shift+K must not read the Mac clipboard')), false);
+  assert.equal(key('a', { code: 'KeyQ', meta: true }), true);
+  await tick();
+  assert.equal(calls.length, index + 1);
+  assert.deepEqual(calls.at(-1).body, { keys: [{ key: 'a', modifierFlags: 16 }] });
   key('М', { code: 'KeyV', meta: true, shift: true }, () => 'test-paste-text');
   await tick();
   assert.deepEqual(calls.slice(-2).map(({ path: route, body }) => [route.slice('/session/own-session'.length), body]), [
