@@ -14,22 +14,45 @@
 
 const { EventEmitter } = require('events');
 const S = require('../../shared/screen-mesh.js');
+const P = require('../../shared/protocol.js');
+const { IN_TYPES } = require('../input.js');
 const { ScopedPhonePeer: ScopedPeer } = require('./phones.js');
 
 class StreamSet extends EventEmitter {
   // hub: hub.js; server: the Server; make(peer) -> Stream; displays: Displays (model()).
-  constructor({ hub, server, make, displays }) {
+  constructor({ hub, server, make, displays, input, swapKeys }) {
     super();
-    Object.assign(this, { hub, server, make, displays });
+    Object.assign(this, { hub, server, make, displays, input, swapKeys });
     this.byId = new Map();
     this.all = [];
     this.table = {};
+    this.inputEpoch = 0;
+    this.inputOwner = null;
+    this.inputLocked = false;
     this.first = this._create();
     hub.bus.onPeer('welcome', (id) => this._ensure(id));
     hub.bus.onPeer('closed', (id) => this._gone(id));
     for (const s of hub.sessions.list()) if (s.connected) this._ensure(s.id);
     // Publish after the hub settles selection, including a pending user Connect.
     hub.on('change', () => this.syncScopedScreens());
+    if (input) {
+      for (const type of IN_TYPES) hub.bus.on(type, (m, id, source, ws) => this._onInput(m, id, source, ws));
+      hub.bus.on(P.T.CLIP_REQUEST, (_m, id, source, ws) => {
+        const owner = this.inputOwner;
+        if (owner && owner.stream.peer.id === id && owner.grant.socket === ws && source?.ws === ws &&
+            this.hub.sessions.get(id)?.inbound() === source) {
+          this._releaseInput();
+        }
+      });
+      input.helper.on('event', (ev, { epoch } = {}) => {
+        if (ev !== 'screenInputLocal' || !Number.isSafeInteger(epoch)) return;
+        if (this.inputOwner?.grant.inputEpoch <= epoch) this._releaseInput();
+        for (const st of this.all) {
+          if (st.inputGrant?.inputEpoch <= epoch) st.inputGrant = null;
+        }
+        this.syncScopedScreens();
+      });
+    }
     this.syncScopedScreens();
   }
 
@@ -39,7 +62,8 @@ class StreamSet extends EventEmitter {
     st.peer = peer;
     st.audioOk = () => st === this.active;
     st.on('change', () => {
-      if (st.scopedScreen) this._syncScopedScreen(st);
+      const input = this._syncScreenInput(st);
+      if (st.scopedScreen) st.syncScopedScreen(false, input);
       this.emit('change');
     });
     this.all.push(st);
@@ -61,7 +85,97 @@ class StreamSet extends EventEmitter {
 
   _syncScopedScreen(st) {
     const selected = this.hub.selectedId;
-    st.syncScopedScreen?.(selected !== null && selected !== st.peer.id);
+    const input = this._syncScreenInput(st);
+    st.syncScopedScreen?.(selected !== null && selected !== st.peer.id, input);
+  }
+
+  _syncScreenInput(st) {
+    if (!this.input) return false;
+    const c = st.peer.current;
+    const ios = c?.os === P.OS.IOS;
+    const epochRequired = ios && st.viewerUsesInputEpoch === true;
+    const allowed = !this.inputLocked && this.input.enabled() && (epochRequired || c?.deviceId === this.hub.selectedId);
+    const target = allowed ? st.inputTarget() : null;
+    const bounds = target?.bounds;
+    const mapping = bounds ? [target.id, bounds.x, bounds.y, bounds.width, bounds.height].join(':') : null;
+    const old = st.inputGrant;
+    if (!mapping || old?.socket !== c?.conn || old.session !== st.session || old.mapping !== mapping || old.epochRequired !== epochRequired) {
+      if (this.inputOwner?.stream === st) this._releaseInput();
+      st.inputGrant = mapping ? { socket: c.conn, session: st.session, mapping, inputEpoch: ++this.inputEpoch, epochRequired, target } : null;
+    }
+
+    // An iPad that negotiated epochs can control its scoped stream. A legacy iPad keeps its
+    // selected-viewer input path, still checked against the live socket, capture and policy.
+    const on = ios ? !!st.inputGrant : allowed;
+    const msg = { t: P.T.STREAM_INPUT, on };
+    if (ios) {
+      if (epochRequired) {
+        msg.session = st.inputGrant?.session ?? null;
+        msg.inputEpoch = st.inputGrant?.inputEpoch ?? null;
+      }
+      // A transport resume can replace the primary socket without a new welcome on iOS.
+      if (st.viewer === true && st.viewerSocket !== c.conn) msg.refreshViewer = true;
+    }
+    const key = JSON.stringify(msg);
+    if (!c?.conn) st.inputState = null;
+    else if (st.inputState?.socket !== c.conn || st.inputState.key !== key) {
+      if (st.peer.sendToClient(msg)) st.inputState = { socket: c.conn, key };
+    }
+    return !!st.inputGrant;
+  }
+
+  _releaseInput() {
+    if (!this.inputOwner) return;
+    this.inputOwner = null;
+    this.input.releaseAll();
+  }
+
+  lockInput(locked) {
+    this.inputLocked = locked;
+    this.syncScopedScreens();
+  }
+
+  _onInput(m, id, source, ws) {
+    if (m.wid != null || !ws || source?.ws !== ws || this.hub.sessions.get(id)?.inbound() !== source) return;
+    const st = this.byId.get(id);
+    const c = st?.peer.current;
+    if (!c || c.conn !== ws || !this._syncScreenInput(st)) return;
+    const grant = st.inputGrant;
+    const ios = c.os === P.OS.IOS;
+    if (grant.epochRequired && (m.session !== grant.session || m.inputEpoch !== grant.inputEpoch)) return;
+    if (ios && !grant.epochRequired && (m.session != null || m.inputEpoch != null)) return;
+
+    const t = m.t;
+    const key = t === P.T.IN_KEY_DOWN || t === P.T.IN_KEY_UP;
+    if (key && (typeof m.code !== 'string' || !m.code.length || m.code.length > 32)) return;
+    let owner = this.inputOwner;
+    if (owner?.grant !== grant) {
+      if (owner && (owner.buttons.size || owner.keys.size)) return;
+      const claims = t === P.T.IN_DOWN || t === P.T.IN_WHEEL ||
+        (t === P.T.IN_MOVE && (!owner || (grant.epochRequired && m.engaged === true))) ||
+        (t === P.T.IN_KEY_DOWN && !grant.epochRequired && !owner);
+      if (!claims) return;
+      this._releaseInput();
+      owner = this.inputOwner = { stream: st, grant, buttons: new Set(), keys: new Set(), keyboard: !grant.epochRequired };
+    }
+    const b = Number.isFinite(m.b) ? Math.max(0, Math.min(4, m.b | 0)) : 0;
+    if (t === P.T.IN_UP && !owner.buttons.delete(b)) return;
+    if (key && (!owner.keyboard || (t === P.T.IN_KEY_UP && !owner.keys.delete(m.code)))) return;
+    if (t === P.T.IN_DOWN) {
+      owner.buttons.add(b);
+      owner.keyboard = true;
+    }
+    if (t === P.T.IN_KEY_DOWN) owner.keys.add(m.code);
+    if (t !== P.T.IN_WHEEL && !key && Number.isFinite(m.x) && Number.isFinite(m.y)) {
+      owner.point = { x: m.x, y: m.y };
+    }
+    const scrollAt = Number.isFinite(m.x) && Number.isFinite(m.y) ? { x: m.x, y: m.y }
+      : owner.point || { x: 0.5, y: 0.5 };
+    this.input.inject(m, grant.target, { swapKeys: this.swapKeys?.(c), meshScreen: grant.inputEpoch, scrollAt });
+    if (t === P.T.IN_UP && b === 0 && c.os === P.OS.ANDROID) {
+      this.input.textFocus(() => this.inputOwner === owner && st.peer.current?.conn === ws &&
+        this.input.enabled() && !!st.inputTarget(), (m) => st.peer.sendToClient(m));
+    }
   }
 
   syncScopedScreens() {

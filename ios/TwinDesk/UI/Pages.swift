@@ -138,6 +138,7 @@ struct ViewerScreen: View {
             if !autoRotate { Orientation.free() }
         }
         .onChange(of: core.tick) { _ in
+            if !core.screen.inputOn { keyboard = false }
             if core.screen.sharing { seenOn = true }
             else if seenOn && core.screen.autoOpened && core.screen.state != nil { close() }
             if !core.connected { close() }
@@ -161,7 +162,7 @@ struct ViewerScreen: View {
                 barButton(s.touchpad ? tr("Touchpad") : tr("Touch"), icon: s.touchpad ? "rectangle.and.hand.point.up.left" : "hand.point.up") {
                     s.setOpt("screen.touchpad", !s.touchpad)
                 }
-                barButton(tr("Keyboard"), icon: "keyboard", selected: keyboard) { keyboard.toggle() }
+                if s.inputOn { barButton(tr("Keyboard"), icon: "keyboard", selected: keyboard) { keyboard.toggle() } }
                 barButton(tr("Auto-rotate"), icon: autoRotate ? "arrow.triangle.2.circlepath" : "lock.rotation", selected: autoRotate) {
                     autoRotate.toggle()
                     if autoRotate { Orientation.free() } else { Orientation.lockAsNow() }

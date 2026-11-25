@@ -12,6 +12,7 @@ import UIKit
 final class Screen: Feature {
     private(set) var state: JSON? // the computer's screen.state
     private(set) var inputOn = true
+    private var inputPolicy: JSON?
     private(set) var viewing = false
     private(set) var size: (Int, Int)?
     private(set) var autoOpened = false
@@ -61,6 +62,7 @@ final class Screen: Feature {
             if ev == "netemSample", let h, let data { self?.netemSample(h, data) }
         }
         h.post(opts())
+        if let policy = inputPolicy { h.post(policy) }
         if let i = lastInfo { h.post(i) }
         if let s = state { h.post(s) }
         sendViewerPolicy()
@@ -90,7 +92,8 @@ final class Screen: Feature {
 
     private func sendViewerPolicy() {
         let px = UIScreen.main.nativeBounds.size
-        core.send(msg("screen.policy", ["accept": true, "width": Int(max(px.width, px.height)), "height": Int(min(px.width, px.height))]))
+        core.send(msg("screen.policy", ["accept": true, "width": Int(max(px.width, px.height)),
+                                        "height": Int(min(px.width, px.height)), "inputEpoch": true]))
     }
 
     override func onWelcome(_ computer: Computer, _ m: JSON) {
@@ -125,6 +128,8 @@ final class Screen: Feature {
 
     override func onClosed() {
         state = nil
+        inputOn = true
+        inputPolicy = nil
         netemOffer = nil
         lastInfo = nil
         wantStart = false
@@ -150,7 +155,14 @@ final class Screen: Feature {
             if !on { netemOffer = nil; Notifier.shared.cancel("screen") }
             if wantStart { startIfNeeded() }
             core.changed()
-        case "stream.input": inputOn = (m["on"] as? Bool) ?? true; core.changed()
+        case "stream.input":
+            inputOn = (m["on"] as? Bool) ?? true
+            inputPolicy = m
+            host?.post(m)
+            if m.bool("refreshViewer"), viewing, viewerComputer == core.link.host?.id {
+                sendViewerPolicy()
+            }
+            core.changed()
         case "stream.info": lastInfo = m; host?.post(m)
         case "rtc.offer":
             netemOffer = nil
@@ -200,7 +212,25 @@ final class Screen: Feature {
         }
     }
 
-    func key(_ code: String, _ down: Bool) { core.send(msg(down ? "in.kd" : "in.ku", ["code": code])) }
+    func key(_ code: String, _ down: Bool) {
+        guard let host else { return }
+        var m = msg(down ? "in.kd" : "in.ku", ["code": code])
+        if let policy = inputPolicy, let epoch = policy["inputEpoch"] as? Int {
+            m["session"] = policy["session"]
+            m["inputEpoch"] = epoch
+        }
+        sendViewerInput(m, from: host)
+    }
+
+    func sendViewerInput(_ m: JSON, from sender: WebHost) {
+        guard inputOn, host === sender, viewing, viewerComputer == core.link.host?.id,
+              let linkSession = core.link.sessionID else { return }
+        if let policy = inputPolicy, policy["inputEpoch"] != nil {
+            guard let epoch = policy["inputEpoch"] as? Int, let session = policy["session"] as? Int,
+                  m["inputEpoch"] as? Int == epoch, m["session"] as? Int == session else { return }
+        }
+        core.link.send(m, session: linkSession)
+    }
 }
 
 // The computer's sound here (mac/audio.js m2w): accepted while the switch is on, played by

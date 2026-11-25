@@ -361,9 +361,8 @@ function setupIpc(ctx) {
     },
     setStreamInput(on) {
       settings.streamInput = !!on;
+      ctx.stream.syncScopedScreens();
       save();
-      if (!on) ctx.input.releaseAll();
-      ctx.server.sendToClient({ t: P.T.STREAM_INPUT, on: !!on }); // Windows goes view-only when off
     },
     // Share this Mac's screen with one device its own way: { mode: 'default'|'none'|'mirror'|'virtual', displayId? }.
     setStreamTarget(id, choice) {

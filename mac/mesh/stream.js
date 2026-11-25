@@ -75,6 +75,8 @@ class Stream extends EventEmitter {
     // does. So wait up to 1.5 s before sending anything, then treat silence as "watching".
     server.on('client', () => {
       this.viewer = null;
+      this.viewerSocket = null;
+      this.viewerUsesInputEpoch = false;
       this.waitingPolicy = true;
       clearTimeout(this.policyTimer);
       this.policyTimer = setTimeout(() => {
@@ -87,6 +89,12 @@ class Stream extends EventEmitter {
       const c = this.server.current;
       if (c?.os === P.OS.IOS && !this._currentIosMessage(ctx)) return;
       const on = !!msg.accept;
+      const moved = on && this.viewerSocket !== c?.conn;
+      const usesInputEpoch = on && (msg.inputEpoch === true || (!moved && this.viewerUsesInputEpoch));
+      const onChanged = on !== this.viewer || moved;
+      const epochChanged = usesInputEpoch !== this.viewerUsesInputEpoch;
+      this.viewerSocket = on ? c?.conn : null;
+      this.viewerUsesInputEpoch = usesInputEpoch;
       // A scoped viewer must not resize the shared virtual display.
       if (c && P.isPhoneOs(c.os) && !this.scopedScreen && on && msg.width > 0 && msg.height > 0) {
         displayOverrideOwner.set(this.displays, this);
@@ -94,7 +102,10 @@ class Stream extends EventEmitter {
       }
       this.waitingPolicy = false;
       clearTimeout(this.policyTimer);
-      if (on === this.viewer) return;
+      if (!onChanged) {
+        if (epochChanged) this.emit('change');
+        return;
+      }
       this.viewer = on;
       if (on) this.restart('viewer open');
       else {
@@ -106,6 +117,8 @@ class Stream extends EventEmitter {
     server.on('closed', () => {
       clearTimeout(this.policyTimer);
       this.viewer = null;
+      this.viewerSocket = null;
+      this.viewerUsesInputEpoch = false;
       this.waitingPolicy = false;
       if (displayOverrideOwner.get(this.displays) === this) {
         displayOverrideOwner.delete(this.displays);
@@ -171,14 +184,14 @@ class Stream extends EventEmitter {
   }
 
   _scopedMode() {
-    if (this.choice?.mode === 'virtual') return this.displays.virtualTarget() ? 'extend' : null;
+    if (this.choice?.mode === 'virtual') return 'extend';
     if (this.getSettings().sharing.on && this._target()?.virtual) return 'extend';
     return 'mirror';
   }
 
   // The selected viewer still uses the facade. An iOS viewer offered scoped controls
   // keeps them for this connection even if the sidebar selection changes.
-  syncScopedScreen(unselected) {
+  syncScopedScreen(unselected, input) {
     const c = this.server.current;
     if (c?.os !== P.OS.IOS || !c.conn || (!unselected && !this.scopedScreen)) return;
     this.scopedScreen = true;
@@ -194,7 +207,7 @@ class Stream extends EventEmitter {
       mode: this._target()?.virtual ? 'extend' : 'mirror',
       remote: allowed,
       modes: mode ? [mode] : [],
-      input: false,
+      input,
     };
     const key = JSON.stringify(m);
     if (this.screenState?.socket === c.conn && this.screenState.key === key) return;
@@ -202,7 +215,8 @@ class Stream extends EventEmitter {
   }
 
   _scopedControl(msg, ctx) {
-    if (!this.scopedScreen || !this._currentIosMessage(ctx)) return;
+    if (!this.scopedScreen || !this._currentIosMessage(ctx) ||
+        this.server.route.session?.inbound()?.ws !== ctx.conn) return;
     const sharing = this.getSettings().sharing;
     if (msg.share === false) {
       if (msg.close === true || sharing.remote !== false) this.stop('off', !!sharing.on);
@@ -220,14 +234,24 @@ class Stream extends EventEmitter {
   // The display this target gets: its own choice, else what the shared settings say.
   _target() {
     const c = this.choice;
+    if (c?.mode === 'mirror') return this.displays.list().find((d) => d.id === c.displayId) || null;
+    if (c?.mode === 'virtual') return this.displays.list().find((d) => d.virtual) || null;
     if (this.scopedShare && !this.getSettings().sharing.on) {
-      if (c?.mode === 'mirror') return this.displays.byId(c.displayId);
-      if (c?.mode === 'virtual') return this.displays.virtualTarget();
       return this.displays.list().find((d) => d.primary && !d.virtual) || null;
     }
-    if (c && c.mode === 'mirror') return this.displays.byId(c.displayId) || this.displays.target();
-    if (c && c.mode === 'virtual') return this.displays.virtualTarget() || this.displays.target();
     return this.displays.target();
+  }
+
+  inputTarget() {
+    const c = this.server.current;
+    if (!c?.conn || this.active?.socket !== c.conn || this.active.session !== this.session ||
+        this.view.status !== 'live' || !this._sharing() || this.choice?.mode === 'none' ||
+        this.viewer === false || this.waitingPolicy) return null;
+    if (c.os === P.OS.IOS && (this.viewer !== true || this.viewerSocket !== c.conn ||
+        this.getSettings().sharing.remote === false)) return null;
+    const target = this._target();
+    return target?.id === this.active.displayId && target.pixelWidth === this.active.width &&
+      target.pixelHeight === this.active.height ? target : null;
   }
 
   _releaseAudio() {
@@ -321,11 +345,13 @@ class Stream extends EventEmitter {
     if (this.choice && this.choice.mode === 'none') return this._stopWindow('off for this device');
     // Bluetooth can't carry the picture: it starts once the session is on Wi-Fi (netlink.js, 'transport').
     if (this.server.current && this.server.current.transport === 'ble') return this._stopWindow('waiting for Wi-Fi');
+    this.displays.hold?.(this, this.choice?.mode === 'virtual');
     this.displays.captureWanted?.(this, true);
     const target = this._target();
     if (!target) return this._waitDisplay();
 
     const s = ++this.session;
+    if (this.active) this.emit('change'); // Revoke the old input grant before waiting for audio.
     const { width, height } = this._outSize(target);
     // Sound goes with the screen only when "Share sound with the screen" is on (else: none, for latency):
     // 'loopback' (Chromium captures it; the helper's if it can't), else the helper's capture.
@@ -354,7 +380,7 @@ class Stream extends EventEmitter {
     this.audio.on = !!audio;
     if (this.session !== s) return;
     const detailOwner = this.server.current.os === P.OS.ANDROID ? this.server.current.conn : null;
-    this.active = { session: s, displayId: target.id, width: target.pixelWidth, height: target.pixelHeight, transport: this.server.current.transport, detailOwner };
+    this.active = { session: s, displayId: target.id, width: target.pixelWidth, height: target.pixelHeight, transport: this.server.current.transport, detailOwner, socket: this.server.current.conn };
     Object.assign(this.view, { display: target.label, width, height, fps: 0, mbps: 0 });
     this._setStatus('starting');
     console.log(`[stream] session ${s} (${reason}): ${target.label} ${target.pixelWidth}x${target.pixelHeight} -> ${width}x${height}`);
@@ -441,7 +467,7 @@ class Stream extends EventEmitter {
     const t = this._target();
     if (!t || t.id !== this.active.displayId || t.pixelWidth !== this.active.width || t.pixelHeight !== this.active.height) {
       this.restart('display changed');
-    }
+    } else this.emit('change'); // Bounds may have moved while the capture size stayed the same.
   }
 
   _waitDisplay() {
@@ -452,7 +478,10 @@ class Stream extends EventEmitter {
   _stopWindow(status, waiting = false) {
     this.session++;
     this.awaitingDisplay = false;
-    if (!waiting) this.displays.captureWanted?.(this, false);
+    if (!waiting) {
+      this.displays.hold?.(this, false);
+      this.displays.captureWanted?.(this, false);
+    }
     clearTimeout(this.retryTimer);
     this._releaseAudio();
     this.audio.on = false;

@@ -116,7 +116,8 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKU
         case "send":
             if let s = o["s"] as? String, let m = decodeJSON(s) {
                 if m.str("t") == "cam.state" { core.camera.pageStatus(m) }
-                core.send(m)
+                if page == "viewer.html", m.str("t").hasPrefix("in.") { core.screen.sendViewerInput(m, from: self) }
+                else { core.send(m) }
             }
         case "move":
             let kind = (o["kind"] as? NSNumber)?.intValue ?? 0
@@ -125,7 +126,10 @@ final class WebHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKU
             switch kind {
             case 0: core.send(msg("remote.mm", ["dx": a, "dy": b, "smooth": (o["smooth"] as? Bool) ?? false]))
             case 1: core.send(msg("remote.wh", ["dx": a, "dy": b]))
-            default: core.send(msg("in.mm", ["x": a, "y": b]))
+            default:
+                let m = msg("in.mm", ["x": a, "y": b])
+                if page == "viewer.html" { core.screen.sendViewerInput(m, from: self) }
+                else { core.send(m) }
             }
         case "ready":
             ready = true
