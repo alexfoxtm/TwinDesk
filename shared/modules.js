@@ -38,7 +38,7 @@
     { id: 'deck', label: 'Deck', pages: ['deck'] },
     { id: 'web', label: 'TwinDesk Web', pages: ['web', 'wd-overview', 'wd-drop'] },
     { id: 'airplay', label: 'AirPlay', pages: ['airplay'] },
-    { id: 'iossign', label: 'TwinDesk iPhone', pages: ['iossign'] },
+    { id: 'iossign', label: 'TwinDesk for iPhone & iPad', pages: ['iossign'] },
     { id: 'multi', label: 'Multi-device', pages: ['multi'] },
     { id: 'fullkvm', label: 'Full KVM', pages: ['fullkvm'] }, // Windows and Linux (shared/ui-fullkvm.js); off: the app doesn't use the service either (shared/edition.js)
   ];

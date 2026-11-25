@@ -40,7 +40,7 @@ global.UI = {
   button: (label, onClick) => { const b = el('button', { text: label }); b.click = onClick; return b; },
   row: (label, hint, controls = [], o = {}) => { const r = el('div', { text: label }, controls); r.hintText = hint; r.setHint = (h) => { r.hintText = h; }; r.label = el('span'); r.click = o.onClick; return r; },
   card: (title, rows, o = {}) => { const span = el('span', { text: title }); const c = el('section', { text: title }, [...(o.actions || []), ...rows]); c.titleSpan = span; return c; },
-  switch: (onChange) => { const e = el('input'); return { el: e, on: onChange, set: (v) => { e.checked = !!v; } }; },
+  switch: (onChange) => { const e = el('input', { change: onChange }); return { el: e, on: onChange, set: (v) => { e.checked = !!v; } }; },
   select: (options, onChange) => { const e = el('select'); return { el: e, on: onChange, options: (o) => { e.opts = o; }, set: (v) => { e.value = v; } }; },
   segmented: (options, onChange) => { const e = el('div'); return { el: e, on: onChange, set: (v) => { e.value = v; } }; },
 };
@@ -52,7 +52,8 @@ assert.strictEqual(tab.hidden({}), true);
 const body = el('div');
 const update = tab.build(body);
 const find = (node, pred, out = []) => { if (node instanceof El) { if (pred(node)) out.push(node); node.children.forEach((c) => find(c, pred, out)); } return out; };
-const button = (label) => find(body, (n) => n.tag === 'button' && n.textContent === label)[0];
+const visible = (n) => !n.hidden && (!n.parent || visible(n.parent));
+const button = (label) => find(body, (n) => n.tag === 'button' && n.textContent === label && visible(n))[0];
 const base = { on: true, available: true, anyIpa: true, anisette: 'https://a.example', auto: true, days: 3, how: 'self', which: 'all', retry: 6, retries: [1, 3, 6, 12, 24], keep: false, canKeep: true, devices: [{ udid: 'U1', name: 'An iPhone', usb: false, wifi: true }], udid: 'U1', near: [], session: null, apps: [], phone: null, kept: null, pending: false, ipa: '', run: null, last: null };
 const soon = Math.floor(Date.now() / 1000) + 3600;
 const td = { bundleId: 'com.twindesk.ios.T', name: 'TwinDesk', version: '3', teamName: 'T', expires: soon, twindesk: true };
@@ -86,7 +87,7 @@ assert.ok(order().indexOf('Reinstall') > order().indexOf('Apple developer accoun
 const warnEl = find(body, (n) => n.className === 'ios-warn')[0];
 const heroEl = find(body, (n) => n.className === 'ios-hero')[0];
 const webEl = find(body, (n) => n.className === 'ios-alt')[0];
-assert.deepStrictEqual([heroEl, warnEl, webEl].map((n) => body.children.indexOf(n)), [2, 3, 4]);
+assert.deepStrictEqual([heroEl, warnEl, webEl].map((n) => body.children.indexOf(n)), [3, 4, 5]);
 assert.ok(warnEl.hidden && heroEl.hidden && webEl.hidden);
 update({ iosSign: { ...base, on: false } });
 assert.ok(!warnEl.hidden && !heroEl.hidden && !webEl.hidden);
@@ -132,4 +133,34 @@ button('View app IDs').click();
 assert.deepStrictEqual(sent.pop(), { a: 'appids' });
 update({ iosSign: { ...base, keep: true, kept: { email: 'a@b.c', until: 1, signedIn: true }, ids: { list: [{ id: 'com.twindesk.ios.T', name: 'TwinDesk', expires: soon }], available: 9, teamName: 'Me' } } });
 assert.ok(/Reload/.test(keep.text) && /TwinDesk/.test(keep.text), keep.text);
+const localDevice = { ...base.devices[0], name: 'Tablet', klass: 'iPad', coreId: 'paired', expires: soon, installed: true };
+const localView = { ...base, mode: 'developer', developer: true, bundled: true, devices: [localDevice] };
+assert.strictEqual(tab.titleFor({ iosSign: localView }), 'TwinDesk for iPad');
+assert.strictEqual(tab.titleFor({ iosSign: { ...localView, devices: [{ klass: 'iPhone' }] } }), 'TwinDesk for iPhone');
+assert.strictEqual(tab.titleFor({ iosSign: { ...localView, devices: [localDevice, { klass: 'iPhone' }] } }), 'TwinDesk for iPhone & iPad');
+update({ iosSign: localView });
+assert.match(find(body, (n) => n.textContent === 'Tablet')[0].hintText, /Signed until /);
+const localRefresh = button('Refresh now');
+assert.strictEqual(localRefresh.disabled, false);
+localRefresh.click();
+assert.deepStrictEqual(sent.pop(), { a: 'installDeveloper', udid: 'U1' });
+update({ iosSign: { ...localView, devices: [{ ...localDevice, refreshing: true }] } });
+assert.match(find(body, (n) => n.textContent === 'Tablet')[0].hintText, /Refreshing…/);
+update({ iosSign: { ...localView, devices: [{ ...localDevice, result: { error: { kind: 'device' } } }] } });
+assert.match(find(body, (n) => n.textContent === 'Tablet')[0].hintText, /Connect or unlock the iPad/);
+for (const mode of ['apple', 'developer']) {
+  const device = { ...localDevice, installed: false, muxUdid: 'U1' };
+  update({ iosSign: { ...localView, mode, devices: [device] } });
+  assert.equal(button('Install TwinDesk').disabled, false);
+  const row = find(body, (n) => n.textContent === 'Tablet' && visible(n))[0];
+  assert.equal(row.tabIndex, 0, 'a sole eligible Mac row remains selectable');
+  row.onkeydown({ key: 'Enter', preventDefault() {} });
+  assert.deepStrictEqual(sent.pop(), { a: 'set', udid: 'U1' });
+}
+update({ iosSign: { ...localView, mode: 'apple', devices: [{ ...localDevice, muxUdid: 'U1' }],
+  session: { id: 'Peer', name: 'My iPhone', udid: '', boundUdid: 'U2', auto: false } } });
+const offline = find(body, (n) => n.label?.textContent === 'Refresh My iPhone automatically' && visible(n))[0];
+assert.equal(offline.firstChild.checked, false);
+offline.firstChild.change(true);
+assert.deepStrictEqual(sent.pop(), { a: 'set', udid: 'U2', deviceAuto: true });
 console.log('ui-ios-sign: ok');
