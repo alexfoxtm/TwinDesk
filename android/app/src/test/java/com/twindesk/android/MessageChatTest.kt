@@ -100,6 +100,28 @@ class MessageChatTest {
         assertNull(MessageChat.incomingMmsAddress(null, peer))
         assertNull(MessageChat.incomingMmsAddress("Fixture contact", peer))
     }
+
+    @Test fun inboundGroupMmsFallbackExcludesOnlyATrustworthyHandset() {
+        val from = "+12025550100"
+        val handset = "+1 (202) 555-0101"
+        val other = "2025550102"
+        val third = "+12025550103"
+        val secondLine = "+12025550104"
+        val recipients = listOf(handset, other, third, secondLine)
+        fun same(expected: List<String>, actual: List<String>) = assertTrue(actual == expected)
+        same(emptyList(), MessageChat.incomingMmsParticipants(from, recipients, "US"))
+        same(emptyList(), MessageChat.incomingMmsParticipants(from, recipients, "US", listOf("not-a-number")))
+        same(emptyList(), MessageChat.incomingMmsParticipants(from, recipients, "US", listOf("+12025550109")))
+        same(emptyList(), MessageChat.incomingMmsParticipants(from, recipients, "US", listOf("2025550101", "office")))
+        same(emptyList(), MessageChat.incomingMmsParticipants(from, recipients, "US", listOf(from)))
+        same(listOf(from, other, third, secondLine), MessageChat.incomingMmsParticipants(from, recipients, "US", listOf("2025550101")))
+        same(listOf(from, other, third), MessageChat.incomingMmsParticipants(from, recipients, "US", listOf("+12025550101", secondLine)))
+        same(emptyList(), MessageChat.incomingMmsParticipants("", recipients, "US", listOf(handset)))
+        same(emptyList(), MessageChat.incomingMmsParticipants(from, listOf(from, other), "US", listOf(handset)))
+        same(listOf(from), MessageChat.incomingMmsParticipants(from, listOf(handset), "US"))
+        same(listOf(from), MessageChat.incomingMmsParticipants(from, listOf(handset), "US", listOf("2025550101")))
+        same(listOf(from), MessageChat.incomingMmsParticipants(from, emptyList(), "US"))
+    }
     private fun core() = Core::class.java.getDeclaredConstructor(Context::class.java)
         .apply { isAccessible = true }.newInstance(RuntimeEnvironment.getApplication())
 
@@ -145,8 +167,12 @@ class MessageChatTest {
         fun row() = service.threads(10, "US").getJSONObject(0)
         assertTrue(row().optString("e164") == sender)
         group = true
-        assertTrue(row().optBoolean("group"))
-        assertFalse(row().has("e164"))
+        val grouped = row()
+        assertTrue(grouped.optBoolean("group"))
+        assertFalse(grouped.has("e164"))
+        // No handset evidence is available on this fallback, so the row must not
+        // publish a recipient set that still contains the handset.
+        assertEquals(0, grouped.getJSONArray("addrs").length())
         group = false
         includeFrom = false
         assertEquals(0, row().getJSONArray("addrs").length())

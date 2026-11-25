@@ -100,9 +100,29 @@ internal object MessageChat {
     fun incomingMmsAddress(from: String?, threadPeer: String?, country: String = ""): String? =
         from?.takeIf { sameDestination(it, threadPeer, country) }
 
-    fun incomingMmsParticipants(from: String, recipients: List<String>, country: String): List<String> {
+    // Inbound MMS participants for the scan fallback. FROM is the sender. One type-151
+    // recipient is this handset, so the conversation is the sender. A group removes the
+    // handset only when every supplied number is a usable destination and at least one
+    // recipient matches. Otherwise the set is withheld: the unfiltered TO rows include the
+    // handset, and dropping an unclassified recipient would be a silent subset.
+    fun incomingMmsParticipants(
+        from: String,
+        recipients: List<String>,
+        country: String,
+        handset: Collection<String> = emptyList(),
+    ): List<String> {
         if (from.isBlank() || recipients.any { sameDestination(from, it, country) }) return emptyList()
-        return if (recipients.size <= 1) listOf(from) else (listOf(from) + recipients).distinct()
+        val evidence = handset.map { it.trim() }.filter { it.isNotEmpty() }
+        if (evidence.any { sameDestination(from, it, country) }) return emptyList()
+        if (recipients.size <= 1) return listOf(from)
+        if (evidence.isEmpty() || evidence.any { destination(it) == null }) return emptyList()
+        if (recipients.none { recipient -> evidence.any { sameDestination(recipient, it, country) } }) return emptyList()
+        val others = recipients.filter { recipient -> evidence.none { sameDestination(recipient, it, country) } }
+        val out = ArrayList<String>()
+        for (value in listOf(from) + others) {
+            if (out.none { it == value || sameDestination(it, value, country) }) out.add(value)
+        }
+        return out
     }
 
     data class Candidate(val id: String, val at: Long, val match: String)

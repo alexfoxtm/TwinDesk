@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -58,8 +59,8 @@ func TestListRCSFollowsCursorAndStopsOnRepeatedCursorOrCancellation(t *testing.T
 		}, nil
 	}
 	rows, complete, err := listRCS(ctx, list)
-	if err != nil || !complete || calls != 2 || len(rows) != 2 {
-		t.Fatal("did not collect both pages and stop on a repeated cursor")
+	if err != nil || complete || calls != 2 || len(rows) != 2 {
+		t.Fatal("repeated cursor was treated as a completed listing")
 	}
 	calls = 0
 	_, _, err = listRCS(ctx, func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
@@ -104,6 +105,69 @@ func TestListRCSUsesPageTimeoutAndKeepsEarlierPages(t *testing.T) {
 	}); err == nil {
 		t.Fatal("first-page failure was not reported")
 	}
+}
+
+func TestBoundedOrRepeatedCursorDoesNotCompleteOrErase(t *testing.T) {
+	const maxPages = 20
+	page := func(id string, cursor *gmproto.Cursor) *gmproto.ListConversationsResponse {
+		return &gmproto.ListConversationsResponse{Cursor: cursor,
+			Conversations: []*gmproto.Conversation{{Type: gmproto.ConversationType_RCS, ConversationID: id}}}
+	}
+	kept := &gmproto.Conversation{Type: gmproto.ConversationType_RCS, ConversationID: "kept"}
+	applyPartial := func(t *testing.T, next map[string]*gmproto.Conversation, complete bool) {
+		t.Helper()
+		var buf bytes.Buffer
+		b := inbox{out: &output{w: &buf}, ready: true, convs: map[string]*gmproto.Conversation{"kept": kept}}
+		if b.apply(context.Background(), next, complete, nil) || !b.ready || bytes.Contains(buf.Bytes(), []byte(`"offline"`)) {
+			t.Fatal("incomplete listing claimed completion or went offline")
+		}
+		if b.convs["kept"] != kept {
+			t.Fatal("incomplete listing erased a previously known conversation")
+		}
+		for id, c := range next {
+			if b.convs[id] != c {
+				t.Fatal("incomplete listing dropped a collected conversation")
+			}
+		}
+	}
+	t.Run("page cap", func(t *testing.T) {
+		calls := 0
+		rows, complete, err := listRCS(context.Background(), func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+			calls++
+			if _, ok := ctx.Deadline(); !ok {
+				t.Fatal("page request has no per-page deadline")
+			}
+			id := "p" + strconv.Itoa(calls)
+			return page(id, &gmproto.Cursor{LastItemID: id, LastItemTimestamp: int64(calls)}), nil
+		})
+		if err != nil || complete || calls != maxPages || len(rows) != maxPages {
+			t.Fatalf("page cap claimed a complete listing: complete=%v calls=%d rows=%d err=%v", complete, calls, len(rows), err)
+		}
+		applyPartial(t, rows, complete)
+		if len(rows) != maxPages {
+			t.Fatal("page cap dropped collected pages")
+		}
+	})
+	t.Run("repeated cursor", func(t *testing.T) {
+		cursor := &gmproto.Cursor{LastItemID: "again", LastItemTimestamp: 7}
+		calls := 0
+		rows, complete, err := listRCS(context.Background(), func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+			calls++
+			return page("r"+strconv.Itoa(calls), cursor), nil
+		})
+		if err != nil || complete || calls != 2 || len(rows) != 2 {
+			t.Fatalf("repeated cursor claimed a complete listing: complete=%v calls=%d rows=%d err=%v", complete, calls, len(rows), err)
+		}
+		applyPartial(t, rows, complete)
+	})
+	t.Run("nil cursor", func(t *testing.T) {
+		rows, complete, err := listRCS(context.Background(), func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+			return page("only", nil), nil
+		})
+		if err != nil || !complete || len(rows) != 1 || rows["only"] == nil {
+			t.Fatal("a nil cursor was not a completed listing")
+		}
+	})
 }
 
 func TestPartialSyncKeepsCoherentListOnline(t *testing.T) {

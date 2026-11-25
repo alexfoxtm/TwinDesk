@@ -284,6 +284,8 @@ func (b *inbox) offline() {
 
 // Each page has its own deadline. A later page that fails or times out ends the listing with the
 // pages already collected (complete == false); a failed first page or root cancellation is an error.
+// A nil cursor is the only completed listing. The 20-page bound and a repeated cursor are not an
+// end: completion stays false so a previous inbox is not replaced.
 var rcsPageTimeout = 15 * time.Second
 
 func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error)) (map[string]*gmproto.Conversation, bool, error) {
@@ -295,6 +297,7 @@ func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConver
 	}
 	seen := make(map[position]bool)
 	var cursor *gmproto.Cursor
+	ended := false
 	for page := 0; page < maxPages; page++ {
 		if err := ctx.Err(); err != nil {
 			return nil, false, err
@@ -319,8 +322,12 @@ func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConver
 			}
 		}
 		cursor = resp.GetCursor()
+		if cursor == nil {
+			ended = true
+			break
+		}
 		pos := position{cursor.GetLastItemID(), cursor.GetLastItemTimestamp()}
-		if cursor == nil || seen[pos] {
+		if seen[pos] {
 			break
 		}
 		seen[pos] = true
@@ -328,7 +335,7 @@ func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConver
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	return next, true, nil
+	return next, ended, nil
 }
 
 // Returns whether the inbox now holds a complete listing.
@@ -347,7 +354,7 @@ func (b *inbox) apply(ctx context.Context, next map[string]*gmproto.Conversation
 		return false
 	}
 	if !complete && b.ready {
-		// Later pages failed: keep the previous coherent list, refreshed by the pages that arrived.
+		// Stopped before a real end: keep previously known conversations, refreshed by pages that arrived.
 		for id, c := range next {
 			b.convs[id] = c
 		}
