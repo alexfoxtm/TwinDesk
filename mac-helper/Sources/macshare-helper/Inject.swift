@@ -184,15 +184,18 @@ final class Injector {
 
   func key(_ code: String, down: Bool) {
     if let kt = KeyCodes.system[code] { return systemKey(kt, down: down) }
-    if code == "Space" {
-      let held = Set(heldMods.map(Injector.kind))
-      if down && InputSourceShortcut.shouldSwitch(heldKinds: held) {
+    if code == "Space", let space = KeyCodes.vk(code) {
+      // Keep repeats and key-up on the path chosen for the first key-down.
+      if swallowSpace {
+        if down { modsOnly = false } else { swallowSpace = false }
+        return
+      }
+      if down && !heldKeys.contains(space) && InputSourceShortcut.shouldSwitch(heldKinds: Set(heldMods.map(Injector.kind))) {
         swallowSpace = true
         modsOnly = false
         InputSources.next()
         return
       }
-      if !down && swallowSpace { swallowSpace = false; return }
     }
     if KeyCodes.modifiers[code] != nil || code == "Fn" {
       if down {
