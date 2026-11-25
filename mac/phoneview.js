@@ -203,8 +203,10 @@ class PhoneViews extends EventEmitter {
 
   openScreen(fromIos = false) {
     if (this._focusScreen()) return;
-    const owner = this._iosOwner();
-    if (owner) {
+    const current = this.server.current;
+    if (current?.os === P.OS.IOS) {
+      const owner = this._iosOwner(current);
+      if (!owner) return;
       if (fromIos === true) return this._openIosNative({}, owner);
       return void this.openIosScreen();
     }

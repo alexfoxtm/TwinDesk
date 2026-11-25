@@ -277,7 +277,7 @@ class NativeScreen extends EventEmitter {
   // phone.mirror.state from the phone: to the window it's for (the newest asked).
   static state(m, server) {
     const all = [...live.values()].filter((s) => !server || s.server === server);
-    const s = all.find((x) => x.secret === m.key) || (!server || !m.key ? all.at(-1) : null);
+    const s = m.key ? all.find((x) => x.secret === m.key) : all.at(-1);
     if (s && (!s.owns || (s.secret === m.key && s.owns()))) s.state(m);
   }
 

@@ -78,6 +78,10 @@ function fixture({ platform = 0, mesh = false, os = 'ios', autoRotate = true } =
     click: (v) => ipcMain.emit('phoneview:in', { sender: v.win.webContents }, { t: 'retryIpad' }),
     state: (v, m) => NativeScreen.state({ key: v.session.secret, ...m }, server),
     preview: (sender, m) => ipcMain.emit('phoneview:in', { sender }, { t: 'mirrorPreview', ...m }),
+    retire() {
+      if (mesh) current.conn = null;
+      else current.released = true;
+    },
     replace(id) {
       current = peer(id);
       if (mesh) server.route.session.ctx = current;
@@ -102,11 +106,33 @@ test('dead iOS screens ask again, while an active window only takes focus', asyn
       await tick();
       assert.equal(f.offers().length, 2);
       assert.equal(first.win.isDestroyed(), true);
-      assert.notEqual(f.current().session.secret, first.session.secret);
+      const next = f.current();
+      assert.notEqual(next.session.secret, first.session.secret);
+      if (options.platform) {
+        NativeScreen.state({ key: first.session.secret, on: false, error: 'stale' });
+        assert.equal(next.session.closed, false, 'a retired screen key cannot close the new viewer');
+      }
       if (!options.platform) {
         f.server.emit(mirror, { open: false }, f.server.current); // legacy tail of the previous generation
         assert.equal(f.views.views.size, 1);
       }
+    } finally { f.views.closeAll(); }
+  }
+});
+
+test('a retiring iOS connection cannot fall through to an unowned native screen', async () => {
+  for (const mesh of [false, true]) {
+    const f = fixture({ mesh });
+    try {
+      f.open();
+      await tick();
+      const first = f.current();
+      f.retire();
+      f.views.openScreen();
+      await tick();
+      assert.equal(first.win.isDestroyed(), true);
+      assert.equal(f.views.views.size, 0);
+      assert.equal(f.offers().length, 1);
     } finally { f.views.closeAll(); }
   }
 });
