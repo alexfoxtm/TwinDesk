@@ -57,7 +57,7 @@ fi
 sh scripts/fetch-adb.sh
 
 rm -rf "$STAGE" && mkdir -p "$STAGE/mac" "$STAGE/shared" "$STAGE/mac-helper/.build/release" "$STAGE/node_modules"
-rsync -a --exclude node_modules --exclude dist --exclude dev --exclude test --exclude dmg --exclude build-app.sh --exclude build-dmg.sh --exclude scripts/signing-identity.sh --exclude entitlements.plist ./ "$STAGE/mac/"
+rsync -a --exclude node_modules --exclude dist --exclude dev --exclude test --exclude ios-developer --exclude dmg --exclude build-app.sh --exclude build-dmg.sh --exclude scripts/signing-identity.sh --exclude entitlements.plist ./ "$STAGE/mac/"
 cp "$ROOT"/shared/*.js "$ROOT"/shared/*.css "$ROOT"/shared/*.html "$STAGE/shared/"
 cp -R "$ROOT/shared/lang" "$STAGE/shared/"
 # TwinDesk Web (shared/web/webwire.js): its server, the page (web/, without the Shortcuts sources) and
@@ -73,6 +73,16 @@ cp "$ROOT"/mac-helper/.build/release/macshare-helper "$ROOT"/mac-helper/.build/r
 [ ! -f "$ROOT/mac-helper/.build/release/notification-permission.node" ] || cp "$ROOT/mac-helper/.build/release/notification-permission.node" "$STAGE/mac-helper/.build/release/"
 if [ -f "$ROOT/ios-signer/bin/$ARCH/twindesk-ios-signer" ]; then
   mkdir -p "$STAGE/ios-signer/bin/$ARCH" && cp "$ROOT/ios-signer/bin/$ARCH/twindesk-ios-signer" "$STAGE/ios-signer/bin/$ARCH/"
+fi
+# Developer signing uses an explicitly supplied unsigned fork IPA from this release's iOS sources.
+# Start from an empty stage and never pick up a previous build's IPA from the checkout.
+if [ -n "${TWINDESK_IOS_DEVELOPER_IPA:-}" ]; then
+  case "$TWINDESK_IOS_DEVELOPER_IPA" in
+    /*.ipa) ;;
+    *) echo 'error: TWINDESK_IOS_DEVELOPER_IPA must be an absolute .ipa path' >&2; exit 1 ;;
+  esac
+  mkdir -p "$STAGE/mac/ios-developer"
+  cp "$TWINDESK_IOS_DEVELOPER_IPA" "$STAGE/mac/ios-developer/TwinDesk.ipa"
 fi
 cp "$ROOT"/mac-helper/.build/release/twindesk-gmessages "$ROOT"/mac-helper/.build/release/twindesk-gmessages-transport "$STAGE/mac-helper/.build/release/"
 (

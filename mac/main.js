@@ -1039,7 +1039,7 @@ app.whenReady().then(() => {
   }
   loadSilence();
   app.on('browser-window-focus', () => svc.devctl && svc.devctl.look()); // back on screen: a fresh state of the other side now
-  // TwinDesk iPhone (shared/iossign.js): TwinDesk for iPhone signed with the person's Apple ID.
+  // Sign and install TwinDesk on paired iPhones and iPads.
   if (!modulesAtStart.includes('iossign')) svc.iosSign = require('../shared/iossign-host.js').create({ // off in General › Modules: not loaded
     app, safeStorage: require('electron').safeStorage,
     link: {
@@ -1942,6 +1942,7 @@ app.on('second-instance', showWindow);
 app.on('activate', showWindow);
 app.on('window-all-closed', () => {}); // keep running in the menu bar
 app.on('will-quit', () => {
+  svc?.iosSign?.close();
   globalShortcut.unregisterAll();
 });
 let focusReleasePending = false;

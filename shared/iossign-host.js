@@ -12,6 +12,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { EventEmitter } = require('events');
 const { IosSign } = require('./iossign.js');
 
 const EXE = process.platform === 'win32' ? 'twindesk-ios-signer.exe' : 'twindesk-ios-signer';
@@ -19,7 +21,8 @@ const ROOT = path.join(__dirname, '..', 'ios-signer');
 // As packaged (bin/<x64|arm64>/, ios-signer/build.sh), then a developer's own build.
 const BINS = [path.join(ROOT, 'bin', process.arch, EXE), path.join(ROOT, 'target', 'release', EXE), path.join(ROOT, 'target', 'debug', EXE)];
 
-function create({ app, safeStorage, link, near, usbSerials, onChange }) {
+function create({ app, safeStorage, link, near, usbSerials, onChange, developer = process.platform === 'darwin'
+  ? require('../mac/ios-developer-sign.js').create() : null }) {
   const dir = app.getPath('userData');
   const cfgFile = path.join(dir, 'ios-signing.json');
   const vaultFile = path.join(dir, 'ios-signing.bin');
@@ -64,7 +67,7 @@ function create({ app, safeStorage, link, near, usbSerials, onChange }) {
   let seed = null;
   try { seed = JSON.parse(fs.readFileSync(seedFile, 'utf8')); } catch {}
   const sign = new IosSign({
-    link, near, bins: BINS, usbSerials, vault, seed, cacheDir: path.join(dir, 'ios-ipas'),
+    link, near, bins: BINS, usbSerials, vault, seed, developer, cacheDir: path.join(dir, 'ios-ipas'),
     cfg: () => cfg,
     setCfg: (patch) => {
       cfg = { ...cfg, ...patch };
@@ -79,13 +82,14 @@ function create({ app, safeStorage, link, near, usbSerials, onChange }) {
 // Turning it on: said once more, in a dialog of its own, before anything is switched.
 async function enable(sign, dialog, win) {
   if (!sign) return;
+  if (sign.view.mode === 'developer') return sign.set({ on: true });
   const r = await dialog.showMessageBox(win || undefined, {
     type: 'warning',
     message: 'Not recommended',
     detail: 'TwinDesk will sign in to Apple with your Apple ID to request development certificates and provisioning profiles for your iPhone or iPad. Apple may reject the sign-in, temporarily lock the account, or prevent it from signing apps.\n\nWe recommend AltStore for installing and refreshing TwinDesk.\n\nUse a dedicated Apple ID rather than your primary account.',
     buttons: ['Cancel', 'Turn On'], defaultId: 0, cancelId: 0,
   });
-  if (r.response === 1) sign.set({ on: true });
+  if (r.response === 1 && sign.view.mode !== 'developer') sign.set({ on: true });
 }
 
 // One action from the window ({a: 'enable'} asks first).
@@ -120,6 +124,46 @@ async function pickIpa(sign, dialog, win) {
   if (!sign) return;
   const r = await dialog.showOpenDialog(win || undefined, { title: 'IPA', properties: ['openFile'], filters: [{ name: 'IPA', extensions: ['ipa'] }] });
   if (!r.canceled && r.filePaths[0]) sign.setIpa(r.filePaths[0]);
+}
+
+// Release acceptance uses the same service and install operation as the two Mac renderers.
+async function installFromCommand(udid) {
+  if (process.platform !== 'darwin' || !/^(?:[a-f0-9]{8}-[a-f0-9]{16}|[a-f0-9]{40})$/i.test(udid || '')) {
+    throw new Error('Use --install-developer with the exact iPhone or iPad UDID on a Mac');
+  }
+  udid = udid.toUpperCase();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'twindesk-ios-proof-'));
+  let sign;
+  const stop = () => sign?.close();
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+  try {
+    fs.writeFileSync(path.join(dir, 'ios-signing.json'), JSON.stringify({ mode: 'developer', localDevice: udid, auto: false }));
+    sign = create({ app: { getPath: () => dir }, link: new EventEmitter(), onChange: () => {} });
+    sign.set({ on: true });
+    await sign.look();
+    if (!sign.view.devices.some((d) => d.udid === udid && d.coreId)) throw new Error('The selected device is not paired with Xcode');
+    const receipt = await sign.installDeveloper(udid);
+    if (!receipt) throw new Error(sign.view.last?.error?.message || 'TwinDesk was not installed');
+    return receipt;
+  } finally {
+    stop();
+    process.removeListener('SIGINT', stop);
+    process.removeListener('SIGTERM', stop);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+if (require.main === module) {
+  if (process.argv.length !== 4 || process.argv[2] !== '--install-developer') {
+    console.error('Usage: node iossign-host.js --install-developer UDID');
+    process.exitCode = 1;
+  } else {
+    installFromCommand(process.argv[3]).then((receipt) => console.log(JSON.stringify(receipt)), (error) => {
+      console.error(error.message);
+      process.exitCode = 1;
+    });
+  }
 }
 
 module.exports = { create, pickIpa, act, BINS };

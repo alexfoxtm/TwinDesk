@@ -56,7 +56,8 @@ use idevice::{
     IdeviceService,
     installation_proxy::InstallationProxyClient,
     misagent::MisagentClient,
-    provider::UsbmuxdProvider,
+    lockdown::LockdownClient,
+    provider::{IdeviceProvider, UsbmuxdProvider},
     usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdConnection},
 };
 use isideload::{
@@ -307,6 +308,7 @@ async fn devices() -> Result<Value, Report> {
     // One device can be there twice (its cable and Wi-Fi): one entry, with the address it has on Wi-Fi.
     let mut out: BTreeMap<String, Value> = BTreeMap::new();
     for d in &list {
+        if !matches!(d.connection_type, Connection::Usb | Connection::Network(_)) { continue; }
         let e = out.entry(d.udid.clone()).or_insert_with(|| json!({"udid": d.udid, "usb": false, "ip": "", "name": ""}));
         match &d.connection_type {
             Connection::Usb => e["usb"] = json!(true),
@@ -314,13 +316,26 @@ async fn devices() -> Result<Value, Report> {
             Connection::Unknown(_) => {}
         }
     }
-    for (udid, e) in out.iter_mut() {
-        let name = async { IdeviceInfo::from_device(&provider(udid).await?).await };
-        if let Ok(Ok(info)) = tokio::time::timeout(std::time::Duration::from_secs(4), name).await {
-            e["name"] = json!(info.name);
+    let devices: Vec<_> = futures_util::stream::iter(out).map(|(udid, mut entry)| async move {
+        let p = provider(&udid).await.ok()?;
+        let pairing = p.get_pairing_file().await.ok()?;
+        let details = async {
+            let mut client = LockdownClient::connect(&p).await.ok()?;
+            client.start_session(&pairing).await.ok()?;
+            let name = client.get_value(Some("DeviceName"), None).await.ok()?;
+            let class = client.get_value(Some("DeviceClass"), None).await.ok()?;
+            Some((name, class))
+        };
+        if let Ok(Some((name, class))) = tokio::time::timeout(std::time::Duration::from_secs(4), details).await {
+            entry["name"] = json!(name.as_string());
+            entry["klass"] = json!(class.as_string());
+            if class.as_string().is_some_and(|k| !matches!(k, "iPhone" | "iPad")) {
+                return None;
+            }
         }
-    }
-    Ok(json!({"ev": "devices", "devices": out.into_values().collect::<Vec<_>>()}))
+        Some(entry)
+    }).buffered(8).filter_map(std::future::ready).collect().await;
+    Ok(json!({"ev": "devices", "devices": devices}))
 }
 
 async fn provider(udid: &str) -> Result<UsbmuxdProvider, Report> {
@@ -613,6 +628,9 @@ async fn sign_and_install(
 
     let device = provider(udid).await?;
     let info = IdeviceInfo::from_device(&device).await.context("Couldn't talk to the device: unlock it and tap Trust")?;
+    if !info.udid.eq_ignore_ascii_case(udid) {
+        bail!("The connected device does not match the selected device");
+    }
 
 
     // The anisette identity belongs to the server it was made with: another server, another identity.

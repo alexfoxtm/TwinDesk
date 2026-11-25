@@ -865,9 +865,9 @@ app.whenReady().then(() => {
   svc.loadRemote = () => (svc.remotes.load() ? svc.remotes : null);
   svc.remote = () => (svc.remotes.loaded ? svc.remotes : null);
   svc.kvm.on('where', () => svc.remotes.refresh()); // the phones' Remote is taken only with the mouse at home
-  // TwinDesk iPhone (shared/iossign.js): TwinDesk for iPhone signed with the person's Apple ID, for
-  // whichever iPhone connected or spoke last (shared/perphone.js anyPhone). Off in General › Modules: not loaded.
-  svc.anyPhone = require('../../shared/perphone.js').anyPhone({ want: (c) => c.os === P.OS.IOS }); // TwinDesk iPhone: one iPhone at a time
+  // The legacy Apple ID protocol still has one authenticated iOS session. The signer inventories
+  // paired devices and schedules local installations independently of that session.
+  svc.anyPhone = require('../../shared/perphone.js').anyPhone({ want: (c) => c.os === P.OS.IOS });
   if (!modulesAtStart.includes('iossign')) svc.iosSign = require('../../shared/iossign-host.js').create({
     app, safeStorage: require('electron').safeStorage, link: svc.anyPhone.link,
     near: { list: () => (svc.ble ? svc.ble.list() : []), invite: (devId) => svc.ble && svc.ble.invite(devId) }, // iPhones linked over Bluetooth
@@ -1516,6 +1516,7 @@ function setupWeb() {
 app.on('activate', showWindow);
 app.on('window-all-closed', () => {}); // keep running in the menu bar
 app.on('will-quit', () => {
+  svc?.iosSign?.close();
   globalShortcut.unregisterAll();
 });
 app.on('before-quit', () => {

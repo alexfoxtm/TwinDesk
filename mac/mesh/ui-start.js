@@ -45,7 +45,7 @@
     if (def.bottom) navBtn.dataset.bottom = '1';
     navBtn.onclick = () => show(def.id, true);
     nav.append(el('li', {}, [navBtn]));
-    views.set(def.id, { def, ...buildPage(def), navBtn, stateEl, gap });
+    views.set(def.id, { def, ...buildPage(def), navBtn, stateEl, gap, label });
   }
   UI.arrangeHold(nav);
 
@@ -87,7 +87,7 @@
     } catch (e) { // one tab that fails to build doesn't take the rest of the sidebar with it
       console.error('build ' + def.id + ':', e);
     }
-    return { page, body, master, render, wifiNote, devTag, art };
+    return { page, body, master, h1Text, descEl, render, wifiNote, devTag, art };
   }
 
   // The session is through Bluetooth (pages that need Wi-Fi say so).
@@ -172,6 +172,12 @@
     // Tabs that don't apply to the peer (a phone has no terminal or screen to share to it…). A web
     // device picked: its own pages, then Connection, TwinDesk Web, AirPlay & SMB, General and About.
     for (const v of views.values()) {
+      if (v.def.titleFor && v.label) {
+        const title = v.def.titleFor(s);
+        if (v.label.textContent !== title) v.label.textContent = v.h1Text.textContent = title;
+      }
+      const description = v.def.descFor?.(s);
+      if (description && v.descEl.textContent !== description) v.descEl.textContent = description;
       const hide = UI.tourPeek === v.def.id ? false : UI.webDev ? !v.def.web && !UI.WEB_KEEP.includes(v.def.id)
         : !!v.def.web || !!(v.def.hidden && v.def.hidden(s));
       if (v.navBtn.parentElement) v.navBtn.parentElement.hidden = hide;
