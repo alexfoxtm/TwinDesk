@@ -16,6 +16,7 @@ final class Screen: Feature {
     private(set) var size: (Int, Int)?
     private(set) var autoOpened = false
     private var host: WebHost?
+    private var viewerComputer: String?
     private var lastInfo: JSON?
     private var wantStart = false
     private var startedByUs = false
@@ -51,6 +52,7 @@ final class Screen: Feature {
     // makes Extend this shape).
     func attach(_ h: WebHost) {
         host = h
+        viewerComputer = core.link.host?.id
         viewing = true
         h.onEvent = { [weak self] ev, data in
             if ev == "playing", let d = data { self?.size = (d.int("w"), d.int("h")); self?.core.changed() }
@@ -58,8 +60,7 @@ final class Screen: Feature {
         h.post(opts())
         if let i = lastInfo { h.post(i) }
         if let s = state { h.post(s) }
-        let px = UIScreen.main.nativeBounds.size
-        core.send(msg("screen.policy", ["accept": true, "width": Int(max(px.width, px.height)), "height": Int(min(px.width, px.height))]))
+        sendViewerPolicy()
         if state == nil { wantStart = true } else { startIfNeeded() }
         Awake.hold("viewer", true)
         core.changed()
@@ -68,10 +69,12 @@ final class Screen: Feature {
     func detach(_ h: WebHost) {
         guard host === h else { return }
         host = nil
+        let computer = viewerComputer
+        viewerComputer = nil
         viewing = false
         size = nil
         wantStart = false
-        if core.connected {
+        if core.connected && core.link.host?.id == computer {
             core.send(msg("screen.policy", ["accept": false]))
             if startedByUs && sharing { control(share: false) }
         }
@@ -81,14 +84,28 @@ final class Screen: Feature {
         core.changed()
     }
 
+    private func sendViewerPolicy() {
+        let px = UIScreen.main.nativeBounds.size
+        core.send(msg("screen.policy", ["accept": true, "width": Int(max(px.width, px.height)), "height": Int(min(px.width, px.height))]))
+    }
+
+    override func onWelcome(_ computer: Computer, _ m: JSON) {
+        guard viewing, host != nil, viewerComputer == computer.id,
+              core.link.state == "connected", core.link.host?.id == computer.id else { return }
+        // A surviving viewer must report its presence on the new session. A new remote
+        // Start still requires a fresh viewer open or an explicit action in its toolbar.
+        sendViewerPolicy()
+    }
+
     private func startIfNeeded() {
         wantStart = false
-        guard viewing, !sharing, remote else { return }
+        guard viewing, viewerComputer == core.link.host?.id, !sharing, remote else { return }
         startedByUs = true
         control(share: true, mode: modes.contains("mirror") ? "mirror" : (modes.first ?? "mirror"))
     }
 
     func control(share: Bool? = nil, mode: String? = nil, close: Bool = false) {
+        guard !viewing || viewerComputer == core.link.host?.id else { return }
         var m = msg("screen.ctl")
         if let s = share { m["share"] = s }
         if let md = mode { m["mode"] = md }
@@ -105,6 +122,7 @@ final class Screen: Feature {
     override func onClosed() {
         state = nil
         lastInfo = nil
+        wantStart = false
         startedByUs = false
         host?.post(msg("stream.stop"))
         core.changed()
