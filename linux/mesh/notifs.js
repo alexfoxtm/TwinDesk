@@ -68,7 +68,7 @@ class Notifs extends EventEmitter {
 
     const bus = this.bus;
     bus.on(T.NOTIF, (m, from, ws) => this._show(m, from, ws));
-    bus.on('notif.gone', (m, from) => { const h = (this.history || []).find((x) => x.id === m.id); if (h && h.from === from) this.gone(m.id); }); // gone from the phone (shared/notifacts.js)
+    bus.on('notif.gone', (m, from) => this.expireOrigin(m.id, from)); // this origin only (shared/notifacts.js)
     bus.on(T.NOTIF_POLICY, (m, from) => {
       const e = this.mesh.get(from);
       if (e) e.notifPool = m.accept === true;
@@ -279,6 +279,7 @@ class Notifs extends EventEmitter {
     });
     if (sys) {
       sys.tdId = item.id;
+      sys.tdOrigin = item.from;
       this.live.add(sys);
       this.shown++;
       return void this.onChange();
@@ -289,6 +290,7 @@ class Notifs extends EventEmitter {
       body: [[appName, origin].filter(Boolean).join(' · '), str(m.subtitle, 200), body].filter(Boolean).join('\n'),
     });
     n.tdId = item.id;
+    n.tdOrigin = item.from;
     this.live.add(n);
     const drop = () => this.live.delete(n);
     n.on('close', drop);

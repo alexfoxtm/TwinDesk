@@ -135,6 +135,28 @@ function withMeshPhoneActions(Cls) {
       this.history = [item, ...this.history.filter((x) => !(x.id === item.id && x.from === item.from))].slice(0, 50);
       return item;
     },
+    // notif.gone for one origin. The same notification id on another origin keeps its reply offer,
+    // and only that origin's current session can still answer it.
+    expireOrigin(id, origin) {
+      id = str(id, 200);
+      origin = str(origin, 200);
+      if (!id || !origin) return false;
+      const before = (this.history || []).length;
+      this.history = (this.history || []).filter((h) => h.id !== id || h.from !== origin);
+      for (const n of [...(this.live || [])]) {
+        if (n.tdId !== id || n.tdOrigin !== origin) continue;
+        try { n.close(); } catch (_) { /* already closed */ }
+        if (this.live instanceof Set) this.live.delete(n);
+        else this.live = this.live.filter((x) => x !== n);
+      }
+      const pop = this.pop;
+      if (pop && typeof pop.gone === 'function' && Array.isArray(pop.wins)) {
+        const wins = pop.wins.filter((w) => w && w.id === id);
+        if (wins.length === 1 && wins[0].item && wins[0].item.from === origin) pop.gone(id);
+      }
+      if ((this.history || []).length !== before) this.changed();
+      return (this.history || []).length !== before;
+    },
     // notif.act / notif.dismiss / notif.reply: to the device the notification came from.
     send(m) {
       const item = (this.history || []).find((h) => h.id === m.id);

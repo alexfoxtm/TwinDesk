@@ -68,7 +68,7 @@ class Notifs extends EventEmitter {
 
     const bus = this.bus;
     bus.on(T.NOTIF, (m, from, ws) => this._show(m, from, ws));
-    bus.on('notif.gone', (m, from) => { const h = (this.history || []).find((x) => x.id === m.id); if (h && h.from === from) this.gone(m.id); }); // gone from the phone (shared/notifacts.js)
+    bus.on('notif.gone', (m, from) => this.expireOrigin(m.id, from)); // this origin only (shared/notifacts.js)
     bus.on(T.NOTIF_POLICY, (m, from) => {
       const e = this.mesh.get(from);
       if (e) e.notifPool = m.accept === true;
@@ -226,6 +226,7 @@ class Notifs extends EventEmitter {
         + '<actions><action content="' + xmlEsc('Copy ' + code) + '" activationType="protocol" arguments="twindesk:copy?code=' + code + '"/></actions></toast>',
     }) : new this.Notification({ title, icon, body: text });
     n.tdId = item.id;
+    n.tdOrigin = item.from;
     this.live.add(n);
     const drop = () => this.live.delete(n);
     n.on('close', drop);
