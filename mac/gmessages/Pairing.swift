@@ -10,15 +10,25 @@ private let requiredCookies = googleCookies.union(["OSID"])
 
 private func allowedCookies(_ cookies: [HTTPCookie]) -> [String: String]? {
     var allowed: [String: String] = [:]
-    for cookie in cookies where cookie.isSecure && !cookie.value.isEmpty && (cookie.expiresDate ?? .distantFuture) > Date() {
+    for cookie in cookies where cookieIsAllowed(cookie) {
         if cookie.name == "OSID",
            cookie.domain == "messages.google.com" || cookie.domain == ".messages.google.com" {
             allowed[cookie.name] = cookie.value
-        } else if cookie.domain == ".google.com", googleCookies.contains(cookie.name) || cookie.name == "__Secure-1PSIDTS" {
+        } else if cookie.domain == ".google.com", googleCookies.contains(cookie.name) || cookie.name.hasPrefix("__Secure-") {
             allowed[cookie.name] = cookie.value
         }
     }
     return requiredCookies.isSubset(of: allowed.keys) ? allowed : nil
+}
+
+private func cookieNeedsSecure(_ name: String) -> Bool {
+    name == "SSID" || name == "SAPISID" || name == "OSID" || name.hasPrefix("__Secure-")
+}
+
+private func cookieIsAllowed(_ cookie: HTTPCookie) -> Bool {
+    !cookie.value.isEmpty
+        && (cookie.expiresDate ?? .distantFuture) > Date()
+        && (!cookieNeedsSecure(cookie.name) || cookie.isSecure)
 }
 
 private protocol SessionStore {
@@ -96,6 +106,7 @@ private final class SignIn: NSObject, WKNavigationDelegate, NSWindowDelegate {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = store
         let view = WKWebView(frame: .zero, configuration: config)
+        view.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
         web = view
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 690),
                           styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -139,10 +150,19 @@ private final class SignIn: NSObject, WKNavigationDelegate, NSWindowDelegate {
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let url = action.request.url, url.scheme == "https", url.port == nil,
-              action.targetFrame != nil else { decisionHandler(.cancel); return }
-        let allowed = url.host == "accounts.google.com" ||
-            (url.host == "messages.google.com" && url.path == "/web/config")
+        guard let url = action.request.url, url.scheme == "https", url.port == nil else {
+            decisionHandler(.cancel)
+            return
+        }
+        // Cookie capture is the trust boundary. Subframes (reCAPTCHA, account
+        // interstitials) often leave accounts.google.com.
+        if action.targetFrame?.isMainFrame == false {
+            decisionHandler(.allow)
+            return
+        }
+        let host = url.host ?? ""
+        let allowed = host == "accounts.google.com" || host == "accounts.youtube.com"
+            || host == "www.google.com" || host == "google.com" || host == "messages.google.com"
         decisionHandler(allowed ? .allow : .cancel)
     }
 
@@ -183,6 +203,7 @@ private final class Bridge {
     private var generation = 0
     private var connected = false
     private var wiping = false
+    private var resumeAttempts = 0
 
     init(store: SessionStore) { keychain = store }
 
@@ -203,6 +224,13 @@ private final class Bridge {
             guard signIn == nil, worker == nil, !wiping else { return }
             generation += 1
             let expected = generation
+            do {
+                if let data = try keychain.read(),
+                   let session = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    start(["op": "resume", "session": session])
+                    return
+                }
+            } catch { state("keychain-error"); return }
             state("signing-in")
             signIn = SignIn { [weak self] cookies in
                 guard let self, self.generation == expected else { return }
@@ -242,6 +270,23 @@ private final class Bridge {
 
     private func state(_ value: String) { emit(["type": "state", "state": value]) }
 
+    private func recover(_ reason: String) {
+        stop()
+        state(reason)
+        let expected = generation
+        do {
+            guard let data = try keychain.read(),
+                  let session = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  resumeAttempts < 3 else { return }
+            resumeAttempts += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self, self.generation == expected, self.worker == nil,
+                      self.signIn == nil, !self.wiping else { return }
+                self.start(["op": "resume", "session": session])
+            }
+        } catch { state("keychain-error") }
+    }
+
     private func start(_ first: [String: Any]) {
         let child = Worker()
         let binary = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
@@ -272,10 +317,7 @@ private final class Bridge {
                 if buffer.count > 10_000_000 { break }
             }
             DispatchQueue.main.async {
-                if self.worker === child {
-                    self.stop()
-                    self.state("helper-error")
-                }
+                if self.worker === child { self.recover("helper-error") }
             }
         }
     }
@@ -289,12 +331,12 @@ private final class Bridge {
             do { try keychain.save(data) }
             catch { stop(); state("keychain-error") }
         case "failed":
-            stop()
-            state("connection-error")
+            recover("connection-error")
         case "offline":
             connected = false
             state("offline")
         case "conversations":
+            resumeAttempts = 0
             connected = true
             emit(event)
         case "emoji", "history", "message", "typing", "photo", "result":
@@ -312,14 +354,25 @@ private final class MemoryStore: SessionStore {
 }
 
 private func selfTest() throws -> Bool {
-    func cookie(_ name: String, _ domain: String) -> HTTPCookie? {
-        HTTPCookie(properties: [.name: name, .domain: domain, .path: "/", .value: "fixture", .secure: "TRUE"])
+    func cookie(_ name: String, _ domain: String, secure: Bool = true) -> HTTPCookie? {
+        var props: [HTTPCookiePropertyKey: Any] = [.name: name, .domain: domain, .path: "/", .value: "fixture"]
+        if secure { props[.secure] = "TRUE" }
+        return HTTPCookie(properties: props)
     }
-    let required = googleCookies.compactMap { cookie($0, ".google.com") } + [cookie("OSID", "messages.google.com")].compactMap { $0 }
+    let required = [
+        cookie("SID", ".google.com", secure: false),
+        cookie("HSID", ".google.com", secure: false),
+        cookie("SSID", ".google.com"),
+        cookie("APISID", ".google.com", secure: false),
+        cookie("SAPISID", ".google.com"),
+        cookie("OSID", "messages.google.com"),
+    ].compactMap { $0 }
     let extras = [cookie("OTHER", ".google.com"), cookie("__Secure-1PSIDTS", ".google.com"), cookie("OSID", "example.test")].compactMap { $0 }
     guard let captured = allowedCookies(required + extras),
           Set(captured.keys) == requiredCookies.union(["__Secure-1PSIDTS"]),
-          allowedCookies(extras) == nil else { return false }
+          allowedCookies(extras) == nil,
+          allowedCookies(required.map { $0.name == "SSID" ? cookie("SSID", ".google.com", secure: false)! : $0 }) == nil,
+          allowedCookies(required) != nil else { return false }
     let store = MemoryStore()
     guard try store.read() == nil else { return false }
     let fixture = Data([1, 2, 3])

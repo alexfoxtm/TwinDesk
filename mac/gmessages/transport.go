@@ -31,10 +31,18 @@ var requiredCookies = []string{"SID", "HSID", "SSID", "OSID", "APISID", "SAPISID
 
 func allowedCookie(name string) bool {
 	switch name {
-	case "SID", "HSID", "SSID", "OSID", "APISID", "SAPISID", "__Secure-1PSIDTS":
+	case "SID", "HSID", "SSID", "OSID", "APISID", "SAPISID":
 		return true
 	}
-	return false
+	return strings.HasPrefix(name, "__Secure-")
+}
+
+func cookieNeedsSecure(name string) bool {
+	switch name {
+	case "SSID", "SAPISID", "OSID":
+		return true
+	}
+	return strings.HasPrefix(name, "__Secure-")
 }
 
 func filterCookies(cookies map[string]string) bool {
@@ -71,7 +79,7 @@ func (t googleTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	cookies := resp.Cookies()
 	resp.Header.Del("Set-Cookie")
 	for _, cookie := range cookies {
-		if !allowedCookie(cookie.Name) || !cookie.Secure {
+		if !allowedCookie(cookie.Name) || (cookieNeedsSecure(cookie.Name) && !cookie.Secure) {
 			continue
 		}
 		domain := strings.TrimPrefix(cookie.Domain, ".")

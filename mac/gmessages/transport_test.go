@@ -28,9 +28,10 @@ func TestGoogleCookieBoundary(t *testing.T) {
 		calls++
 		header := make(http.Header)
 		for _, v := range []string{
-			"OSID=fixture; Secure", "HSID=fixture; Domain=.google.com; Secure",
+			"OSID=fixture; Secure", "HSID=fixture; Domain=.google.com",
 			"unrelated=fixture; Domain=.google.com; Secure",
 			"SID=fixture; Domain=.example.test; Secure", "APISID=fixture; Domain=.google.com",
+			"SSID=fixture; Domain=.google.com", "SAPISID=fixture; Domain=.google.com; Secure",
 		} {
 			header.Add("Set-Cookie", v)
 		}
@@ -45,7 +46,7 @@ func TestGoogleCookieBoundary(t *testing.T) {
 	for _, c := range resp.Cookies() {
 		names = append(names, c.Name)
 	}
-	if !reflect.DeepEqual(names, []string{"OSID", "HSID"}) {
+	if !reflect.DeepEqual(names, []string{"OSID", "HSID", "APISID", "SAPISID"}) {
 		t.Fatal("rotating cookie allow-list mismatch")
 	}
 	req, _ = http.NewRequest("GET", "https://example.test/redirect", nil)
