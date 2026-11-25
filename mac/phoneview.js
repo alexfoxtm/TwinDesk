@@ -18,7 +18,7 @@ const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 const I18n = require('../shared/i18n.js');
 const { Session, ACTION, TYPE } = require('./scrcpy');
-const { NativeScreen } = require('../shared/nativescreen.js');
+const { NativeScreen, screenSize } = require('../shared/nativescreen.js');
 const iosusb = require('./iosusb.js'); // an iPhone's screen over its cable
 const { uhidKey } = require('../shared/uhidkbd.js');
 const { KeyState, ANDROID } = require('./android-keys');
@@ -29,6 +29,7 @@ const { AppPanel } = require('./app-panel.js');
 const { startApp } = require('../shared/appstart.js');
 
 const T = P.T;
+const PHONEVIEW_BAR = 32; // #stage inset in phoneview.css
 const NOTIFIED_MS = 60000; // how long a clicked notification waits for the unlock and wireless debugging
 let nextId = 1;
 let quitting = false; // a camera's window hides on close, but not on quit
@@ -229,16 +230,20 @@ class PhoneViews extends EventEmitter {
     this.openingIos = null;
     if (this._iosOwner() !== owner || this._focusScreen(o)) return;
     if (usb.length) {
-      const { width, height } = this._iosSize(o);
+      const { width, height } = this._iosSize(o, usb[0].model);
       return void this._open({ kind: 'screen', usb: usb[0].id, title: o.title || usb[0].name, width, height, opts: { maxSize: 0, videoBitRate: 12000000 } });
     }
     if (owner) this._openIosNative(o, owner);
   }
 
-  _iosSize(o) {
+  _iosSize(o, usbModel = '') {
     const height = o.height || Math.min(860, screen.getPrimaryDisplay().workAreaSize.height - 80);
-    const pad = this.phone.info?.platform === 'ipados';
-    return { pad, height, width: o.width || Math.round(height * (pad ? 3 / 4 : 9 / 19.5)) };
+    const info = this.phone.info;
+    const pad = info?.platform === 'ipados' || /^iPad/i.test(info?.model || usbModel);
+    const iphone = !pad && (info?.platform === 'ios' || /^iPhone/i.test(info?.model || usbModel));
+    const display = screenSize(info?.display?.w, info?.display?.h);
+    const aspect = display ? display.width / display.height : iphone ? 9 / 19.5 : 3 / 4;
+    return { pad, height, width: o.width || Math.round((height - PHONEVIEW_BAR) * aspect) };
   }
 
   _openIosNative(o, owner) {
@@ -476,6 +481,12 @@ class PhoneViews extends EventEmitter {
     win.on('minimize', tellMinimized);
     win.on('restore', tellMinimized);
     win.on('show', tellMinimized);
+    if (kind === 'screen') {
+      const refit = () => {
+        if (v.size && (v.ios || v.usb || require('../shared/appturn.js').autoRotate(this.getSettings()))) this._fitScreen(v, v.size);
+      };
+      for (const ev of ['restore', 'unmaximize', 'leave-full-screen']) win.on(ev, refit);
+    }
     // A camera's window: closed, it only hides (the camera stops with Camera's switch).
     if (kind === 'camera') {
       win.on('close', (e) => {
@@ -539,7 +550,8 @@ class PhoneViews extends EventEmitter {
       this._send(v, 'phoneview:size', size);
       const auto = require('../shared/appturn.js').autoRotate(this.getSettings());
       if (v.kind === 'app') require('../shared/appturn.js').appSized(v, size, auto); // the app turned its display round (#258)
-      else if ((v.kind === 'camera' || auto || !v.shaped) && v.win && !v.win.isDestroyed()) v.win.setAspectRatio(size.width / size.height); // Auto-rotate off: the window keeps its shape
+      else if (v.kind === 'screen' && (v.ios || v.usb || auto)) this._fitScreen(v, size);
+      else if ((v.kind === 'camera' || !v.shaped) && v.win && !v.win.isDestroyed()) v.win.setAspectRatio(size.width / size.height); // Auto-rotate off: the window keeps its shape
       v.shaped = true;
     });
     s.on('video', (p) => this._send(v, 'phoneview:video', p));
@@ -584,6 +596,35 @@ class PhoneViews extends EventEmitter {
     await startApp(s, { adb, serial, maker, app: v.app, live });
     if (!live()) { s.stop(); return; }
     if (dark) await this._blankAfterAppFrame(v, s, panel, live);
+  }
+
+  _fitScreen(v, size) {
+    const win = v.win;
+    if (!screenSize(size.width, size.height) || v.ending || win.isDestroyed() || !win.isNormal()) return;
+    const aspect = size.width / size.height;
+    // The encoder rounds scaled dimensions to even pixels.
+    if (v.videoAspect && Math.abs(aspect / v.videoAspect - 1) < 0.01) return;
+    const bounds = win.getBounds();
+    const content = win.getContentBounds();
+    const work = screen.getDisplayMatching(bounds).workArea;
+    const extraW = bounds.width - content.width;
+    const extraH = bounds.height - content.height + PHONEVIEW_BAR;
+    const [minW, minH] = win.getMinimumSize();
+    const long = Math.max(content.width, content.height - PHONEVIEW_BAR);
+    const w = aspect >= 1 ? long : long * aspect;
+    const h = w / aspect;
+    const maxScale = Math.min((work.width - extraW) / w, (work.height - extraH) / h);
+    const minScale = Math.max((minW - extraW) / w, (minH - extraH) / h);
+    const scale = Math.min(maxScale, Math.max(1, minScale));
+    const width = Math.min(work.width, Math.max(minW, Math.round(w * scale + extraW)));
+    const height = Math.min(work.height, Math.max(minH, Math.round(h * scale + extraH)));
+    const x = Math.max(work.x, Math.min(work.x + work.width - width, bounds.x + Math.round((bounds.width - width) / 2)));
+    const y = Math.max(work.y, Math.min(work.y + work.height - height, bounds.y + Math.round((bounds.height - height) / 2)));
+    v.videoAspect = aspect;
+    win.setAspectRatio(aspect, { width: 0, height: PHONEVIEW_BAR });
+    if (bounds.x !== x || bounds.y !== y || bounds.width !== width || bounds.height !== height) {
+      win.setBounds({ x, y, width, height });
+    }
   }
 
   _showUnlock(v) {

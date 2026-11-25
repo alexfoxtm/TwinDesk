@@ -13,18 +13,30 @@ class Window extends EventEmitter {
   constructor(options) {
     super();
     this.options = options;
+    this.bounds = { x: 1180, y: 105, width: options.width, height: options.height };
+    this.resizes = [];
     this.webContents = new EventEmitter();
   }
   loadFile(_file, options) { this.query = options.query; }
   isDestroyed() { return !!this.destroyed; }
   isVisible() { return !!this.visible; }
   isAlwaysOnTop() { return false; }
+  isNormal() { return true; }
+  getBounds() { return this.bounds; }
+  getContentBounds() { return { ...this.bounds, width: this.bounds.width - 4, height: this.bounds.height - 16 }; }
+  getMinimumSize() { return [this.options.minWidth, this.options.minHeight]; }
+  setAspectRatio(ratio, extra) { this.aspect = { ratio, extra }; }
+  setBounds(bounds) { this.bounds = bounds; this.resizes.push(bounds); }
   show() { this.visible = true; }
   focus() { this.focused = true; }
   close() { this.destroyed = true; this.emit('closed'); }
 }
 const app = Object.assign(new EventEmitter(), { getLocale: () => 'en' });
-const screen = { getPrimaryDisplay: () => ({ workAreaSize: { width: 1280, height: 900 } }) };
+const workArea = { x: 1000, y: 90, width: 735, height: 690 };
+const screen = {
+  getPrimaryDisplay: () => ({ workAreaSize: { width: 1280, height: 900 } }),
+  getDisplayMatching: () => ({ workArea }),
+};
 const realLoad = Module._load;
 Module._load = function (name, ...args) {
   if (name === 'electron') return { app, screen, ipcMain, BrowserWindow: Window };
@@ -36,7 +48,7 @@ after(() => { Module._load = realLoad; });
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const mirror = `t:${P.T.PHONE_MIRROR}`;
-function fixture({ platform = 0, mesh = false, os = 'ios' } = {}) {
+function fixture({ platform = 0, mesh = false, os = 'ios', autoRotate = true } = {}) {
   ipcMain.removeAllListeners();
   NativeScreen.airplay = () => ''; // no platform probes / opening System Settings
   const peer = (id) => ({ deviceId: id, os, authed: true, name: id, transport: 'ip', conn: {} });
@@ -51,7 +63,7 @@ function fixture({ platform = 0, mesh = false, os = 'ios' } = {}) {
   });
   const phone = { info: { platform: 'ipados' } };
   const { PhoneViews } = viewsFor[platform];
-  const views = new PhoneViews({ server, bridge, phone, getSettings: () => ({ phone: {} }) });
+  const views = new PhoneViews({ server, bridge, phone, getSettings: () => ({ phone: { autoRotate } }) });
   const open = () => server.emit(mirror, { open: true }, server.current);
   return {
     server, phone, views, open, wire, current: () => [...views.views.values()][0],
@@ -118,5 +130,48 @@ test('Ask iPad again uses only the failed window and its exact authenticated own
     f.views.close(f.current().id);
     assert.equal(f.wire.at(-1).msg.on, false);
     assert.equal(f.wire.at(-1).to, 'replacement');
+  } finally { f.views.closeAll(); }
+});
+
+test('the iPad window fits ReplayKit size, then packet orientation, without moving on equal aspect', async () => {
+  const f = fixture({ autoRotate: false });
+  f.phone.info = null;
+  try {
+    f.open();
+    await tick();
+    const v = f.current();
+    assert.equal(v.win.options.width, Math.round((v.win.options.height - 32) * 3 / 4));
+    f.state(v, { on: true, w: '900', h: 0, sw: -1, sh: 200 });
+    assert.equal(v.win.resizes.length, 0);
+    f.state(v, { on: true, w: 900, h: 1200, sw: 1536, sh: 2048 });
+    assert.equal(v.win.resizes.length, 1);
+    assert.equal(v.win.bounds.height, workArea.height, 'outer frame is clamped to the window display');
+    assert.deepEqual(v.win.aspect, { ratio: 3 / 4, extra: { width: 0, height: 32 } });
+    const req = new EventEmitter();
+    req.destroy = () => {};
+    req.method = 'POST';
+    req.url = '/twindesk/mirror';
+    req.headers = { 'x-twindesk-mirror': v.session.secret };
+    const res = { writeHead(code) { assert.equal(code, 200); }, end() {} };
+    assert.equal(NativeScreen.request(req, res), true);
+    const sizePacket = (w, h) => {
+      const packet = Buffer.alloc(12);
+      packet[0] = 0x80;
+      packet.writeUInt32BE(w, 4);
+      packet.writeUInt32BE(h, 8);
+      req.emit('data', packet);
+    };
+    sizePacket(1200, 900);
+    assert.equal(v.win.resizes.length, 2);
+    assert.equal(v.win.aspect.ratio, 4 / 3);
+    const b = v.win.bounds;
+    assert.equal(b.width, 646, 'rotation keeps the long side of the video');
+    assert.ok(b.x >= workArea.x && b.x + b.width <= workArea.x + workArea.width);
+    assert.ok(b.y >= workArea.y && b.y + b.height <= workArea.y + workArea.height);
+    assert.ok(Math.abs((b.width - 4) / (b.height - 48) - 4 / 3) < 0.01);
+    f.state(v, { on: true, w: 900, h: 1200, sw: 1536, sh: 2048 });
+    sizePacket(800, 600);
+    sizePacket(50000, 1);
+    assert.equal(v.win.resizes.length, 2, 'no resize for late state, same ratio, or invalid packet');
   } finally { f.views.closeAll(); }
 });

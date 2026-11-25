@@ -73,6 +73,7 @@ class NativeScreen extends EventEmitter {
     this.closed = false;
     this.secret = crypto.randomBytes(16).toString('hex');
     this.size = null; // the picture's
+    this.packetSized = false;
     this.screen = null; // the phone's screen, for phone.in: {w, h}
     this.on_ = false;
     this.input = new PhoneInput((m) => this._send(m));
@@ -126,12 +127,16 @@ class NativeScreen extends EventEmitter {
   // phone.mirror.state, for this window (phone-bridge.js hands it to the open native screen).
   state(m) {
     if (this.closed) return;
-    if (num(m.sw) && num(m.sh)) this.screen = { w: num(m.sw), h: num(m.sh) };
+    const display = screenSize(m.sw, m.sh);
+    if (display) this.screen = { w: display.width, h: display.height };
     if (m.waiting) this.emit('waiting');
     if (m.airplay && !m.on) return this._fail(err('Mirroring over AirPlay instead'));
     if (typeof m.error === 'string' && m.error && !m.on) return this._fail(err(m.error.slice(0, 200)));
     if (m.on) {
       this.on_ = true;
+      // Start with ReplayKit's announcement. Once packets arrive, their session header is ordered
+      // with the video, while the separate state message may arrive late during rotation.
+      if (this.owns && !this.packetSized) this._size(screenSize(m.w, m.h) || display);
       if (this._started) {
         const s = this._started;
         this._started = null;
@@ -139,6 +144,12 @@ class NativeScreen extends EventEmitter {
         s.resolve();
       }
     } else if (this.on_ || (this.owns && !m.waiting)) this._close('stopped');
+  }
+
+  _size(size) {
+    if (!size || (size.width === this.size?.width && size.height === this.size?.height)) return;
+    this.size = size;
+    this.emit('size', size);
   }
 
   // The stream arrived (request()).
@@ -158,9 +169,10 @@ class NativeScreen extends EventEmitter {
           if (h[0] & 0x80) {
             const w = h.readUInt32BE(4);
             const ht = h.readUInt32BE(8);
-            if (w > 0 && ht > 0 && w < 16384 && ht < 16384) {
-              this.size = { width: w, height: ht };
-              this.emit('size', this.size);
+            const size = screenSize(w, ht);
+            if (size) {
+              this.packetSized = true;
+              this._size(size);
             }
             continue;
           }
@@ -275,12 +287,14 @@ class NativeScreen extends EventEmitter {
   }
 }
 
-function num(v) {
-  return Number.isFinite(v) && v > 0 && v < 100000 ? Math.round(v) : 0;
+function screenSize(width, height) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2
+      || width >= 16384 || height >= 16384 || width > 8 * height || height > 8 * width) return null;
+  return { width, height };
 }
 
 function err(messageKey, messageVars) {
   return Object.assign(new Error(messageKey), { messageKey, messageVars });
 }
 
-module.exports = { NativeScreen, PATH, HEADER };
+module.exports = { NativeScreen, PATH, HEADER, screenSize };
