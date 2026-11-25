@@ -102,14 +102,14 @@ let
       # ip, loginctl.
       servicePath = lib.makeBinPath [ pkgs.openssl pkgs.iproute2 config.systemd.package ];
 
-      # System-wide's machine copy of the person's settings folder: install.sh sync, as root through pkexec,
-      # as the Full KVM tab does it elsewhere (the script's text through `sh -c`; it checks the folder is theirs).
+      # System-wide's machine copy of the person's settings folder. The store script is readable
+      # by pkexec and checks that the source folder belongs to the caller.
       sync = pkgs.writeShellScriptBin "twindesk-fullkvm-sync" ''
         set -eu
         dir=''${1:-''${XDG_CONFIG_HOME:-$HOME/.config}/MacShare}
         exec /run/wrappers/bin/pkexec ${pkgs.coreutils}/bin/env \
           PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.gnugrep pkgs.gnused config.systemd.package ]} \
-          ${pkgs.runtimeShell} -c "$(${pkgs.coreutils}/bin/cat ${share}/linux/fullkvm/install.sh)" install.sh sync "$dir"
+          ${pkgs.runtimeShell} ${share}/linux/fullkvm/install.sh sync "$dir"
       '';
     in
     {

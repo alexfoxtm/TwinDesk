@@ -116,8 +116,11 @@ ${again}`;
   const bin = ['/usr/bin/systemd-run', '/bin/systemd-run', '/run/current-system/sw/bin/systemd-run'].find((f) => fs2.existsSync(f));
   const p = bin
     ? spawn(bin, ['--user', '--collect', '--quiet', '--unit', 'twindesk-fullkvm-guard-' + process.pid,
-      // The unit has the user manager's environment, not ours: what starting TwinDesk again needs.
-      ...['DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_SESSION_TYPE', 'XDG_CURRENT_DESKTOP', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'APPIMAGE', 'HOME', 'PATH', 'LANG']
+      // The unit starts with the user manager's environment. Preserve the display and package
+      // wrapper settings used when the guard restarts the Electron executable.
+      ...['DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_SESSION_TYPE', 'XDG_CURRENT_DESKTOP',
+        'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'APPIMAGE', 'HOME', 'PATH', 'LANG',
+        'NODE_PATH', 'TWINDESK_BIN', 'CHROME_DESKTOP', 'GI_TYPELIB_PATH', 'GST_PLUGIN_SYSTEM_PATH_1_0']
         .filter((k) => env[k]).map((k) => '--setenv=' + k + '=' + env[k]),
       '/bin/sh', '-c', sh], { detached: true, stdio: 'ignore', env })
     : spawn('/bin/sh', ['-c', sh], { detached: true, stdio: 'ignore', env });

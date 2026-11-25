@@ -14,20 +14,25 @@ const cp = require('child_process');
 
 const UNIT = '/etc/systemd/system/twindesk-fullkvm.service';
 const CONF = '/etc/twindesk/fullkvm.json';
+const NIX_SYSTEMD_RUN = '/run/current-system/sw/bin/systemd-run';
 let files = {}; // what the pretend /etc holds
 const calls = [];
 
 const realExists = fs.existsSync;
 const realRead = fs.readFileSync;
 const onNixos = realExists('/etc/NIXOS');
-fs.existsSync = (p) => (p in files ? true : p === '/etc/NIXOS' || p === UNIT || p === CONF ? false : realExists(p));
+fs.existsSync = (p) => {
+  if (p in files) return true;
+  if (['/etc/NIXOS', UNIT, CONF, '/usr/bin/systemd-run', '/bin/systemd-run', NIX_SYSTEMD_RUN].includes(p)) return false;
+  return realExists(p);
+};
 fs.readFileSync = function (p, ...a) { return p in files ? files[p] : realRead.call(this, p, ...a); };
 const realExecFile = cp.execFile;
 cp.execFile = (cmd, args, opts, cb) => { calls.push(cmd); cb(null, cmd === 'systemctl' ? 'active\n' : '', ''); };
 
 const load = Module._load;
 Module._load = function (id, ...a) {
-  if (id === 'electron') return { app: { getPath: () => os.tmpdir() }, ipcMain: { handle() {} }, session: {} };
+  if (id === 'electron') return { app: { getPath: () => os.tmpdir() }, ipcMain: { handle() {} }, session: { defaultSession: { registerPreloadScript() {} } } };
   return load.call(this, id, ...a);
 };
 const M = require('../manager.js');
@@ -46,6 +51,39 @@ Module._load = load;
   st = await M.set('simple');
   assert.match(st.error, /NixOS configuration/);
   assert.ok(!calls.includes('pkexec'), 'no password prompt for a declared service');
+
+  // NixOS restarts the app outside the wrapper's process environment.
+  files[NIX_SYSTEMD_RUN] = '';
+  const wrapperEnv = {
+    NODE_PATH: '/nix/store/test/share/twindesk/node_modules',
+    TWINDESK_BIN: '/nix/store/test/bin/twindesk',
+    CHROME_DESKTOP: 'twindesk.desktop',
+    GI_TYPELIB_PATH: '/nix/store/test/lib/girepository-1.0',
+    GST_PLUGIN_SYSTEM_PATH_1_0: '/nix/store/test/lib/gstreamer-1.0',
+  };
+  const realSpawn = cp.spawn;
+  const realEnv = process.env;
+  const spawned = [];
+  try {
+    process.env = { ...realEnv, ...wrapperEnv, ELECTRON_RUN_AS_NODE: '1', TWINDESK_TEST_UNRELATED: '1' };
+    cp.spawn = (cmd, args, opts) => {
+      spawned.push({ cmd, args, opts });
+      return { on() {}, unref() {} };
+    };
+    M.attach({ helper: null });
+  } finally {
+    cp.spawn = realSpawn;
+    process.env = realEnv;
+  }
+  assert.strictEqual(spawned.length, 1);
+  const [{ cmd, args, opts }] = spawned;
+  assert.strictEqual(cmd, NIX_SYSTEMD_RUN);
+  assert.ok(args.includes('--user'));
+  for (const [key, value] of Object.entries(wrapperEnv)) {
+    assert.ok(args.includes(`--setenv=${key}=${value}`), `restart must preserve ${key}`);
+  }
+  assert.ok(!args.includes('--setenv=TWINDESK_TEST_UNRELATED=1'));
+  assert.strictEqual(opts.env.ELECTRON_RUN_AS_NODE, undefined);
 
   // Declarative, Signed in; the same mode asked for again is just the state.
   files = { [UNIT]: '', [CONF]: '{"declarative":true,"mode":"simple"}' };
