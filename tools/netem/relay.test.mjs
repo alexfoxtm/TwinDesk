@@ -90,7 +90,13 @@ test('UDP limits loss, queues and exposure and retires per-client state on cut o
   })
 
   await assert.rejects(startRelay({ ...options, host: '0.0.0.0' }), /unicast IPv4/)
-  await assert.rejects(startRelay({ ...options, host: '192.0.2.4' }), /explicit unicast client/)
+  await assert.rejects(startRelay({ ...options, host: '8.8.8.8' }), /unicast IPv4/)
+  await assert.rejects(startRelay({ ...options, host: '192.168.4.255' }), /unicast IPv4/)
+  await assert.rejects(startRelay({ ...options, host: '192.168.4.4' }), /explicit unicast client/)
+  await assert.rejects(startRelay({ ...options, host: '100.64.0.4', client: '8.8.8.8' }), /explicit unicast client/)
+  await assert.rejects(startRelay({ ...options, host: '100.64.0.4', client: '100.64.0.7' }), /exact TwinDesk/)
+  await assert.rejects(startRelay({ ...options, protocol: 'tcp', host: '100.64.0.4', client: '100.64.0.7',
+    port: 43199, targetPort: 47802 }), /exact TwinDesk/)
   await assert.rejects(startRelay({ ...options, targetPort: 51228 }), /allowed listener and target/)
   relay = await startRelay({ ...options, loss: 100 })
   for (const client of clients) {

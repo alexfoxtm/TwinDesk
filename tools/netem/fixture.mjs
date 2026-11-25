@@ -69,9 +69,10 @@ async function sweep(rtt, targetPort) {
 
 async function rate(mbps, targetPort) {
   let received = 0
+  let failure
   const target = createServer(socket => {
     socket.on('data', data => { received += data.length })
-    socket.on('error', () => {})
+    socket.on('error', error => { failure ??= error })
   })
   const port = targetPort + 1
   let relay
@@ -82,6 +83,7 @@ async function rate(mbps, targetPort) {
     relay = await startRelay({ protocol: 'tcp', rtt: 0, loss: 0, jitter: 0, mbps, port, targetPort, seed })
     client = createConnection(port, host)
     await once(client, 'connect')
+    client.on('error', error => { failure ??= error })
     const chunk = Buffer.alloc(16384)
     function pump() {
       while (client.write(chunk)) { /* Stop at socket backpressure. */ }
@@ -92,6 +94,7 @@ async function rate(mbps, targetPort) {
     const begin = performance.now()
     const before = received
     await sleep(2000)
+    if (failure) throw failure
     const durationMs = Math.round(performance.now() - begin)
     const bytes = received - before
     console.log(JSON.stringify({

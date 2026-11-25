@@ -13,6 +13,7 @@ export const profiles = Object.freeze({
 
 const loopback = '127.0.0.1'
 const excludedPorts = new Set([51228, 47624])
+const deviceTargets = new Map([[43198, 47800], [43199, 43200]])
 const maxFlows = 32
 const queueBytes = 256 * 1024
 const queueItems = 512
@@ -36,8 +37,10 @@ function validPort(port) {
 
 function externalAddress(address) {
   if (!isIPv4(address)) return false
-  const firstOctet = Number(address.split('.')[0])
-  return firstOctet > 0 && firstOctet !== 127 && firstOctet < 224
+  const [first, second, , last] = address.split('.').map(Number)
+  if (last === 0 || last === 255) return false
+  return first === 10 || (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) || (first === 100 && second >= 64 && second <= 127)
 }
 
 function validate({ protocol, host, port, targetPort, client, seed, rtt, loss, mbps, jitter, idleMs }) {
@@ -49,6 +52,9 @@ function validate({ protocol, host, port, targetPort, client, seed, rtt, loss, m
   }
   if (host !== loopback && !externalAddress(client)) {
     throw new Error('A non-loopback listener requires one explicit unicast client IPv4')
+  }
+  if (host !== loopback && (client === host || protocol !== 'tcp' || deviceTargets.get(port) !== targetPort)) {
+    throw new Error('Use the exact TwinDesk control or test TURN relay ports and a distinct client')
   }
   if (host === loopback && client !== loopback) throw new Error('Loopback listener requires loopback client')
   if (typeof seed !== 'string' || seed.length === 0 || seed.length > 80 ||
@@ -216,7 +222,11 @@ export async function startRelay(options) {
     let socketsClosed = 0
     function read(socket, name) {
       socket.setNoDelay(true)
-      socket.on('data', data => flow.push(name, data))
+      socket.on('data', data => {
+        for (let offset = 0; offset < data.length; offset += burst) {
+          flow.push(name, data.subarray(offset, offset + burst))
+        }
+      })
       socket.once('end', () => flow[name].end())
       socket.once('error', flow.close)
       socket.once('close', hadError => {
@@ -251,12 +261,16 @@ export async function startRelay(options) {
           if (onConnected === null) target.send(buffer, done)
           else onConnected = () => target.send(buffer, done)
         },
-        close: () => target.close(),
+        close: () => {
+          onConnected = undefined
+          target.close()
+        },
       })
       target.on('message', buffer => flow.push('down', buffer))
       target.on('error', flow.close)
       // A dedicated connected socket isolates reply routing and filters the fixed target.
       target.connect(targetPort, loopback, () => {
+        if (flows.get(remote.port) !== flow) return
         const send = onConnected
         onConnected = null
         send?.()
