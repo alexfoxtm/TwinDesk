@@ -264,8 +264,9 @@
       PAPP_RETURN: 'papp.return', // M->W {wid}: a window moved here (papp.windows moved: true) goes back, dragged past the edge home
       // A phone (os 'android') as the peer
       PHONE_INFO: 'phone.info', // phone->Mac {model, maker, sdk, release, battery?, charging?, colors: ['#rrggbb'], wallpaper?: data URL (small JPEG), app? (versionName), caps?: ['mirror.native', …] (what it can do without wireless debugging; an older app sends none)}
-      PHONE_APPS_LIST: 'phone.apps.list', // Mac->phone
-      PHONE_APPS: 'phone.apps', // phone->Mac {apps: [{id (package), name, icon (data URL PNG)}]}
+      PHONE_APPS_LIST: 'phone.apps.list', // Mac->phone {version?}
+      PHONE_APPS: 'phone.apps', // phone->Mac {version?, apps?}; only version is needed on a match
+      PHONE_APPS_READY: 'phone.apps.ready', // negotiated: current viewer presented its first frame
       PHONE_POINTER: 'phone.pointer', // Mac->phone {on, x?, y?}: where the Mac's pointer is while it drives the phone (the app draws it)
       // Driving the phone without wireless debugging (shared/phoneinput.js): the phone applies the input itself
       PHONE_IN: 'phone.in', // computer->phone {a: 'd'|'m'|'u'|'s'|'k', …}: touch, scroll, key

@@ -553,7 +553,7 @@ class PhoneBridge extends EventEmitter {
     }
     this.setupDone.add(serial);
     setTimeout(() => {
-      if (this._live(epoch) && this.serial === serial) this.server.sendToClient({ t: T.PHONE_APPS_LIST });
+      if (this._live(epoch) && this.serial === serial) this.phone.refreshApps();
     }, 500);
   }
 

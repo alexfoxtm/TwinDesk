@@ -131,35 +131,6 @@ class PhoneInfo(core: Core) : Feature(core) {
     }
 }
 
-class Apps(core: Core) : Feature(core) {
-    override fun onMessage(t: String, m: JSONObject): Boolean {
-        if (t != Proto.T.PHONE_APPS_LIST) return false
-        core.bg.execute { core.send(msg(Proto.T.PHONE_APPS, "apps" to jsonArray(list()))) }
-        return true
-    }
-
-    private fun list(): List<JSONObject> {
-        val pm = core.ctx.packageManager
-        val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val seen = mutableSetOf<String>()
-        return pm.queryIntentActivities(main, 0).mapNotNull { ri ->
-            val pkg = ri.activityInfo.packageName
-            if (pkg == core.ctx.packageName || !seen.add(pkg)) return@mapNotNull null
-            JSONObject().put("id", pkg).put("name", ri.loadLabel(pm).toString().take(100)).put("icon", if (core.link.ble) "" else icon(ri.loadIcon(pm)))
-        }
-    }
-
-    private fun icon(d: Drawable): String = runCatching {
-        val size = 96
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        d.setBounds(0, 0, size, size)
-        d.draw(c)
-        val out = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-        "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-    }.getOrDefault("")
-}
 
 // Wireless debugging: the Mac pairs with it once (the code from Developer options), then grants
 // this app WRITE_SECURE_SETTINGS over adb, so after that we can switch it on by ourselves when

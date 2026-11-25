@@ -13,7 +13,10 @@ const P = require('../shared/protocol.js');
 const T = P.T;
 const CONNECT_WAIT_MS = 8000; // an invited phone that doesn't say hello by then isn't coming
 const str = (v, n = 200) => (typeof v === 'string' ? v.slice(0, n) : '');
+const APPS_IDLE_MS = 4000;
 const isPhone = (ctx) => !!ctx && P.isPhoneOs(ctx.os);
+const socketOf = (ctx) => ctx?.conn || ctx?.ws;
+const appVersion = (version) => typeof version === 'string' && /^[a-f0-9]{64}$/.test(version);
 
 class Phone extends EventEmitter {
   constructor({ server, raw, discovery, pairing }) {
@@ -22,6 +25,8 @@ class Phone extends EventEmitter {
     this.info = null; // phone.info
     this.adb = null; // adb.state
     this.apps = []; // phone.apps
+    this.appsCache = null; // shown again only after the same authenticated pairing returns
+    this.appsSession = null;
     this.assets = 0; // bumps when the wallpaper or the app list changed (the window fetches them: assetsView)
     this.connecting = null; // {id, name, timer}
     this.message = '';
@@ -31,12 +36,19 @@ class Phone extends EventEmitter {
     server.on('client', (ctx) => {
       if (!isPhone(ctx)) return this._reset();
       this._doneConnecting('');
-      if (ctx.os === P.OS.ANDROID) this.server.sendToClient({ t: T.PHONE_APPS_LIST });
+      if (ctx.os === P.OS.ANDROID) this._startApps(ctx);
       this.emit('change');
     });
     server.on('closed', () => {
+      this._endApps();
       if (isPhone(server.current)) return;
       this._reset();
+    });
+    server.on('transport', () => {
+      const current = server.current;
+      if (current?.os === P.OS.ANDROID && this.appsSession && this.appsSession.owner !== socketOf(current)) {
+        this._startApps(current);
+      }
     });
     const on = (t, fn) => server.on(`t:${t}`, (m, ctx) => isPhone(ctx) && fn(m, ctx));
     on(T.PHONE_INFO, (m) => {
@@ -63,15 +75,78 @@ class Phone extends EventEmitter {
       this.emit('adb', this.adb);
       this.emit('change');
     });
-    on(T.PHONE_APPS, (m) => {
+    on(T.SCREEN_POLICY, (m, ctx) => {
+      const s = this._appsFor(ctx);
+      if (!s || s.requested) return;
+      s.waitingForFrame = m.accept === true;
+      clearTimeout(s.timer);
+      if (m.accept !== true) this._idleApps(s);
+    });
+    on(T.PHONE_APPS_READY, (_m, ctx) => {
+      const s = this._appsFor(ctx);
+      if (!s?.waitingForFrame) return;
+      s.waitingForFrame = false;
+      this._requestApps(s);
+    });
+    on(T.PHONE_APPS, (m, ctx) => {
+      const s = this._appsFor(ctx);
+      const source = socketOf(ctx);
+      if ((source && source !== socketOf(this.server.current)) ||
+          (!s && (this.appsSession || (source?.ctx || ctx).appsPair))) return;
       if (!Array.isArray(m.apps)) return;
       this.apps = m.apps.slice(0, 2000).filter((a) => a && typeof a.id === 'string' && /^[\w.]{1,200}$/.test(a.id)).map((a) => ({
         id: a.id, name: str(a.name, 100) || a.id,
         icon: typeof a.icon === 'string' && a.icon.startsWith('data:image/png;base64,') && a.icon.length < 60000 ? a.icon : '',
       })).sort((a, b) => a.name.localeCompare(b.name));
+      if (s) this.appsCache = appVersion(m.version) ? { pair: s.pair, version: m.version, apps: this.apps } : null;
       this.assets++;
       this.emit('change');
     });
+  }
+
+  _endApps() {
+    clearTimeout(this.appsSession?.timer);
+    this.appsSession = null;
+  }
+
+  _startApps(ctx) {
+    this._endApps();
+    const owner = socketOf(ctx);
+    const pair = (owner?.ctx || ctx).appsPair;
+    if (this.appsCache?.pair !== pair) this.appsCache = null;
+    if (!pair || !owner) return this.server.sendToClient({ t: T.PHONE_APPS_LIST });
+    const apps = this.appsCache?.apps || [];
+    if (this.apps !== apps) { this.apps = apps; this.assets++; }
+    const s = this.appsSession = { owner, pair, requested: false, waitingForFrame: false };
+    this._idleApps(s);
+  }
+
+  _appsFor(ctx) {
+    const s = this.appsSession;
+    if (!s || socketOf(ctx) !== s.owner || socketOf(this.server.current) !== s.owner ||
+        s.owner.readyState !== (s.owner.OPEN ?? 1) || s.owner.ctx?.released || ctx.released || ctx.authed === false) return null;
+    return s;
+  }
+
+  _idleApps(s) {
+    s.timer = setTimeout(() => this._requestApps(s), APPS_IDLE_MS);
+    s.timer.unref?.();
+  }
+
+  _requestApps(s) {
+    if (this._appsFor(this.server.current) !== s || s.requested) return;
+    clearTimeout(s.timer);
+    const version = this.appsCache?.pair === s.pair ? this.appsCache.version : undefined;
+    s.requested = this.server.sendToClient({ t: T.PHONE_APPS_LIST, version }) === true;
+  }
+
+  // The bridge refreshes inventory after setup. It must use the same deadline and cache.
+  refreshApps() {
+    const s = this._appsFor(this.server.current);
+    if (!s) return this.server.sendToClient({ t: T.PHONE_APPS_LIST });
+    s.requested = false;
+    clearTimeout(s.timer);
+    if (!s.waitingForFrame) this._idleApps(s);
   }
 
   get connected() {

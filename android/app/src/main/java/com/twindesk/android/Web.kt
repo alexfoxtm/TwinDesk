@@ -521,6 +521,9 @@ class Screen(core: Core) : Feature(core) {
     fun videoState(h: WebHost, generation: Int, session: Int, playing: Boolean, w: Int, height: Int) {
         if (host !== h || !viewing || videoGeneration != generation || videoSession != session ||
             !core.link.ownsVideoSession(videoMarker)) return
+        if (playing && decodedCapture != session.toLong() && w > 0 && height > 0 && !core.lockView.locked) {
+            core.link.appsViewerReady(videoMarker)
+        }
         if (playing) decodedCapture = session.toLong() else if (decodedCapture == session.toLong()) decodedCapture = null
         val nextSize = if (playing && w > 0 && height > 0) w to height else null
         if (videoPlaying != playing || decodedSize != nextSize) {

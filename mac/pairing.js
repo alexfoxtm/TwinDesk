@@ -265,9 +265,11 @@ class Pairing extends EventEmitter {
     // A re-pair with the same install id gets a new token, and must opt in again.
     ctx.photoBackupPair = P.sha256Hex('photo backup:' + e.tokenHash);
     ctx.photoBackup = msg.pb === 1; // camera photo backup (shared/photobackup.js); missing: an older phone
+    if (e.os === P.OS.ANDROID && msg.pa === 1) ctx.appsPair = P.sha256Hex(`phone apps:${e.id}:${e.tokenHash}`);
     this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN }, {
       t: P.T.WELCOME, v: P.PROTOCOL_VERSION, macId: this.id.macId, macName: this.id.macName, os: P.OS.MAC,
       ...(ctx.photoBackup && e.os === P.OS.ANDROID && this.photoBackupOn?.() === true ? { pb: 1 } : {}),
+      ...(ctx.appsPair ? { pa: 1 } : {}),
       rc: 1, // this single-session Mac accepts a paired Android's non-takeover return
       tail: require('../shared/tailnet.js').mine(), // its Tailscale addresses, for reconnecting away from this network (#161)
       relay: require('../shared/relay.js').welcome() || null, // your own relay (shared/relay.js), for reconnecting away from this network; null: none

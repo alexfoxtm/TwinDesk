@@ -88,6 +88,11 @@ class Link(
         val traceRemaining = java.util.concurrent.atomic.AtomicInteger(48)
     }
     @Volatile private var netemDial: NetemDial? = null
+    @Volatile private var appsReady = false
+
+    internal fun appsViewerReady(marker: Any?) {
+        if (appsReady) sendFor(marker, msg("phone.apps.ready"))
+    }
 
     internal fun isNetemPeer(h: Host): Boolean =
         hostsKey == "hosts" && h.os == "mac" && NetemRoute.configured?.peer == h.id
@@ -742,6 +747,7 @@ class Link(
         // rc and resume together: an older host treats hello+resume
         // as a socket move and refuses it. A plain phone hello would take whatever session it holds.
         raw(msg(Proto.T.HELLO, "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "os" to Proto.OS, "token" to h.token, "fx" to 1, "fxPlain" to 1).apply {
+            put("pa", 1)
             if (netemDial?.let { it.socket === ws } == true) put("netem", 1)
             if (offerPhotoBackup() && h.os == "mac") put("pb", 1)
             if (!wired) put("fx2", 1)
@@ -882,6 +888,7 @@ class Link(
             return
         }
         canReclaim = m.optInt("rc", 0) == 1 && h.os in Core.RETURN_OS
+        appsReady = h.os == "mac" && m.opt("pa") == 1
         reclaimHello = false
         m.optString("macName").takeIf { it.isNotEmpty() }?.let { h.name = it.take(64) }
         if (m.has("tail")) h.tail = Tailnet.clean(m.optJSONArray("tail")) // its Tailscale addresses (Tailnet.kt)
@@ -1167,6 +1174,7 @@ class Link(
         dialAdmit = null
         helloSent = false
         ws = null
+        appsReady = false
         netemDial = null
         fxToken = ""
         fxPlain = null
@@ -1203,6 +1211,7 @@ class Link(
         helloSent = false
         val w = ws
         ws = null
+        appsReady = false
         netemDial = null
         fxToken = ""
         fxPlain = null
