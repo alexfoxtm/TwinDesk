@@ -19,7 +19,7 @@ const { handleIPad, pairedIPad, installIPadQuitDrain } = require('../phoneview-i
 const udid = '12345678-1234567890ABCDEF';
 const tick = () => new Promise(setImmediate);
 
-function wda({ marker = 'expected', window = { x: 0, y: 0, width: 820, height: 1180 } } = {}) {
+function wda({ marker = 'expected', version = '26.2', window = { x: 0, y: 0, width: 820, height: 1180 } } = {}) {
   const calls = [];
   const lost = new AbortController();
   const transport = {
@@ -31,7 +31,7 @@ function wda({ marker = 'expected', window = { x: 0, y: 0, width: 820, height: 1
       signal.throwIfAborted();
       calls.push({ method, path, body });
       if (path === '/status') return { sessionId: null, value: { ready: true, device: 'ipad',
-        build: { productBundleIdentifier: RUNNER_ID, upgradedAt: marker } } };
+        os: { version }, build: { productBundleIdentifier: RUNNER_ID, upgradedAt: marker } } };
       if (path === '/session') return { value: { sessionId: 'own-session' } };
       if (path.endsWith('/appium/settings')) return { value: { animationCoolOffTimeout: 0 } };
       if (path.endsWith('/window/rect')) return { value: { ...window } };
@@ -369,8 +369,9 @@ test('staged XCTest runner discards both envs and rejects executable overrides o
 
 test('WDA parity uses the pinned keyboard, pasteboard, coordinate and button commands', async (t) => {
   const { calls, transport } = wda();
-  const log = [];
-  const controller = new IpadControl({ udid, owns: () => true, status() {}, log: (line) => log.push(line), start: async () => transport });
+  const log = [], status = [];
+  const controller = new IpadControl({ udid, owns: () => true, status: (state) => status.push(state),
+    log: (line) => log.push(line), start: async () => transport });
   t.after(() => controller.stop());
   await controller.connect();
   const key = (key, modifiers = {}, readPasteboard) => controller.input({ op: 'key', key, down: true, ...modifiers }, null, readPasteboard);
@@ -400,18 +401,24 @@ test('WDA parity uses the pinned keyboard, pasteboard, coordinate and button com
   key('Z', { meta: true, shift: true });
   await tick();
   assert.deepEqual(calls.at(-1).body, { keys: [{ key: 'z', modifierFlags: 18 }] });
-  key('v', { meta: true }, () => 'test-paste-text');
+  index = calls.length;
+  key('м', { code: 'KeyV', meta: true }, () => assert.fail('plain Cmd+V must preserve the iPad clipboard'));
+  await tick();
+  assert.equal(calls.length, index + 1);
+  assert.deepEqual(calls.at(-1).body, { keys: [{ key: 'v', modifierFlags: 16 }] });
+  key('М', { code: 'KeyV', meta: true, shift: true }, () => 'test-paste-text');
   await tick();
   assert.deepEqual(calls.slice(-2).map(({ path: route, body }) => [route.slice('/session/own-session'.length), body]), [
     ['/wda/setPasteboard', { contentType: 'plaintext', content: Buffer.from('test-paste-text').toString('base64') }],
     ['/wda/element/0/keyboardInput', { keys: [{ key: 'v', modifierFlags: 16 }] }],
   ]);
   index = calls.length;
-  key('v', { meta: true }, () => 'é'.repeat(8193));
+  key('v', { meta: true, shift: true }, () => 'é'.repeat(8193));
   assert.equal(key('Tab', { meta: true }), false);
-  assert.equal(key('v', { meta: true, repeat: true }, () => assert.fail('repeat reads pasteboard')), true);
+  assert.equal(key('v', { meta: true, shift: true, repeat: true }, () => assert.fail('repeat reads pasteboard')), true);
   await tick();
   assert.equal(calls.length, index);
+  assert.deepEqual(status, ['connected', 'pasteTooLarge']);
   assert.equal(log.some((line) => line.includes('test-paste-text') || line.includes('dGVzdC1wYXN0ZS10ZXh0')), false);
 
   controller.input({ op: 'volumeUp' });
@@ -432,6 +439,25 @@ test('WDA parity uses the pinned keyboard, pasteboard, coordinate and button com
   const [hold, drag] = actions(calls);
   assert.equal(hold.find((step) => step.type === 'pause')?.duration, 520);
   assert.equal(drag.filter((step) => step.type === 'pointerMove').reduce((sum, step) => sum + step.duration, 0), 246);
+});
+
+test('iPadOS 16 keeps Space and Home without using the hardware-key endpoint', async (t) => {
+  const { calls, transport } = wda({ version: '16.7.11' });
+  const controller = new IpadControl({ udid, owns: () => true, status() {}, log() {}, start: async () => transport });
+  t.after(() => controller.stop());
+  await controller.connect();
+  const key = (key, fields = {}) => controller.input({ op: 'key', key, down: true, ...fields });
+  assert.equal(controller.hardwareKeys, false);
+  assert.equal(key(' '), true);
+  assert.equal(key('Enter'), false);
+  assert.equal(key('v', { meta: true }), false);
+  assert.equal(controller.input({ op: 'spotlight' }), false);
+  assert.equal(key('h', { meta: true }), true);
+  await tick();
+  assert.deepEqual(calls.slice(-2).map((c) => c.body), [{ value: [' '] }, { name: 'home' }]);
+  assert.throws(() => parseWdaResponse(500, '/session/own-session/wda/element/0/keyboardInput',
+    { sessionId: 'own-session', value: { error: 'unsupported operation' } }),
+  (error) => error instanceof WdaInputRejected && error.code === 'unsupported_operation');
 });
 
 test('blur clears queued scroll momentum and fences a paste or drag between WDA requests', async (t) => {
@@ -473,7 +499,7 @@ test('blur clears queued scroll momentum and fences a paste or drag between WDA 
   pending();
   await tick();
   assert.equal(actions(calls).length, 2, 'refocus cannot revive the running or queued scroll');
-  const paste = { op: 'key', meta: true, key: 'v', down: true };
+  const paste = { op: 'key', meta: true, shift: true, key: 'v', down: true };
   controller.input(paste, null, () => 'owned paste');
   await tick();
   assert.match(calls.at(-1).path, /\/wda\/setPasteboard$/);

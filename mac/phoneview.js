@@ -524,7 +524,7 @@ class PhoneViews extends EventEmitter {
       win.webContents.on('before-input-event', (event, input) => {
         if (quitting || !win.isFocused() || input.type !== 'keyDown' || input.meta !== true || input.alt || input.control || input.isComposing) return;
         const accepted = v.ipadLease?.controller?.input({
-          op: 'key', down: true, meta: true, key: input.key, shift: input.shift, repeat: input.isAutoRepeat,
+          op: 'key', down: true, meta: true, key: input.key, code: input.code, shift: input.shift, repeat: input.isAutoRepeat,
         }, null, () => clipboard.readText());
         if (accepted) event.preventDefault();
       });

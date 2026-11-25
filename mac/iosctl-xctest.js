@@ -26,6 +26,7 @@ const REJECTED_INPUT = new Map(Object.entries({
   'no such element': 'no_such_element',
   'stale element reference': 'stale_element_reference',
   'move target out of bounds': 'move_target_out_of_bounds',
+  'unsupported operation': 'unsupported_operation',
   'unknown error': 'xctest_rejected', // Pinned WDA uses this for failed action synthesis.
 }));
 

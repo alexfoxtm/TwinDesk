@@ -20,8 +20,8 @@ function matchesIPad(views, owner) {
   return !!live && live.socket === owner.socket && live.pair.id === owner.pair.id && live.pair.pairedAt === owner.pair.pairedAt;
 }
 
-function ipadState(views, v, code, generation) {
-  views._send(v, 'phoneview:opts', { ipadState: code, ipadGeneration: generation });
+function ipadState(views, v, code, generation, hardwareKeys) {
+  views._send(v, 'phoneview:opts', { ipadState: code, ipadGeneration: generation, ipadHardwareKeys: hardwareKeys });
 }
 
 function stopIPad(views, v, reason = 'off', immediate = false) {
@@ -86,7 +86,8 @@ async function startIPad(views, v, dialog) {
     if (!owns()) return;
     const controller = new IpadControl({ udid, owns, template, canInput: () => !win.isDestroyed() && win.isFocused(), status: (code) => {
       if (v.ipadLease !== lease) return;
-      if (code === 'connected') ipadState(views, v, code, lease.generation);
+      if (code === 'connected') ipadState(views, v, code, lease.generation, controller.hardwareKeys);
+      else if (code === 'pasteTooLarge') views._send(v, 'phoneview:opts', { ipadPasteTooLarge: true });
       else stopIPad(views, v, code);
     } });
     lease.controller = controller;

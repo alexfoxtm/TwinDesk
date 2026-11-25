@@ -61,21 +61,27 @@ function keyboardInput(key, modifierFlags = 0) {
   return [KEYBOARD_INPUT, { keys: [modifierFlags ? { key, modifierFlags } : key] }];
 }
 
-function keyCommand(m) {
+function shortcutKey(m) {
+  if (m.code === 'Space') return ' ';
+  return typeof m.code === 'string' && /^Key[A-Z]$/.test(m.code) ? m.code[3].toLowerCase() : m.key.toLowerCase();
+}
+
+function keyCommand(m, hardwareKeys) {
   const key = m.key;
   if (m.down !== true || m.composing || m.ctrl || typeof key !== 'string') return null;
   if (m.meta) {
     if (m.alt) return null;
-    const lower = key.toLowerCase();
+    const lower = shortcutKey(m);
     if (lower === 'h' && !m.shift) return ['/wda/pressButton', { name: 'home' }];
-    if (key === ' ' && !m.shift) return keyboardInput('XCUIKeyboardKeySpace', COMMAND_FLAG);
-    if (EDITING_COMMANDS.has(lower) && (!m.shift || lower === 'z')) {
-      return keyboardInput(lower, COMMAND_FLAG | (m.shift ? SHIFT_FLAG : 0));
+    if (!hardwareKeys) return null;
+    if (lower === ' ' && !m.shift) return keyboardInput('XCUIKeyboardKeySpace', COMMAND_FLAG);
+    if (EDITING_COMMANDS.has(lower) && (!m.shift || lower === 'z' || lower === 'v')) {
+      return keyboardInput(lower, COMMAND_FLAG | (m.shift && lower === 'z' ? SHIFT_FLAG : 0));
     }
     return null;
   }
   const special = SPECIAL_KEYS.get(key);
-  if (special && !m.alt) return keyboardInput(`XCUIKeyboardKey${special}`, m.shift ? SHIFT_FLAG : 0);
+  if (special && !m.alt && hardwareKeys) return keyboardInput(`XCUIKeyboardKey${special}`, m.shift ? SHIFT_FLAG : 0);
   if (Array.from(key).length === 1 && !/\p{Cc}/u.test(key)) return ['/wda/keys', { value: [key] }];
   return null;
 }
@@ -86,6 +92,7 @@ class IpadControl {
     this.abort = new AbortController();
     this.queue = [];
     this.inputEpoch = 0;
+    this.hardwareKeys = false;
   }
 
   async connect() {
@@ -108,7 +115,12 @@ class IpadControl {
           code = 'endpoint';
           throw new Error(code);
         }
-        if (r?.value?.ready === true) { verified = true; break; }
+        if (r?.value?.ready === true) {
+          const version = r.value.os?.version;
+          this.hardwareKeys = typeof version === 'string' && Number.parseInt(version, 10) >= 17;
+          verified = true;
+          break;
+        }
         await delay(300, undefined, { signal: deadline });
       }
       if (!verified || !this.owns()) throw new Error(code);
@@ -164,17 +176,24 @@ class IpadControl {
     if (m.op === 'cancel') return this.clearInput();
     const epoch = this.inputEpoch;
     const active = () => epoch === this.inputEpoch && this.canInput() && this.owns() && !this.abort.signal.aborted;
-    const key = m.op === 'key' && keyCommand(m);
+    const key = m.op === 'key' && keyCommand(m, this.hardwareKeys);
     if (key) {
+      const paste = m.meta && m.shift && shortcutKey(m) === 'v';
+      if (paste && !readPasteboard) return false;
       if (m.meta && m.repeat) return true;
-      const paste = m.meta && m.key.toLowerCase() === 'v';
+      let text;
+      if (paste) {
+        try { text = readPasteboard(); } catch { return true; }
+        if (typeof text !== 'string' || !text || !active()) return true;
+        if (Buffer.byteLength(text, 'utf8') > MAX_PASTE_BYTES) {
+          this.status('pasteTooLarge');
+          return true;
+        }
+      }
       this.enqueue(paste ? 'paste' : 'key', async () => {
         if (!active()) return;
-        if (paste && readPasteboard) {
-          let text;
-          try { text = readPasteboard(); } catch { return; }
-          if (!active() || Buffer.byteLength(text, 'utf8') > MAX_PASTE_BYTES) return;
-          if (text) await this.send('POST', '/wda/setPasteboard', {
+        if (paste) {
+          await this.send('POST', '/wda/setPasteboard', {
             contentType: 'plaintext', content: Buffer.from(text, 'utf8').toString('base64'),
           });
         }
@@ -182,6 +201,7 @@ class IpadControl {
       });
       return true;
     }
+    if (m.op === 'spotlight' && !this.hardwareKeys) return false;
     if (m.op === 'spotlight') return this.enqueue('spotlight', () => {
       if (active()) return this.send('POST', ...keyboardInput('XCUIKeyboardKeySpace', COMMAND_FLAG));
     });

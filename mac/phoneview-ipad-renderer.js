@@ -4,6 +4,7 @@
 window.PhoneViewIPad = (api, I, canvas, displayedFrame) => {
   let state = 'off';
   let generation;
+  let hardwareKeys = false;
   let gesture;
   let pendingTap;
   let scroll;
@@ -17,7 +18,8 @@ window.PhoneViewIPad = (api, I, canvas, displayedFrame) => {
   const status = document.getElementById('ipad-control-status');
   const pointer = document.getElementById('ipad-pointer');
   const shortcuts = document.getElementById('ipad-shortcuts');
-  document.getElementById('ipad-spotlight').onclick = () => send('spotlight');
+  const spotlight = document.getElementById('ipad-spotlight');
+  spotlight.onclick = () => send('spotlight');
   document.getElementById('ipad-volume-down').onclick = () => send('volumeDown');
   document.getElementById('ipad-volume-up').onclick = () => send('volumeUp');
   button.onclick = () => api.send({ t: 'ipadControl', on: state !== 'starting' && state !== 'connected' });
@@ -34,13 +36,16 @@ window.PhoneViewIPad = (api, I, canvas, displayedFrame) => {
   };
   api.on('opts', (m) => {
     if (m?.minimized === true) clearInput();
+    if (m?.ipadPasteTooLarge === true && state === 'connected') I.text(status, 'Mac clipboard text exceeds 16 KiB');
     if (!m?.ipadState) return;
     state = m.ipadState;
     generation = m.ipadGeneration;
+    hardwareKeys = m.ipadHardwareKeys === true;
     clearInput();
     const connected = state === 'connected';
     document.body.classList.toggle('ipad-connected', connected);
     shortcuts.hidden = !connected;
+    spotlight.hidden = !hardwareKeys;
     I.text(button, connected || state === 'starting' ? 'Stop iPad control' : 'Control this iPad');
     const [label, detail] = copy[state] || [''];
     I.text(status, label);
@@ -187,7 +192,7 @@ window.PhoneViewIPad = (api, I, canvas, displayedFrame) => {
       e.preventDefault();
       return send(e.key === 'AudioVolumeUp' ? 'volumeUp' : 'volumeDown');
     }
-    if (!special.has(e.key) && Array.from(e.key).length !== 1) return;
+    if (!(hardwareKeys && special.has(e.key)) && Array.from(e.key).length !== 1) return;
     e.preventDefault();
     send('key', { key: e.key, down: true, shift: e.shiftKey, alt: e.altKey });
   });
