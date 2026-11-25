@@ -142,7 +142,8 @@ final class Injector {
     case "in.md", "in.mu":
       button((ev["b"] as? NSNumber)?.intValue ?? 0, down: t == "in.md", at: point(ev, bounds))
     case "in.wh":
-      scroll(dx: (ev["dx"] as? NSNumber)?.doubleValue ?? 0, dy: (ev["dy"] as? NSNumber)?.doubleValue ?? 0, lines: false)
+      let at = ev["x"] != nil && ev["y"] != nil ? point(ev, bounds) : nil
+      scroll(dx: (ev["dx"] as? NSNumber)?.doubleValue ?? 0, dy: (ev["dy"] as? NSNumber)?.doubleValue ?? 0, lines: false, at: at)
     case "in.kd", "in.ku":
       guard let code = ev["code"] as? String else { return }
       key(code, down: t == "in.kd")
@@ -174,11 +175,12 @@ final class Injector {
   }
 
   /// Scroll in DOM sign (positive dy = see content further down); pixels, or lines (wheel notches).
-  func scroll(dx: Double, dy: Double, lines: Bool) {
+  func scroll(dx: Double, dy: Double, lines: Bool, at: CGPoint? = nil) {
     let clamp = { (v: Double) in Int32(max(-10000, min(10000, -v.rounded()))) }
     let e = CGEvent(scrollWheelEvent2Source: source, units: lines ? .line : .pixel, wheelCount: 2,
                     wheel1: clamp(dy), wheel2: clamp(dx), wheel3: 0)
     e?.flags = flags
+    if let at = at { e?.location = at }
     post(e)
   }
 
@@ -274,6 +276,9 @@ final class Injector {
 
   /// Key-up every key and button we hold, clear modifiers.
   func releaseAll() {
+#if MULTI
+    Capture.shared.clearScreenInput()
+#endif
     for vk in heldKeys {
       let e = CGEvent(keyboardEventSource: source, virtualKey: vk, keyDown: false)
       e?.flags = flags

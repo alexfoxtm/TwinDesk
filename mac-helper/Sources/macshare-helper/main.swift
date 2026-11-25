@@ -366,6 +366,9 @@ func handle(_ line: String) {
           let x = (b["x"] as? NSNumber)?.doubleValue, let y = (b["y"] as? NSNumber)?.doubleValue,
           let w = (b["width"] as? NSNumber)?.doubleValue, let h = (b["height"] as? NSNumber)?.doubleValue
     else { return replyError(id, "input needs ev and bounds") }
+#if MULTI
+    if let epoch = msg["meshScreen"] as? Int, !Capture.shared.allowScreenInput(epoch: epoch) { return }
+#endif
     injector.input(ev, bounds: CGRect(x: x, y: y, width: w, height: h))
   case "releaseAll":
     DragIn.shared.cancel() // first: its button must not come up as a drop

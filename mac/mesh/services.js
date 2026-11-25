@@ -41,18 +41,18 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
   const helper = new Helper();
   const displays = new Displays(helper, s);
   const hub = new AudioHub(helper, s);
+  let kvm = null;
+  const input = new Input(server, helper, displays, {
+    enabled: () => helper.running && s().streamInput !== false && (!kvm || kvm.mode === 'home'),
+    listen: false,
+  });
   const observeNetem = process.env.TWINDESK_NETEM_PHONE && require('../netem-trace.js').observeNetemStream;
-  const stream = new StreamSet({ hub: meshHub, server, displays, make: (peer) => {
+  const swapKeys = (c) => s().keys.swapCtrlCmd !== false && P.keySwapNeeded(P.OS.MAC, c.os);
+  const stream = new StreamSet({ hub: meshHub, server, displays, input, swapKeys, make: (peer) => {
     const target = new Stream(peer, displays, s, hub);
     if (observeNetem) observeNetem(target, peer, s, meshHub);
     return target;
   } });
-  let kvm = null;
-  // Stream input only when "Receive input" is on and shared input is home.
-  const input = new Input(server, helper, displays, {
-    enabled: () => s().streamInput !== false && (!kvm || kvm.mode === 'home'),
-    swapKeys: () => server.keySwap(s()), // never between two Macs
-  });
   // Each viewer's own picture, including one that is not the shared pointer's display.
   // The bus hears every device; a phone that is not the selected computer can still switch
   // the desktop on the display it is being shown.
@@ -104,6 +104,7 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
   const drop = new Drop({ server, helper, displays, getSettings: s });
   const fileSend = new FileSend(server, s, { outboxFile: require('path').join(require('electron').app.getPath('userData'), 'outbox.json') });
   kvm = new Kvm({ hub: meshHub, layoutSync, helper, getSettings: s, clipboard, input, drop, fileSend });
+  kvm.on('where', () => stream.syncScopedScreens());
   require('../../shared/applog.js').linkStats(() => kvm.linkSample()); // the link's line in the log every 30 s
   const terminal = new Terminal(server, s);
   const smb = new Smb({ server, helper, getSettings: s, saveSettings: () => store.saveSettings(s()) });
@@ -126,7 +127,6 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
 
   for (const x of [stream, clipboard, kvm, terminal, drop, fileSend, smb, apps, sshClient, audio, pcView, pcApps, notifs, fileClip, wake, appSend]) x.on('change', pushState);
   displays.on('change', () => {
-    input.releaseAll(); // the shared display moved or changed size mid-press
     invalidateLook();
     pushState();
   });

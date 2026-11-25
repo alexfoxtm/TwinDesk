@@ -31,9 +31,23 @@
   const t = (text, vars = {}) => (typeof TD.tr === 'function' ? TD.tr(text, JSON.stringify(vars))
     : text.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)));
   const TD = window.TD;
-  const send = (m) => TD.send(JSON.stringify(m));
+  let scopedInput = null; // stream.input from the iOS host bridge
+  const send = (m) => {
+    if (scopedInput && m.t.startsWith('in.')) {
+      if (!scopedInput.on || scopedInput.session !== session || !videoOwner ||
+          pc?.connectionState !== 'connected' || video.srcObject !== videoOwner.stream ||
+          video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.paused) return;
+      m.session = session;
+      m.inputEpoch = scopedInput.inputEpoch;
+      if (m.t === 'in.mm') m.engaged = touches.size > 0 || m.pen?.c === true;
+    }
+    TD.send(JSON.stringify(m));
+  };
   // in.mm straight to the socket (WebHost's TD.move): no object or JSON per pointer event.
-  const sendAt = typeof TD.move === 'function' ? (x, y) => TD.move(2, x, y, false) : (x, y) => send({ t: 'in.mm', x, y });
+  const sendAt = (x, y) => {
+    if (!scopedInput && typeof TD.move === 'function') TD.move(2, x, y, false);
+    else send({ t: 'in.mm', x, y });
+  };
   const B = { LEFT: 0, RIGHT: 1, MIDDLE: 2 };
 
   let pc = null;
@@ -335,7 +349,7 @@
   }
 
   async function onOffer(msg) {
-    if (viewGestures) cancelInput();
+    if (viewGestures || scopedInput) cancelInput();
     closePc();
     captureUnavailable = false;
     // On a USB cable the computer sends its relay (msg.ice): the picture goes through adb.
@@ -452,11 +466,19 @@
         else pc.addIceCandidate(msg.candidate).catch(() => {});
         break;
       case 'stream.stop':
-        if (viewGestures) cancelInput();
+        if (viewGestures || scopedInput) cancelInput();
         closePc();
         setOverlay(t('{name} isn’t sharing its screen', { name }));
         break;
       case 'viewer.input':
+        inputAllowsCue = msg.on === true;
+        if (!inputAllowsCue) hidePointerCue();
+        break;
+      case 'stream.input':
+        if (Object.hasOwn(msg, 'inputEpoch')) {
+          if (scopedInput?.inputEpoch !== msg.inputEpoch) cancelInput();
+          scopedInput = msg;
+        }
         inputAllowsCue = msg.on === true;
         if (!inputAllowsCue) hidePointerCue();
         break;
@@ -471,7 +493,7 @@
         selectScale(msg.mode);
         break;
       case 'opts': {
-        inputAllowsCue = msg.inputOn === true;
+        inputAllowsCue = scopedInput ? scopedInput.on === true : msg.inputOn === true;
         if (!inputAllowsCue) hidePointerCue();
         macViewGestures = msg.viewGestures === true;
         const gestures = macViewGestures || !!detail;
@@ -709,7 +731,8 @@
       const c = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
       const dx = (two.x - c.x) * 2, dy = (two.y - c.y) * 2;
       if (Math.abs(dx) + Math.abs(dy) >= 1) {
-        send({ t: 'in.wh', dx, dy });
+        const at = scopedInput ? (touchMode === 'pad' ? cur : norm(c.x, c.y, true)) : null;
+        send({ t: 'in.wh', dx, dy, ...at });
         two = c;
       }
       return;
@@ -1113,15 +1136,16 @@
     }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { stopDoctor(); if (viewGestures) cancelInput(); else hidePointerCue(); }
+    if (document.hidden) { stopDoctor(); if (viewGestures || scopedInput) cancelInput(); else hidePointerCue(); }
     else requireCurrentFrame();
   });
-  window.addEventListener('blur', () => { if (viewGestures) cancelInput(); else hidePointerCue(); });
+  window.addEventListener('blur', () => { if (viewGestures || scopedInput) cancelInput(); else hidePointerCue(); });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('wheel', (e) => {
     e.preventDefault();
     const k = e.deltaMode === 1 ? 40 : 1;
-    send({ t: 'in.wh', dx: e.deltaX * k, dy: e.deltaY * k });
+    const at = scopedInput ? norm(e.clientX, e.clientY, true) : null;
+    send({ t: 'in.wh', dx: e.deltaX * k, dy: e.deltaY * k, ...at });
   }, { passive: false });
 
   // Keys: a hardware keyboard sends codes; the soft keyboard sends characters (mapped to keys).

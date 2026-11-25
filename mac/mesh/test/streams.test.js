@@ -9,7 +9,8 @@ const { EventEmitter } = require('events');
 const Module = require('module');
 const P = require('../../../shared/protocol.js');
 const { StreamSet } = require('../streams.js');
-const { node, close, waitFor, pairPhone, helloPhone, hello } = require('./lib/mesh.js');
+const { Input } = require('../../input.js');
+const { node, close, waitFor, pairPhone, helloPhone, hello, rawConnect } = require('./lib/mesh.js');
 
 const T = P.T;
 const tests = [];
@@ -92,22 +93,36 @@ function receiveFixture(A) {
   try { ({ Stream } = require('../stream.js')); }
   finally { Module._load = load; }
   const settings = { sharing: { on: false, remote: true } };
-  const target = { id: 1, label: 'Built-in', primary: true, pixelWidth: 3024, pixelHeight: 1964 };
+  const target = { id: 1, label: 'Built-in', primary: true, pixelWidth: 3024, pixelHeight: 1964,
+    bounds: { x: 0, y: 0, width: 1512, height: 982 } };
+  const left = { id: 2, label: 'Left', pixelWidth: 1920, pixelHeight: 1080,
+    bounds: { x: -1920, y: 0, width: 1920, height: 1080 } };
+  const extended = { id: 9, label: 'TwinDesk', virtual: true, pixelWidth: 1920, pixelHeight: 1080,
+    bounds: { x: 1512, y: 0, width: 1920, height: 1080 } };
   const displays = Object.assign(new EventEmitter(), {
-    model: () => MODEL, target: () => target, list: () => [target], setOverride() {},
+    model: () => MODEL, target: () => target, list: () => [target, left, extended], setOverride() {},
   });
   const started = [];
+  const injected = [];
+  const helper = Object.assign(new EventEmitter(), { send: (op, data) => injected.push({ op, ...data }) });
+  const input = new Input(new EventEmitter(), helper, displays, {
+    listen: false, enabled: () => settings.streamInput !== false, swapKeys: () => false,
+  });
   const set = new StreamSet({
-    hub: A.hub, server: A.server, displays,
+    hub: A.hub, server: A.server, displays, input,
     make: (peer) => {
       const stream = new Stream(peer, displays, () => settings, { release() {}, loopback() {} });
       stream._ensureWindow = async () => {};
       stream._source = async () => ({ id: 'screen:1:0' });
-      stream._toWindow = (ch, m) => { if (ch === 'start') started.push([peer.id, m.session]); };
+      stream._toWindow = (ch, m) => {
+        if (ch !== 'start') return;
+        started.push([peer.id, m.session]);
+        stream._setStatus('live');
+      };
       return stream;
     },
   });
-  return { set, settings, started };
+  return { set, settings, started, injected, target, left, extended, helper };
 }
 
 async function ipadFixture(A) {
@@ -225,6 +240,180 @@ test('remote revocation and a Mac target set to off deny the iPad’s scoped req
     await request();
     assert.strictEqual(st.active, null, 'Mac’s per-device Off overrides remote start');
     assert.strictEqual(started.length, 1);
+  } finally {
+    close(A);
+  }
+});
+
+test('selected and unselected iPad control their streamed display and hand off with Galaxy', async () => {
+  const A = await node('A');
+  try {
+    const { set, settings, injected, target, left, extended } = receiveFixture(A);
+    const { other, ipad, connect } = await ipadFixture(A);
+    const client = await connect();
+    const st = set.byId.get(ipad.id);
+    const galaxy = set.byId.get(other.id);
+    settings.sharing.on = true;
+    set.setTarget(ipad.id, { mode: 'mirror', displayId: left.id });
+    assert.strictEqual(A.hub.selectedId, other.id);
+    accept(other.client);
+    accept(client);
+    await waitFor(() => st.view.status === 'live' && galaxy.view.status === 'live', 'both viewers live');
+    const state = await client.until((m) => m.t === T.SCREEN_STATE && m.on && m.input);
+    const grant = await client.until((m) => m.t === T.STREAM_INPUT && m.on && m.session === st.session);
+    assert.strictEqual(state.mode, 'mirror');
+    const send = (c, t, fields = {}) => c.send({ t, x: 0.5, y: 0.25, ...fields });
+    const ios = (t, fields = {}) => send(client, t, { session: grant.session, inputEpoch: grant.inputEpoch, ...fields });
+
+    send(other.client, T.IN_DOWN);
+    await waitFor(() => injected.length === 1, 'selected Galaxy input');
+    assert.deepStrictEqual(injected[0].bounds, target.bounds);
+    const attempted = new Promise(resolve => st.peer.once(`t:${T.IN_DOWN}`, resolve));
+    ios(T.IN_DOWN);
+    await attempted;
+    assert.strictEqual(injected.length, 1, 'an iPad touch does not bisect a Galaxy drag');
+    send(other.client, T.IN_UP);
+    await waitFor(() => injected.length === 2, 'Galaxy release');
+    ios(T.IN_MOVE, { engaged: true });
+    await waitFor(() => injected.at(-1)?.ev?.t === T.IN_MOVE, 'unselected iPad touchpad claims ownership');
+    assert.deepStrictEqual(injected.at(-1).bounds, left.bounds);
+    ios(T.IN_DOWN);
+    await waitFor(() => injected.at(-1)?.ev?.t === T.IN_DOWN, 'unselected iPad input');
+    assert.deepStrictEqual(injected.at(-1).bounds, left.bounds);
+    ios(T.IN_UP);
+    ios(T.IN_KEY_DOWN, { code: 'KeyA' });
+    ios(T.IN_KEY_UP, { code: 'KeyA' });
+    await waitFor(() => injected.at(-1)?.ev?.t === T.IN_KEY_UP, 'iPad keyboard follows its touch');
+    ios(T.IN_WHEEL, { dx: 4, dy: 8 });
+    await waitFor(() => injected.at(-1)?.ev?.t === T.IN_WHEEL, 'iPad scroll');
+    assert.deepStrictEqual(injected.at(-1).ev, { t: T.IN_WHEEL, x: 0.5, y: 0.25, dx: 4, dy: 8 });
+    ios(T.IN_MOVE, { pen: { p: 0.3, c: true }, pts: [[0.4, 0.2, 0.2, 0, 0]] });
+    await waitFor(() => injected.at(-1)?.ev?.pen?.p === 0.3, 'Pencil sample arrived');
+    assert.deepStrictEqual(injected.slice(-2).map((e) => [e.ev.x, e.ev.pen.p, e.bounds.x]),
+      [[0.4, 0.2, left.bounds.x], [0.5, 0.3, left.bounds.x]]);
+
+    assert.strictEqual(A.hub.select(ipad.id), true);
+    ios(T.IN_DOWN);
+    await waitFor(() => injected.at(-1)?.ev?.t === T.IN_DOWN, 'selected iPad still drives its display');
+    assert.deepStrictEqual(injected.at(-1).bounds, left.bounds);
+    ios(T.IN_UP);
+    await waitFor(() => injected.at(-1)?.ev?.t === T.IN_UP, 'selected iPad release');
+    assert.strictEqual(A.hub.select(other.id), true);
+    send(other.client, T.IN_DOWN);
+    await waitFor(() => injected.at(-1)?.ev?.t === T.IN_DOWN, 'Galaxy can retake');
+    assert.deepStrictEqual(injected.at(-1).bounds, target.bounds);
+
+    client.close();
+    await waitFor(() => !st.peer.current, 'retired scoped iPad link');
+    A.hub.wantSelect(ipad.id);
+    const selected = await connect();
+    assert.strictEqual(A.hub.selectedId, ipad.id);
+    assert.strictEqual(st.scopedScreen, false, 'the fresh selected iPad still uses selected screen controls');
+    assert.strictEqual(set.setTarget(ipad.id, { mode: 'virtual' }).ok, true);
+    accept(selected);
+    const extend = await selected.until((m) => m.t === T.STREAM_INPUT && m.on && m.session === st.session);
+    send(selected, T.IN_DOWN, { session: extend.session, inputEpoch: extend.inputEpoch });
+    await waitFor(() => injected.at(-1)?.ev?.t === T.IN_DOWN, 'fresh selected iPad controls Extend');
+    assert.deepStrictEqual(injected.at(-1).bounds, extended.bounds);
+  } finally {
+    close(A);
+  }
+});
+
+test('iPad stream input retires on policy, Stop, remap and socket replacement', async () => {
+  const A = await node('A');
+  try {
+    const { set, settings, injected, left, helper } = receiveFixture(A);
+    const { ipad, connect } = await ipadFixture(A);
+    let client = await connect();
+    const st = set.byId.get(ipad.id);
+    settings.sharing.on = true;
+    accept(client);
+    const grant = () => client.until((m) => m.t === T.STREAM_INPUT && m.on && m.inputEpoch === st.inputGrant?.inputEpoch);
+    let current = await grant();
+    const message = (g, t = T.IN_DOWN) => ({ t, x: 0.5, y: 0.25, session: g.session, inputEpoch: g.inputEpoch });
+    const press = async () => {
+      client.send(message(current));
+      await waitFor(() => injected.at(-1)?.ev?.t === T.IN_DOWN, 'press held');
+    };
+    const reject = async (g = current) => {
+      const count = injected.length;
+      const arrived = new Promise((resolve) => st.peer.once(`t:${T.IN_DOWN}`, resolve));
+      client.send(message(g));
+      await arrived;
+      assert.strictEqual(injected.length, count);
+    };
+
+    await press();
+    settings.streamInput = false;
+    set.syncScopedScreens();
+    assert.strictEqual(injected.at(-1).op, 'releaseAll');
+    await reject();
+    settings.streamInput = true;
+    set.syncScopedScreens();
+    const revoked = current;
+    current = await client.until((m) => m.t === T.STREAM_INPUT && m.on && m.inputEpoch !== revoked.inputEpoch);
+    await reject(revoked);
+    await press();
+    settings.sharing.remote = false;
+    set.syncScopedScreens();
+    assert.strictEqual(injected.at(-1).op, 'releaseAll');
+    await reject();
+    settings.sharing.remote = true;
+    set.syncScopedScreens();
+    current = await grant();
+    await press();
+    set.setTarget(ipad.id, { mode: 'mirror', displayId: left.id });
+    assert.strictEqual(injected.at(-1).op, 'releaseAll');
+    const oldMapping = current;
+    current = await grant();
+    await reject(oldMapping);
+    await press();
+    assert.deepStrictEqual(injected.at(-1).bounds, left.bounds);
+    const beforeLocal = current;
+    helper.emit('event', 'screenInputLocal', { epoch: current.inputEpoch });
+    assert.strictEqual(injected.at(-1).op, 'releaseAll');
+    current = await grant();
+    await reject(beforeLocal);
+    await press();
+    const countBeforeStaleLocal = injected.length;
+    helper.emit('event', 'screenInputLocal', { epoch: beforeLocal.inputEpoch });
+    assert.strictEqual(injected.length, countBeforeStaleLocal, 'late local event cannot retire a newer owner');
+    client.send({ t: T.SCREEN_CTL, share: false, close: true });
+    await waitFor(() => !st.active, 'Stop retired the stream');
+    assert.strictEqual(injected.at(-1).op, 'releaseAll');
+    await reject();
+    const retiredSocket = st.peer.current.conn;
+    client.close();
+    await waitFor(() => !st.peer.current, 'socket retired');
+    client = await connect();
+    accept(client);
+    current = await grant();
+    const count = injected.length;
+    const session = A.hub.sessions.get(ipad.id);
+    session.fromHost(message(current), session.ctx, retiredSocket);
+    session.inject(message(current));
+    assert.strictEqual(injected.length, count, 'stale socket and synthetic route events are ignored');
+    await press();
+
+    const old = client;
+    const resumed = await rawConnect(A.port);
+    resumed.send({ t: T.HELLO, id: ipad.id, resume: session.ctx.resumeKey });
+    await resumed.until(m => m.t === T.WELCOME && m.resumed);
+    await resumed.until(m => m.t === T.STREAM_INPUT && !m.on && m.refreshViewer);
+    assert.strictEqual(injected.at(-1).op, 'releaseAll', 'same-transport resume releases the held button');
+    client = resumed;
+    await reject();
+    accept(client);
+    const oldGrant = current;
+    current = await grant();
+    await reject(oldGrant);
+    const countBeforeFallback = injected.length;
+    const fallback = new Promise(resolve => st.peer.once(`t:${T.IN_DOWN}`, resolve));
+    old.send(message(current));
+    await fallback;
+    assert.strictEqual(injected.length, countBeforeFallback, 'a fallback socket cannot use the new grant');
+    await press();
   } finally {
     close(A);
   }

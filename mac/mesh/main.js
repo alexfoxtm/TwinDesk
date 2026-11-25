@@ -304,7 +304,6 @@ function publishState() {
 
 // Tell the viewer what we share, so it can show Start / Extend / Mirror itself
 // (screen.state); only when something changed or the peer is new.
-let screenInputOwner = null;
 let screenStateKey = '';
 let previewShots = null;
 
@@ -356,7 +355,6 @@ function onPreviewWant(m) {
 }
 
 function sendScreenState() {
-  updateScreenInputOwner();
   const c = peer && peer.current;
   if (!c || !svc || svc.stream.byId.get(c.deviceId)?.scopedScreen) {
     screenStateKey = '';
@@ -383,7 +381,7 @@ function sendScreenState() {
   const spaceHold = Spaces.spaceHold(look);
   if (spaceHold) msg.spaceHold = spaceHold;
   const keyed = [c.deviceId, msg];
-  msg.input = !!svc.input.enabled();
+  msg.input = c.os === P.OS.IOS ? !!svc.stream.byId.get(c.deviceId)?.inputGrant : !!svc.input.enabled();
   const key = JSON.stringify(keyed);
   if (key === screenStateKey) {
     if (previewShots) previewShots.kick();
@@ -392,21 +390,6 @@ function sendScreenState() {
   screenStateKey = key;
   peer.sendToClient(msg);
   if (previewShots) previewShots.kick();
-}
-
-function updateScreenInputOwner() {
-  const c = peer && peer.current;
-  const scoped = c && svc && svc.stream.byId.get(c.deviceId)?.peer;
-  const socket = scoped && (scoped.current?.conn || scoped.current?.ws);
-  if (screenInputOwner && (screenInputOwner.peer !== scoped || screenInputOwner.socket !== socket)) {
-    const previous = screenInputOwner.peer.current;
-    if (previous && (previous.conn || previous.ws) === screenInputOwner.socket) {
-      screenInputOwner.peer.sendToClient({ t: P.T.STREAM_INPUT, on: false });
-    }
-    screenInputOwner = null;
-    screenStateKey = '';
-  }
-  if (scoped && socket) screenInputOwner = { peer: scoped, socket };
 }
 
 function displayPick(m) {
@@ -710,7 +693,7 @@ app.whenReady().then(() => {
   peer = new Peer(hub.facade, server);
   peer.on('client', (ctx) => {
     console.log(`[peer] session with ${ctx.name} (${ctx.os}, ${ctx.role === 'host' ? 'we are its guest' : 'it is our guest'})`);
-    peer.send(ctx, { t: P.T.STREAM_INPUT, on: settings.streamInput !== false });
+    screenStateKey = '';
     if (previewShots) previewShots.cancel('session');
     pushState();
   });
@@ -775,7 +758,9 @@ app.whenReady().then(() => {
   });
   require('electron').powerMonitor.on('lock-screen', () => {
     if (previewShots) previewShots.cancel('session');
+    svc.stream.lockInput(true);
   });
+  require('electron').powerMonitor.on('unlock-screen', () => svc.stream.lockInput(false));
   // Audio › Microphone (shared/mic.js): loaded the first time one of its switches is on.
   svc.loadMic = () => {
     if (svc.mic || !(settings.audio.micSend || settings.audio.micReceive)) return svc.mic || null;
@@ -1113,7 +1098,11 @@ app.whenReady().then(() => {
   svc.kvm.blockEdge = () => blockEdge() || svc.phone.focused; // moving inside the phone window never crosses
   svc.apps.setSharing = (on, by) => actions.setSharing(on, by);
   peer.on(`t:${P.T.SCREEN_CTL}`, (m, c) => {
-    if (!svc.stream.byId.get(c.deviceId)?.scopedScreen) onScreenCtl(m);
+    const st = svc.stream.byId.get(c.deviceId);
+    if (st?.scopedScreen) return;
+    if (c.os === P.OS.IOS && (!st || !c.conn || hub.sessions.get(c.deviceId)?.inbound()?.ws !== c.conn ||
+        st.peer.current?.conn !== c.conn || (m.share !== false && st.viewer !== true))) return;
+    onScreenCtl(m);
   });
   peer.on(`t:${P.T.SCREEN_PREVIEW_WANT}`, (m) => onPreviewWant(m));
   // Two-way switches shared with the other computer, per pair (pairsync.js).

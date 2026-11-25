@@ -154,6 +154,43 @@ final class Capture {
   private var remoteDown = Set<UInt16>()  // pressed while capturing (went to the other machine)
   private var swallowUps = Set<UInt16>()  // their releases, to swallow at home
   private var localDown = Set<UInt16>()   // pressed at home (their releases stay local)
+#if MULTI
+  private var screenInputEpoch: Int?
+  private var retiredScreenInputEpoch = 0
+  private var localMouseButtons = Set<Int64>()
+  private var lastLocalScreenEvent: TimeInterval = -.infinity
+
+  func allowScreenInput(epoch: Int) -> Bool {
+    guard epoch > retiredScreenInputEpoch, !capturing, startTap() else { return false }
+    guard ProcessInfo.processInfo.systemUptime - lastLocalScreenEvent >= 0.35,
+          localDown.isEmpty, localMouseButtons.isEmpty else {
+      retireScreenInput(epoch: epoch)
+      return false
+    }
+    screenInputEpoch = epoch
+    return true
+  }
+
+  func clearScreenInput() { screenInputEpoch = nil }
+
+  private func retireScreenInput(epoch: Int) {
+    retiredScreenInputEpoch = max(epoch, retiredScreenInputEpoch)
+    if screenInputEpoch != nil { injector.releaseAll() }
+    emit(["event": "screenInputLocal", "epoch": epoch])
+  }
+
+  private func localScreenActivity(_ type: CGEventType, _ event: CGEvent) {
+    switch type {
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+      localMouseButtons.insert(event.getIntegerValueField(.mouseEventButtonNumber))
+    case .leftMouseUp, .rightMouseUp, .otherMouseUp:
+      localMouseButtons.remove(event.getIntegerValueField(.mouseEventButtonNumber))
+    default: break
+    }
+    lastLocalScreenEvent = ProcessInfo.processInfo.systemUptime
+    if let epoch = screenInputEpoch { retireScreenInput(epoch: epoch) }
+  }
+#endif
 
   /// Any command from main counts as a keepalive.
   func touch() { lastCommand = now() }
@@ -575,6 +612,9 @@ final class Capture {
       return pass
     }
     if event.getIntegerValueField(.eventSourceUserData) == injectedMark { return pass }
+#if MULTI
+    localScreenActivity(type, event)
+#endif
     let arrived = DispatchTime.now().uptimeNanoseconds
     if let age = Capture.eventAge(now: arrived, timestamp: event.timestamp), age > 50_000_000,
        lastSlowTap == 0 || arrived - lastSlowTap >= 5_000_000_000 {
