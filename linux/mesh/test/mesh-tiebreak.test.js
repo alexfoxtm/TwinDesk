@@ -5,6 +5,7 @@
 
 const assert = require('assert');
 const P = require('../../../shared/protocol.js');
+const overlappingDials = require('../../../shared/test/lib/mesh-overlapping-dials.js');
 const { runTests } = require('./lib/run.js');
 const { node, close, waitFor, pair, linked, socketCount } = require('./lib/mesh.js');
 
@@ -67,6 +68,15 @@ test('the larger id waits INBOUND_WAIT_MS and then dials itself when the smaller
     const waited = Date.now() - t0;
     assert.ok(waited >= P.INBOUND_WAIT_MS - 700, `hi waited ${waited} ms, expected about ${P.INBOUND_WAIT_MS} ms`);
     assert.strictEqual(socketCount(lo, hi), 1, 'one socket, dialled by hi');
+  } finally {
+    close(lo, hi);
+  }
+});
+
+test('an inbound welcome retires the overlapping dial in either direction', async () => {
+  const { lo, hi } = await mutual();
+  try {
+    await overlappingDials(lo, hi, { linked, socketCount, waitFor });
   } finally {
     close(lo, hi);
   }

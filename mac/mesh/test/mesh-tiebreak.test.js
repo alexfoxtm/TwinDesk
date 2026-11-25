@@ -5,6 +5,7 @@
 
 const assert = require('assert');
 const P = require('../../../shared/protocol.js');
+const overlappingDials = require('../../../shared/test/lib/mesh-overlapping-dials.js');
 const { runTests } = require('../../../windows/mesh/test/lib/run.js');
 const { node, close, waitFor, pair, linked, socketCount } = require('./lib/mesh.js');
 
@@ -67,6 +68,15 @@ test('when the one link drops, the smaller id dials and the larger one does not 
     assert.strictEqual(socketCount(lo, hi), 1, 'one socket after the reconnect, too');
     assert.ok(lo.links.get(HI).authed, 'the smaller id dialled (its link is the one up)');
     assert.strictEqual(hi.links.get(LO).authed, false, 'the larger id did not dial a second socket');
+  } finally {
+    close(lo, hi);
+  }
+});
+
+test('an inbound welcome retires the overlapping dial in either direction', async () => {
+  const { lo, hi } = await mutual();
+  try {
+    await overlappingDials(lo, hi, { linked, socketCount, waitFor });
   } finally {
     close(lo, hi);
   }
