@@ -9,7 +9,7 @@ const path = require('path');
 const P = require('../shared/protocol.js');
 const { IconsIn } = require('../shared/notificon.js');
 const { otpOf } = require('../shared/otp.js');
-const { actionsOf, withPhoneActions, hidden, present } = require('../shared/notifacts.js');
+const { actionsOf, messageIdentityOf, withPhoneActions, hidden, present } = require('../shared/notifacts.js');
 const { richOf, popupOn } = require('../shared/notifpop.js');
 
 const xmlEsc = (t) => String(t).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
@@ -141,7 +141,7 @@ class Notifs extends EventEmitter {
       at: Math.round(Number(m.at)) || Date.now(),
       reply: m.reply === true, // a phone chat's: answered with reply() (notif.reply)
       actions: actionsOf(m), // its buttons, clicked from Overview (act())
-      ...richOf(m), // a picture, the sender's picture, a progress bar (TwinDesk's window shows them)
+      ...messageIdentityOf(m, this.link.current?.deviceId), ...richOf(m), // a picture, the sender's picture, a progress bar (TwinDesk's window shows them)
     };
     if (item.app && typeof m.icon === 'string' && m.icon.startsWith('data:image/') && m.icon.length < 200000) {
       this.historyIcons.delete(item.app);

@@ -22,6 +22,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { messagePeerOf } = require('./notifacts');
 
 const T = { WANT: 'chat.want', CONV: 'chat.conv', GONE: 'chat.gone', MATCH: 'chat.match', PIC: 'chat.pic', PICD: 'chat.picd' };
 const PICTURE = /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/;
@@ -135,6 +136,7 @@ class Chats {
     c.pic = !messaging && m.pic === true;
     if (typeof m.avatar === 'string' && m.avatar.length < 60000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(m.avatar)) c.avatar = m.avatar; // the contact's or group's picture
     if (messaging) {
+      c.messagePeer = c.group ? '' : messagePeerOf(m);
       for (const [id, bind] of this.messageReplies) {
         if (bind.dev === dev && bind.key === k) this.messageReplies.delete(id);
       }
@@ -153,6 +155,7 @@ class Chats {
         if (typeof x.id !== 'string' || !DIGEST.test(x.id) || !Number.isSafeInteger(x.at) || x.at <= 0) continue;
         it.id = x.id;
         if (typeof x.match === 'string' && DIGEST.test(x.match)) it.match = x.match;
+        if (x.attachment === true) it.attachment = true;
       }
       const i = c.items.findIndex((y) => messaging ? y.id === it.id : same(y, it));
       if (messaging && i >= 0 && c.items[i].carrier) it.carrier = true;
@@ -309,7 +312,10 @@ class Chats {
       const at = messaging ? items[items.length - 1].at : c.at;
       const shown = items.slice(-VIEW_ITEMS);
       return [{ key: c.key, app: c.app, appName: c.appName, name: c.name, group: c.group, reply, pic: !!(c.pic && this.sessionUp), avatar: c.avatar || '', at,
-        items: messaging ? shown.map(({ id, at, from, text, me, match }) => ({ id, at, from, text, me, ...(includeMatches && match ? { match } : {}) })) : shown }];
+        ...(messaging && c.messagePeer && !c.group ? { messagePeer: c.messagePeer } : {}),
+        items: messaging ? shown.map(({ id, at, from, text, me, match, attachment }) => ({
+          id, at, from, text, me, ...(includeMatches && match ? { match } : {}), ...(attachment ? { attachment } : {}),
+        })) : shown }];
     }).sort((a, b) => b.at - a.at).slice(0, VIEW_CONVS);
   }
 

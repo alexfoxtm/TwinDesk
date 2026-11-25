@@ -3,7 +3,12 @@ package com.twindesk.android
 
 import android.app.Notification
 import android.app.RemoteInput
+import android.content.Context
+import android.telephony.PhoneNumberUtils
+import android.telephony.SubscriptionManager
+import android.telephony.TelephonyManager
 import java.security.MessageDigest
+import java.util.Locale
 
 // A MessagingStyle projection has no SMS/MMS/RCS transport flag.
 internal object MessageChat {
@@ -30,6 +35,36 @@ internal object MessageChat {
         return if (digits.length in 1..15) (if (address.startsWith("+")) "+" else "") + digits else null
     }
 
+    // A SIM supplies the numbering context, never the desktop locale or a matching suffix.
+    fun simCountry(ctx: Context): String {
+        val country = runCatching {
+            val tm = ctx.getSystemService(TelephonyManager::class.java)
+            val subs = ctx.getSystemService(SubscriptionManager::class.java).activeSubscriptionInfoList
+            if (subs.isNullOrEmpty()) {
+                // Without subscription access, use the SIM only when there's one modem.
+                if (tm.phoneCount == 1) tm.simCountryIso else ""
+            } else subs.map { tm.createForSubscriptionId(it.subscriptionId).simCountryIso }.distinct().singleOrNull().orEmpty()
+        }.getOrElse {
+            runCatching {
+                val tm = ctx.getSystemService(TelephonyManager::class.java)
+                if (tm.phoneCount == 1) tm.simCountryIso else ""
+            }.getOrDefault("")
+        }
+        return country.uppercase(Locale.ROOT)
+    }
+
+    fun e164(value: String?, country: String): String? {
+        val addr = destination(value) ?: return null
+        if (addr.startsWith("+")) return addr.takeIf { Regex("""\+[1-9][0-9]{6,14}""").matches(it) }
+        if (country == "US" || country == "CA") {
+            val national = addr.takeLast(10)
+            if ((addr == national || addr == "1$national") && Regex("""[2-9][0-9]{2}[2-9][0-9]{6}""").matches(national)) {
+                return "+1$national"
+            }
+        }
+        return country.takeIf { it.length == 2 }?.let { PhoneNumberUtils.formatNumberToE164(addr, it) }
+    }
+
     fun digest(vararg fields: String): String {
         val hash = MessageDigest.getInstance("SHA-256")
         for (field in fields) {
@@ -54,24 +89,19 @@ internal object MessageChat {
 
     // Incoming MMS addr rows usually include the user's own number, so addrs.singleOrNull()
     // is null. Use the thread's one recipient, and only when it is the same destination as from.
-    // Prefer from: it often carries the country code, matching a notification tel: URI.
-    fun sameDestination(a: String?, b: String?): Boolean {
+    fun sameDestination(a: String?, b: String?, country: String = ""): Boolean {
         val left = destination(a) ?: return false
         val right = destination(b) ?: return false
         if (left == right) return true
-        val digitsA = left.filter { it in '0'..'9' }
-        val digitsB = right.filter { it in '0'..'9' }
-        val n = minOf(digitsA.length, digitsB.length)
-        return n >= 10 && digitsA.takeLast(10) == digitsB.takeLast(10)
+        val normalized = e164(left, country) ?: return false
+        return normalized == e164(right, country)
     }
 
-    fun incomingMmsAddress(from: String?, threadPeer: String?): String? {
-        if (!sameDestination(from, threadPeer)) return null
-        return if (destination(from) != null) from else threadPeer
-    }
+    fun incomingMmsAddress(from: String?, threadPeer: String?, country: String = ""): String? =
+        from?.takeIf { sameDestination(it, threadPeer, country) }
 
     data class Candidate(val id: String, val at: Long, val match: String)
-    data class Row(val at: Long, val match: String, val mms: Boolean)
+    data class Row(val at: Long, val match: String, val mms: Boolean, val normalizedMatch: String? = null)
 
     // SMS has millisecond timestamps and MMS has seconds. Require a one-to-one match
     // at the precision of the provider. If two rows or projections could match, keep both.
@@ -79,7 +109,9 @@ internal object MessageChat {
         val sms = candidates.groupBy { it.at to it.match }
         val mms = candidates.groupBy { it.at / 1000 to it.match }
         val edges = rows.map { row ->
-            if (row.mms) mms[row.at / 1000 to row.match].orEmpty() else sms[row.at to row.match].orEmpty()
+            val at = if (row.mms) row.at / 1000 else row.at
+            val byTime = if (row.mms) mms else sms
+            listOfNotNull(row.match, row.normalizedMatch).distinct().flatMap { byTime[at to it].orEmpty() }
         }
         val counts = edges.flatten().groupingBy { it.id }.eachCount()
         return edges.mapNotNull { edge -> edge.singleOrNull()?.id?.takeIf { counts[it] == 1 } }

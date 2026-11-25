@@ -31,7 +31,8 @@ test('Google Messages scopes the inbox and invalidates it on helper outage or Di
 
   event({ type: 'conversations', items: [{ id: 'thread', at: 1000, addrs: ['+12025550100'], snippet: 'fixture', snippetMe: false, reply: true }] });
   assert.equal(gm.view().state, 'connected');
-  assert.ok(gm.view().rows[0].fingerprints[0].matches.includes(fingerprints(['2025550100'], false, 'fixture')[0]));
+  assert.deepEqual(gm.view().rows[0].fingerprints[0].matches, fingerprints(['+12025550100'], false, 'fixture'));
+  assert.notDeepEqual(gm.view().rows[0].fingerprints[0].matches, fingerprints(['2025550100'], false, 'fixture'));
   assert.ok(!JSON.stringify(gm.view()).includes('synthetic-private-value'));
   assert.equal(await gm.action({ op: 'history', owner: 'other-owner', chat: 'thread' }), false);
   const opened = gm.action({ op: 'history', owner, chat: 'thread' });
@@ -40,14 +41,22 @@ test('Google Messages scopes the inbox and invalidates it on helper outage or Di
   assert.equal(await opened, true);
   assert.equal(gm.view().history.items.length, 1);
 
+  const send = { op: 'send', owner, chat: 'thread', text: 'fixture', allowCarrier: true };
+  const dispatched = gm.action(send);
+  assert.equal(sent.at(-1).op, 'send');
   event({ type: 'state', state: 'offline' });
+  assert.equal(await dispatched, false, 'loss after writing the request is an uncertain dispatch');
   assert.equal(gm.view().rows.length, 0);
   assert.equal(gm.view().history, null);
   assert.equal(await gm.action({ op: 'send', owner, chat: 'thread', text: 'fixture' }), false);
+  const count = sent.length;
+  assert.equal(await gm.action(send), 'not-dispatched');
+  assert.equal(sent.length, count);
   const disconnected = gm.action({ op: 'disconnect', owner });
   assert.equal(sent.at(-1).op, 'disconnect');
   event({ type: 'state', state: 'disconnected', wipe: true });
   assert.equal(await disconnected, true);
+  assert.equal(await gm.action(send), false);
   owner = '';
   assert.equal(gm.view(), null);
   await gm.retiring;

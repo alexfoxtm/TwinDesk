@@ -105,7 +105,11 @@ class Hub(core: Core) : Feature(core) {
             Proto.T.CALL_DO -> calls?.act(m) ?: core.send(msg(Proto.T.CALL_DONE, "a" to m.str("a", 20), "ok" to false, "error" to "off"))
             Proto.T.CALL_LOG -> calls?.let { c -> run { core.send(msg(Proto.T.CALL_LOG, "items" to c.log(m.optInt("n", 100)))) } }
             Proto.T.CONTACTS -> calls?.let { c -> val q = m.str("q", 80); run { core.send(msg(Proto.T.CONTACTS, "q" to q, "items" to c.contacts(q))) } }
-            Proto.T.SMS_THREADS -> messages?.let { s -> run { core.send(msg(Proto.T.SMS_THREADS, "items" to s.threads(m.optInt("n", 60)))) } }
+            Proto.T.SMS_THREADS -> messages?.let { s -> run {
+                val country = MessageChat.simCountry(core.ctx)
+                core.send(msg(Proto.T.SMS_THREADS, "items" to s.threads(m.optInt("n", 60), country),
+                    "nanp" to (country == "US" || country == "CA")))
+            } }
             Proto.T.SMS_THREAD -> messages?.let { s -> run { core.send(s.thread(m)) } }
             Proto.T.SMS_PART -> messages?.let { s -> val id = m.str("id", 40); run { core.send(msg(Proto.T.SMS_PART, "id" to id, "data" to s.part(id))) } }
             Proto.T.SMS_SEND -> messages?.send(m) ?: core.send(msg(Proto.T.SMS_SENT, "ref" to m.str("ref", 60), "ok" to false, "error" to "off"))

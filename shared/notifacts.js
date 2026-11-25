@@ -10,6 +10,18 @@
 
 const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
 
+// Optional identity from Android's one-to-one MessagingStyle projection.
+function messagePeerOf(m) {
+  return /^(?:com\.google\.android\.apps\.messaging|com\.samsung\.android\.messaging)$/.test(m.app) &&
+    typeof m.messagePeer === 'string' && /^\+[1-9][0-9]{6,14}$/.test(m.messagePeer) ? m.messagePeer : '';
+}
+
+function messageIdentityOf(m, phone) {
+  const messagePeer = phone && messagePeerOf(m);
+  return messagePeer && Number.isSafeInteger(m.messageAt) && m.messageAt > 0
+    ? { messagePeer, messageAt: m.messageAt, messagePhone: phone } : {};
+}
+
 // The buttons of a notif message: up to 3 short titles.
 function actionsOf(m) {
   return Array.isArray(m && m.actions) ? m.actions.filter((a) => typeof a === 'string' && a.trim()).slice(0, 3).map((a) => a.slice(0, 40)) : [];
@@ -73,6 +85,7 @@ function withMeshPhoneActions(Cls) {
         on: str(on, 100), from: str(origin || from, 200),
         reply: direct && m.reply === true,
         actions: direct ? actionsOf(m) : [],
+        ...messageIdentityOf(m, direct && from),
       };
       if (item.app && typeof m.icon === 'string' && m.icon.startsWith('data:image/') && m.icon.length < 200000) {
         this.historyIcons.delete(item.app);
@@ -169,4 +182,4 @@ function languageOf(n) {
   }
 }
 
-module.exports = { actionsOf, withPhoneActions, withMeshPhoneActions, hidden, present, popGone };
+module.exports = { actionsOf, messagePeerOf, messageIdentityOf, withPhoneActions, withMeshPhoneActions, hidden, present, popGone };

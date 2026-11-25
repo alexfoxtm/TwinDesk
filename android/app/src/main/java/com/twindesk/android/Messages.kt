@@ -144,14 +144,20 @@ class Messages(private val hub: Hub, private val core: Core) {
         val rows = ArrayList<MessageChat.Row>()
         val candidates = request.candidates
         if (candidates.isNotEmpty()) {
+            val country = MessageChat.simCountry(ctx)
+            fun addRow(at: Long, address: String?, out: Boolean, text: String, mms: Boolean) {
+                val raw = MessageChat.fingerprint(address, out, text) ?: return
+                val normalized = MessageChat.fingerprint(MessageChat.e164(address, country), out, text)
+                // Existing notification projections may still have their original address digest.
+                rows.add(MessageChat.Row(at, raw, mms, normalized))
+            }
             fun queryDates(uri: String, cols: Array<String>, dates: List<Long>, where: String, row: (android.database.Cursor) -> Unit) {
                 val holes = dates.joinToString(",") { "?" }
                 cr.query(Uri.parse(uri), cols, "date IN ($holes) AND $where", dates.map(Long::toString).toTypedArray(), null)
                     ?.use { c -> while (c.moveToNext()) { if (!current()) return; row(c) } }
             }
             queryDates("content://sms", SMS_COLS, candidates.map { it.at }.distinct(), "type IN (1, 2)") { c ->
-                MessageChat.fingerprint(c.getString(1), c.getInt(4) == 2, c.getString(2).orEmpty())
-                    ?.let { rows.add(MessageChat.Row(c.getLong(3), it, mms = false)) }
+                addRow(c.getLong(3), c.getString(1), c.getInt(4) == 2, c.getString(2).orEmpty(), mms = false)
             }
             val peers = HashMap<Long, String?>()
             queryDates("content://mms", MMS_COLS, candidates.map { it.at / 1000 }.distinct(), "msg_box IN (1, 2) AND m_type IN (128, 132)") { c ->
@@ -159,9 +165,8 @@ class Messages(private val hub: Hub, private val core: Core) {
                 val detail = mmsDetail(c.getLong(0), !out)
                 if (!detail.attachment) {
                     val address = if (out) detail.addrs.singleOrNull()
-                    else MessageChat.incomingMmsAddress(detail.from, threadPeer(c.getLong(3), peers))
-                    MessageChat.fingerprint(address, out, detail.text)
-                        ?.let { rows.add(MessageChat.Row(c.getLong(1) * 1000, it, mms = true)) }
+                    else MessageChat.incomingMmsAddress(detail.from, threadPeer(c.getLong(3), peers), country)
+                    addRow(c.getLong(1) * 1000, address, out, detail.text, mms = true)
                 }
             }
         }
@@ -172,14 +177,20 @@ class Messages(private val hub: Hub, private val core: Core) {
     }
 
     // Conversations, newest first: {id, addrs, name, snippet, at, unread}.
-    fun threads(n: Int): JSONArray {
+    fun threads(n: Int, country: String? = null): JSONArray {
         val want = n.coerceIn(1, 300)
-        val out = runCatching { conversations(want) }.getOrNull() ?: scan(want)
+        val out = runCatching { conversations(want, country != null) }.getOrNull() ?: scan(want)
+        if (country != null) out.forEach { row ->
+            val addrs = row.getJSONArray("addrs")
+            if (!row.optBoolean("group") && addrs.length() == 1) {
+                MessageChat.e164(addrs.optString(0), country)?.let { row.put("e164", it) }
+            }
+        }
         return jsonArray(out)
     }
 
     // Android's conversation list (most phones).
-    private fun conversations(n: Int): List<JSONObject>? {
+    private fun conversations(n: Int, includeIdentity: Boolean): List<JSONObject>? {
         val addrs = HashMap<String, String>()
         cr.query(Uri.parse("content://mms-sms/canonical-addresses"), arrayOf("_id", "address"), null, null, null)?.use { c ->
             while (c.moveToNext()) addrs[c.getString(0)] = c.getString(1) ?: ""
@@ -187,9 +198,11 @@ class Messages(private val hub: Hub, private val core: Core) {
         val out = ArrayList<JSONObject>()
         cr.query(Uri.parse("content://mms-sms/conversations?simple=true"), arrayOf("_id", "date", "recipient_ids", "snippet", "read"), null, null, "date DESC")?.use { c ->
             while (c.moveToNext() && out.size < n) {
-                val list = (c.getString(2) ?: "").split(' ').mapNotNull { addrs[it]?.takeIf { a -> a.isNotBlank() } }
+                val recipients = (c.getString(2) ?: "").split(' ').filter(String::isNotEmpty)
+                val list = recipients.mapNotNull { addrs[it]?.takeIf { a -> a.isNotBlank() } }
                 if (list.isEmpty()) continue
-                out.add(thread(c.getLong(0), list, c.getString(3) ?: "", c.getLong(1), c.getInt(4) == 0))
+                out.add(thread(c.getLong(0), list, c.getString(3) ?: "", c.getLong(1), c.getInt(4) == 0)
+                    .apply { if (includeIdentity && recipients.size > 1) put("group", true) })
             }
         } ?: return null
         return out

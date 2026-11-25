@@ -10,7 +10,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const P = require('../shared/protocol.js');
 const { IconsIn } = require('../shared/notificon.js');
-const { actionsOf, withPhoneActions, hidden, present } = require('../shared/notifacts.js');
+const { actionsOf, messageIdentityOf, withPhoneActions, hidden, present } = require('../shared/notifacts.js');
 const { richOf, popupOn } = require('../shared/notifpop.js');
 const { otpOf } = require('../shared/otp.js');
 
@@ -181,7 +181,7 @@ class Notifs extends EventEmitter {
     const appName = str(m.appName, 100);
     const title = str(m.title, 200) || appName || peer;
     // The recent ones, for Overview and Messages' chat apps (as Windows keeps them).
-    const item = { id: str(m.id, 200) || String(Date.now()), app: str(m.app, 200), appName, title, subtitle: str(m.subtitle, 200), body: str(m.body, 1000), at: Math.round(Number(m.at)) || Date.now(), reply: m.reply === true, actions: actionsOf(m), ...richOf(m) };
+    const item = { id: str(m.id, 200) || String(Date.now()), app: str(m.app, 200), appName, title, subtitle: str(m.subtitle, 200), body: str(m.body, 1000), at: Math.round(Number(m.at)) || Date.now(), reply: m.reply === true, actions: actionsOf(m), ...messageIdentityOf(m, this.link.current?.deviceId), ...richOf(m) };
     if (!this.historyIcons) this.historyIcons = new Map();
     if (item.app && typeof m.icon === 'string' && m.icon.startsWith('data:image/') && m.icon.length < 200000) {
       this.historyIcons.delete(item.app);

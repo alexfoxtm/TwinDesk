@@ -164,13 +164,14 @@ func pair(ctx context.Context, cookies map[string]string, out *output) *libgm.Au
 }
 
 type item struct {
-	ID      string `json:"id"`
-	At      int64  `json:"at"`
-	Text    string `json:"text"`
-	From    string `json:"from,omitempty"`
-	Me      bool   `json:"me"`
-	Receipt string `json:"receipt,omitempty"`
-	Photos  []int  `json:"photos,omitempty"`
+	ID        string `json:"id"`
+	At        int64  `json:"at"`
+	Text      string `json:"text"`
+	From      string `json:"from,omitempty"`
+	Me        bool   `json:"me"`
+	Receipt   string `json:"receipt,omitempty"`
+	Photos    []int  `json:"photos,omitempty"`
+	Transport string `json:"transport,omitempty"`
 }
 
 type conversation struct {
@@ -221,6 +222,12 @@ func project(m *gmproto.Message) item {
 	status := m.GetMessageStatus().GetStatus()
 	i := item{ID: m.GetMessageID(), At: m.GetTimestamp() / 1000,
 		Me: m.GetSenderParticipant().GetIsMe() || (status > 0 && status < 100)}
+	switch m.GetType() {
+	case 1, 2, 3: // SMS and the downloaded/pending MMS variants
+		i.Transport = "text"
+	case 4: // RCS, including in a conversation that has also used SMS
+		i.Transport = "rcs"
+	}
 	if !i.Me {
 		i.From = m.GetSenderParticipant().GetFullName()
 		if i.From == "" {

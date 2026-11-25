@@ -10,49 +10,97 @@
   const tr = (text, vars) => window.I18n ? window.I18n.t(text, vars)
     : text.replace(/\{(\w+)\}/g, (m, k) => vars && Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m);
 
-// Same normalization as Android's MessageChat fingerprint and sameDestination.
-const destination = (value) => {
+// Android supplies E.164 or a verified SIM numbering context. Never compare suffixes.
+const destination = (value, nanp) => {
   const address = String(value || '').trim();
   if (!/^\+?[0-9() .-]+$/.test(address)) return '';
   const digits = address.replace(/\D/g, '');
-  return digits.length && digits.length <= 15 ? (address.startsWith('+') ? '+' : '') + digits : '';
+  if (address.startsWith('+')) return /^[1-9][0-9]{6,14}$/.test(digits) ? '+' + digits : '';
+  if (nanp && /^1?[2-9][0-9]{2}[2-9][0-9]{6}$/.test(digits)) return '+1' + digits.slice(-10);
+  return '';
 };
-const sameDestination = (a, b) => {
-  const left = destination(a);
-  const right = destination(b);
-  return !!left && !!right && (left === right ||
-    (left.replace(/\D/g, '').length >= 10 && right.replace(/\D/g, '').length >= 10 && left.slice(-10) === right.slice(-10)));
-};
+const sameDestination = (a, b) => !!a && a === b;
 const messageText = (text) => String(text || '').replace(/\r\n/g, '\n').trim();
-const sameMessage = (a, b) => !!messageText(a) && messageText(a) === messageText(b);
-const coversText = (rows, t) => {
-  const candidates = rows.filter((c) => t.addrs?.length === 1 && !c.group && c.addrs?.length === 1 &&
-    sameDestination(t.addrs[0], c.addrs[0]));
-  return candidates.length === 1 && candidates[0].at >= t.at &&
-    (Math.floor(candidates[0].at / 1000) === Math.floor(t.at / 1000) && sameMessage(t.snippet, candidates[0].snippet) ||
-      candidates[0].msgs.some((m) => Math.floor(m.at / 1000) === Math.floor(t.at / 1000) && sameMessage(t.snippet, m.text)));
-};
-const coversStructured = (rows, fallback) => {
-  const latest = fallback.msgs[fallback.msgs.length - 1];
-  if (!latest) return false;
-  if (latest.match) {
-    const candidates = rows.filter((c) => c.fingerprints?.some((m) =>
-      m.at === latest.at && m.matches.includes(latest.match)));
-    return candidates.length === 1;
+
+function contactThreads(carrier, chats, nanp) {
+  const address = (c) => c.group ? '' : c.messagePeer ? destination(c.messagePeer)
+    : c.addrs?.length === 1 ? destination(c.e164) || destination(c.addrs[0], nanp) : '';
+  const google = chats.filter((c) => c.google && address(c));
+  const identifies = (thread, paired) => thread.pkg === 'com.google.android.apps.messaging' &&
+    thread.msgs?.some((m) => m.match && paired.fingerprints?.some((f) => f.at === m.at && f.matches.includes(m.match)));
+  const contacts = new Map();
+  const separate = [];
+  for (const thread of [...carrier, ...chats]) {
+    let dest = address(thread);
+    if (!dest && !thread.group && thread.pkg === 'com.google.android.apps.messaging') {
+      // Older structured projections have fingerprints but no address field. A unique
+      // fingerprint can bind to a verified Google conversation ID.
+      const exact = google.filter((c) => identifies(thread, c));
+      if (exact.length === 1) dest = address(exact[0]);
+    }
+    if (!dest) { separate.push(thread); continue; }
+    const sources = contacts.get(dest) || [];
+    sources.push(thread);
+    contacts.set(dest, sources);
   }
-  return !latest.me && coversNotification(rows, fallback.name, latest.text, latest.at, 1000);
-};
-const coversNotification = (rows, title, text, at, slack) => {
-  if (!title || !text || !at) return false;
-  const candidates = rows.filter((c) => {
-    const nameMatches = destination(title) ? !c.group && c.addrs?.length === 1 && sameDestination(title, c.addrs[0])
-      : c.name?.trim() === title.trim();
-    if (!nameMatches) return false;
-    return Math.abs(c.at - at) <= slack && sameMessage(c.snippet, text) ||
-      c.msgs.some((m) => !m.me && Math.abs(m.at - at) <= slack && sameMessage(m.text, text));
-  });
-  return candidates.length === 1;
-};
+  for (const [dest, sources] of contacts) {
+    const paired = sources.filter((c) => c.google);
+    // A single Google history cursor is addressed by its exact conversation ID.
+    // Keep conflicting Google IDs independently actionable.
+    if (paired.length > 1) {
+      const exact = paired.filter((c) => sources.some((t) => !t.google && identifies(t, c)));
+      const independent = paired.filter((c) => exact.length !== 1 || c !== exact[0]);
+      separate.push(...independent);
+      for (const c of independent) sources.splice(sources.indexOf(c), 1);
+    }
+    if (!sources.length) continue;
+    sources.sort((a, b) => b.at - a.at);
+    const newest = sources[0];
+    const textThreads = sources.filter((c) => c.carrier);
+    separate.push({
+      key: 'contact:' + dest, dest, sources, newest, textThreads, googleSource: sources.find((c) => c.google),
+      at: newest.at, name: textThreads.find((c) => c.name)?.name || newest.name || dest,
+      avatar: textThreads.find((c) => c.avatar)?.avatar || sources.find((c) => c.avatar)?.avatar,
+    });
+  }
+  return separate.sort((a, b) => b.at - a.at);
+}
+
+function interleaveMessages(messages) {
+  // A duplicate cluster must be unambiguous in both directions, including across
+  // three projections. A repeated message within any source breaks that cluster.
+  const edges = messages.map(() => []);
+  const byText = new Map();
+  for (const [i, m] of messages.entries()) {
+    const body = messageText(m.text);
+    if (!body || !m.at || m.pending || m.status === 'failed' || m.status === 'sending' ||
+      m.attachment || m.parts?.length || m.photos?.length || m.pic || !m.source) continue;
+    const key = JSON.stringify([m.me, body]);
+    const matches = byText.get(key) || [];
+    for (const j of matches) {
+      const n = messages[j];
+      if (m.source === n.source || (m.transport && n.transport && m.transport !== n.transport)) continue;
+      const sameTime = m.mms || n.mms ? Math.floor(m.at / 1000) === Math.floor(n.at / 1000) : m.at === n.at;
+      if (sameTime) { edges[i].push(j); edges[j].push(i); }
+    }
+    matches.push(i);
+    byText.set(key, matches);
+  }
+  const dropped = new Set();
+  for (const [i, neighbors] of edges.entries()) {
+    if (!neighbors.length || dropped.has(i)) continue;
+    const cluster = [i, ...neighbors];
+    if (new Set(cluster.map((j) => messages[j].source)).size !== cluster.length ||
+      !cluster.every((j) => edges[j].length === neighbors.length && edges[j].every((k) => cluster.includes(k)))) continue;
+    // Prefer the carrier record, then the full paired record, over projections.
+    const keep = cluster.find((j) => messages[j].source === 'carrier') ??
+      cluster.find((j) => messages[j].source === 'google') ?? i;
+    for (const j of cluster) if (j !== keep) dropped.add(j);
+  }
+  return messages.filter((_, i) => !dropped.has(i)).sort((a, b) => a.at - b.at);
+}
+
+const transportLabel = (kind) => kind === 'text' ? tr('Text') : kind === 'rcs' ? tr('RCS') : tr('Unknown transport');
 
 // A picture picked here as a JPEG data: URL, at most 1600 px and about 4 MB (the phone makes it
 // fit the carrier's MMS limit). On white: a transparent PNG's clear parts don't turn black.
@@ -166,6 +214,8 @@ UI.tab({
     const send = UI.button(tr('Send'), () => sendNow(), 'primary');
     const groupNote = el('div', { class: 'hint hub-group-note', text: tr('Answer group conversations on the phone.') });
     // Two SIMs or more on the phone: which one the text goes out on ('' is the phone's default).
+    const simOptions = (s) => [{ value: '', label: tr('Default SIM') },
+      ...(s?.hub?.perm?.messages?.sims || []).map((x) => ({ value: String(x.id), label: x.label }))];
     const simPick = UI.select([{ value: '', label: tr('Default SIM') }], () => {});
     simPick.el.setAttribute('aria-label', tr('SIM'));
     simPick.el.hidden = true;
@@ -201,7 +251,7 @@ UI.tab({
     const pills = el('div', { class: 'msg-pills', attrs: { role: 'tablist' } });
     const pillBtns = CHAT.map(([id, label]) => {
       const b = el('button', { class: 'msg-pill', text: label, attrs: { role: 'tab' } });
-      b.onclick = () => { chosePill = true; pill = id; chatOpen = ''; chatKey = ''; paintChats(UI.state); if (UI.state) layout.hidden = pill !== 'texts' || !UI.hubReady(UI.state, 'messages'); };
+      b.onclick = () => { chosePill = true; pill = id; closeChat(); chatKey = ''; paintChats(UI.state); if (UI.state) layout.hidden = pill !== 'texts' || !UI.hubReady(UI.state, 'messages'); };
       pills.append(b);
       return [id, b];
     });
@@ -213,7 +263,7 @@ UI.tab({
       const sw = UI.switch((v) => {
         if (v) hiddenApps.delete(id); else hiddenApps.add(id);
         keep('td.msg.hiddenApps', [...hiddenApps]);
-        if (!v && pill === id) pill = 'all';
+        if (!v && pill === id) { pill = 'all'; closeChat(); }
         paintChats(UI.state, true);
       }, { label });
       sw.set(!hiddenApps.has(id));
@@ -238,14 +288,31 @@ UI.tab({
     chatBox.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); chatReply(); } });
     const chatNote = el('div', { class: 'hint hub-group-note' });
     const chatConv = el('div', { class: 'hub-conv' });
-    const chatPicOk = () => { const t = chatThreads(UI.state).find((x) => x.key === chatOpen); return !!(t && t.msgs && t.pic); };
+    const chatPicOk = () => { const t = selectedChat(); return !!t && (t.dest ? !!googleOf(t)?.reply || (carrierSend(UI.state) && mmsOk()) : !!(t.msgs && t.pic)); };
     const chatPic = attacher(UI, chatConv, chatBox, chatPicOk);
-    const chatCompose = el('div', { class: 'hub-compose-row' }, [chatPic.btn, el('div', { class: 'hub-compose-col' }, [chatPic.chip, chatBox]), chatSend, chatPic.input]);
+    const chatSim = UI.select([{ value: '', label: tr('Default SIM') }], () => {});
+    chatSim.el.hidden = true;
+    chatSim.el.setAttribute('aria-label', tr('SIM'));
+    const chatCompose = el('div', { class: 'hub-compose-row' }, [chatSim.el, chatPic.btn, el('div', { class: 'hub-compose-col' }, [chatPic.chip, chatBox]), chatSend, chatPic.input]);
     chatConv.append(chatHead, chatScroll, chatNote, chatCompose);
     const chatEmpty = el('div', { class: 'hub-empty hub-conv-empty', text: tr('Choose a conversation') });
     const chatSearch = searchBox(() => { renderList(); paintChats(UI.state, true); });
-    const chatLayout = el('div', { class: 'card hub-msgs' }, [el('div', { class: 'hub-side' }, [el('div', { class: 'hub-side-head' }, [chatSearch]), chatList]), chatConv, chatEmpty]);
-    let chatOpen = ''; // app|title
+    const chatNew = UI.button(tr('New message'), () => {
+      chosePill = true;
+      pill = 'texts';
+      closeChat();
+      paintChats(UI.state, true);
+      openNew();
+    }, 'small');
+    const chatLayout = el('div', { class: 'card hub-msgs' }, [el('div', { class: 'hub-side' }, [el('div', { class: 'hub-side-head' }, [chatSearch, chatNew]), chatList]), chatConv, chatEmpty]);
+    let chatOpen = '';
+    let openContact = null;
+    let chatEpoch = 0;
+    let carrierHistory = new Map();
+    let nanp = false;
+    let phoneSession;
+    const carrierReady = (s) => UI.hubReady(s, 'messages') && !s.hub.perm.messages.missing?.includes('read');
+    const carrierSend = (s) => UI.hubReady(s, 'messages') && !s.hub.perm.messages.missing?.includes('send');
     let chatKey = '';
     const gmAct = (op, args = {}, gm = UI.state?.googleMessages) =>
       api.googleMessages && gm ? api.googleMessages({ op, owner: gm.owner, ...args }).catch(() => false) : Promise.resolve(false);
@@ -300,7 +367,7 @@ UI.tab({
     }
     const paired = (s) => {
       const gm = s?.googleMessages;
-      if (gm?.state !== 'connected' || hiddenApps.has('rcs')) return [];
+      if (gm?.state !== 'connected' || hiddenApps.has('rcs') || (s.hub?.deviceId && s.hub.deviceId !== gm.owner)) return [];
       return gm.rows.map((c) => {
         const history = gm.history?.chat === c.id ? gm.history : null;
         return {
@@ -310,17 +377,25 @@ UI.tab({
         };
       }).filter((c) => !isGone(c.key, c.at));
     };
+    function closeChat() {
+      chatOpen = '';
+      openContact = null;
+      chatEpoch++;
+      chatBox.value = '';
+      chatPic.clear();
+      carrierHistory.clear();
+      gmHistory = '';
+      gmRead = '';
+      gmTypingAt = 0;
+      gmError = '';
+      gmPhotos.clear();
+    }
     function openChat(t) {
-      if (chatOpen !== t.key && (t.google || chatOpen.startsWith('google:'))) {
-        chatBox.value = '';
-        chatPic.clear();
-        gmHistory = '';
-        gmRead = '';
-        gmTypingAt = 0;
-        gmError = '';
-        gmPhotos.clear();
-      }
+      if (chatOpen !== t.key) closeChat();
       chatOpen = t.key;
+      if (t.dest && t.googleSource && UI.state.hub?.deviceId && UI.state.hub.deviceId === UI.state.googleMessages?.owner) {
+        openContact = { key: t.key, dest: t.dest, deviceId: UI.state.hub.deviceId, session: UI.state.hub.session };
+      }
       paintChats(UI.state);
     }
     function markGoogleRead(t) {
@@ -336,56 +411,137 @@ UI.tab({
     const synced = (s) => !!(s && Array.isArray(s.chats));
     function chatThreads(s) {
       const google = paired(s);
-      const own = synced(s) ? s.chats.map((c) => ({ key: c.key, pkg: c.app, avatar: c.avatar || '', app: appOf(c.app) || 'other', name: appOf(c.app) ? c.name || c.appName : [c.name, c.appName].filter(Boolean).join(' · '), group: !!c.group, reply: !!c.reply, pic: !!c.pic, at: c.at, msgs: c.items || [] })) : [];
+      const own = synced(s) ? s.chats.map((c) => ({ key: c.key, pkg: c.app, avatar: c.avatar || '', app: appOf(c.app) || 'other',
+        name: appOf(c.app) ? c.name || c.appName : [c.name, c.appName].filter(Boolean).join(' · '),
+        group: !!c.group, reply: !!c.reply, pic: !!c.pic, at: c.at, msgs: c.items || [], messagePeer: c.messagePeer })) : [];
       const by = new Map();
-      for (const h of ((s && s.notifs) || {}).history || []) {
+      for (const h of s.notifs?.history || []) {
         const app = appOf(h.app);
-        // Skip RCS from history only once the phone is delivering structured messaging conversations.
-        // Windows, Linux and older phones have no socket, so they keep the previous history fallback.
-        if (!app || (app !== 'rcs' && synced(s))) continue;
-        if (app === 'rcs' && s.chatsMessaging) continue;
-        if (h.app === 'com.google.android.apps.messaging' && coversNotification(google, h.title, h.body, h.at, 120000)) continue;
-        if (h.live || BUSY.test(h.body || '') || BUSY.test(h.title || '')) continue; // the app at work, not a message
-        const key = app + '|' + (h.title || h.appName);
-        const t = by.get(key) || { key, pkg: h.app, avatar: h.avatar || '', app, name: h.title || h.appName, items: [], at: 0 };
+        // Structured messaging supersedes raw notifications on phones that deliver it.
+        if (!app || (app !== 'rcs' && synced(s)) || (app === 'rcs' && s.chatsMessaging)) continue;
+        if (h.live || BUSY.test(h.body || '') || BUSY.test(h.title || '')) continue;
+        const peer = app === 'rcs' && h.messagePhone && h.messagePhone === s.hub?.deviceId ? h.messagePeer : '';
+        const key = app === 'rcs' && h.id ? JSON.stringify([app, h.from || h.messagePhone, h.app, h.id])
+          : app + '|' + (h.title || h.appName);
+        const t = by.get(key) || { key, pkg: h.app, avatar: h.avatar || '', app, name: h.title || h.appName,
+          messagePeer: peer, items: [], at: 0 };
         t.items.push(h);
-        t.at = Math.max(t.at, h.at);
+        t.at = Math.max(t.at, peer && h.messageAt || h.at);
         by.set(key, t);
       }
-      const uncovered = own.filter((t) => t.pkg !== 'com.google.android.apps.messaging' ||
-        !coversStructured(google, t));
-      return google.concat(uncovered, [...by.values()]).filter((t) => (t.app !== 'rcs' || !!(s.hub && s.hub.messages)) &&
+      return google.concat(own, [...by.values()]).filter((t) => (t.app !== 'rcs' || !!s.hub?.messages) &&
         !hiddenApps.has(t.app) && !isGone(t.key, t.at)).sort((a, b) => b.at - a.at);
+    }
+    function inboxThreads(s, chats = chatThreads(s)) {
+      const carrier = carrierReady(s) ? threads.filter((t) => !isGone('sms:' + t.id, t.at))
+        .map((t) => ({ ...t, name: t.name || t.addrs?.join(', '), key: 'sms:' + t.id, avatar: t.photo, carrier: true })) : [];
+      const rows = contactThreads(carrier, chats, nanp);
+      const gm = s.googleMessages;
+      if (openContact && openContact.deviceId === gm?.owner && openContact.deviceId === s.hub?.deviceId &&
+          openContact.session === s.hub?.session && !hiddenApps.has('rcs') && carrierSend(s) &&
+          ['offline', 'helper-error', 'connection-error'].includes(gm.state) &&
+          !rows.some((c) => c.key === openContact.key)) {
+        // Keep the selected address available for Text through a helper outage.
+        // All paired content is removed by the helper's owner/session boundary.
+        rows.push({ key: openContact.key, dest: openContact.dest, name: openContact.dest,
+          at: 0, sources: [], textThreads: [] });
+      }
+      return rows;
     }
     // A chat app's notice that isn't a message: "Sending video…", "Deleting chats… 100%".
     const BUSY = /^(?:sending|uploading|downloading|deleting|backing up|restoring|checking for new messages|preparing|syncing)\b|\b\d{1,3}\s?%\s*$/i;
     // A conversation's last message, as its row shows it.
     function snippetOf(t) {
+      if (t.dest) return t.newest ? snippetOf(t.newest) : '';
+      if (t.carrier) return t.snippet || '';
       if (!t.msgs) return (t.items[0] && t.items[0].body) || '';
       const m = t.msgs[t.msgs.length - 1];
       if (!m && t.google) return t.snippet || '';
       return m ? m.me ? tr('You: {message}', { message: m.text }) : t.group && m.from ? tr('{sender}: {message}', { sender: m.from, message: m.text }) : m.text : '';
     }
+    const googleOf = (t) => t.googleSource || (t.google ? t : null);
+    function selectedChat() {
+      const s = UI.state;
+      if (!s || !chatOpen || pill === 'texts') return null;
+      const rows = pill === 'all' ? inboxThreads(s) : chatThreads(s);
+      return rows.find((t) => t.key === chatOpen && (pill === 'all' || t.app === pill));
+    }
+    function projectContact(t) {
+      const texts = t.textThreads.flatMap((c) => carrierHistory.get(c.id)?.items || []);
+      const local = pending.filter((p) => p.contact === t.key);
+      const messages = [...texts, ...local].map((m) => ({ ...m, text: m.body, me: m.out || !!m.ref,
+        pending: !!m.ref, mms: m.id?.startsWith('m'), source: 'carrier', transport: 'text' }));
+      for (const c of t.sources) {
+        if (c.carrier) continue;
+        if (c.msgs) {
+          messages.push(...c.msgs.map((m) => ({ ...m, source: c.google ? 'google' : 'structured' })));
+        } else {
+          messages.push(...c.items.flatMap((h) => [
+            { text: h.body || h.subtitle, at: h.messageAt || h.at, me: false, source: 'notification' },
+            ...(h.replies || []).map((r) => ({ ...r, me: true, pending: true })),
+          ]));
+        }
+      }
+      return interleaveMessages(messages);
+    }
+    const canText = (t, image) => !!t?.dest && carrierSend(UI.state) && (!image || mmsOk());
+    function sendContactText(t, text, image) {
+      const sms = t.textThreads.length === 1 ? t.textThreads[0] : null;
+      dispatchText([t.dest], text, image, chatSim.el, sms?.id, t.key);
+      chatBox.value = '';
+      chatPic.clear();
+      paintChats(UI.state, true);
+    }
     async function chatReply() {
-      const t = chatThreads(UI.state).find((x) => x.key === chatOpen);
+      const t = selectedChat();
       const text = chatBox.value.trim();
       const image = chatPic.get();
-      if (t?.google) {
-        if (!t.reply || (!text && !image) || gmSend) return;
+      if (!t || (!text && !image) || gmSend?.key === t.key) return;
+      const google = googleOf(t);
+      if (google?.reply) {
+        if (!google.loaded || gmSend || gmBusy) return;
         const gm = UI.state.googleMessages;
-        const request = {};
+        const epoch = chatEpoch;
+        const session = UI.state.hub?.session;
+        const allowCarrier = canText(t, image);
+        const request = { key: t.key };
         gmSend = request;
         gmError = '';
         paintChats(UI.state, true);
-        const ok = await gmAct('send', { chat: t.id, text: image ? '' : text, image }, gm);
+        const ok = await gmAct('send', { chat: google.id, text: image ? '' : text, image, allowCarrier }, gm);
         if (gmSend !== request) return;
         gmSend = null;
-        if (chatOpen !== t.key || UI.state.googleMessages?.owner !== gm.owner) return;
-        if (ok) {
+        if (epoch !== chatEpoch || chatOpen !== t.key || UI.state.googleMessages?.owner !== gm.owner) {
+          paintChats(UI.state, true);
+          return;
+        }
+        const current = selectedChat();
+        if (ok === 'not-dispatched' && allowCarrier && session === UI.state.hub?.session && !gmBusy &&
+            UI.state.googleMessages?.enabled && UI.state.googleMessages?.state !== 'disconnected' &&
+            sameDestination(current?.dest, t.dest) && canText(current, image) &&
+            chatBox.value.trim() === text && chatPic.get() === image) {
+          sendContactText(current, text, image);
+          return;
+        }
+        if (ok === true) {
           if (image && chatPic.get() === image) chatPic.clear();
           if (!image && chatBox.value.trim() === text) chatBox.value = '';
-        } else gmError = tr('Google Messages could not confirm the send. Check the conversation before retrying.');
+        } else gmError = ok === 'not-dispatched' ? tr('Google Messages is unavailable. Check the reply options and try again.')
+          : tr('Google Messages could not confirm the send. Check the conversation before retrying.');
         paintChats(UI.state, true);
+        return;
+      }
+      if (canText(t, image)) {
+        sendContactText(t, text, image);
+        return;
+      }
+      if (t.dest) {
+        const sources = t.sources.filter((c) => !c.carrier && !c.google &&
+          (c.msgs ? c.reply : c.items.some((h) => h.reply)));
+        if (sources.length !== 1 || image || !text || !api.notifReply) return;
+        const c = sources[0];
+        api.notifReply(c.msgs ? { chat: c.key, text } : { id: c.items.find((h) => h.reply).id, text });
+        chatBox.value = '';
         return;
       }
       if (t && t.msgs && t.pic && image && api.notifReply) {
@@ -407,7 +563,7 @@ UI.tab({
     }
     const threadRow = (name, at, snippet, active, onClick, photo, pkg) => {
       const b = el('button', { class: `hub-thread${active ? ' active' : ''}`, attrs: { 'data-literal': '' } }, [avatar(name, photo, pkg), el('span', { class: 'hub-thread-text' }, [
-        el('span', { class: 'hub-thread-top' }, [el('span', { class: 'hub-thread-name', text: name }), el('span', { class: 'hub-thread-time', text: UI.clock(at) })]),
+        el('span', { class: 'hub-thread-top' }, [el('span', { class: 'hub-thread-name', text: name }), el('span', { class: 'hub-thread-time', text: at ? UI.clock(at) : '' })]),
         el('span', { class: 'hub-thread-snippet', text: snippet }),
       ])]);
       b.onclick = onClick;
@@ -424,14 +580,16 @@ UI.tab({
         gmPhotos.clear();
       }
       paintAccount(gm);
-      const on = !!s.ui?.chats || gm?.state === 'connected';
+      const ready = carrierReady(s);
+      const on = !!s.ui?.chats || gm?.state === 'connected' ||
+        (pill === 'all' && chatOpen.startsWith('contact:') && carrierSend(s));
       chatsSw.set(!!s.ui?.chats);
       pills.hidden = !on;
       chatsCard.hidden = !!s.ui?.chats || !api.setChats;
-      if (!on && pill !== 'texts') pill = 'texts';
+      if (!on && pill !== 'texts') { pill = 'texts'; closeChat(); }
       const all = chatThreads(s);
-      if (chatsRow.setHint) chatsRow.setHint(chatsHint(!!(s && s.chatsMessaging)));
-      if (on && !chosePill) pill = all.some((t) => t.app === 'rcs') ? 'all' : 'texts';
+      if (chatsRow.setHint) chatsRow.setHint(chatsHint(!!s.chatsMessaging));
+      if (on && !chosePill) pill = 'all';
       for (const [id, b] of pillBtns) {
         b.classList.toggle('on', id === pill);
         b.setAttribute('aria-selected', String(id === pill));
@@ -439,77 +597,103 @@ UI.tab({
       }
       appsBtn.hidden = !on;
       if (!on) appsPanel.hidden = true;
+      chatNew.hidden = pill !== 'all' || !carrierSend(s);
       chatLayout.hidden = pill === 'texts';
       layout.hidden = pill !== 'texts' || !UI.hubReady(s, 'messages');
       if (pill === 'texts') return;
-      const shown = all.filter((t) => (pill === 'all' || t.app === pill) && (matches(t.name, snippetOf(t)) || t.key === chatOpen));
-      const sum = (t) => t.google
-        ? [t.at, t.snippet, t.reply, t.loaded, t.more, t.typing, t.msgs.map((m) => [m.id, m.text, m.receipt, m.photos])]
-        : (t.msgs ? [t.msgs.length, t.reply, t.pic, t.msgs.map((m) => m.id || m.pic || '').join()] : [t.items.length, t.items.map((h) => (h.replies || []).length)]);
-      const k = JSON.stringify([pill, chatOpen, query, shown.map((t) => [t.key, t.at, sum(t), !!t.avatar]), pill === 'all' ? threads.map((t) => t.id + t.at) : 0, (s.notifs || {}).receive, synced(s), Object.keys((s.notifs || {}).historyIcons || {}).length]);
+      const shown = (pill === 'all' ? inboxThreads(s, all) : all.filter((t) => t.app === pill)).filter((t) =>
+        matches(t.name, t.dest, t.addrs?.join(' '), snippetOf(t)) ||
+        t.sources?.some((c) => matches(c.name, snippetOf(c))) || t.key === chatOpen);
+      const t = shown.find((x) => x.key === chatOpen);
+      const google = t && googleOf(t);
+      const messages = t?.dest ? projectContact(t) : t?.msgs || [];
+      const k = JSON.stringify([pill, chatOpen, query, shown.map((row) => [row.key, row.at, row.name, snippetOf(row), row.sources?.map((c) => c.key), !!row.avatar]),
+        messages.map(({ image, ...m }) => m), t?.items, t?.reply, t?.pic,
+        t?.sources?.map((c) => [c.reply, c.items?.some((h) => h.reply)]), google?.reply, google?.loaded,
+        google?.more, google?.typing, ready, carrierSend(s), mmsOk(), s.hub?.perm?.messages?.sims, (s.notifs || {}).receive, synced(s),
+        Object.keys((s.notifs || {}).historyIcons || {}).length]);
       if (k === chatKey) return;
       chatKey = k;
-      // The list: chats, and in All the texts too (opening one goes to Texts).
-      const snippet = snippetOf;
-      const rows = shown.map((t) => ({ at: t.at, el: threadRow(t.name, t.at, (APP_NAME[t.app] || '') + ' · ' + snippet(t), t.key === chatOpen, () => openChat(t), t.avatar, t.pkg) }));
-      if (pill === 'all') {
-        for (const t of visibleThreads()) {
-          if (coversText(all.filter((c) => c.google), t)) continue;
-          rows.push({ at: t.at || 0, el: threadRow(t.name || (t.addrs || []).join(', '), t.at, tr('Texts · {message}', { message: t.snippet || '' }), false, () => { chosePill = true; pill = 'texts'; paintChats(UI.state); openThread(t.id); }, t.photo) });
-        }
-      }
-      rows.sort((a, b) => b.at - a.at);
-      chatList.replaceChildren(...rows.map((r) => r.el));
-      if (!rows.length) chatList.append(el('div', { class: 'hub-empty', text: query ? tr('Nothing found') : !synced(s) && !(s.notifs || {}).receive ? tr('Turn on Notifications to see chats here') : tr('No chats yet. They show here as messages arrive.') }));
-      const t = shown.find((x) => x.key === chatOpen);
+      const rows = shown.map((row) => {
+        const prefix = row.carrier || row.newest?.carrier ? tr('Texts') : APP_NAME[row.newest?.app || row.app] || '';
+        return threadRow(row.name, row.at, [prefix, snippetOf(row)].filter(Boolean).join(' · '), row.key === chatOpen, () => {
+          if (!row.carrier) { openChat(row); return; }
+          closeChat();
+          chosePill = true;
+          pill = 'texts';
+          paintChats(UI.state);
+          openThread(row.id);
+        }, row.avatar, row.pkg);
+      });
+      chatList.replaceChildren(...rows);
+      if (!rows.length) chatList.append(el('div', { class: 'hub-empty', text: query ? tr('Nothing found') : !synced(s) && !s.notifs?.receive && !ready ? tr('Turn on Notifications to see chats here') : tr('No chats yet. They show here as messages arrive.') }));
       chatConv.hidden = !t;
       chatEmpty.hidden = !!t;
       if (!t) return;
-      if (t.google && !t.loaded && gmHistory !== t.key) {
-        gmHistory = t.key;
-        gmError = '';
-        gmAct('history', { chat: t.id }).then((ok) => {
-          if (!ok && gmHistory === t.key && chatOpen === t.key && UI.state.googleMessages?.state === 'connected') {
+      if (t.dest) {
+        for (const c of t.textThreads) {
+          if (carrierHistory.has(c.id)) continue;
+          carrierHistory.set(c.id, { items: [], more: false, loading: true });
+          UI.hubAsk({ t: 'sms.thread', id: c.id, before: 0, n: 50 });
+        }
+      }
+      if (google && !google.loaded && gmHistory !== google.key) {
+        gmHistory = google.key;
+        gmAct('history', { chat: google.id }).then((ok) => {
+          if (!ok && gmHistory === google.key && chatOpen === t.key && UI.state.googleMessages?.state === 'connected') {
             gmError = tr('Could not load Google Messages history.');
             paintChats(UI.state, true);
           }
         });
       }
-      if (t.google) markGoogleRead(t);
+      if (google) markGoogleRead(google);
       const del = UI.button(tr('Delete'), () => {
-        if (t.msgs && !t.google && api.notifReply) api.notifReply({ chat: t.key, remove: true }); // off the list kept here (shared/chats.js)
-        forget(t.key, t.at); // and from notifications (an older phone): until a newer message
-        chatOpen = '';
+        for (const c of t.sources || [t]) {
+          if (c.msgs && !c.google && api.notifReply) api.notifReply({ chat: c.key, remove: true });
+          forget(c.key, c.at);
+        }
+        closeChat();
         paintChats(UI.state, true);
       }, 'small');
       del.classList.add('hub-del');
       del.title = tr('Delete this chat from the list here (it stays on the phone, and comes back with a new message)');
-      chatHead.replaceChildren(avatar(t.name, t.avatar, t.pkg), el('div', { class: 'hub-conv-title' }, [el('div', { class: 'hub-conv-name', text: t.name }), el('div', { class: 'hint', text: t.group ? tr('{app} · Group', { app: APP_NAME[t.app] || '' }) : (APP_NAME[t.app] || '') })]), del);
+      chatHead.replaceChildren(avatar(t.name, t.avatar, t.pkg), el('div', { class: 'hub-conv-title' }, [el('div', { class: 'hub-conv-name', text: t.name }), el('div', { class: 'hint', text: t.dest || (t.group ? tr('{app} · Group', { app: APP_NAME[t.app] || '' }) : (APP_NAME[t.app] || '')) })]), del);
       const msgs = [];
-      if (t.google && t.more) msgs.push(UI.button(tr('Earlier messages'), async () => {
-        if (!(await gmAct('earlier', { chat: t.id })) && chatOpen === t.key) {
+      const older = (t.textThreads || []).filter((c) => carrierHistory.get(c.id)?.more);
+      if (google?.more || older.length) msgs.push(UI.button(tr('Earlier messages'), async () => {
+        for (const c of older) {
+          const h = carrierHistory.get(c.id);
+          if (!h || h.loading || !h.items.length) continue;
+          h.loading = true;
+          UI.hubAsk({ t: 'sms.thread', id: c.id, before: h.items[0].at, n: 50 });
+        }
+        if (google?.more && !(await gmAct('earlier', { chat: google.id })) && chatOpen === t.key) {
           gmError = tr('Could not load earlier messages.');
           paintChats(UI.state, true);
         }
       }, 'small'));
-      if (t.google && !t.loaded && gmError) msgs.push(UI.button(tr('Retry history'), () => {
+      if (google && !google.loaded && gmError) msgs.push(UI.button(tr('Retry history'), () => {
         gmHistory = '';
         paintChats(UI.state, true);
       }, 'small'));
       let lastDay = '';
-      for (const m of t.msgs || []) {
+      for (const m of messages) {
         const day = new Date(m.at).toDateString();
         if (day !== lastDay) { lastDay = day; msgs.push(el('div', { class: 'hub-day', text: UI.clock(m.at) })); }
-        msgs.push(el('div', { class: `hub-bubble ${m.me ? 'out' : 'in'}`, title: new Date(m.at).toLocaleString() }, [
+        msgs.push(el('div', { class: `hub-bubble ${m.me ? 'out' : 'in'}${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
           t.group && !m.me && m.from ? el('div', { class: 'hub-from', text: m.from }) : null,
-          ...(t.google ? (m.photos || []).map((part) => {
-            const key = JSON.stringify([t.id, m.id, part]);
+          ...(m.source === 'carrier' ? textPictures(m) : []),
+          ...(google ? (m.photos || []).map((part) => {
+            const key = JSON.stringify([google.id, m.id, part]);
             const picture = (src) => el('img', { class: 'hub-pic', src, alt: tr('Picture') });
             if (gmPhotos.has(key)) return picture(gmPhotos.get(key));
             return UI.button(tr('Load photo'), async () => {
               const gm = UI.state.googleMessages;
-              const data = await gmAct('photo', { chat: t.id, message: m.id, part }, gm);
-              if (chatOpen !== t.key || UI.state.googleMessages?.owner !== gm.owner || UI.state.googleMessages?.state !== 'connected') return;
+              const epoch = chatEpoch;
+              const data = await gmAct('photo', { chat: google.id, message: m.id, part }, gm);
+              const current = selectedChat();
+              if (!gm || epoch !== chatEpoch || current?.key !== t.key || googleOf(current)?.id !== google.id ||
+                  UI.state.googleMessages?.owner !== gm.owner || UI.state.googleMessages?.state !== 'connected') return;
               if (typeof data === 'string') {
                 gmPhotos.set(key, data);
                 if (gmPhotos.size > 8) gmPhotos.delete(gmPhotos.keys().next().value);
@@ -519,32 +703,43 @@ UI.tab({
           }) : []),
           m.pic ? el('div', { class: 'hub-text', text: tr('Picture') }) : null,
           m.text ? el('div', { class: 'hub-text', text: m.text }) : null,
+          t.dest || t.app === 'rcs' ? el('div', { class: 'hub-status', text: transportLabel(m.transport) }) : null,
+          textStatus(m),
           m.receipt ? el('div', { class: 'hub-status', text: m.receipt === 'read' ? tr('Read') : tr('Delivered') }) : null,
           m.pic && m.pic !== 'sent' ? el('div', { class: 'hub-status', text: m.pic === 'sending' ? tr('Sending…') : m.pic === 'opened' ? tr('Open on the phone: tap Send there') : m.error ? tr('Not sent: {error}', { error: tr(m.error) }) : tr('Not sent') }) : null,
         ]));
       }
-      for (const h of t.msgs ? [] : t.items.slice().reverse()) {
-        msgs.push(el('div', { class: 'hub-bubble in' }, [el('div', { text: h.body || h.subtitle || '' }), el('div', { class: 'hub-status', text: UI.clock(h.at) })]));
+      for (const h of t.msgs || t.dest ? [] : t.items.slice().reverse()) {
+        msgs.push(el('div', { class: 'hub-bubble in' }, [el('div', { text: h.body || h.subtitle || '' }),
+          t.app === 'rcs' ? el('div', { class: 'hub-status', text: transportLabel() }) : null,
+          el('div', { class: 'hub-status', text: UI.clock(h.at) })]));
         for (const r of h.replies || []) msgs.push(el('div', { class: 'hub-bubble out' }, [el('div', { text: r.text }), el('div', { class: 'hub-status', text: UI.clock(r.at) })]));
       }
-      if (t.google && t.typing) msgs.push(el('div', { class: 'hint', text: tr('Typing…'), attrs: { role: 'status' } }));
-      if (t.google && gmError) msgs.push(el('div', { class: 'hint', text: gmError, attrs: { role: 'status' } }));
+      if (google?.typing) msgs.push(el('div', { class: 'hint', text: tr('Typing…'), attrs: { role: 'status' } }));
+      if (gmError) msgs.push(el('div', { class: 'hint', text: gmError, attrs: { role: 'status' } }));
       const wasAtBottom = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 40;
       chatBubbles.replaceChildren(...msgs);
-      if (!t.google || wasAtBottom) chatScroll.scrollTop = chatScroll.scrollHeight;
-      const canReply = t.google ? t.loaded && t.reply : (t.msgs ? t.reply || t.pic : t.items.some((h) => h.reply)) && !!api.notifReply;
+      if ((!google && !t.dest) || wasAtBottom) chatScroll.scrollTop = chatScroll.scrollHeight;
+      const notificationReply = (c) => !c.carrier && !c.google && (c.msgs ? c.reply || c.pic : c.items.some((h) => h.reply));
+      const canReply = google?.reply ? google.loaded : t.dest
+        ? carrierSend(s) || !!api.notifReply && t.sources.filter(notificationReply).length === 1
+        : !google && !!api.notifReply && notificationReply(t);
       chatCompose.hidden = !canReply;
       chatNote.hidden = canReply;
-      chatSend.disabled = !!(t.google && gmSend);
-      chatPic.show(!!(t.msgs && t.pic));
-      if (t.google) {
-        chatNote.textContent = t.loaded ? tr('This conversation is read-only.') : gmError ? '' : tr('Loading conversation…');
-      } else chatNote.textContent = t.msgs ? tr('Reply here once the phone shows this chat’s notification again.') : tr('Answer this one on the phone: its notification has no Reply.');
+      chatSend.disabled = !!gmSend && (!!google?.reply || gmSend.key === t.key);
+      chatPic.show(t.dest ? !!google?.reply || (carrierSend(s) && mmsOk()) : !!(t.msgs && t.pic));
+      const sims = simOptions(s);
+      chatSim.options(sims);
+      chatSim.el.hidden = !t.dest || !!google?.reply || sims.length < 3;
+      if (google) {
+        chatNote.textContent = google.loaded ? tr('This conversation is read-only.') : gmError ? '' : tr('Loading conversation…');
+      } else chatNote.textContent = t.msgs || t.dest ? tr('Reply here once the phone shows this chat’s notification again.') : tr('Answer this one on the phone: its notification has no Reply.');
     }
 
     chatBox.addEventListener('input', () => {
       if (!chatBox.value.trim() || Date.now() - gmTypingAt < 4000) return;
-      const t = paired(UI.state).find((c) => c.key === chatOpen);
+      const row = selectedChat();
+      const t = row && googleOf(row);
       if (!t?.loaded || !t.reply) return;
       gmTypingAt = Date.now();
       gmAct('typing', { chat: t.id });
@@ -582,6 +777,22 @@ UI.tab({
       if (!visibleThreads().length) list.append(el('div', { class: 'hub-empty', text: query ? tr('Nothing found') : tr('No conversations') }));
     }
 
+    function textPictures(m) {
+      if (m.image) return [el('img', { class: 'hub-pic', alt: '', src: m.image })];
+      return (m.parts || []).map((p) => {
+        const img = el('img', { class: 'hub-pic', alt: '' });
+        if (parts.has(p.id)) img.src = parts.get(p.id);
+        else { parts.set(p.id, ''); UI.hubAsk({ t: 'sms.part', id: p.id }); }
+        img.dataset.part = p.id;
+        return img;
+      });
+    }
+    function textStatus(m) {
+      if (m.status === 'sending') return el('div', { class: 'hub-status', text: tr('Sending…') });
+      if (m.status !== 'failed') return null;
+      return el('div', { class: 'hub-status', text: m.error ? tr('Not sent: {error}', { error: tr(m.error) }) : tr('Not sent') });
+    }
+
     function renderConv() {
       const t = thread();
       const isNew = openId === '';
@@ -589,13 +800,14 @@ UI.tab({
       empty.hidden = openId !== null;
       to.hidden = !isNew;
       head.replaceChildren(...(isNew ? [to] : t ? [avatar(t.name, t.photo), el('div', { class: 'hub-conv-title' }, [el('div', { class: 'hub-conv-name', text: t.name || t.addrs.join(', ') }), el('div', { class: 'hint', text: t.name ? t.addrs.join(', ') : '' })]), delText] : []));
-      const group = !!(t && t.addrs && t.addrs.length > 1);
-      groupNote.hidden = !group || mmsOk(); // a phone that sends MMS answers groups too
+      const group = !!(t?.group || t?.addrs?.length > 1);
+      const groupBlocked = group && (!mmsOk() || t.addrs.length < 2);
+      groupNote.hidden = !groupBlocked;
       pic.show(mmsOk());
-      const sims = (UI.state && UI.state.hub && UI.state.hub.perm && UI.state.hub.perm.messages && UI.state.hub.perm.messages.sims) || [];
-      simPick.options([{ value: '', label: tr('Default SIM') }, ...sims.map((x) => ({ value: String(x.id), label: x.label }))]);
-      simPick.el.hidden = sims.length < 2;
-      compose.hidden = group && !mmsOk();
+      const sims = simOptions(UI.state);
+      simPick.options(sims);
+      simPick.el.hidden = sims.length < 3;
+      compose.hidden = groupBlocked;
       more.hidden = !hasMore || isNew;
       const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
       const shown = items.concat(pending.filter((p) => p.thread === openId).map((p) => ({ id: p.ref, body: p.body, at: p.at, out: true, status: p.status, error: p.error, image: p.image })));
@@ -604,18 +816,12 @@ UI.tab({
       for (const m of shown) {
         const day = new Date(m.at).toDateString();
         if (day !== lastDay) { lastDay = day; nodes.push(el('div', { class: 'hub-day', text: UI.clock(m.at) })); }
-        const pics = m.image ? [el('img', { class: 'hub-pic', alt: '', src: m.image })] : (m.parts || []).map((p) => {
-          const img = el('img', { class: 'hub-pic', alt: '' });
-          if (parts.has(p.id)) img.src = parts.get(p.id);
-          else { parts.set(p.id, ''); UI.hubAsk({ t: 'sms.part', id: p.id }); }
-          img.dataset.part = p.id;
-          return img;
-        });
         nodes.push(el('div', { class: `hub-bubble ${m.out ? 'out' : 'in'}${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
           group && !m.out && (m.fromName || m.from) ? el('div', { class: 'hub-from', text: m.fromName || m.from }) : null,
-          ...pics,
+          ...textPictures(m),
           m.body ? el('div', { class: 'hub-text', text: m.body }) : null,
-          m.status ? el('div', { class: 'hub-status', text: m.status === 'sending' ? tr('Sending…') : m.status === 'failed' ? m.error ? tr('Not sent: {error}', { error: tr(m.error) }) : tr('Not sent') : '' }) : null,
+          el('div', { class: 'hub-status', text: transportLabel('text') }),
+          textStatus(m),
         ]));
       }
       bubbles.replaceChildren(...nodes);
@@ -659,16 +865,23 @@ UI.tab({
       const addrs = openId === '' ? to.value.split(/[,;]/).map((x) => x.trim()).filter(Boolean) : (t && t.addrs) || [];
       const dest = addrs[0];
       if (!dest) return to.focus();
-      if ((addrs.length > 1 || image) && !mmsOk()) return;
-      const ref = `r${Date.now()}-${refCount++}`;
-      pending.push({ ref, body: text, at: Date.now(), status: 'sending', thread: openId, to: dest, image });
-      const sim = simPick.el.hidden || simPick.el.value === '' ? undefined : Number(simPick.el.value);
-      UI.hubAsk({ t: 'sms.send', to: dest, body: text, ref, sim, ...(addrs.length > 1 ? { addrs: addrs.slice(0, 20) } : {}), ...(image ? { image } : {}) });
+      if ((t?.group && addrs.length < 2) || ((addrs.length > 1 || image) && !mmsOk())) return;
+      if (!carrierSend(UI.state)) return;
+      dispatchText(addrs, text, image, simPick.el, openId);
       box.value = '';
       pic.clear();
       autosize();
       renderConv();
       scroll.scrollTop = scroll.scrollHeight;
+    }
+
+    function dispatchText(addrs, text, image, simPicker, id, contact) {
+      const dest = addrs[0];
+      const ref = `r${Date.now()}-${refCount++}`;
+      pending.push({ ref, body: text, at: Date.now(), status: 'sending', thread: id, contact, to: dest, image });
+      const sim = simPicker.hidden || simPicker.value === '' ? undefined : Number(simPicker.value);
+      UI.hubAsk({ t: 'sms.send', to: dest, body: text, ref, sim,
+        ...(contact && UI.state.hub.deviceId ? { phone: { deviceId: UI.state.hub.deviceId, session: UI.state.hub.session } } : {}), ...(addrs.length > 1 ? { addrs: addrs.slice(0, 20) } : {}), ...(image ? { image } : {}) });
     }
 
     const autosize = () => { box.style.height = 'auto'; box.style.height = `${Math.min(140, box.scrollHeight)}px`; };
@@ -678,15 +891,30 @@ UI.tab({
     };
 
     UI.hubOn('sms.threads', (m) => {
+      if (!carrierReady(UI.state)) return;
+      nanp = m.nanp === true;
       threads = (m.items || []).filter((t) => t && t.id);
       renderList();
       paintChats(UI.state, true);
       if (openId) renderConv();
     });
     UI.hubOn('sms.thread', (m) => {
-      if (m.id !== openId) return;
+      if (!carrierReady(UI.state)) return;
       const older = (m.items || []).slice().reverse();
       const before = Number(m.before) || 0;
+      const contact = selectedChat();
+      const history = carrierHistory.get(m.id);
+      if (history && contact?.textThreads?.some((c) => c.id === m.id)) {
+        const h = chatScroll.scrollHeight;
+        const byId = new Map([...older, ...history.items].map((msg) => [msg.id, msg]));
+        history.items = [...byId.values()].sort((a, b) => a.at - b.at);
+        history.more = !!m.more;
+        history.loading = false;
+        reconcileContact(contact, m.id, history.items);
+        paintChats(UI.state, true);
+        if (before) chatScroll.scrollTop += chatScroll.scrollHeight - h;
+      }
+      if (m.id !== openId) return;
       if (before) {
         const h = scroll.scrollHeight;
         items = older.concat(items);
@@ -703,7 +931,9 @@ UI.tab({
     UI.hubOn('sms.part', (m) => {
       if (!m.data) return;
       parts.set(m.id, m.data);
-      for (const img of bubbles.querySelectorAll('img[data-part]')) if (img.dataset.part === m.id) img.src = m.data;
+      for (const container of [bubbles, chatBubbles]) {
+        for (const img of container.querySelectorAll('img[data-part]')) if (img.dataset.part === m.id) img.src = m.data;
+      }
     });
     UI.hubOn('sms.sent', (m) => {
       const p = pending.find((x) => x.ref === m.ref);
@@ -711,14 +941,34 @@ UI.tab({
       if (m.ok) p.status = 'sent';
       else { p.status = 'failed'; p.error = m.error || ''; }
       // A new conversation: the phone's store has it now.
-      if (p.thread === '' && m.ok) setTimeout(() => UI.hubAsk({ t: 'sms.threads', n: 80 }), 800);
+      if (!p.thread && m.ok) setTimeout(() => UI.hubAsk({ t: 'sms.threads', n: 80 }), 800);
       if (openId === p.thread) renderConv();
+      if (p.contact === chatOpen) paintChats(UI.state, true);
     });
     let threadsTimer = 0;
     // The phone's copy of one sent from here: the same text, and a picture if it had one.
     const sameAs = (p, msg) => p.body.trim() === String(msg.body || '').trim() && !!p.image === !!(msg.parts && msg.parts.length);
+    function reconcileContact(contact, id, arrived) {
+      const sent = pending.filter((p) => p.contact === contact.key && p.status !== 'failed' && (!p.thread || p.thread === id));
+      const matches = (p, m) => m.out && Math.abs(p.at - m.at) < 120000 && sameAs(p, m);
+      for (const m of arrived) {
+        const candidates = sent.filter((p) => matches(p, m));
+        if (candidates.length !== 1) continue;
+        const p = candidates[0];
+        if (arrived.filter((msg) => matches(p, msg)).length === 1) pending = pending.filter((x) => x !== p);
+      }
+    }
     UI.hubOn('sms.new', (m) => {
+      if (!carrierReady(UI.state)) return;
       const msg = m.msg || {};
+      const contact = selectedChat();
+      const h = carrierHistory.get(m.thread);
+      if (h && contact?.textThreads?.some((c) => c.id === m.thread) && !h.items.some((x) => x.id === msg.id)) {
+        h.items.push(msg);
+        h.items.sort((a, b) => a.at - b.at);
+        reconcileContact(contact, m.thread, h.items);
+        paintChats(UI.state, true);
+      }
       if (m.thread === openId && !items.some((x) => x.id === msg.id)) {
         if (msg.out) {
           const i = pending.findIndex((p) => p.thread === openId && sameAs(p, msg) && p.status !== 'failed');
@@ -748,46 +998,57 @@ UI.tab({
     UI.onShown(page, (shown) => {
       if (!shown) return;
       api.hub({ do: 'seen' });
-      const t = UI.state && paired(UI.state).find((c) => c.key === chatOpen);
-      if (t) markGoogleRead(t);
-      if (UI.hubReady(UI.state, 'messages')) load();
+      const t = selectedChat();
+      if (t && googleOf(t)) markGoogleRead(googleOf(t));
+      if (carrierReady(UI.state)) load();
     });
     renderList();
     renderConv();
     UI.onDeviceChange(() => { // another device: its conversations, not the previous one's
       pill = 'texts';
       chosePill = false;
-      chatOpen = '';
+      closeChat();
       chatKey = '';
-      chatBox.value = '';
       gmSend = null;
       gmError = '';
       gmWipeError = false;
-      gmHistory = '';
-      gmRead = '';
-      gmPhotos.clear();
+      resetCarrier();
+      renderList();
+      renderConv();
+      if (!page.hidden && carrierReady(UI.state)) load();
+    });
+
+    function resetCarrier() {
+      chatEpoch++;
+      openContact = null;
       threads = [];
+      carrierHistory.clear();
+      parts.clear();
+      nanp = false;
       openId = null;
       items = [];
       hasMore = false;
       pending = [];
       pic.clear();
-      chatPic.clear();
       loaded = false;
       loadedAt = 0;
-      renderList();
-      renderConv();
-      if (!page.hidden && UI.hubReady(UI.state, 'messages')) load();
-    });
+      clearTimeout(threadsTimer);
+    }
 
     return (s) => {
       top.render(s);
+      if (phoneSession !== s.hub?.session || (!carrierReady(s) && (loaded || threads.length))) {
+        phoneSession = s.hub?.session;
+        resetCarrier();
+        renderList();
+        renderConv();
+      }
       paintChats(s);
       const ready = UI.hubReady(s, 'messages');
       layout.hidden = !ready || pill !== 'texts';
       if (!ready) { loaded = false; return; }
-      if (!loaded) load();
-      const canSend = !(s.hub.perm.messages.missing || []).includes('send');
+      if (!loaded && carrierReady(s)) load();
+      const canSend = carrierSend(s);
       send.disabled = !canSend;
       box.disabled = !canSend;
       box.placeholder = canSend ? tr('Text message') : tr('Allow sending on the phone to answer here');

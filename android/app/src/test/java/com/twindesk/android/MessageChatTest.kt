@@ -55,6 +55,10 @@ class MessageChatTest {
         val sms = MessageChat.Row(10021, match, mms = false)
         assertEquals(emptyList<String>(), MessageChat.matches(candidates, emptyList()))
         assertEquals(listOf("first"), MessageChat.matches(candidates, listOf(sms)))
+        val national = MessageChat.fingerprint("2025550100", false, "Fixture\nmessage")!!
+        val aliased = sms.copy(match = national, normalizedMatch = match)
+        assertEquals(listOf("first"), MessageChat.matches(candidates, listOf(aliased)))
+        assertEquals(emptyList<String>(), MessageChat.matches(listOf(first, first.copy(id = "legacy", match = national)), listOf(aliased)))
         assertEquals(emptyList<String>(), MessageChat.matches(candidates, listOf(mms)))
         assertEquals(listOf("first"), MessageChat.matches(listOf(first), listOf(mms)))
         assertEquals(emptyList<String>(), MessageChat.matches(listOf(first), listOf(mms, sms)))
@@ -73,8 +77,10 @@ class MessageChatTest {
         val own = "+12025550999"
         // The addr list for an incoming 1:1 MMS is [from] plus type-151 "to" rows (often the user).
         assertNull(listOf(from, own).singleOrNull())
-        assertEquals("+12025550100", MessageChat.destination(MessageChat.incomingMmsAddress(from, peer)))
-        assertEquals(MessageChat.fingerprint(from, false, "Fixture MMS"), MessageChat.fingerprint(MessageChat.incomingMmsAddress(from, peer), false, "Fixture MMS"))
+        assertEquals("+12025550100", MessageChat.destination(MessageChat.incomingMmsAddress(from, peer, "US")))
+        assertEquals(MessageChat.fingerprint(from, false, "Fixture MMS"), MessageChat.fingerprint(MessageChat.incomingMmsAddress(from, peer, "US"), false, "Fixture MMS"))
+        assertNull(MessageChat.incomingMmsAddress(from, peer))
+        assertNull(MessageChat.incomingMmsAddress(from, "+442025550100", "US"))
         assertNull(MessageChat.incomingMmsAddress(from, null))
         assertNull(MessageChat.incomingMmsAddress(from, own))
         assertNull(MessageChat.incomingMmsAddress(null, peer))

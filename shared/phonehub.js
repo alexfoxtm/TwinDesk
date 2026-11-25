@@ -93,7 +93,7 @@ class PhoneHub extends EventEmitter {
     this.unread = 0; // texts that came in since the Messages page was last looked at
     this.audio = null;
     this.muted = false;
-    this.mediaAlertSession = 0;
+    this.phoneSession = 0;
 
     server.on('client', (ctx) => isPhone(ctx) && this.started());
     server.on('closed', (ctx) => isPhone(ctx) && this.stopped());
@@ -169,7 +169,7 @@ class PhoneHub extends EventEmitter {
   // A phone's session started (or this was loaded while one is connected).
   started() {
     this.emit('unasked'); // a new connection does not keep the previous Save
-    ++this.mediaAlertSession;
+    ++this.phoneSession;
     this.state = null;
     this.photoPolicyRoute = this.savePhotoAs ? this.photoConnection : null;
     this.photoSavePeer = null;
@@ -184,7 +184,7 @@ class PhoneHub extends EventEmitter {
 
   stopped() {
     this.emit('unasked'); // Stop: the Save's files may no longer arrive on this session
-    ++this.mediaAlertSession;
+    ++this.phoneSession;
     if (this.share) this.share.stopped();
     if (this.tether) this.tether.stopped();
     const had = this.call;
@@ -358,6 +358,8 @@ class PhoneHub extends EventEmitter {
       case T.SMS_THREAD: Object.assign(out, { id: str(m.id, 20), before: Number(m.before) || 0, n: n(m.n, 200, 50) }); break;
       case T.SMS_PART: out.id = str(m.id, 40); break;
       case T.SMS_SEND: {
+        if (m.phone && (m.phone.deviceId !== this.phone.deviceId || m.phone.session !== this.phoneSession ||
+          !['ok', 'partial'].includes(this.state?.messages?.perm) || this.state.messages.missing.includes('send'))) return;
         Object.assign(out, { to: str(m.to, 60), body: str(m.body, 5000), ref: str(m.ref, 60), ...(Number.isInteger(m.sim) && m.sim >= 0 ? { sim: m.sim } : {}) });
         // An MMS (phones that say messages.mms): a picture, and/or everyone in a group.
         const addrs = Array.isArray(m.addrs) ? m.addrs.map((a) => str(a, 60).trim()).filter(Boolean).slice(0, 20) : [];
@@ -498,10 +500,10 @@ class PhoneHub extends EventEmitter {
     const photos = count(m && m.photos);
     const videos = count(m && m.videos);
     if (!photos && !videos) return;
-    const generation = this.mediaAlertSession, socket = ctx.ws, id = ctx.deviceId;
+    const generation = this.phoneSession, socket = ctx.ws, id = ctx.deviceId;
     this.mediaAlert({ photos, videos, name: str(ctx.name, 100), current: () => {
       const now = this.phone, media = this.state && this.state.media;
-      return !!now && generation === this.mediaAlertSession && now.deviceId === id &&
+      return !!now && generation === this.phoneSession && now.deviceId === id &&
         (socket ? now.ws === socket : now === ctx) && !!this.settings.media && !!this.settings.mediaAlerts &&
         !!media && media.alerts && media.perm === 'ok';
     } });
@@ -616,7 +618,7 @@ class PhoneHub extends EventEmitter {
     const s = this.settings;
     return {
       calls: !!s.calls, messages: !!s.messages, media: !!s.media, files: !!s.files, callAudio: !!s.callAudio, callPause: !!s.callPause, btDevice: this.btDevice(),
-      connected: !!this.phone, name: this.phone ? this.phone.name : '',
+      connected: !!this.phone, name: this.phone ? this.phone.name : '', deviceId: this.phone?.deviceId || '', session: this.phoneSession,
       supported: !!this.state, // the phone app answered (an older one doesn't know these)
       perm: this.state, call: this.call, ended: this.ended, unread: this.unread, muted: this.muted,
       audio: this.audio ? this.audio.view : null, canAudio: !!this.makeAudio, audioLimit: this.audioLimit, audioStore: this.audioStore,

@@ -12,8 +12,7 @@ const commands = new Set(['history', 'earlier', 'send', 'read', 'typing', 'photo
 const imageURL = /^data:image\/(?:jpeg|png|gif|webp);base64,[A-Za-z0-9+/=]+$/;
 const atOf = (row) => Number.isSafeInteger(row?.at) ? row.at : 0;
 
-// Wire format shared with Android MessageChat.fingerprint. Try the two NANP spellings
-// because Google and Android may report the same contact in different forms.
+// Wire format shared with Android MessageChat.fingerprint.
 function fingerprints(addrs, me, text) {
   if (addrs?.length !== 1 || typeof addrs[0] !== 'string' || typeof me !== 'boolean' || typeof text !== 'string') return [];
   const address = addrs[0].trim();
@@ -21,18 +20,11 @@ function fingerprints(addrs, me, text) {
   const digits = address.replace(/\D/g, '');
   const body = text.replace(/\r\n/g, '\n').trim();
   if (!digits.length || digits.length > 15 || !body) return [];
-  const candidates = new Set([(address.startsWith('+') ? '+' : '') + digits]);
-  if (digits.length === 10 || /^1[0-9]{10}$/.test(digits)) {
-    const local = digits.slice(-10);
-    candidates.add(local);
-    candidates.add('1' + local);
-    candidates.add('+1' + local);
+  const hash = createHash('sha256');
+  for (const field of [(address.startsWith('+') ? '+' : '') + digits, String(me), body]) {
+    hash.update(Buffer.byteLength(field) + ':').update(field);
   }
-  return [...candidates].map((dest) => {
-    const hash = createHash('sha256');
-    for (const field of [dest, String(me), body]) hash.update(Buffer.byteLength(field) + ':').update(field);
-    return hash.digest('hex');
-  });
+  return [hash.digest('hex')];
 }
 
 class GoogleMessages {
@@ -222,9 +214,17 @@ class GoogleMessages {
       child.stdin.write(JSON.stringify({ op: 'connect' }) + '\n');
       return true;
     }
-    if (this.wiped || !this.child || this.state !== 'connected' || !this.rows.has(arg.chat) || !commands.has(arg.op)) return false;
-    const { op, chat } = arg;
+    if (this.wiped || !commands.has(arg.op)) return false;
     const child = this.child;
+    const available = child && child.exitCode == null && child.signalCode == null && child.stdin.writable;
+    if (!available || this.state !== 'connected' || !this.rows.has(arg.chat)) {
+      // The renderer may use its independently verified carrier route. This result
+      // must only be returned before the helper could have received a send command.
+      if (arg.op === 'send' && arg.allowCarrier === true &&
+        (this.state === 'connected' || this.state === 'offline' || this.state === 'helper-error')) return 'not-dispatched';
+      return false;
+    }
+    const { op, chat } = arg;
     if (this.pending.size >= 16) return false;
     if (op === 'history') {
       clearTimeout(this.typingTimer);

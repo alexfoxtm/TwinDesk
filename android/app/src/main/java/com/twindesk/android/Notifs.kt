@@ -412,8 +412,8 @@ class Notifs(core: Core) : Feature(core) {
         val key = MessageChat.digest(sbn.user.toString(), if (shortcut == null) "notification" else "shortcut", shortcut ?: sbn.key)
         val people = entries.associateWith(::senderOf)
         val canMatch = sbn.user == android.os.Process.myUserHandle() && !x.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION, true)
-        fun address(person: android.app.Person?) = person?.uri?.takeIf { it.startsWith("tel:", ignoreCase = true) }
-            ?.substring(4)?.let { MessageChat.destination(android.net.Uri.decode(it)) }
+        val country = if (canMatch) MessageChat.simCountry(core.ctx) else ""
+        fun address(person: android.app.Person?) = messageAddress(person)?.let { MessageChat.e164(it, country) ?: it }
         val peer = if (group) null else entries.filter { people[it] != null || it.getCharSequence("sender") != null }
             .map { address(people[it]) }.distinct().singleOrNull()
         val occurrences = mutableMapOf<String, Int>()
@@ -434,6 +434,7 @@ class Notifs(core: Core) : Feature(core) {
             items.put(JSONObject().put("id", MessageChat.digest(signature, occurrence.toString()))
                 .put("at", at).put("from", from.take(120)).put("text", text.take(4000)).put("me", me)
                 .apply {
+                    if (attachment) put("attachment", true)
                     // With no exact, one-to-one phone destination, keep the projection.
                     if (canMatch && !attachment) {
                         MessageChat.fingerprint(if (me) peer else address(person), me, text)?.let { put("match", it) }
@@ -446,7 +447,10 @@ class Notifs(core: Core) : Feature(core) {
         val id = reply?.let { "r:" + java.util.UUID.randomUUID().toString() }
         val payload = msg("chat.conv", "key" to key, "app" to pkg, "appName" to appNameOf(pkg), "source" to "messaging",
             "name" to name.take(200), "group" to group, "id" to id, "reply" to (reply != null), "items" to items)
-            .apply { avatarOf(n)?.let { put("avatar", it) } }
+            .apply {
+                if (canMatch) MessageChat.e164(peer, country)?.let { put("messagePeer", it) }
+                avatarOf(n)?.let { put("avatar", it) }
+            }
         synchronized(messageReplies) {
             if (!messageChatAllowed(pkg) || !commit(plan)) return
             messageReplies.remove(sbn.key)?.let { core.link.sendFor(it.bind.ticket.marker, msg("chat.gone", "id" to it.id)) }
@@ -462,6 +466,10 @@ class Notifs(core: Core) : Feature(core) {
             }
         }
     }
+
+    private fun messageAddress(person: android.app.Person?) =
+        person?.uri?.takeIf { it.startsWith("tel:", ignoreCase = true) }
+            ?.substring(4)?.let { MessageChat.destination(android.net.Uri.decode(it)) }
 
     // Another app's conversation (Viber, LINE, Discord, Slack…): a message notification in Android's
     // conversation style, from anything but a texting app (those are Messages' texts).
@@ -564,6 +572,23 @@ class Notifs(core: Core) : Feature(core) {
             "title" to title.take(300), "subtitle" to out.subtitle.take(200),
             "body" to text.take(1000), "at" to sbn.postTime,
         ).apply {
+            if (chatsWanted && !hide && !out.redacted && plan.includeSensitive && core.hub.messagesOn &&
+                sbn.user == android.os.Process.myUserHandle() && MessageChat.projects(pkg, n, sbn.isOngoing || live != null) &&
+                !x.getBoolean(Notification.EXTRA_IS_GROUP_CONVERSATION, true)) {
+                val entries = messages(x)?.filterIsInstance<Bundle>().orEmpty()
+                val last = entries.lastOrNull()
+                val country = MessageChat.simCountry(core.ctx)
+                val addresses = entries.filter { senderOf(it) != null || it.getCharSequence("sender") != null }
+                    .map { MessageChat.e164(messageAddress(senderOf(it)), country) }.distinct()
+                val at = last?.getLong("time") ?: 0
+                if (last != null && at > 0 && last.getCharSequence("text")?.toString() == text && text.length <= 1000 &&
+                    !last.containsKey("uri") && !last.containsKey("type") && senderOf(last) != null) {
+                    addresses.singleOrNull()?.let {
+                        put("messagePeer", it)
+                        put("messageAt", at)
+                    }
+                }
+            }
             if (icon != null) put("icon", icon)
             if (reply != null && !out.redacted) put("reply", true) // the computer may answer it (notif.reply)
             if (actionTitles.isNotEmpty()) put("actions", jsonArray(actionTitles))
@@ -582,6 +607,10 @@ class Notifs(core: Core) : Feature(core) {
         val replyBind = if (reply != null && !out.redacted) reply else null
         rememberActions(sbn.key, ticket, if (out.redacted) emptyList() else kept, replyBind)
         // Checked again after the buttons are stored and immediately before the socket write.
+        if (!chatsWanted || !core.hub.messagesOn || core.store.flag("notifs.hideText", false)) {
+            payload.remove("messagePeer")
+            payload.remove("messageAt")
+        }
         if (!commit(plan) || !core.link.sendFor(captured.marker, payload)) {
             forgetActions(sbn.key, captured.marker)
             return releaseClaim()

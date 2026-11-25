@@ -8,11 +8,21 @@ import (
 	"os/exec"
 	"reflect"
 	"testing"
+
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestProjectUsesMessageTransport(t *testing.T) {
+	for kind, want := range map[int64]string{0: "", 1: "text", 2: "text", 3: "text", 4: "rcs", 9: ""} {
+		if got := project(&gmproto.Message{Type: kind}).Transport; got != want {
+			t.Errorf("transport for type %d = %q, want %q", kind, got, want)
+		}
+	}
+}
 
 func TestGoogleCookieBoundary(t *testing.T) {
 	cookies := make(map[string]string)
