@@ -5,10 +5,11 @@
 'use strict';
 
 const assert = require('assert');
+const { defaultMaxListeners } = require('node:events');
 const P = require('../../../shared/protocol.js');
 const { Phone } = require('../../phone.js');
 const { PhoneSet, PhoneDir } = require('../phones.js');
-const { node, close, waitFor, pairPhone, helloPhone } = require('./lib/mesh.js');
+const { node, close, waitFor, pairPhone, helloPhone, rawConnect } = require('./lib/mesh.js');
 
 const T = P.T;
 const tests = [];
@@ -35,6 +36,8 @@ test('two phones: a stack each, routed by id, what each says about itself stays 
     const log = [];
     const set = new PhoneSet({ hub: A.hub, link: new PhoneDir(A.hub, A.server), raw: A.server, discovery: { list: () => [], get: () => null }, pairing: { list: () => [] }, make: fakeStack(log) });
     assert.strictEqual(set.all.length, 1);
+    assert.strictEqual(set.first.link.route.getMaxListeners(), 12);
+    assert.strictEqual(A.hub.facade.getMaxListeners(), defaultMaxListeners);
     const p1 = await pairPhone(A, { name: 'One' });
     const p2 = await pairPhone(A, { name: 'Two' });
     clients.push(p1.client, p2.client);
@@ -71,10 +74,26 @@ test('two phones: a stack each, routed by id, what each says about itself stays 
     assert.strictEqual(set.active, set.byId.get(p1.id));
     assert.strictEqual(set.view.phones.length, 2);
 
+    const unit = set.unit(p2.id);
+    const route = unit.link.route;
+    const closed = route.listeners('closed');
+    assert.strictEqual(route.getMaxListeners(), 12);
     p2.client.close();
     await waitFor(() => !set.byId.get(p2.id).link.current, 'phone two is gone');
     assert.ok(set.drives(p1.id) && !set.drives(p2.id));
     assert.strictEqual(set.view.phones.length, 1);
+    for (let i = 0; i < 3; i++) {
+      const client = await rawConnect(A.port);
+      clients.push(client);
+      assert.strictEqual((await helloPhone(client, { id: p2.id, name: 'Two', token: p2.token })).t, T.WELCOME);
+      await waitFor(() => set.drives(p2.id), 'phone two back');
+      assert.strictEqual(set.all.length, 2);
+      assert.strictEqual(set.unit(p2.id), unit);
+      assert.strictEqual(unit.link.route, route);
+      assert.deepStrictEqual(route.listeners('closed'), closed);
+      client.close();
+      await waitFor(() => !set.drives(p2.id), 'phone two gone again');
+    }
   } finally {
     for (const c of clients) { try { c.close(); } catch (_) { /* already */ } }
     close(A);

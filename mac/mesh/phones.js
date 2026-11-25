@@ -19,6 +19,8 @@ const { Peer } = require('./peer.js');
 const { viewOf } = require('./hub.js');
 
 const CONNECT_WAIT_MS = 8000; // an invited phone that doesn't say hello by then isn't coming
+// 'closed': Phone, Bridge (3), Views (2), battery, media, Remote, signing, Deck and PcNow.
+const PHONE_ROUTE_MAX_LISTENERS = 12;
 const isPhone = (ctx) => !!ctx && P.isPhoneOs(ctx.os); // Android or iPhone
 
 // The phones connected to this Mac, as events and lookups: 'client' (ctx) when one says hello, 'closed' when
@@ -95,6 +97,7 @@ class PhoneSet extends EventEmitter {
 
   _create() {
     const scoped = this.link.scoped(null);
+    scoped.route.setMaxListeners(PHONE_ROUTE_MAX_LISTENERS);
     const unit = this.make(scoped);
     unit.link = scoped;
     unit.seq = 0;
