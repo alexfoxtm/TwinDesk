@@ -14,7 +14,7 @@ const code = fs.readFileSync(path.join(__dirname, '../phoneview-renderer.js'), '
 
 function fixture(kind = 'app') {
   const events = new Map(), handlers = new Map(), decoders = [], sent = [], painted = [], blanks = [], pushed = [], statusKeys = [];
-  const controls = new Map();
+  const controls = new Map(), previewDraws = [];
   const timers = [];
   let now = 5000;
   const canvas = {
@@ -82,7 +82,11 @@ function fixture(kind = 'app') {
     now = end;
   }
   vm.runInNewContext(code, {
-    window, document: { body: element(), getElementById: key => nodes[key] || null, querySelector: () => element(), addEventListener() {} },
+    window, document: { body: element(), getElementById: key => nodes[key] || null, querySelector: () => element(), addEventListener() {},
+      createElement: () => ({
+        getContext: () => ({ drawImage: (frame, _x, _y, w, h) => previewDraws.push([frame.id, w, h]) }),
+        toDataURL: () => 'data:image/jpeg;base64,/9j/2Q==',
+      }) },
     location: { search: '?kind=' + kind }, URLSearchParams, devicePixelRatio: 2, VideoDecoder: Decoder,
     EncodedVideoChunk: class { constructor(data) { Object.assign(this, data); } },
     ResizeObserver: class { observe() {} }, performance: { now: () => now }, console,
@@ -91,7 +95,7 @@ function fixture(kind = 'app') {
   const recv = (name, value) => { for (const fn of handlers.get(name) || []) fn(value); };
   const config = () => recv('video', { config: true, data: Uint8Array.from([0, 0, 1, 0x67, 0x42, 0, 0x1f]) });
   const frame = (id, timestamp) => ({ id, timestamp, displayWidth: 300, displayHeight: 600, closed: 0, close() { this.closed++; } });
-  return { recv, config, frame, canvas, decoders, sent, painted, blanks, pushed, statusKeys, status: nodes.status, events, controls, rail, advance,
+  return { recv, config, frame, canvas, decoders, sent, painted, blanks, pushed, statusKeys, previewDraws, status: nodes.status, events, controls, rail, advance,
     record(on) { recording = on; }, output(f) { decoders.at(-1).callbacks.output(f); } };
 }
 
@@ -456,4 +460,19 @@ test('unlock resumes panel blanking when no video preceded the app-frame request
   await views._resumeDarkApp(view);
   assert.deepEqual(renderer.painted, [8]);
   assert.deepEqual(renderer.sent.filter((m) => m.t === 'appFrame'), [{ t: 'appFrame', capture: 'resumed capture' }]);
+});
+
+test('the preview reuses decoded frames and samples once per interval while the capture is live', () => {
+  const f = fixture('screen');
+  f.recv('opts', { mirrorPreview: 8 });
+  f.config();
+  f.output(f.frame(1, 1));
+  f.output(f.frame(2, 2));
+  f.advance(4000);
+  f.output(f.frame(3, 3));
+  f.recv('status', { closed: 'stopped' });
+  f.advance(4000);
+  f.output(f.frame(4, 4));
+  assert.deepEqual(f.previewDraws, [[1, 100, 200], [3, 100, 200]]);
+  assert.deepEqual(f.sent.filter((m) => m.t === 'mirrorPreview').map((m) => m.capture), [8, 8]);
 });

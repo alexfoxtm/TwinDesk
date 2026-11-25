@@ -251,7 +251,7 @@ class PhoneViews extends EventEmitter {
     if (!owner || owner !== this._iosOwner(c)) return;
     this.openingIos = null;
     const { pad, width, height } = this._iosSize(o);
-    return this._open({ kind: 'screen', native: true, ios: { owner, pad }, title: c.name || this._i18n().t('Phone'),
+    return this._open({ kind: 'screen', native: true, ios: { owner, pad, deviceId: c.deviceId }, title: c.name || this._i18n().t('Phone'),
       width, height, opts: this.bridge.sessionOpts('screen') });
   }
 
@@ -670,7 +670,8 @@ class PhoneViews extends EventEmitter {
   // The window's switches as they are now (its buttons light up).
   _opts(v) {
     const ph = this.getSettings().phone || {};
-    return { enterSends: ph.enterSends !== false, autoRotate: ph.autoRotate !== false, arrowSwipe: ph.arrowSwipe === true, screenOff: !!v.screenOff || (!v.native && (v.kind === 'app' || v.kind === 'screen') && this.appPanel?.off === true), pinned: !!(v.win && !v.win.isDestroyed() && v.win.isAlwaysOnTop()) };
+    const mirrorPreview = v.ios && this.phone.pairing?.previews?.owner(v.ios.owner) ? v.id : null;
+    return { mirrorPreview, enterSends: ph.enterSends !== false, autoRotate: ph.autoRotate !== false, arrowSwipe: ph.arrowSwipe === true, screenOff: !!v.screenOff || (!v.native && (v.kind === 'app' || v.kind === 'screen') && this.appPanel?.off === true), pinned: !!(v.win && !v.win.isDestroyed() && v.win.isAlwaysOnTop()) };
   }
 
   // Return sends / Arrow keys swipe changed (here, or on the Phone page): every window shows it.
@@ -721,7 +722,20 @@ class PhoneViews extends EventEmitter {
     return done;
   }
 
+  _saveIosPreview(v, m) {
+    const s = v.session;
+    if (!v.ios || v.ending || v.id !== m.capture || !v.started || !s?.on_ || !s.req || s.closed || !s.owns?.()) return;
+    const size = s.size;
+    if (!size) return;
+    const sw = s.screen?.w, sh = s.screen?.h;
+    const display = sw && sh && Math.abs((sw / sh) / (size.width / size.height) - 1) < 0.01
+      ? { width: sw, height: sh } : size;
+    const info = this.phone.infoId === v.ios.deviceId ? this.phone.info : null;
+    if (this.phone.pairing?.previews?.save(v.ios.owner, m.jpeg, display, info)) this.phone.emit('change');
+  }
+
   _input(v, m) {
+    if (m.t === 'mirrorPreview') return this._saveIosPreview(v, m);
     if (m.t === 'retryIpad') return this._retryIos(v);
     // Keep on top (the title bar's pin): the window's own, no phone needed. 'floating': over other
     // apps' windows, under menus and the Dock.

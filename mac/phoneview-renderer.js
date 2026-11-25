@@ -111,6 +111,25 @@
   let skipped = false;
   // The capture closed or failed: its message stays, and nothing asks for a keyframe until a new one starts.
   let ended = false;
+  let previewCapture = null;
+  let previewCanvas = null;
+  let previewAt = -Infinity;
+
+  function publishPreview(frame) {
+    if (previewCapture == null || ended) return;
+    const now = performance.now();
+    if (now - previewAt < 4000) return;
+    previewAt = now;
+    const scale = Math.min(1, 200 / Math.max(frame.displayWidth, frame.displayHeight));
+    const width = Math.max(1, Math.round(frame.displayWidth * scale));
+    const height = Math.max(1, Math.round(frame.displayHeight * scale));
+    previewCanvas ||= document.createElement('canvas');
+    if (previewCanvas.width !== width) previewCanvas.width = width;
+    if (previewCanvas.height !== height) previewCanvas.height = height;
+    const image = previewCanvas.getContext('2d', { alpha: false });
+    image.drawImage(frame, 0, 0, width, height);
+    api.send({ t: 'mirrorPreview', capture: previewCapture, jpeg: previewCanvas.toDataURL('image/jpeg', 0.64) });
+  }
   // Decoder errors in a row with no picture in between. Past a few, asking again cannot help.
   let decodeErrors = 0;
   let heldFrame = null;
@@ -183,6 +202,7 @@
         decodeErrors = 0;
         try {
           paintFrame(frame);
+          publishPreview(frame);
           if (vcam) vcam.push(frame, frame.displayWidth, frame.displayHeight);
         } finally { frame.close(); }
         if (!status.hidden) setStatus('');
@@ -569,6 +589,7 @@
   if (pinBtn) pinBtn.onclick = () => { api.send({ t: 'pin' }); canvas.focus(); };
   api.on('opts', (m) => {
     if (!m) return;
+    if ('mirrorPreview' in m) previewCapture = Number.isSafeInteger(m.mirrorPreview) ? m.mirrorPreview : null;
     if (typeof m.minimized === 'boolean') {
       const was = minimized;
       minimized = m.minimized;

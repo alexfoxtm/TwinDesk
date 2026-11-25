@@ -4,6 +4,9 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const Module = require('node:module');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const { PhonePreviews } = require('../phone-preview.js');
 const { test, after } = require('node:test');
 const P = require('../../shared/protocol.js');
 const { NativeScreen } = require('../../shared/nativescreen.js');
@@ -61,7 +64,11 @@ function fixture({ platform = 0, mesh = false, os = 'ios', autoRotate = true } =
   const bridge = Object.assign(new EventEmitter(), {
     views: null, _tellPhone() {}, _sound() {}, mirrorVia: 'native', sessionOpts: () => ({}),
   });
-  const phone = { info: { platform: 'ipados' } };
+  const phone = Object.assign(new EventEmitter(), { info: { platform: 'ipados' }, infoId: 'tablet' });
+  const pairing = Object.assign(new EventEmitter(), { paired: [{ id: 'tablet', os }] });
+  phone.pairing = pairing;
+  pairing.previews = new PhonePreviews(pairing);
+  pairing.previews.authorize(current, pairing.paired[0]);
   const { PhoneViews } = viewsFor[platform];
   const views = new PhoneViews({ server, bridge, phone, getSettings: () => ({ phone: { autoRotate } }) });
   const open = () => server.emit(mirror, { open: true }, server.current);
@@ -70,6 +77,7 @@ function fixture({ platform = 0, mesh = false, os = 'ios', autoRotate = true } =
     offers: () => wire.filter(({ msg }) => msg.on && !msg.sync),
     click: (v) => ipcMain.emit('phoneview:in', { sender: v.win.webContents }, { t: 'retryIpad' }),
     state: (v, m) => NativeScreen.state({ key: v.session.secret, ...m }, server),
+    preview: (sender, m) => ipcMain.emit('phoneview:in', { sender }, { t: 'mirrorPreview', ...m }),
     replace(id) {
       current = peer(id);
       if (mesh) server.route.session.ctx = current;
@@ -173,5 +181,59 @@ test('the iPad window fits ReplayKit size, then packet orientation, without movi
     sizePacket(800, 600);
     sizePacket(50000, 1);
     assert.equal(v.win.resizes.length, 2, 'no resize for late state, same ratio, or invalid packet');
+  } finally { f.views.closeAll(); }
+});
+
+test('a paired iPad snapshot reaches the oriented card, stays after Stop and clears on identity removal', async () => {
+  const f = fixture({ mesh: true });
+  const previews = f.phone.pairing.previews;
+  try {
+    f.open();
+    const v = f.current();
+    assert.equal(v.queue[0][1].mirrorPreview, v.id);
+    f.state(v, { on: true, w: 1200, h: 900, sw: 2048, sh: 1536 });
+    await tick();
+    const req = Object.assign(new EventEmitter(), { method: 'POST', url: '/twindesk/mirror',
+      headers: { 'x-twindesk-mirror': v.session.secret }, destroy() {} });
+    NativeScreen.request(req, { writeHead() {}, end() {} });
+    const jpeg = 'data:image/jpeg;base64,/9j/2Q==';
+    const capture = { capture: v.id, jpeg };
+    f.preview(new EventEmitter(), capture);
+    f.preview(v.win.webContents, { ...capture, capture: v.id + 1 });
+    assert.deepEqual(previews.list(), []);
+    f.preview(v.win.webContents, capture);
+    f.preview(v.win.webContents, { ...capture, jpeg: 'data:image/jpeg;base64,/9j/1Q==' });
+    assert.equal(previews.list(true)[0].data, jpeg, 'main rate limit preserves the first snapshot');
+    f.views.close(v.id);
+    assert.equal(previews.list(true)[0].data, jpeg, 'Stop keeps the last snapshot');
+
+    const UI = { phoneAssets: { iosPreviews: previews.list(true) } };
+    vm.runInNewContext(fs.readFileSync(require.resolve('../../shared/ui-device-parts.js'), 'utf8'), { UI, window: {} });
+    const classes = new Set();
+    const style = new Map();
+    const card = {
+      classList: { add: (k) => classes.add(k), toggle: (k, on) => on ? classes.add(k) : classes.delete(k) },
+      style: { setProperty: (k, v) => style.set(k, v), removeProperty: (k) => style.delete(k) },
+    };
+    const D = UI.deviceParts;
+    const info = f.phone.info;
+    D.phonePic(card, info, D.iosPreview({ iosPreviews: previews.list() }, 'tablet'));
+    assert.ok(classes.has('ios-frame') && classes.has('has-preview'));
+    assert.equal(style.get('--ios-width'), '140px');
+    assert.equal(style.get('--ios-height'), '105px');
+    assert.equal(style.get('--phone-wall'), `url("${jpeg}")`);
+    assert.equal(D.iosPreview({ iosPreviews: previews.list() }, 'other-tablet'), null);
+
+    // Replace the pairing record while the UI still holds the old reply.
+    f.phone.pairing.paired = [{ id: 'tablet', os: 'ios' }];
+    f.phone.pairing.emit('change');
+    assert.deepEqual(previews.list(true), []);
+    f.open();
+    assert.equal(f.current().queue[0][1].mirrorPreview, null, 'old authentication cannot fill the new record');
+    D.phonePic(card, info, D.iosPreview({ iosPreviews: previews.list() }, 'tablet'));
+    assert.ok(classes.has('ios-frame') && !classes.has('has-preview'));
+    assert.equal(style.get('--ios-width'), '105px');
+    assert.equal(style.get('--ios-height'), '140px');
+    assert.equal(style.has('--phone-wall'), false);
   } finally { f.views.closeAll(); }
 });

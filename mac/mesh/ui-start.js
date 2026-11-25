@@ -232,14 +232,22 @@
   // Every known device above the sections: paired phones (wallpaper, name, link) and computers (OS icon,
   // name, ping/transport), devices only another one reaches with a "via" line (not clickable).
   let phonesKey = '';
-  let assetsSeen = -1;
+  let assetsSeen = '';
+  let assetsDevice = null;
   function renderPhones(s) {
     const ph = s.phone || { nearby: [] };
-    if (ph.assets !== assetsSeen) {
-      assetsSeen = ph.assets;
+    const deviceId = ph.connected?.id || null;
+    const assetKey = JSON.stringify([deviceId, ph.assets, ph.iosPreviews]);
+    if (assetKey !== assetsSeen) {
+      assetsSeen = assetKey;
+      if (deviceId !== assetsDevice) {
+        assetsDevice = deviceId;
+        UI.phoneWall = '';
+      }
       api.phoneAssets().then((a) => {
+        if (assetKey !== assetsSeen || ('deviceId' in a && a.deviceId !== deviceId)) return;
         UI.phoneAssets = a;
-        UI.phoneWall = a.wallpaper ? 'url("' + a.wallpaper + '")' : '';
+        UI.phoneWall = a.wallpaper ? `url("${a.wallpaper}")` : '';
         phonesKey = '';
         if (UI.state) render(UI.state);
       }, () => {});
@@ -266,7 +274,7 @@
             : peer.state === 'identity_changed' ? tr('Identity changed') : tr('Not connected');
       return { ...tile, sub };
     });
-    const key = JSON.stringify([tiles.map((t) => [t.id, t.kind, t.name, t.os, t.state, t.selected, t.action, t.via, t.forget]), ph.held, ph.activeId, (ph.phones || []).map((x) => [x.id, x.colors]), colors, UI.phoneWall ? UI.phoneWall.length : 0, current && current.def.id]);
+    const key = JSON.stringify([tiles.map((t) => [t.id, t.kind, t.name, t.os, t.state, t.selected, t.action, t.via, t.forget]), ph.held, ph.activeId, (ph.phones || []).map((x) => [x.id, x.colors, x.platform, x.display]), colors, info.platform, info.display, ph.iosPreviews, UI.phoneWall ? UI.phoneWall.length : 0, current && current.def.id]);
     if (key === phonesKey) {
       const subs = new Map(tiles.map((t) => [t.id, t.sub]));
       for (const b of $('phones').children) {
@@ -282,7 +290,8 @@
         const mine = (ph.phones || []).find((x) => x.id === t.id) || null;
         const dcolors = mine && mine.colors ? mine.colors : colors;
         wall = el('span', { class: 'phone-wall' }, [UI.icon('phone')]);
-        if (t.connected && UI.phoneWall && (!ph.activeId || ph.activeId === t.id)) wall.style.backgroundImage = UI.phoneWall;
+        if (t.os === 'ios') UI.deviceParts.iosPic(wall, t.id === deviceId ? info : mine || {}, UI.deviceParts.iosPreview(ph, t.id), 46);
+        else if (t.connected && UI.phoneWall && (!ph.activeId || ph.activeId === t.id)) wall.style.backgroundImage = UI.phoneWall;
         else if (t.connected && dcolors) wall.style.backgroundImage = 'linear-gradient(160deg, ' + dcolors.join(', ') + (dcolors.length === 1 ? ', ' + dcolors[0] : '') + ')';
       } else {
         wall = el('span', { class: 'phone-wall computer-wall' }, [UI.osIcon(t.os)]);
