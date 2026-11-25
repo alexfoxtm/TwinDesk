@@ -138,7 +138,8 @@ async function ipadFixture(A) {
   return { other, ipad, connect };
 }
 
-const accept = (client) => client.send({ t: T.SCREEN_POLICY, accept: true, width: 2732, height: 2048 });
+const accept = (client, inputEpoch = true) => client.send({ t: T.SCREEN_POLICY, accept: true, width: 2732, height: 2048,
+  ...(inputEpoch ? { inputEpoch: true } : {}) });
 const start = (client) => client.send({ t: T.SCREEN_CTL, share: true, mode: 'mirror' });
 
 test('a non-selected iPad can receive its own screen again after reconnect', async () => {
@@ -274,12 +275,17 @@ test('selected and unselected iPad control their streamed display and hand off w
     assert.strictEqual(injected.length, 1, 'an iPad touch does not bisect a Galaxy drag');
     send(other.client, T.IN_UP);
     await waitFor(() => injected.length === 2, 'Galaxy release');
+    const untagged = new Promise(resolve => st.peer.once(`t:${T.IN_DOWN}`, resolve));
+    send(client, T.IN_DOWN);
+    await untagged;
+    assert.strictEqual(injected.length, 2, 'an iPad that advertised epochs cannot fall back to untagged input');
     ios(T.IN_MOVE, { engaged: true });
     await waitFor(() => injected.at(-1)?.ev?.t === T.IN_MOVE, 'unselected iPad touchpad claims ownership');
     assert.deepStrictEqual(injected.at(-1).bounds, left.bounds);
     ios(T.IN_DOWN);
     await waitFor(() => injected.at(-1)?.ev?.t === T.IN_DOWN, 'unselected iPad input');
     assert.deepStrictEqual(injected.at(-1).bounds, left.bounds);
+    assert.strictEqual(injected.at(-1).meshScreen, grant.inputEpoch, 'the helper gets the numeric input epoch');
     ios(T.IN_UP);
     ios(T.IN_KEY_DOWN, { code: 'KeyA' });
     ios(T.IN_KEY_UP, { code: 'KeyA' });
@@ -315,6 +321,31 @@ test('selected and unselected iPad control their streamed display and hand off w
     send(selected, T.IN_DOWN, { session: extend.session, inputEpoch: extend.inputEpoch });
     await waitFor(() => injected.at(-1)?.ev?.t === T.IN_DOWN, 'fresh selected iPad controls Extend');
     assert.deepStrictEqual(injected.at(-1).bounds, extended.bounds);
+  } finally {
+    close(A);
+  }
+});
+
+test('legacy iPad input is limited to the selected viewer', async () => {
+  const A = await node('A');
+  try {
+    const { set, settings, injected, target } = receiveFixture(A);
+    const { other, ipad, connect } = await ipadFixture(A);
+    const client = await connect();
+    const st = set.byId.get(ipad.id);
+    settings.sharing.on = true;
+    accept(client, false);
+    await waitFor(() => st.view.status === 'live', 'legacy iPad viewer live');
+    assert.strictEqual(st.inputGrant, null, 'unselected legacy viewer remains view-only');
+
+    assert.strictEqual(A.hub.select(ipad.id), true);
+    await client.until((m) => m.t === T.STREAM_INPUT && m.on && !Object.hasOwn(m, 'inputEpoch'));
+    client.send({ t: T.IN_DOWN, x: 0.5, y: 0.25 });
+    await waitFor(() => injected.at(-1)?.ev?.t === T.IN_DOWN, 'legacy selected viewer can still click');
+    assert.deepStrictEqual(injected.at(-1).bounds, target.bounds);
+    assert.strictEqual(A.hub.select(other.id), true);
+    assert.strictEqual(injected.at(-1).op, 'releaseAll');
+    assert.strictEqual(st.inputGrant, null, 'selecting Galaxy revokes the legacy grant');
   } finally {
     close(A);
   }

@@ -93,23 +93,26 @@ class StreamSet extends EventEmitter {
     if (!this.input) return false;
     const c = st.peer.current;
     const ios = c?.os === P.OS.IOS;
-    const allowed = !this.inputLocked && this.input.enabled() && (ios || c?.deviceId === this.hub.selectedId);
+    const epochRequired = ios && st.viewerUsesInputEpoch === true;
+    const allowed = !this.inputLocked && this.input.enabled() && (epochRequired || c?.deviceId === this.hub.selectedId);
     const target = allowed ? st.inputTarget() : null;
     const bounds = target?.bounds;
     const mapping = bounds ? [target.id, bounds.x, bounds.y, bounds.width, bounds.height].join(':') : null;
     const old = st.inputGrant;
-    if (!mapping || old?.socket !== c?.conn || old.session !== st.session || old.mapping !== mapping) {
+    if (!mapping || old?.socket !== c?.conn || old.session !== st.session || old.mapping !== mapping || old.epochRequired !== epochRequired) {
       if (this.inputOwner?.stream === st) this._releaseInput();
-      st.inputGrant = mapping ? { socket: c.conn, session: st.session, mapping, inputEpoch: ++this.inputEpoch, target } : null;
+      st.inputGrant = mapping ? { socket: c.conn, session: st.session, mapping, inputEpoch: ++this.inputEpoch, epochRequired, target } : null;
     }
 
-    // Legacy selected viewers keep their Receive input preference. iOS binds each input to the
-    // capture and grant that enabled it, so an old gesture cannot run after a restart or revoke.
+    // An iPad that negotiated epochs can control its scoped stream. A legacy iPad keeps its
+    // selected-viewer input path, still checked against the live socket, capture and policy.
     const on = ios ? !!st.inputGrant : allowed;
     const msg = { t: P.T.STREAM_INPUT, on };
     if (ios) {
-      msg.session = st.inputGrant?.session ?? null;
-      msg.inputEpoch = st.inputGrant?.inputEpoch ?? null;
+      if (epochRequired) {
+        msg.session = st.inputGrant?.session ?? null;
+        msg.inputEpoch = st.inputGrant?.inputEpoch ?? null;
+      }
       // A transport resume can replace the primary socket without a new welcome on iOS.
       if (st.viewer === true && st.viewerSocket !== c.conn) msg.refreshViewer = true;
     }
@@ -139,7 +142,8 @@ class StreamSet extends EventEmitter {
     if (!c || c.conn !== ws || !this._syncScreenInput(st)) return;
     const grant = st.inputGrant;
     const ios = c.os === P.OS.IOS;
-    if (ios && (m.session !== grant.session || m.inputEpoch !== grant.inputEpoch)) return;
+    if (grant.epochRequired && (m.session !== grant.session || m.inputEpoch !== grant.inputEpoch)) return;
+    if (ios && !grant.epochRequired && (m.session != null || m.inputEpoch != null)) return;
 
     const t = m.t;
     const key = t === P.T.IN_KEY_DOWN || t === P.T.IN_KEY_UP;
@@ -148,11 +152,11 @@ class StreamSet extends EventEmitter {
     if (owner?.grant !== grant) {
       if (owner && (owner.buttons.size || owner.keys.size)) return;
       const claims = t === P.T.IN_DOWN || t === P.T.IN_WHEEL ||
-        (t === P.T.IN_MOVE && (!owner || (ios && m.engaged === true))) ||
-        (t === P.T.IN_KEY_DOWN && !ios && !owner);
+        (t === P.T.IN_MOVE && (!owner || (grant.epochRequired && m.engaged === true))) ||
+        (t === P.T.IN_KEY_DOWN && !grant.epochRequired && !owner);
       if (!claims) return;
       this._releaseInput();
-      owner = this.inputOwner = { stream: st, grant, buttons: new Set(), keys: new Set(), keyboard: !ios };
+      owner = this.inputOwner = { stream: st, grant, buttons: new Set(), keys: new Set(), keyboard: !grant.epochRequired };
     }
     const b = Number.isFinite(m.b) ? Math.max(0, Math.min(4, m.b | 0)) : 0;
     if (t === P.T.IN_UP && !owner.buttons.delete(b)) return;

@@ -76,6 +76,7 @@ class Stream extends EventEmitter {
     server.on('client', () => {
       this.viewer = null;
       this.viewerSocket = null;
+      this.viewerUsesInputEpoch = false;
       this.waitingPolicy = true;
       clearTimeout(this.policyTimer);
       this.policyTimer = setTimeout(() => {
@@ -89,7 +90,11 @@ class Stream extends EventEmitter {
       if (c?.os === P.OS.IOS && !this._currentIosMessage(ctx)) return;
       const on = !!msg.accept;
       const moved = on && this.viewerSocket !== c?.conn;
+      const usesInputEpoch = on && (msg.inputEpoch === true || (!moved && this.viewerUsesInputEpoch));
+      const onChanged = on !== this.viewer || moved;
+      const epochChanged = usesInputEpoch !== this.viewerUsesInputEpoch;
       this.viewerSocket = on ? c?.conn : null;
+      this.viewerUsesInputEpoch = usesInputEpoch;
       // A scoped viewer must not resize the shared virtual display.
       if (c && P.isPhoneOs(c.os) && !this.scopedScreen && on && msg.width > 0 && msg.height > 0) {
         displayOverrideOwner.set(this.displays, this);
@@ -97,7 +102,10 @@ class Stream extends EventEmitter {
       }
       this.waitingPolicy = false;
       clearTimeout(this.policyTimer);
-      if (on === this.viewer && !moved) return;
+      if (!onChanged) {
+        if (epochChanged) this.emit('change');
+        return;
+      }
       this.viewer = on;
       if (on) this.restart('viewer open');
       else {
@@ -110,6 +118,7 @@ class Stream extends EventEmitter {
       clearTimeout(this.policyTimer);
       this.viewer = null;
       this.viewerSocket = null;
+      this.viewerUsesInputEpoch = false;
       this.waitingPolicy = false;
       if (displayOverrideOwner.get(this.displays) === this) {
         displayOverrideOwner.delete(this.displays);

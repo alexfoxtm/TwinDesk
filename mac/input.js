@@ -43,7 +43,7 @@ class Input {
   inject(msg, target, { swapKeys = this.swapKeys(), meshScreen, scrollAt } = {}) {
     if (!target) return false;
     const route = { bounds: target.bounds };
-    if (meshScreen) route.meshScreen = true;
+    if (meshScreen) route.meshScreen = meshScreen;
     let ev;
     switch (msg.t) {
       case P.T.IN_MOVE:
