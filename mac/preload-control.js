@@ -11,7 +11,7 @@ const ACTIONS = [
   'keepPcAppInDock', 'sendFiles', 'chooseSendFiles', 'setNotifs', 'muteNotifApp', 'allowFullDisk',
   'connectAddress', 'pairWith', 'confirmGuestCode', 'cancelGuestPair', 'forgetHost', 'refreshDiscovery', 'copyText', 'allowPermission', 'skipSetup',
   'connectPhone', 'disconnectPhone', 'disconnect', 'connectAgain', 'setPhone', 'phonePair', 'phoneScreen', 'phoneCamera', 'takePhoto', 'scanDocument', 'phoneListCameras', 'phoneOpenApp', 'phoneCloseView', 'phoneScreenAct', 'phoneRetry', 'phoneInstallFull', 'phoneInstallApps', 'phoneMount', 'phoneUnmount', 'setMount', 'phoneAppMenu',
-  'deviceDo', 'setOverview', 'setChats', 'notifReply', 'adbQr', // the redesign: Overview, General › Overview, Messages, QR codes
+  'deviceDo', 'setOverview', 'setChats', 'adbQr', // the redesign: Overview, General › Overview, Messages, QR codes
   'showFileShelf',
   'webSet', 'webNewCode', 'webAllow', 'webChooseFolder', 'webForget', 'webDisconnect', 'webRename', 'webSendText', 'webSendFiles', 'webChooseFiles', 'webDeleteItem', 'webClearChat', 'webStopScreen', 'webStopCam', 'webShowScr', 'webAudio', 'webRemotePad', 'webOpenItem', 'webSaveItem', 'webCopy', 'webShareSet', 'webShareFolder', // TwinDesk Web (shared/web/webwire.js)
   'copyLiteral',
@@ -23,6 +23,7 @@ const ACTIONS = [
 
 const api = {
   getState: () => ipcRenderer.invoke('getState'),
+  notifReply: (arg) => ipcRenderer.invoke('notifReply', arg).then((ok) => ok === true, () => false),
   googleMessages: (arg) => ipcRenderer.invoke('googleMessages', arg),
   phoneAssets: () => ipcRenderer.invoke('phoneAssets'),
   deckApps: () => ipcRenderer.invoke('deckApps'), // the Deck page's app picker

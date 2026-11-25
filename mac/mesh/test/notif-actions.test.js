@@ -4,12 +4,14 @@
 const assert = require('assert');
 const { EventEmitter } = require('events');
 const Module = require('module');
+const { pathToFileURL } = require('node:url');
 const { Mesh } = require('../../../shared/mesh.js');
 const P = require('../../../shared/protocol.js');
 
 const copied = [];
 const ipcMain = new EventEmitter();
-ipcMain.handle = () => {};
+const handlers = new Map();
+ipcMain.handle = (name, fn) => handlers.set(name, fn);
 const load = Module._load;
 Module._load = function (name) {
   if (name === 'electron') return { ipcMain, clipboard: { writeText: (text) => copied.push(text) } };
@@ -167,7 +169,9 @@ function exactReplyAndPrivateRelay() {
   show(notice, 'second-phone');
   const other = f.notifs.history[0];
   setupIpc({ state: { connect: {}, permissions: {} }, server: new EventEmitter(), notifs: f.notifs });
-  const send = ({ id, from, replySession }) => ipcMain.emit('notifReply', {}, { id, from, replySession, text: 'Fixture reply' });
+  const frame = { url: new URL('../control.html', pathToFileURL(__filename)).href };
+  const event = { sender: { mainFrame: frame }, senderFrame: frame };
+  const send = ({ id, from, replySession }) => handlers.get('notifReply')(event, { id, from, replySession, text: 'Fixture reply' });
   send(old);
   send(other);
   assert.deepStrictEqual(f.sent.map((x) => x.id), ['phone', 'second-phone']);

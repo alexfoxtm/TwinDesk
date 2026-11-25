@@ -3,6 +3,7 @@
 'use strict';
 
 const { ipcMain, shell, app, screen, dialog, clipboard, Menu, systemPreferences } = require('electron');
+const { pathToFileURL } = require('node:url');
 const P = require('../../shared/protocol.js');
 const CL = require('../../shared/cursorlock.js');
 const Crossing = require('../../shared/crossing.js');
@@ -799,7 +800,6 @@ function setupIpc(ctx) {
       if ((ctx.chats && ctx.chats())) (ctx.chats && ctx.chats()).sync();
       ctx.pushState();
     },
-    // A phone chat's notification answered here (its own Reply).
     // Keep history: {do: 'set', save, days} | {do: 'unlock', what} | {do: 'clear'} (shared/histkeeper.js).
     history(r) {
       if (ctx.history && r && typeof r === 'object') ctx.history.act(r);
@@ -807,13 +807,6 @@ function setupIpc(ctx) {
     // Connection › Wireless debugging › Pair with a QR code: on while shown.
     adbQr(on) {
       if (ctx.adbQr) ctx.adbQr(on === true);
-    },
-    notifReply(r) {
-      if (r && typeof r === 'object' && r.chat) return void ((ctx.chats && ctx.chats()) && (ctx.chats && ctx.chats()).reply(String(r.chat), r.text, r.image, r.remove === true, r.from, r.replySession)); // a chat app's conversation (shared/chats.js)
-      if (!r || typeof r !== 'object' || !ctx.notifs) return;
-      if (r.dismiss) return void ctx.notifs.dismiss(String(r.id || '')); // Overview's × (shared/notifacts.js)
-      if (Number.isInteger(r.act)) return void ctx.notifs.act(String(r.id || ''), r.act); // one of its buttons
-      ctx.notifs.reply(String(r.id || ''), r.text, r.from, r.replySession);
     },
     // General › Appearance: { style }, { theme } and/or { accent } ('' follows the system); local only.
     setLook(o) {
@@ -861,6 +854,18 @@ function setupIpc(ctx) {
   };
 
   ipcMain.handle('getState', () => ctx.state);
+  const controlURL = pathToFileURL(`${__dirname}/control.html`).href;
+  ipcMain.handle('notifReply', ({ sender, senderFrame }, r) => {
+    if (!senderFrame || senderFrame !== sender.mainFrame || senderFrame.url.split(/[?#]/, 1)[0] !== controlURL) return false;
+    if (!r || typeof r !== 'object') return false;
+    if (r.chat) {
+      return typeof r.chat === 'string' && ctx.chats?.()?.reply?.(r.chat, r.text, r.image, r.remove === true, r.from, r.replySession) === true;
+    }
+    if (typeof r.id !== 'string' || !r.id) return false;
+    if (r.dismiss) return ctx.notifs?.dismiss?.(r.id) === true;
+    if (Number.isInteger(r.act)) return ctx.notifs?.act?.(r.id, r.act) === true;
+    return ctx.notifs?.reply?.(r.id, r.text, r.from, r.replySession) === true;
+  });
   ipcMain.handle('qrPair', () => (ctx.qrPair ? ctx.qrPair() : { url: '' })); // Connection: the phone pairing QR code's link
   ipcMain.handle('phoneAssets', () => ctx.phone.assetsView());
   ipcMain.handle('deckApps', () => (ctx.deck ? ctx.deck.apps().catch(() => []) : [])); // the Deck page's app picker
