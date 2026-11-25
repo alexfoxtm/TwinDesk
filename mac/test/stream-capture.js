@@ -232,8 +232,10 @@ test('a crashed or dropped capture window still receives stats-gate on the next 
 test('capture errors reach only the current viewer without raw error details', () => {
   for (const Class of [Stream, MeshStream]) {
     const sent = [];
-    const context = { view: {}, server: { current: { deviceId: 'phone' }, sendToClient: (m) => sent.push(m) },
-      getSettings: () => ({ sharing: { on: true } }), emit() {} };
+    const context = Object.assign(Object.create(Class.prototype), {
+      view: {}, server: { current: { deviceId: 'phone' }, sendToClient: (m) => sent.push(m) },
+      getSettings: () => ({ sharing: { on: true } }), emit() {},
+    });
     Class.prototype._setStatus.call(context, 'error: private system diagnostic');
     assert.deepEqual(sent, [{ t: 'stream.stop', reason: 'capture-unavailable' }]);
     Class.prototype._setStatus.call(context, 'starting');

@@ -1,14 +1,15 @@
 // TwinDesk — Copyright (C) 2026 inukaasith, Erdoğan Yeşil. GPL-3.0, see LICENSE.
 // Share screen to several devices on the Mac: a Stream per connected device on a peer bound to it,
 // a choice of its own per device, the active one answers for the single-stream API.
-// Run with: node mac/test/streams.test.js  (NODE_PATH as in CI)
+// Run with: node mac/mesh/test/streams.test.js  (NODE_PATH as in CI)
 'use strict';
 
 const assert = require('assert');
 const { EventEmitter } = require('events');
+const Module = require('module');
 const P = require('../../../shared/protocol.js');
 const { StreamSet } = require('../streams.js');
-const { node, close, waitFor, pairPhone, helloPhone } = require('./lib/mesh.js');
+const { node, close, waitFor, pairPhone, helloPhone, hello } = require('./lib/mesh.js');
 
 const T = P.T;
 const tests = [];
@@ -73,6 +74,158 @@ test('a stream per device, choices of their own, the single-stream API follows t
     assert.ok(!set.table[p2.id]);
   } finally {
     for (const c of clients) { try { c.close(); } catch (_) { /* already */ } }
+    close(A);
+  }
+});
+
+function receiveFixture(A) {
+  const load = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === 'electron') return {
+      ipcMain: Object.assign(new EventEmitter(), { handle() {} }),
+      session: { defaultSession: { setDisplayMediaRequestHandler() {} } },
+    };
+    if (request === '../audiohub.js') return {};
+    return load.call(this, request, parent, isMain);
+  };
+  let Stream;
+  try { ({ Stream } = require('../stream.js')); }
+  finally { Module._load = load; }
+  const settings = { sharing: { on: false, remote: true } };
+  const target = { id: 1, label: 'Built-in', primary: true, pixelWidth: 3024, pixelHeight: 1964 };
+  const displays = Object.assign(new EventEmitter(), {
+    model: () => MODEL, target: () => target, list: () => [target], setOverride() {},
+  });
+  const started = [];
+  const set = new StreamSet({
+    hub: A.hub, server: A.server, displays,
+    make: (peer) => {
+      const stream = new Stream(peer, displays, () => settings, { release() {}, loopback() {} });
+      stream._ensureWindow = async () => {};
+      stream._source = async () => ({ id: 'screen:1:0' });
+      stream._toWindow = (ch, m) => { if (ch === 'start') started.push([peer.id, m.session]); };
+      return stream;
+    },
+  });
+  return { set, settings, started };
+}
+
+async function ipadFixture(A) {
+  const other = await pairPhone(A, { name: 'Android' });
+  await helloPhone(other.client, other);
+  const ipad = await pairPhone(A, { name: 'iPad', os: P.OS.IOS });
+  ipad.client.close();
+  const connect = async () => {
+    const result = await hello(A.port, { ...ipad, name: 'iPad', os: P.OS.IOS });
+    assert.strictEqual(result.reply.t, T.WELCOME);
+    return result.client;
+  };
+  return { other, ipad, connect };
+}
+
+const accept = (client) => client.send({ t: T.SCREEN_POLICY, accept: true, width: 2732, height: 2048 });
+const start = (client) => client.send({ t: T.SCREEN_CTL, share: true, mode: 'mirror' });
+
+test('a non-selected iPad can receive its own screen again after reconnect', async () => {
+  const A = await node('A');
+  try {
+    const { set, settings, started } = receiveFixture(A);
+    const { other, ipad, connect } = await ipadFixture(A);
+
+    const first = await connect();
+    const st = set.byId.get(ipad.id);
+    assert.strictEqual(A.hub.selectedId, other.id);
+    accept(first);
+    await waitFor(() => st.viewer === true, 'iPad policy reached its own Stream');
+    assert.strictEqual(started.length, 0, 'policy alone cannot start sharing that is off');
+    start(first);
+    await waitFor(() => started.length === 1, 'the unselected iPad’s own capture', 800);
+    assert.deepStrictEqual(started.map(([id]) => id), [ipad.id]);
+    await first.until((m) => m.t === T.SCREEN_STATE && m.on);
+    const retiredSocket = st.peer.current.conn;
+
+    assert.strictEqual(A.hub.select(ipad.id), true);
+    first.close();
+    await waitFor(() => !st.active && !st.peer.current, 'iPad sender retired');
+    assert.strictEqual(A.hub.selectedId, other.id);
+    const next = await connect();
+    assert.strictEqual(set.byId.get(ipad.id), st);
+    assert.strictEqual(st.viewer, null, 'the scoped client event reset viewer policy');
+    assert.strictEqual(started.length, 1);
+    await next.until((m) => m.t === T.SCREEN_STATE && !m.on && m.remote);
+    st.peer.route.deliver({ t: T.SCREEN_POLICY, accept: true }, retiredSocket);
+    assert.strictEqual(st.viewer, null, 'retired socket cannot accept for the replacement');
+    accept(next);
+    start(next);
+    await waitFor(() => started.length === 2, 'fresh policy and Start restarted the iPad’s sender');
+    assert.ok(started[1][1] > started[0][1]);
+    assert.strictEqual(next.count(T.STREAM_INFO), 1);
+    st.peer.route.deliver({ t: T.SCREEN_CTL, share: false, close: true }, retiredSocket);
+    assert.ok(st.active, 'retired socket cannot stop the replacement');
+    next.send({ t: T.SCREEN_CTL, share: false, close: true });
+    await waitFor(() => !st.active, 'iPad Stop retired its own sender');
+    const acceptedAgain = new Promise((resolve) => st.peer.once(`t:${T.SCREEN_POLICY}`, resolve));
+    accept(next);
+    await acceptedAgain;
+    await next.until((m) => m.t === T.STREAM_STOP);
+    assert.strictEqual(started.length, 2, 'repeated acceptance does not undo Stop');
+    assert.strictEqual(settings.sharing.on, false);
+    assert.strictEqual(A.hub.selectedId, other.id);
+    assert.strictEqual(other.client.count(T.STREAM_INFO), 0);
+
+    // Stopping the iPad's separate share must not veto a later Mac Share Screen action.
+    settings.sharing.on = true;
+    await set.restart('sharing on');
+    assert.ok(st.active, 'the Mac can start global sharing after the iPad stops a scoped share');
+
+    // A Stop during an active global share applies until that share ends.
+    const stopped = next.until((m) => m.t === T.STREAM_STOP);
+    next.send({ t: T.SCREEN_CTL, share: false });
+    await stopped;
+    await waitFor(() => !st.active, 'iPad can stop receiving the current global share');
+    await set.restart('bitrate changed');
+    assert.strictEqual(st.active, null, 'a restart of the same global share must respect the iPad Stop');
+    settings.sharing.on = false;
+    set.stop('off');
+    settings.sharing.on = true;
+    await set.restart('sharing on');
+    assert.ok(st.active, 'the next Mac share is independent of the previous stop');
+  } finally {
+    close(A);
+  }
+});
+
+test('remote revocation and a Mac target set to off deny the iPad’s scoped requests', async () => {
+  const A = await node('A');
+  try {
+    const { set, settings, started } = receiveFixture(A);
+    const { ipad, connect } = await ipadFixture(A);
+    const client = await connect();
+    const st = set.byId.get(ipad.id);
+    const request = async () => {
+      const delivered = new Promise((resolve) => st.peer.once(`t:${T.SCREEN_CTL}`, resolve));
+      start(client);
+      await delivered;
+    };
+    await request();
+    assert.strictEqual(st.active, null, 'Start requires live viewer acceptance');
+    accept(client);
+    await request();
+    await waitFor(() => started.length === 1, 'iPad capture before revoke');
+
+    settings.sharing.remote = false;
+    set.syncScopedScreens();
+    assert.strictEqual(st.active, null, 'remote-start revocation retires the sender');
+    await client.until((m) => m.t === T.STREAM_STOP);
+    await request();
+    assert.strictEqual(st.active, null, 'remote-start revocation stops and denies the request');
+
+    settings.sharing.remote = true;
+    assert.strictEqual(set.setTarget(ipad.id, { mode: 'none' }).ok, true);
+    await request();
+    assert.strictEqual(st.active, null, 'Mac’s per-device Off overrides remote start');
+    assert.strictEqual(started.length, 1);
+  } finally {
     close(A);
   }
 });
