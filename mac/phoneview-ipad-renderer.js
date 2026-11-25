@@ -14,7 +14,7 @@ window.PhoneViewIPad = (api, I, canvas, displayedFrame) => {
   button.onclick = () => api.send({ t: 'ipadControl', on: state !== 'starting' && state !== 'connected' });
   const copy = {
     starting: ['Connecting…'], connected: ['Connected'], picture: ['Waiting for video', 'Wait for the iPad’s screen to appear.'],
-    setup: ['Set up XCUITest', 'Set TWINDESK_IPAD_WDA_XCTESTRUN to the staged runner’s .xctestrun file.'],
+    setup: ['Set up XCUITest', 'Stage the signed XCUITest runner in this TwinDesk profile’s ipad-control folder.'],
     device: ['iPad unavailable', 'Check the iPad’s developer pairing in Xcode.'],
     developerMode: ['Developer Mode off', 'On the iPad, open Settings › Privacy & Security › Developer Mode.'],
     route: ['No developer route', 'Check the associated iPad’s paired Wi-Fi connection in Xcode, or use trusted USB.'],

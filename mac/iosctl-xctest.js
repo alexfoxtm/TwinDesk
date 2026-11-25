@@ -13,8 +13,85 @@ const { Mux } = require('../shared/iosnet');
 
 const exec = promisify(execFile);
 const RUNNER_ID = 'net.waypair.twindesk.ipadcontrol.wda';
+const RUNNER_TEAM = '5H4D7574Z4';
+const HOST = 'Debug-iphoneos/WebDriverAgentRunner-Runner.app';
+const TEST = 'PlugIns/WebDriverAgentRunner.xctest';
+const FRAMEWORK = 'Debug-iphoneos/WebDriverAgentLib.framework';
 const UDID = /^[\da-f]{8}-[\da-f]{16}$/i;
 const BUILD_PIN = '30aac069ecf7891fe1673482d3e962b181e714b5';
+const REJECTED_INPUT = new Map(Object.entries({
+  'invalid argument': 'invalid_argument',
+  'invalid element state': 'invalid_element_state',
+  'element not interactable': 'element_not_interactable',
+  'no such element': 'no_such_element',
+  'stale element reference': 'stale_element_reference',
+  'move target out of bounds': 'move_target_out_of_bounds',
+  'unknown error': 'xctest_rejected', // Pinned WDA uses this for failed action synthesis.
+}));
+
+function dictionary(value) {
+  return !!value && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function runnerTemplate(profile) {
+  return process.env.TWINDESK_IPAD_WDA_XCTESTRUN || path.join(profile, 'ipad-control', 'WebDriverAgentRunner.xctestrun');
+}
+
+async function stagedRunner(root) {
+  const paths = [HOST, `${HOST}/${TEST}`, FRAMEWORK].map((entry) => path.join(root, entry));
+  for (const entry of paths) {
+    if (await fs.realpath(entry) !== entry || !(await fs.stat(entry)).isDirectory()) throw new Error('setup');
+  }
+  return paths[0];
+}
+
+function prepareManifest(run, address, port, marker) {
+  const runner = run?.WebDriverAgentRunner;
+  const expected = [`__TESTROOT__/${FRAMEWORK}`, `__TESTROOT__/${HOST}`, `__TESTROOT__/${HOST}/${TEST}`];
+  if (!dictionary(run) || !dictionary(run.__xctestrun_metadata__) || run.__xctestrun_metadata__.FormatVersion !== 1
+      || Object.keys(run).length !== 2 || !dictionary(runner) || runner.IsUITestBundle !== true
+      || runner.IsXCTRunnerHostedTestBundle !== true || runner.TestHostBundleIdentifier !== `${RUNNER_ID}.xctrunner`
+      || runner.TestHostPath !== expected[1] || runner.TestBundlePath !== `__TESTHOST__/${TEST}`
+      || runner.UITargetAppPath != null || runner.UITargetAppBundleIdentifier != null
+      || !Array.isArray(runner.CommandLineArguments) || runner.CommandLineArguments.length
+      || !Array.isArray(runner.DependentProductPaths) || runner.DependentProductPaths.length !== expected.length
+      || !expected.every((entry) => runner.DependentProductPaths.includes(entry))
+      || !dictionary(runner.EnvironmentVariables) || !dictionary(runner.TestingEnvironmentVariables)) throw new Error('setup');
+
+  // Reconstruct the test specification from the fields needed for this single runner.
+  // In particular no manifest-provided environment or additional paths reach XCTest.
+  return {
+    __xctestrun_metadata__: { FormatVersion: 1 },
+    WebDriverAgentRunner: {
+      BlueprintName: 'WebDriverAgentRunner', ProductModuleName: 'WebDriverAgentRunner', IsUITestBundle: true,
+      IsXCTRunnerHostedTestBundle: true, UseUITargetAppProvidedByTests: true, TestHostPath: expected[1],
+      TestHostBundleIdentifier: `${RUNNER_ID}.xctrunner`, TestBundlePath: `__TESTHOST__/${TEST}`,
+      DependentProductPaths: expected, CommandLineArguments: [], SystemAttachmentLifetime: 'keepNever',
+      TestingEnvironmentVariables: {}, UITargetAppEnvironmentVariables: {},
+      EnvironmentVariables: { USE_IP: address, USE_PORT: String(port), MJPEG_SERVER_PORT: '0',
+        WDA_PRODUCT_BUNDLE_IDENTIFIER: RUNNER_ID, UPGRADE_TIMESTAMP: marker },
+    },
+  };
+}
+
+class WdaInputRejected extends Error {
+  constructor(code) {
+    super('WDA rejected input');
+    this.code = code;
+  }
+}
+
+function parseWdaResponse(status, route, payload) {
+  const session = /^\/session\/([\w-]+)(?:\/|$)/.exec(route)?.[1];
+  if (!dictionary(payload) || !Object.hasOwn(payload, 'value') || !Object.hasOwn(payload, 'sessionId')
+      || (session && payload.sessionId !== session)) throw new Error('Invalid WDA response');
+  const error = payload.value?.error;
+  if (status === 200 && error == null && !(payload.status > 0)) return payload;
+  if (session && [400, 404, 500].includes(status) && REJECTED_INPUT.has(error)) {
+    throw new WdaInputRejected(REJECTED_INPUT.get(error));
+  }
+  throw new Error('WDA request failed');
+}
 
 function pairedWifiAddress(detail, udid) {
   const connection = detail?.connectionProperties;
@@ -140,11 +217,8 @@ function requestWda(agent, method, route, body, signal, timeout) {
       });
       res.on('end', () => {
         try {
-          if (res.statusCode !== 200) throw new Error('WDA rejected command');
-          if (route === '/wda/shutdown') return resolve();
-          const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          if (payload.value?.error || payload.status > 0) throw new Error('WDA rejected command');
-          resolve(payload);
+          if (route === '/wda/shutdown' && res.statusCode === 200) return resolve();
+          resolve(parseWdaResponse(res.statusCode, route, JSON.parse(Buffer.concat(chunks).toString('utf8'))));
         } catch (error) { reject(error); }
       });
     });
@@ -155,40 +229,51 @@ function requestWda(agent, method, route, body, signal, timeout) {
 
 // Xcode owns installation and XCTest. Existing usbmux takes precedence. A Wi-Fi-only device
 // must have a CoreDevice-attested point-to-point route. Each session pins that one address pair.
-async function startXCTest(udid, signal) {
-  const template = process.env.TWINDESK_IPAD_WDA_XCTESTRUN;
-  if (!template || !path.isAbsolute(template)) throw new Error('setup');
+async function startXCTest(udid, signal, template = process.env.TWINDESK_IPAD_WDA_XCTESTRUN) {
+  if (!template || !path.isAbsolute(template) || path.extname(template) !== '.xctestrun') throw new Error('setup');
   if (!UDID.test(udid)) throw new Error('device');
   const device = (await developerIPads(signal)).find((d) => d.udid === udid);
   if (!device) throw new Error('device');
   if (!device.developerMode) throw new Error('developerMode');
   const marker = `${BUILD_PIN}:${randomUUID()}`;
   const port = randomInt(54000, 64000);
-  const { stdout } = await exec('/usr/bin/plutil', ['-convert', 'json', '-o', '-', template], { signal, timeout: 3000 });
-  const run = JSON.parse(stdout);
-  const runner = run.WebDriverAgentRunner;
-  if (run.__xctestrun_metadata__?.FormatVersion !== 1 || Object.keys(run).length !== 2 ||
-      runner?.TestHostBundleIdentifier !== `${RUNNER_ID}.xctrunner`) throw new Error('setup');
-  const env = runner.EnvironmentVariables;
-  if (!env || runner.CommandLineArguments?.length) throw new Error('setup');
+  let root, run;
+  try {
+    const requestedRoot = path.dirname(template);
+    if (!(await fs.lstat(requestedRoot)).isDirectory()) throw new Error('setup');
+    root = await fs.realpath(requestedRoot);
+    template = path.join(root, path.basename(template));
+    if (!(await fs.lstat(template)).isFile()) throw new Error('setup');
+    const signedHost = await stagedRunner(root);
+    const signer = `anchor apple generic and certificate leaf[subject.OU] = "${RUNNER_TEAM}"`;
+    const requirement = (bundle) => `-R=identifier "${bundle}" and ${signer}`;
+    await Promise.all([
+      exec('/usr/bin/codesign', ['--verify', '--deep', '--strict', requirement(`${RUNNER_ID}.xctrunner`), signedHost], { signal, timeout: 4000 }),
+      exec('/usr/bin/codesign', ['--verify', '--strict', requirement(RUNNER_ID), path.join(root, FRAMEWORK)], { signal, timeout: 4000 }),
+    ]);
+    const { stdout } = await exec('/usr/bin/plutil', ['-convert', 'json', '-o', '-', template], { signal, timeout: 3000 });
+    run = JSON.parse(stdout);
+  } catch { throw new Error('setup'); }
   const target = await muxDevice(udid, AbortSignal.any([signal, AbortSignal.timeout(2000)])).catch(() => null);
   signal.throwIfAborted();
   const wifi = target ? null : await pairedWifi(udid, signal).catch(() => { throw new Error('route'); });
-  delete env.ENABLE_AUTOMATIC_SCREENSHOTS;
-  delete env.ENABLE_AUTOMATIC_SCREEN_RECORDINGS;
-  Object.assign(env, { USE_IP: wifi?.address || '127.0.0.1', USE_PORT: String(port), MJPEG_SERVER_PORT: '0',
-    WDA_PRODUCT_BUNDLE_IDENTIFIER: RUNNER_ID, UPGRADE_TIMESTAMP: marker });
+  const manifest = prepareManifest(run, wifi?.address || '127.0.0.1', port, marker);
 
   // __TESTROOT__ in the generated manifest is relative to the xctestrun file.
-  const runFile = path.join(path.dirname(template), `.twindesk-${randomUUID()}.xctestrun`);
+  const runFile = path.join(root, `.twindesk-${randomUUID()}.xctestrun`);
   const resultPath = runFile.replace(/\.xctestrun$/, '.xcresult');
+  let ownsManifest = false;
   try {
-    await fs.writeFile(runFile, JSON.stringify(run), { flag: 'wx', mode: 0o600, signal });
+    const file = await fs.open(runFile, 'wx', 0o600);
+    ownsManifest = true;
+    try { await file.writeFile(JSON.stringify(manifest), { signal }); }
+    finally { await file.close(); }
     await exec('/usr/bin/plutil', ['-convert', 'xml1', runFile], { signal, timeout: 3000 });
     signal.throwIfAborted();
-  } catch (error) {
-    await fs.rm(runFile, { force: true });
-    throw error;
+  } catch {
+    if (ownsManifest) await fs.rm(runFile, { force: true });
+    signal.throwIfAborted();
+    throw new Error('setup');
   }
 
   const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
@@ -218,9 +303,18 @@ async function startXCTest(udid, signal) {
     }, callback);
   };
 
-  const child = spawn('/usr/bin/xcrun', ['xcodebuild', 'test-without-building', '-xctestrun', runFile,
-    '-destination', `platform=iOS,id=${udid}`, '-parallel-testing-enabled', 'NO',
-    '-resultBundlePath', resultPath], { stdio: 'ignore' });
+  // xcodebuild strips the TEST_RUNNER_ prefix and passes those values into XCTest.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('TEST_RUNNER_')));
+  let child;
+  try {
+    child = spawn('/usr/bin/xcrun', ['xcodebuild', 'test-without-building', '-xctestrun', runFile,
+      '-destination', `platform=iOS,id=${udid}`, '-parallel-testing-enabled', 'NO',
+      '-only-testing:WebDriverAgentRunner/UITestingUITests/testRunner', '-collect-test-diagnostics', 'never',
+      '-resultBundlePath', resultPath], { stdio: 'ignore', env });
+  } catch (error) {
+    await fs.rm(runFile, { force: true });
+    throw error;
+  }
   const exited = new Promise((resolve) => {
     child.once('error', resolve);
     child.once('exit', resolve);
@@ -243,4 +337,5 @@ async function startXCTest(udid, signal) {
   };
 }
 
-module.exports = { developerIPads, startXCTest, RUNNER_ID, pairedWifiAddress, wifiSource };
+module.exports = { developerIPads, startXCTest, RUNNER_ID, pairedWifiAddress, wifiSource,
+  runnerTemplate, stagedRunner, prepareManifest, parseWdaResponse, WdaInputRejected };

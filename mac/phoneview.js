@@ -13,6 +13,7 @@
 'use strict';
 
 const path = require('path');
+const { existsSync } = require('node:fs');
 const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
@@ -27,8 +28,8 @@ const { MirrorSave } = require('../shared/mirror-save.js');
 const { DockStub, addToDock } = require('./dockstub');
 const { AppPanel } = require('./app-panel.js');
 const { startApp } = require('../shared/appstart.js');
-const { pairedIPad, matchesIPad, stopIPad, handleIPad } = require('./phoneview-ipad');
-const { stopAllIPadControl } = require('./iosctl');
+const { pairedIPad, matchesIPad, stopIPad, handleIPad, installIPadQuitDrain } = require('./phoneview-ipad');
+const { runnerTemplate } = require('./iosctl-xctest');
 
 const T = P.T;
 const PHONEVIEW_BAR = 32; // #stage inset in phoneview.css
@@ -36,20 +37,8 @@ const IPAD_CONTROL_BAR = 32;
 const NOTIFIED_MS = 60000; // how long a clicked notification waits for the unlock and wireless debugging
 let nextId = 1;
 let quitting = false; // a camera's window hides on close, but not on quit
-let ipadQuit = null;
-app.on('before-quit', () => { quitting = true; ipadQuit ||= stopAllIPadControl(); });
-app.on('will-quit', (event) => {
-  if (!ipadQuit) return;
-  event.preventDefault();
-  const resume = () => {
-    if (!ipadQuit) return;
-    ipadQuit = null;
-    clearTimeout(timer);
-    app.quit();
-  };
-  const timer = setTimeout(resume, 3000);
-  ipadQuit.then(resume);
-});
+app.on('before-quit', () => { quitting = true; });
+installIPadQuitDrain(app);
 
 class PhoneViews extends EventEmitter {
   constructor({ bridge, phone, getSettings, server, fileSend }) {
@@ -260,7 +249,7 @@ class PhoneViews extends EventEmitter {
     const owner = this._iosOwner();
     const ipadOwner = pairedIPad(this);
     const pending = this.openingIos = {};
-    const usb = ipadOwner && process.env.TWINDESK_IPAD_WDA_XCTESTRUN ? [] : await iosusb.list();
+    const usb = ipadOwner && existsSync(this.ipadRunnerTemplate()) ? [] : await iosusb.list();
     if (this.openingIos !== pending) return;
     this.openingIos = null;
     if (this._iosOwner() !== owner || (ipadOwner && !matchesIPad(this, ipadOwner)) || this._focusScreen(o)) return;
@@ -297,6 +286,10 @@ class PhoneViews extends EventEmitter {
     const owner = v.ios.owner;
     this.close(v.id);
     this._openIosNative({}, owner);
+  }
+
+  ipadRunnerTemplate() {
+    return runnerTemplate(app.getPath('userData'));
   }
 
   // The phone's camera (Camera's switch, or the phone's Camera page; scrcpy's camera source, Android

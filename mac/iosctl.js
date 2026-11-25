@@ -3,7 +3,7 @@
 
 const { performance } = require('node:perf_hooks');
 const { setTimeout: delay } = require('node:timers/promises');
-const { startXCTest, RUNNER_ID } = require('./iosctl-xctest');
+const { startXCTest, RUNNER_ID, WdaInputRejected } = require('./iosctl-xctest');
 
 const owners = new Map();
 const MAX_QUEUE = 12;
@@ -57,8 +57,8 @@ function keyCommand(m) {
 }
 
 class IpadControl {
-  constructor({ udid, owns, canInput = () => true, status, log = console.log, start = startXCTest }) {
-    Object.assign(this, { udid, owns, canInput, status, log, start });
+  constructor({ udid, owns, canInput = () => true, status, log = console.log, start = startXCTest, template }) {
+    Object.assign(this, { udid, owns, canInput, status, log, start, template });
     this.abort = new AbortController();
     this.queue = [];
   }
@@ -70,7 +70,7 @@ class IpadControl {
     const deadline = AbortSignal.any([this.abort.signal, AbortSignal.timeout(START_MS)]);
     let code = 'startup';
     try {
-      this.transport = await this.start(this.udid, deadline);
+      this.transport = await this.start(this.udid, deadline, this.template);
       this.transport.exited.then(() => { if (!this.abort.signal.aborted) this.stop(this.session ? 'lost' : 'startup'); });
       let verified = false;
       while (this.owns() && !deadline.aborted) {
@@ -99,7 +99,13 @@ class IpadControl {
       const id = r.value?.sessionId;
       if (typeof id !== 'string' || !/^[\w-]{1,80}$/.test(id) || !this.owns()) throw new Error(code);
       deadline.throwIfAborted();
-      this.session = `/session/${id}`;
+      const session = `/session/${id}`;
+      const settings = await this.transport.request('POST', `${session}/appium/settings`, {
+        settings: { animationCoolOffTimeout: 0 },
+      }, deadline);
+      if (settings.value?.animationCoolOffTimeout !== 0 || !this.owns()) throw new Error(code);
+      deadline.throwIfAborted();
+      this.session = session;
       this.status('connected');
       this.heartbeat = setInterval(() => this.enqueue('heartbeat', () => this.send('GET', '')), 3000);
     } catch (error) {
@@ -175,7 +181,13 @@ class IpadControl {
         if (item.kind !== 'heartbeat' && !this.canInput()) continue;
         if (performance.now() - item.queued > 1600) continue;
         const began = performance.now();
-        const result = await item.run();
+        let result;
+        try { result = await item.run(); }
+        catch (error) {
+          if (!(error instanceof WdaInputRejected) || item.kind === 'heartbeat') throw error;
+          if (!this.abort.signal.aborted) this.log(`[ipad control] ${item.kind} rejected ${error.code}`);
+          continue;
+        }
         if (result && !this.abort.signal.aborted && item.kind !== 'heartbeat') {
           this.log(`[ipad control] ${item.kind} ${Math.round(performance.now() - began)}ms`);
         }

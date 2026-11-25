@@ -2,7 +2,8 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const { IpadControl } = require('./iosctl');
+const { existsSync } = require('node:fs');
+const { IpadControl, stopAllIPadControl } = require('./iosctl');
 const { developerIPads } = require('./iosctl-xctest');
 
 function pairedIPad(views, peer = views.server.current) {
@@ -38,7 +39,8 @@ async function startIPad(views, v, dialog) {
   if (!session?.req || session.req.destroyed || session.closed || !v.size || !v.ipadGeometry) {
     return ipadState(views, v, 'picture');
   }
-  if (!process.env.TWINDESK_IPAD_WDA_XCTESTRUN) return ipadState(views, v, 'setup');
+  const template = views.ipadRunnerTemplate();
+  if (!existsSync(template)) return ipadState(views, v, 'setup');
   const contents = win.webContents;
   const lease = { abort: new AbortController(), stream: session.req, generation: randomUUID() };
   const owns = () => v.ipadLease === lease && views.views.get(v.id) === v && !v.ending
@@ -81,7 +83,7 @@ async function startIPad(views, v, dialog) {
       views.bridge.emit('save');
     }
     if (!owns()) return;
-    const controller = new IpadControl({ udid, owns, canInput: () => !win.isDestroyed() && win.isFocused(), status: (code) => {
+    const controller = new IpadControl({ udid, owns, template, canInput: () => !win.isDestroyed() && win.isFocused(), status: (code) => {
       if (v.ipadLease !== lease) return;
       if (code === 'connected') ipadState(views, v, code, lease.generation);
       else stopIPad(views, v, code);
@@ -117,4 +119,25 @@ function handleIPad(views, v, m, dialog) {
   return m.t !== 'resetVideo' && m.t !== 'pin';
 }
 
-module.exports = { pairedIPad, matchesIPad, stopIPad, handleIPad };
+function installIPadQuitDrain(app, stop = stopAllIPadControl) {
+  let pending;
+  let draining = false;
+  let resumed = false;
+  app.on('before-quit', () => { if (!resumed) pending ||= stop(); });
+  app.on('will-quit', (event) => {
+    if (!pending || resumed) return;
+    event.preventDefault();
+    if (draining) return;
+    draining = true;
+    const resume = () => {
+      if (resumed) return;
+      resumed = true;
+      clearTimeout(timer);
+      app.quit();
+    };
+    const timer = setTimeout(resume, 3000);
+    pending.then(resume, resume);
+  });
+}
+
+module.exports = { pairedIPad, matchesIPad, stopIPad, handleIPad, installIPadQuitDrain };

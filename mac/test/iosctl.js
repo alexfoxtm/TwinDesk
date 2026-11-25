@@ -2,10 +2,15 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const { test } = require('node:test');
 const { IpadControl } = require('../iosctl');
-const { RUNNER_ID, pairedWifiAddress, wifiSource } = require('../iosctl-xctest');
-const { handleIPad, pairedIPad } = require('../phoneview-ipad');
+const { RUNNER_ID, pairedWifiAddress, wifiSource, prepareManifest, stagedRunner,
+  parseWdaResponse, WdaInputRejected } = require('../iosctl-xctest');
+const { handleIPad, pairedIPad, installIPadQuitDrain } = require('../phoneview-ipad');
 
 const udid = '12345678-1234567890ABCDEF';
 const tick = () => new Promise(setImmediate);
@@ -24,6 +29,7 @@ function wda({ marker = 'expected', window = { x: 0, y: 0, width: 820, height: 1
       if (path === '/status') return { sessionId: null, value: { ready: true, device: 'ipad',
         build: { productBundleIdentifier: RUNNER_ID, upgradedAt: marker } } };
       if (path === '/session') return { value: { sessionId: 'own-session' } };
+      if (path.endsWith('/appium/settings')) return { value: { animationCoolOffTimeout: 0 } };
       if (path.endsWith('/window/rect')) return { value: { ...window } };
       return { value: null };
     },
@@ -63,6 +69,9 @@ test('verified WDA session maps upright portrait and landscape video, gestures, 
   await controller.connect();
   assert.deepEqual(statuses, ['connected']);
   assert(transport.sealed);
+  assert.deepEqual(calls[2], { method: 'POST', path: '/session/own-session/appium/settings', body: {
+    settings: { animationCoolOffTimeout: 0 },
+  } });
   const portrait = { frame: { width: 820, height: 1180 }, source: { w: 1640, h: 2360 } };
   const portraitRect = { left: 100, top: 64, width: 410, height: 590 };
   const tap = { op: 'gesture', ...frameArgs(portrait.frame, portraitRect), points: [{ x: 305, y: 359 }] };
@@ -156,6 +165,126 @@ test('rejects a wrong runner, duplicate owner, stale generation and reconnect du
   rectReply({ value: { x: 0, y: 0, width: 820, height: 1180 } });
   await controller.stopping;
   assert.equal(v.ipadLease, null);
-  assert.deepEqual(calls.map((c) => c.path), ['/status', '/session', '/wda/shutdown']);
+  assert.deepEqual(calls.map((c) => c.path), ['/status', '/session', '/session/own-session/appium/settings', '/wda/shutdown']);
   assert.equal(transport.stops, 1);
+});
+
+test('drops a rejected action, keeps its session, and stops on invalid session or heartbeat failure', async (t) => {
+  const status = [], logs = [];
+  const rejection = { sessionId: 'own-session', value: { error: 'invalid element state', message: 'PRIVATE' } };
+  const { calls, transport } = wda();
+  const request = transport.request;
+  let keyAttempts = 0;
+  transport.request = async (method, route, body, signal) => {
+    if (route.endsWith('/wda/keys')) {
+      keyAttempts++;
+      if (keyAttempts === 1) return parseWdaResponse(400, route, rejection);
+      return parseWdaResponse(404, route, { ...rejection, value: { error: 'invalid session id' } });
+    }
+    return request(method, route, body, signal);
+  };
+  const controller = new IpadControl({ udid, owns: () => true, status: (s) => status.push(s),
+    log: (s) => logs.push(s), start: async () => transport });
+  t.after(() => controller.stop());
+  await controller.connect();
+  controller.input({ op: 'key', down: true, key: 'F' });
+  controller.input({ op: 'home' });
+  await tick();
+  assert.equal(keyAttempts, 1);
+  assert.equal(calls.at(-1).path, '/session/own-session/wda/pressButton');
+  assert.deepEqual(status, ['connected']);
+  assert.equal(logs[0], '[ipad control] key rejected invalid_element_state');
+  controller.input({ op: 'key', down: true, key: 'Q' });
+  await tick();
+  await controller.stopping;
+  assert.equal(keyAttempts, 2);
+  assert.deepEqual(status, ['connected', 'lost']);
+  assert(logs.every((entry) => !entry.includes('PRIVATE')));
+  for (const args of [[403, rejection], [400, { ...rejection, sessionId: 'wrong' }], [200, {}]]) {
+    assert.throws(() => parseWdaResponse(args[0], '/session/own-session/actions', args[1]),
+      (error) => !(error instanceof WdaInputRejected));
+  }
+
+  const heartbeat = wda();
+  const heartbeatState = [];
+  const next = new IpadControl({ udid, owns: () => true, log() {}, status: (s) => heartbeatState.push(s),
+    start: async () => heartbeat.transport });
+  t.after(() => next.stop());
+  await next.connect();
+  next.enqueue('heartbeat', () => parseWdaResponse(400, '/session/own-session', rejection));
+  await tick();
+  await next.stopping;
+  assert.deepEqual(heartbeatState, ['connected', 'lost']);
+});
+
+test('only one iPad quit drain runs on completion, timeout, or repeated quit', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const outcome of ['no jobs', 'completed', 'timeout']) {
+    const app = new EventEmitter();
+    let quitCalls = 0, completedQuits = 0, cleanupCalls = 0, finish;
+    const pending = new Promise((resolve) => { finish = resolve; });
+    app.quit = () => {
+      quitCalls++;
+      let canceled = false;
+      app.emit('before-quit');
+      app.emit('will-quit', { preventDefault() { canceled = true; } });
+      if (!canceled) completedQuits++;
+    };
+    installIPadQuitDrain(app, () => { cleanupCalls++; return outcome === 'no jobs' ? null : pending; });
+    app.quit();
+    if (outcome !== 'no jobs') {
+      app.quit();
+      assert.equal(completedQuits, 0);
+      if (outcome === 'timeout') t.mock.timers.tick(3000);
+      else { finish(); await tick(); }
+      assert.equal(quitCalls, 3);
+      finish();
+      await tick();
+      t.mock.timers.tick(3000);
+      assert.equal(quitCalls, 3);
+    }
+    assert.equal(cleanupCalls, 1);
+    assert.equal(completedQuits, 1);
+  }
+});
+
+test('staged XCTest runner discards both envs and rejects executable overrides or path escapes', async (t) => {
+  const host = '__TESTROOT__/Debug-iphoneos/WebDriverAgentRunner-Runner.app';
+  const suite = 'PlugIns/WebDriverAgentRunner.xctest';
+  const library = '__TESTROOT__/Debug-iphoneos/WebDriverAgentLib.framework';
+  const unsafe = { USE_IP: '0.0.0.0', ENABLE_AUTOMATIC_SCREEN_RECORDINGS: 'YES',
+    ENABLE_AUTOMATIC_SCREENSHOTS: 'YES', DYLD_INSERT_LIBRARIES: '/tmp/untrusted.dylib', USE_PORT: '8100' };
+  const template = {
+    __xctestrun_metadata__: { FormatVersion: 1 }, WebDriverAgentRunner: {
+      IsUITestBundle: true, IsXCTRunnerHostedTestBundle: true, TestHostBundleIdentifier: `${RUNNER_ID}.xctrunner`,
+      TestHostPath: host, TestBundlePath: `__TESTHOST__/${suite}`, DependentProductPaths: [library, host, `${host}/${suite}`],
+      EnvironmentVariables: unsafe, TestingEnvironmentVariables: unsafe, UITargetAppEnvironmentVariables: unsafe,
+      CommandLineArguments: [],
+    },
+  };
+  const build = (manifest) => prepareManifest(manifest, '127.0.0.1', 54000, 'fixture');
+  const prepared = build(template).WebDriverAgentRunner;
+  assert.deepEqual(prepared.EnvironmentVariables, { USE_IP: '127.0.0.1', USE_PORT: '54000', MJPEG_SERVER_PORT: '0',
+    WDA_PRODUCT_BUNDLE_IDENTIFIER: RUNNER_ID, UPGRADE_TIMESTAMP: 'fixture' });
+  assert.deepEqual(prepared.TestingEnvironmentVariables, {});
+  assert.deepEqual(prepared.UITargetAppEnvironmentVariables, {});
+  assert.equal(prepared.SystemAttachmentLifetime, 'keepNever');
+  for (const override of [{ EnvironmentVariables: [] }, { TestingEnvironmentVariables: [] },
+    { TestHostPath: '__TESTROOT__/../other.app' }, { TestBundlePath: '__TESTHOST__/../elsewhere.xctest' },
+    { CommandLineArguments: ['--port', '8100'] }, { UITargetAppPath: '/Applications/other.app' },
+    { DependentProductPaths: [host, `${host}/${suite}`, '/tmp/other.framework'] }]) {
+    assert.throws(() => build({ ...template, WebDriverAgentRunner: { ...template.WebDriverAgentRunner, ...override } }), /setup/);
+  }
+
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'twindesk-wda-fixture-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const stagedHost = path.join(root, host.replace('__TESTROOT__/', ''));
+  const stagedSuite = path.join(stagedHost, suite);
+  await fs.mkdir(stagedSuite, { recursive: true });
+  await fs.mkdir(path.join(root, library.replace('__TESTROOT__/', '')));
+  assert.equal(await stagedRunner(root), stagedHost);
+  const outsideHost = path.join(root, 'another-test-bundle');
+  await fs.rename(stagedSuite, outsideHost);
+  await fs.symlink(outsideHost, stagedSuite, 'dir');
+  await assert.rejects(stagedRunner(root), /setup/);
 });
