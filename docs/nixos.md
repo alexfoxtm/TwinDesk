@@ -193,9 +193,11 @@ once after turning System-wide on, and again after you pair or forget a device. 
 <folder>` for a settings folder elsewhere.) Until then the log (`journalctl -u twindesk-fullkvm`) says
 `System-wide: no machine node (nothing copied to /var/lib/twindesk)`.
 
-**Undo it.** Set `fullKvm = false;` and rebuild: the service, `/etc/twindesk`, the account and
-`hardware.uinput` (if nothing else wants it) go. `/var/lib/twindesk` stays (it holds a copy of your pairings):
-`sudo rm -rf /var/lib/twindesk`.
+**Undo it.** Set `fullKvm = false;` and rebuild to remove the service, `/etc/twindesk`, the
+account, and `hardware.uinput` if no other service needs it. Switching to Signed in
+(`fullKvmMode = "simple"`) or disabling Full KVM leaves the machine copy of your identity and
+pairings in `/var/lib/twindesk`. To clear that copy after rebuilding, run
+`sudo rm -rf /var/lib/twindesk`. Your regular TwinDesk settings stay in `~/.config/MacShare`.
 
 **Wiring from another flake**: `nix/fullkvm.nix` is `{ self, lib }: { package, module, … }`; the
 flake's `nixosModules.twindesk` imports `module`, so nothing else is needed.
