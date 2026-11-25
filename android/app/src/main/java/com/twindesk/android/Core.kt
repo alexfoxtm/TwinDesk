@@ -484,6 +484,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
             if (h == null) onInvite(f.copy(invited = true))
             return false
         }
+        if (link.isNetemPeer(h)) return false
         Log.i("TwinDesk", "${f.name} opened a Bluetooth pipe: connecting")
         stopReturn()
         resumeUntil = 0
@@ -498,6 +499,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (link.host?.id == id && link.wired && link.state in setOf("connected", "connecting")) return
         if (peer.connected) { Log.i("TwinDesk", "USB: ${name.ifEmpty { id }} found, but another phone is connected"); return }
         val h = store.hosts().find { it.id == id }
+        if (h != null && link.isNetemPeer(h)) return
         if (h == null) {
             if (link.pair != null && link.pair?.phase != "failed") { Log.i("TwinDesk", "USB: already pairing"); return }
             Log.i("TwinDesk", "USB: pairing with ${name.ifEmpty { id }} through the cable")

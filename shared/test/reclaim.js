@@ -29,10 +29,10 @@ function socket(server) {
   return { ws, ctx, sent };
 }
 function send(server, sock, msg) { server._onMessage(sock.ctx, Buffer.from(JSON.stringify(msg)), false, sock.ws); }
-function hello(server, reclaim = false, id = ANDROID) {
+function hello(server, reclaim = false, id = ANDROID, extra = {}) {
   const sock = socket(server);
   send(server, sock, { t: 'hello', v: P.PROTOCOL_VERSION, id, name: id, os: id === ANDROID ? P.OS.ANDROID : P.OS.WIN, token: TOKEN,
-    ...(reclaim ? { rc: 1, resume: '0', fx: 1, fx2: 1 } : {}) });
+    ...(reclaim ? { rc: 1, resume: '0', fx: 1, fx2: 1 } : {}), ...extra });
   return sock;
 }
 function error(sock) { return sock.sent.find((m) => m.t === P.T.ERROR); }
@@ -231,7 +231,28 @@ async function failurePath(dir, tls) {
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-'));
 execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=test', '-keyout', path.join(root, 'key'), '-out', path.join(root, 'cert')], { stdio: 'ignore' });
 const tls = { keyPem: fs.readFileSync(path.join(root, 'key')), certPem: fs.readFileSync(path.join(root, 'cert')) };
+
+function netemWithoutTestTurn() {
+  const { server } = host(path.join(root, 'netem'), tls);
+  const usbIce = { iceServers: [{ urls: 'turn:127.0.0.1:47802?transport=tcp', credential: 'fixture' }] };
+  server.iceFor = () => usbIce;
+  try {
+    const testPhone = hello(server, false, ANDROID, { netem: 1 });
+    assert.strictEqual(testPhone.sent[0].t, P.T.WELCOME);
+    assert.strictEqual(testPhone.ctx.ice, null);
+    for (const t of [P.T.RTC_OFFER, P.T.AUDIO_OFFER]) {
+      assert.ok(server.send(testPhone.ctx, { t }));
+      assert.strictEqual(testPhone.sent.find(m => m.t === t).ice, undefined);
+    }
+    const usbPhone = hello(server);
+    assert.strictEqual(usbPhone.sent[0].t, P.T.WELCOME);
+    assert.strictEqual(usbPhone.ctx.ice, usbIce);
+    assert.ok(server.send(usbPhone.ctx, { t: P.T.RTC_OFFER }));
+    assert.deepStrictEqual(usbPhone.sent.find(m => m.t === P.T.RTC_OFFER).ice, usbIce);
+  } finally { server.close(); }
+}
+
 (async () => {
-  try { await mainPath(path.join(root, 'main'), tls); await failurePath(path.join(root, 'fail'), tls); console.log('reclaim: ok'); }
+  try { netemWithoutTestTurn(); await mainPath(path.join(root, 'main'), tls); await failurePath(path.join(root, 'fail'), tls); console.log('reclaim: ok'); }
   finally { fs.rmSync(root, { recursive: true, force: true }); }
 })().catch((e) => { console.error(e); process.exitCode = 1; });

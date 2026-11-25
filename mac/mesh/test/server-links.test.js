@@ -97,7 +97,7 @@ test('scoped media offer follows only the configured paired WSS session', async 
     clients.push(phone.client);
     phone.client.close();
     await waitFor(() => {
-      const ctx = { authed: true, ws: {}, netemRequested: true,
+      const ctx = { authed: true, ws: { readyState: 1 }, netemRequested: true,
         deviceId: phoneId, os: P.OS.ANDROID, transport: 'ip', address: '127.0.0.1' };
       mac.server.netemIceFor(ctx);
       return !!ctx.netemIce;
@@ -127,9 +127,29 @@ test('scoped media offer follows only the configured paired WSS session', async 
     mac.server.send(peer, { t: P.T.AUDIO_OFFER });
     assert.equal((await accepted.client.until(m => m.t === P.T.AUDIO_OFFER)).ice, undefined);
 
+    // With the test relay unavailable, a valid opted-in HELLO must not inherit USB TURN.
+    const testIceFor = mac.server.netemIceFor;
+    mac.server.netemIceFor = () => {};
+    wired.turnOk = true;
+    const noTestRelay = await dial(phone.token, true);
+    assert.equal(noTestRelay.reply.t, P.T.WELCOME);
+    assert.equal(peer.netemIce, null, 'the retired WSS session loses its test TURN offer');
+    const noRelayPeer = mac.server.clients.get(phoneId);
+    assert.equal(noRelayPeer.netemIce, undefined);
+    assert.equal(noRelayPeer.ice, null);
+    for (const t of [P.T.RTC_OFFER, P.T.AUDIO_OFFER]) {
+      mac.server.send(noRelayPeer, { t });
+      assert.equal((await noTestRelay.client.until(m => m.t === t)).ice, undefined);
+    }
+
+    mac.server.netemIceFor = testIceFor;
     const normal = await dial(phone.token, false);
     assert.equal(normal.reply.t, P.T.WELCOME);
-    assert.equal(mac.server.clients.get(phoneId).ice, null);
+    const usbPeer = mac.server.clients.get(phoneId);
+    assert.equal(usbPeer.ice.iceServers[0].urls, 'turn:127.0.0.1:47802?transport=tcp');
+    mac.server.send(usbPeer, { t: P.T.RTC_OFFER });
+    assert.equal((await normal.client.until(m => m.t === P.T.RTC_OFFER)).ice.iceServers[0].urls,
+      'turn:127.0.0.1:47802?transport=tcp');
   } finally {
     if (saved === undefined) delete process.env.TWINDESK_NETEM_PHONE;
     else process.env.TWINDESK_NETEM_PHONE = saved;

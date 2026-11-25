@@ -142,7 +142,8 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         q.async {
             let saved = self.pairedNetemHost(h)
             let route = saved == nil ? nil : NetemRoute.configured
-            if route != nil && ble { return }
+            // Recheck after queueing so stale work can't dial an ordinary endpoint for the test pair.
+            if self.list == "hosts", h.os == "mac", NetemRoute.configured?.peer == h.id, route == nil || ble { return }
             let address = route?.address ?? h.address
             if !force, self.ws != nil, self.host?.id == h.id, self.address == address, self.viaBle == ble, self.state == "connecting" || self.state == "connected" { return }
             self.closeSocket()

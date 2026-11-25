@@ -318,7 +318,7 @@ class Server extends EventEmitter {
     ctx.name = name;
     ctx.os = os;
     this.netemIceFor?.(ctx);
-    ctx.ice = !ctx.netemIce && this.iceFor ? this.iceFor(ctx) : null; // USB's RTCConfiguration
+    ctx.ice = !ctx.netemRequested && this.iceFor ? this.iceFor(ctx) : null; // USB's RTCConfiguration
     ctx.resumeKey = P.randomHex(16);
     // Fast files (shared/fastfile.js): when its hello asked and this app serves them, a token for them.
     ctx.fx = ctx.fxWanted && this.fxOn ? P.randomHex(16) : '';

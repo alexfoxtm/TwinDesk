@@ -11,15 +11,19 @@ function netemTurn(listener) {
 
   const turn = new TurnThread({ port: 43200, allocationsOnly: true });
   let ready = false;
-  listener.once('close', () => { ready = false; turn.stop(); });
-  turn.start().then(() => { ready = true; }, () => console.error('[netem] test TURN listener unavailable'));
+  let closed = false;
+  listener.once('close', () => { closed = true; ready = false; turn.stop(); });
+  turn.start().then(() => { ready = !closed; }, () => {
+    if (!closed) console.error('[netem] test TURN listener unavailable');
+  });
   return (ctx) => {
-    if (!ready || !ctx.authed || !ctx.ws || ctx.released || !ctx.netemRequested || ctx.deviceId !== phone ||
-        !P.isPhoneOs(ctx.os) || ctx.transport !== 'ip' || ctx.address !== '127.0.0.1') return;
     const owner = ctx.ws;
+    const open = () => owner && owner.readyState === (owner.OPEN ?? 1);
+    if (!ready || !ctx.authed || !open() || ctx.released || !ctx.netemRequested || ctx.deviceId !== phone ||
+        !P.isPhoneOs(ctx.os) || ctx.transport !== 'ip' || ctx.address !== '127.0.0.1') return;
     const ice = { ...turn.ice(), netem: true };
     Object.defineProperty(ctx, 'netemIce', {
-      get: () => ready && ctx.ws === owner && !ctx.released ? ice : null,
+      get: () => ready && ctx.ws === owner && open() && !ctx.released ? ice : null,
     });
   };
 }

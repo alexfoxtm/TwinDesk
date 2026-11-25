@@ -97,7 +97,7 @@ final class Core: ObservableObject, LinkEvents {
                 resumeLater = nil
                 if link.state == "idle", link.pair == nil, !peer.connected {
                     NSLog("TwinDesk: on screen: reconnecting")
-                    if usb.computerId == h.id, let fresh = store.host(h.id) { connectWired(fresh) } else { connect(store.host(h.id) ?? h) }
+                    reconnect(h)
                 }
             }
         }
@@ -138,11 +138,15 @@ final class Core: ObservableObject, LinkEvents {
         discovery.refresh()
         // Back in front on Bluetooth (the network session dropped): onto the cable or the network again.
         if link.viaBle, link.connected, let h = link.host {
+            if NetemRoute.configured?.peer == h.id {
+                if !peer.connected { reconnect(h) }
+                return
+            }
             if usb.computerId == h.id, let fresh = store.host(h.id) { connectWired(fresh) } else { offBle() }
         }
         if link.state == "idle", link.pair == nil, let id = store.lastHostId, let h = store.host(id),
            store.flag("autoConnect", true), !held, !peer.connected {
-            if usb.computerId == id { connectWired(h) } else { connect(h) }
+            reconnect(h)
         }
     }
 
@@ -514,13 +518,22 @@ final class Core: ObservableObject, LinkEvents {
             return
         }
         let until = resumeUntil
+        reconnect(h, preferBluetooth: true)
+        resumeUntil = until
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.resume() }
+    }
+
+    private func reconnect(_ h: Computer, preferBluetooth: Bool = false) {
+        // A delayed callback must still hold the saved pair before dialing its test endpoint.
+        if NetemRoute.configured?.peer == h.id {
+            if let saved = link.pairedNetemHost(h) { connect(saved) }
+            return
+        }
         if usb.computerId == h.id, let fresh = store.host(h.id) { connectWired(fresh) }
         // Dropped and linked over Bluetooth: back through it at once (offBle moves it onto the network
         // again as soon as discovery sees the computer there).
-        else if ble.has(h.id) { connectBle(store.host(h.id) ?? h) }
+        else if preferBluetooth && ble.has(h.id) { connectBle(store.host(h.id) ?? h) }
         else { connect(store.host(h.id) ?? h) }
-        resumeUntil = until
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.resume() }
     }
 
     private func retryLater(_ h: Computer) {

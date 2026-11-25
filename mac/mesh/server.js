@@ -341,7 +341,7 @@ class Server extends EventEmitter {
     ctx.os = os;
     ctx.authSeq = ++this.authSeq;
     this.netemIceFor?.(ctx);
-    ctx.ice = !ctx.netemIce && this.iceFor ? this.iceFor(ctx) : null; // USB's RTCConfiguration
+    ctx.ice = !ctx.netemRequested && this.iceFor ? this.iceFor(ctx) : null; // USB's RTCConfiguration
     ctx.resumeKey = P.randomHex(16);
     this.clients.set(deviceId, ctx);
     // The input lane (shared/inputlane.js): a lane of its own, when its hello asked, over the network only.

@@ -87,9 +87,11 @@ class Link(
     private data class NetemDial(val route: NetemRoute, val socket: WebSocket, val started: Long)
     @Volatile private var netemDial: NetemDial? = null
 
+    internal fun isNetemPeer(h: Host): Boolean =
+        hostsKey == "hosts" && h.os == "mac" && NetemRoute.configured?.peer == h.id
+
     internal fun pairedNetemHost(h: Host): Host? {
-        val route = NetemRoute.configured ?: return null
-        if (hostsKey != "hosts" || route.peer != h.id || h.os != "mac") return null
+        if (!isNetemPeer(h)) return null
         return store.hosts(hostsKey).firstOrNull { it.id == h.id && it.fp == h.fp && it.token == h.token && it.os == "mac" }
     }
 
@@ -262,14 +264,15 @@ class Link(
     // admit: reclaim only. Checked here, on the link thread, before this dial can replace a socket,
     // and again in hello(). The generation Core captured is already stale if Disconnect ran first.
     fun connect(h: Host, usbPort: Int = 0, blePort: Int = 0, reclaim: Boolean = false, admit: (() -> Boolean)? = null) = run {
-        if (admit != null && !admit()) return@run
-        parting = false
         val viaUsb = usbPort > 0
         val viaBle = blePort > 0
         val wantReclaim = reclaim && !viaUsb && !viaBle
         val saved = pairedNetemHost(h)
-        val testRoute = NetemRoute.configured?.takeIf { saved != null && !viaUsb && !viaBle }
-        if (saved != null && testRoute == null) return@run // Keep the opted-in pair on the test endpoint.
+        // A stale queued dial for the test peer must not fall through to an ordinary endpoint.
+        if (isNetemPeer(h) && (saved == null || viaUsb || viaBle)) return@run
+        val testRoute = NetemRoute.configured?.takeIf { saved != null }
+        if (admit != null && !admit()) return@run
+        parting = false
         if (ws != null && host?.id == h.id && wired == viaUsb && ble == viaBle && reclaimHello == wantReclaim && (state == "connecting" || state == "connected")) return@run
         closeSocket()
         dialAdmit = if (wantReclaim) admit else null

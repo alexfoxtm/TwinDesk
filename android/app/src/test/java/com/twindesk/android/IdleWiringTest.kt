@@ -138,6 +138,50 @@ class IdleWiringTest {
         return host
     }
 
+    @Test fun alternateEventsLeaveTheOptedInReturnAlone() {
+        val route = NetemRoute.configured
+        org.junit.Assume.assumeNotNull(route)
+        val core = core()
+        val link = core.link
+        val executor = link.read("exec") as ScheduledExecutorService
+        val h = Host(route!!.peer, "Fixture Mac", "mac", "192.0.2.1", Proto.PORT, "fixture-pin", "fixture-token", 0)
+        val returnPrefs = context.getSharedPreferences("phone-return", Context.MODE_PRIVATE)
+        val consent = JSONObject().put("id", h.id).put("fp", h.fp).toString()
+        val deadline = System.currentTimeMillis() + 10_000L
+        val generation = core.read("returnGeneration")
+        core.store.putHost(h)
+        core.write("resumeUntil", deadline)
+        returnPrefs.edit().putString("host", consent).commit()
+        try {
+            var admit: (() -> Boolean)? = null
+            core.returnTick({ true }) { _, canDial -> admit = canDial }
+            val pending = checkNotNull(admit)
+            val bleOpen = Core::class.java.getDeclaredMethod("onServeOpen", Found::class.java, Int::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+            val f = Found(h.id, h.name, h.os, h.address, h.port, h.fp, 0, invited = true)
+            assertEquals(false, bleOpen.invoke(core, f, 43197))
+            core.connectWired(h.id, 43197, "fixture-nonce", h.name)
+            assertEquals(generation, core.read("returnGeneration"))
+            assertEquals(deadline, core.read("resumeUntil"))
+            assertEquals(consent, returnPrefs.getString("host", null))
+            assertEquals("", core.read("wiredNonce"))
+            assertTrue(pending())
+
+            // A callback already queued before Core's guard still cannot unset Stop on Link's thread.
+            link.invalidateReturn()
+            link.connect(h, usbPort = 43197)
+            link.connect(h, blePort = 43197)
+            link.connect(h.copy(token = "retired-fixture-token"))
+            executor.submit {}.get(3, TimeUnit.SECONDS)
+            assertEquals(true, link.read("parting"))
+            assertEquals("idle", link.state)
+        } finally {
+            executor.shutdownNow()
+            core.bg.shutdownNow()
+            core.timers.shutdownNow()
+        }
+    }
+
     @Suppress("DEPRECATION")
     @Test fun returnUsesRouteBeforeApplyingAwayBackoff() {
         val core = core()
