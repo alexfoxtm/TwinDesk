@@ -191,6 +191,10 @@ class Peer {
     return p && { deviceId: p.macId, os: p.os, role: 'host', transport: this.link.transport === 'ble' ? 'ble' : 'ip', address: p.address };
   }
 
+  outbound() {
+    return this.screenSocket();
+  }
+
   // The authenticated physical connection carrying this viewer's screen session.
   screenSocket() {
     const ctx = this.hosting ? this.server.current : null;
