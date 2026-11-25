@@ -10,6 +10,50 @@
   const tr = (text, vars) => window.I18n ? window.I18n.t(text, vars)
     : text.replace(/\{(\w+)\}/g, (m, k) => vars && Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m);
 
+// Same normalization as Android's MessageChat fingerprint and sameDestination.
+const destination = (value) => {
+  const address = String(value || '').trim();
+  if (!/^\+?[0-9() .-]+$/.test(address)) return '';
+  const digits = address.replace(/\D/g, '');
+  return digits.length && digits.length <= 15 ? (address.startsWith('+') ? '+' : '') + digits : '';
+};
+const sameDestination = (a, b) => {
+  const left = destination(a);
+  const right = destination(b);
+  return !!left && !!right && (left === right ||
+    (left.replace(/\D/g, '').length >= 10 && right.replace(/\D/g, '').length >= 10 && left.slice(-10) === right.slice(-10)));
+};
+const messageText = (text) => String(text || '').replace(/\r\n/g, '\n').trim();
+const sameMessage = (a, b) => !!messageText(a) && messageText(a) === messageText(b);
+const coversText = (rows, t) => {
+  const candidates = rows.filter((c) => t.addrs?.length === 1 && !c.group && c.addrs?.length === 1 &&
+    sameDestination(t.addrs[0], c.addrs[0]));
+  return candidates.length === 1 && candidates[0].at >= t.at &&
+    (Math.floor(candidates[0].at / 1000) === Math.floor(t.at / 1000) && sameMessage(t.snippet, candidates[0].snippet) ||
+      candidates[0].msgs.some((m) => Math.floor(m.at / 1000) === Math.floor(t.at / 1000) && sameMessage(t.snippet, m.text)));
+};
+const coversStructured = (rows, fallback) => {
+  const latest = fallback.msgs[fallback.msgs.length - 1];
+  if (!latest) return false;
+  if (latest.match) {
+    const candidates = rows.filter((c) => c.fingerprints?.some((m) =>
+      m.at === latest.at && m.matches.includes(latest.match)));
+    return candidates.length === 1;
+  }
+  return !latest.me && coversNotification(rows, fallback.name, latest.text, latest.at, 1000);
+};
+const coversNotification = (rows, title, text, at, slack) => {
+  if (!title || !text || !at) return false;
+  const candidates = rows.filter((c) => {
+    const nameMatches = destination(title) ? !c.group && c.addrs?.length === 1 && sameDestination(title, c.addrs[0])
+      : c.name?.trim() === title.trim();
+    if (!nameMatches) return false;
+    return Math.abs(c.at - at) <= slack && sameMessage(c.snippet, text) ||
+      c.msgs.some((m) => !m.me && Math.abs(m.at - at) <= slack && sameMessage(m.text, text));
+  });
+  return candidates.length === 1;
+};
+
 // A picture picked here as a JPEG data: URL, at most 1600 px and about 4 MB (the phone makes it
 // fit the carrier's MMS limit). On white: a transparent PNG's clear parts don't turn black.
 const shrink = (file) => new Promise((resolve, reject) => {
@@ -191,7 +235,7 @@ UI.tab({
     chatScroll.append(chatBubbles);
     const chatBox = el('textarea', { class: 'hub-compose', rows: 1, placeholder: tr('Reply'), attrs: { 'aria-label': tr('Reply') } });
     const chatSend = UI.button(tr('Send'), () => chatReply(), 'primary');
-    chatBox.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chatReply(); } });
+    chatBox.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); chatReply(); } });
     const chatNote = el('div', { class: 'hint hub-group-note' });
     const chatConv = el('div', { class: 'hub-conv' });
     const chatPicOk = () => { const t = chatThreads(UI.state).find((x) => x.key === chatOpen); return !!(t && t.msgs && t.pic); };
@@ -203,17 +247,104 @@ UI.tab({
     const chatLayout = el('div', { class: 'card hub-msgs' }, [el('div', { class: 'hub-side' }, [el('div', { class: 'hub-side-head' }, [chatSearch]), chatList]), chatConv, chatEmpty]);
     let chatOpen = ''; // app|title
     let chatKey = '';
+    const gmAct = (op, args = {}, gm = UI.state?.googleMessages) =>
+      api.googleMessages && gm ? api.googleMessages({ op, owner: gm.owner, ...args }).catch(() => false) : Promise.resolve(false);
+    let gmBusy = false;
+    let gmWipeError = false;
+    let gmHistory = '';
+    let gmRead = '';
+    let gmTypingAt = 0;
+    let gmSend = null;
+    let gmError = '';
+    let gmOwner = '';
+    const gmPhotos = new Map();
+    const gmConnect = UI.button(tr('Connect Google Messages'), async () => {
+      const gm = UI.state?.googleMessages;
+      gmWipeError = false;
+      gmBusy = true;
+      paintAccount(gm);
+      await gmAct('connect');
+      gmBusy = false;
+      paintAccount(UI.state?.googleMessages);
+    }, 'small');
+    const gmDisconnect = UI.button(tr('Disconnect'), async () => {
+      gmBusy = true;
+      paintAccount(UI.state?.googleMessages);
+      gmWipeError = !(await gmAct('disconnect'));
+      gmBusy = false;
+      paintAccount(UI.state?.googleMessages);
+    }, 'small');
+    const gmRow = api.googleMessages && UI.row(tr('Google Messages'), '', [gmConnect, gmDisconnect]);
+    const gmCard = gmRow && UI.card('', [gmRow]);
+    gmRow?.hint?.setAttribute('role', 'status');
+    function paintAccount(gm) {
+      if (!gmCard) return;
+      gmCard.hidden = !gm;
+      if (!gm) return;
+      const busy = ['connecting', 'signing-in', 'confirm'].includes(gm.state);
+      gmConnect.hidden = busy || gm.state === 'connected' || gm.state === 'offline';
+      gmConnect.disabled = !gm.enabled || gmBusy;
+      gmDisconnect.disabled = gmBusy;
+      const labels = {
+        connected: tr('Connected'),
+        disconnected: gm.enabled ? tr('Disconnected') : tr('Turn on Messages to connect.'),
+        connecting: tr('Connecting to Google Messages…'),
+        'signing-in': tr('Sign in in the TwinDesk window.'),
+        confirm: tr('Tap {emoji} in Google Messages on your phone.', { emoji: gm.emoji }),
+        offline: tr('Disconnected. Waiting for Google Messages to reconnect.'),
+        'connection-error': tr('Disconnected. Check Google Messages on your phone and try again.'),
+        'helper-error': tr('Disconnected. The Google Messages helper could not start.'),
+        'keychain-error': tr('Disconnected. TwinDesk could not access the Google Messages Keychain item.'),
+      };
+      gmRow.setHint?.(gmWipeError ? tr('TwinDesk could not clear the Google Messages session. Try Disconnect again.') : labels[gm.state]);
+    }
+    const paired = (s) => {
+      const gm = s?.googleMessages;
+      if (gm?.state !== 'connected' || hiddenApps.has('rcs')) return [];
+      return gm.rows.map((c) => {
+        const history = gm.history?.chat === c.id ? gm.history : null;
+        return {
+          ...c, key: 'google:' + c.id, pkg: 'com.google.android.apps.messaging', app: 'rcs', google: true,
+          name: c.name || c.addrs?.join(', ') || tr('Google Messages'), pic: c.reply,
+          msgs: history?.items || [], loaded: !!history?.loaded, more: !!history?.more, typing: !!history?.typing,
+        };
+      }).filter((c) => !isGone(c.key, c.at));
+    };
+    function openChat(t) {
+      if (chatOpen !== t.key && (t.google || chatOpen.startsWith('google:'))) {
+        chatBox.value = '';
+        chatPic.clear();
+        gmHistory = '';
+        gmRead = '';
+        gmTypingAt = 0;
+        gmError = '';
+        gmPhotos.clear();
+      }
+      chatOpen = t.key;
+      paintChats(UI.state);
+    }
+    function markGoogleRead(t) {
+      if (page.hidden || !t.loaded) return;
+      const last = [...t.msgs].reverse().find((m) => !m.me);
+      if (!last || last.id === gmRead) return;
+      gmRead = last.id;
+      gmAct('read', { chat: t.id, message: last.id });
+    }
+
     // The conversations: the phone's own (s.chats), else from the notifications, one per app and
     // title (the sender or the group).
     const synced = (s) => !!(s && Array.isArray(s.chats));
     function chatThreads(s) {
+      const google = paired(s);
       const own = synced(s) ? s.chats.map((c) => ({ key: c.key, pkg: c.app, avatar: c.avatar || '', app: appOf(c.app) || 'other', name: appOf(c.app) ? c.name || c.appName : [c.name, c.appName].filter(Boolean).join(' · '), group: !!c.group, reply: !!c.reply, pic: !!c.pic, at: c.at, msgs: c.items || [] })) : [];
       const by = new Map();
       for (const h of ((s && s.notifs) || {}).history || []) {
         const app = appOf(h.app);
         // Skip RCS from history only once the phone is delivering structured messaging conversations.
         // Windows, Linux and older phones have no socket, so they keep the previous history fallback.
-        if (!app || (s.chatsMessaging ? (app === 'rcs' || synced(s)) : (synced(s) && app !== 'rcs'))) continue;
+        if (!app || (app !== 'rcs' && synced(s))) continue;
+        if (app === 'rcs' && s.chatsMessaging) continue;
+        if (h.app === 'com.google.android.apps.messaging' && coversNotification(google, h.title, h.body, h.at, 120000)) continue;
         if (h.live || BUSY.test(h.body || '') || BUSY.test(h.title || '')) continue; // the app at work, not a message
         const key = app + '|' + (h.title || h.appName);
         const t = by.get(key) || { key, pkg: h.app, avatar: h.avatar || '', app, name: h.title || h.appName, items: [], at: 0 };
@@ -221,7 +352,9 @@ UI.tab({
         t.at = Math.max(t.at, h.at);
         by.set(key, t);
       }
-      return own.concat([...by.values()]).filter((t) => (t.app !== 'rcs' || !!(s.hub && s.hub.messages)) &&
+      const uncovered = own.filter((t) => t.pkg !== 'com.google.android.apps.messaging' ||
+        !coversStructured(google, t));
+      return google.concat(uncovered, [...by.values()]).filter((t) => (t.app !== 'rcs' || !!(s.hub && s.hub.messages)) &&
         !hiddenApps.has(t.app) && !isGone(t.key, t.at)).sort((a, b) => b.at - a.at);
     }
     // A chat app's notice that isn't a message: "Sending video…", "Deleting chats… 100%".
@@ -230,12 +363,31 @@ UI.tab({
     function snippetOf(t) {
       if (!t.msgs) return (t.items[0] && t.items[0].body) || '';
       const m = t.msgs[t.msgs.length - 1];
+      if (!m && t.google) return t.snippet || '';
       return m ? m.me ? tr('You: {message}', { message: m.text }) : t.group && m.from ? tr('{sender}: {message}', { sender: m.from, message: m.text }) : m.text : '';
     }
-    function chatReply() {
+    async function chatReply() {
       const t = chatThreads(UI.state).find((x) => x.key === chatOpen);
       const text = chatBox.value.trim();
       const image = chatPic.get();
+      if (t?.google) {
+        if (!t.reply || (!text && !image) || gmSend) return;
+        const gm = UI.state.googleMessages;
+        const request = {};
+        gmSend = request;
+        gmError = '';
+        paintChats(UI.state, true);
+        const ok = await gmAct('send', { chat: t.id, text: image ? '' : text, image }, gm);
+        if (gmSend !== request) return;
+        gmSend = null;
+        if (chatOpen !== t.key || UI.state.googleMessages?.owner !== gm.owner) return;
+        if (ok) {
+          if (image && chatPic.get() === image) chatPic.clear();
+          if (!image && chatBox.value.trim() === text) chatBox.value = '';
+        } else gmError = tr('Google Messages could not confirm the send. Check the conversation before retrying.');
+        paintChats(UI.state, true);
+        return;
+      }
       if (t && t.msgs && t.pic && image && api.notifReply) {
         api.notifReply({ chat: t.key, text, image });
         chatBox.value = '';
@@ -264,10 +416,18 @@ UI.tab({
     function paintChats(s, force) {
       if (!s) return;
       if (force) chatKey = '';
-      const on = !!(s.ui && s.ui.chats);
-      chatsSw.set(on);
+      const gm = s.googleMessages;
+      if (gm?.owner !== gmOwner || gm?.state !== 'connected') {
+        gmOwner = gm?.owner;
+        gmHistory = '';
+        gmRead = '';
+        gmPhotos.clear();
+      }
+      paintAccount(gm);
+      const on = !!s.ui?.chats || gm?.state === 'connected';
+      chatsSw.set(!!s.ui?.chats);
       pills.hidden = !on;
-      chatsCard.hidden = on || !api.setChats;
+      chatsCard.hidden = !!s.ui?.chats || !api.setChats;
       if (!on && pill !== 'texts') pill = 'texts';
       const all = chatThreads(s);
       if (chatsRow.setHint) chatsRow.setHint(chatsHint(!!(s && s.chatsMessaging)));
@@ -283,15 +443,18 @@ UI.tab({
       layout.hidden = pill !== 'texts' || !UI.hubReady(s, 'messages');
       if (pill === 'texts') return;
       const shown = all.filter((t) => (pill === 'all' || t.app === pill) && (matches(t.name, snippetOf(t)) || t.key === chatOpen));
-      const sum = (t) => (t.msgs ? [t.msgs.length, t.reply, t.pic, t.msgs.map((m) => m.id || m.pic || '').join()] : [t.items.length, t.items.map((h) => (h.replies || []).length)]);
+      const sum = (t) => t.google
+        ? [t.at, t.snippet, t.reply, t.loaded, t.more, t.typing, t.msgs.map((m) => [m.id, m.text, m.receipt, m.photos])]
+        : (t.msgs ? [t.msgs.length, t.reply, t.pic, t.msgs.map((m) => m.id || m.pic || '').join()] : [t.items.length, t.items.map((h) => (h.replies || []).length)]);
       const k = JSON.stringify([pill, chatOpen, query, shown.map((t) => [t.key, t.at, sum(t), !!t.avatar]), pill === 'all' ? threads.map((t) => t.id + t.at) : 0, (s.notifs || {}).receive, synced(s), Object.keys((s.notifs || {}).historyIcons || {}).length]);
       if (k === chatKey) return;
       chatKey = k;
       // The list: chats, and in All the texts too (opening one goes to Texts).
       const snippet = snippetOf;
-      const rows = shown.map((t) => ({ at: t.at, el: threadRow(t.name, t.at, (APP_NAME[t.app] || '') + ' · ' + snippet(t), t.key === chatOpen, () => { chatOpen = t.key; paintChats(UI.state); }, t.avatar, t.pkg) }));
+      const rows = shown.map((t) => ({ at: t.at, el: threadRow(t.name, t.at, (APP_NAME[t.app] || '') + ' · ' + snippet(t), t.key === chatOpen, () => openChat(t), t.avatar, t.pkg) }));
       if (pill === 'all') {
         for (const t of visibleThreads()) {
+          if (coversText(all.filter((c) => c.google), t)) continue;
           rows.push({ at: t.at || 0, el: threadRow(t.name || (t.addrs || []).join(', '), t.at, tr('Texts · {message}', { message: t.snippet || '' }), false, () => { chosePill = true; pill = 'texts'; paintChats(UI.state); openThread(t.id); }, t.photo) });
         }
       }
@@ -302,8 +465,19 @@ UI.tab({
       chatConv.hidden = !t;
       chatEmpty.hidden = !!t;
       if (!t) return;
+      if (t.google && !t.loaded && gmHistory !== t.key) {
+        gmHistory = t.key;
+        gmError = '';
+        gmAct('history', { chat: t.id }).then((ok) => {
+          if (!ok && gmHistory === t.key && chatOpen === t.key && UI.state.googleMessages?.state === 'connected') {
+            gmError = tr('Could not load Google Messages history.');
+            paintChats(UI.state, true);
+          }
+        });
+      }
+      if (t.google) markGoogleRead(t);
       const del = UI.button(tr('Delete'), () => {
-        if (t.msgs && api.notifReply) api.notifReply({ chat: t.key, remove: true }); // off the list kept here (shared/chats.js)
+        if (t.msgs && !t.google && api.notifReply) api.notifReply({ chat: t.key, remove: true }); // off the list kept here (shared/chats.js)
         forget(t.key, t.at); // and from notifications (an older phone): until a newer message
         chatOpen = '';
         paintChats(UI.state, true);
@@ -312,14 +486,40 @@ UI.tab({
       del.title = tr('Delete this chat from the list here (it stays on the phone, and comes back with a new message)');
       chatHead.replaceChildren(avatar(t.name, t.avatar, t.pkg), el('div', { class: 'hub-conv-title' }, [el('div', { class: 'hub-conv-name', text: t.name }), el('div', { class: 'hint', text: t.group ? tr('{app} · Group', { app: APP_NAME[t.app] || '' }) : (APP_NAME[t.app] || '') })]), del);
       const msgs = [];
+      if (t.google && t.more) msgs.push(UI.button(tr('Earlier messages'), async () => {
+        if (!(await gmAct('earlier', { chat: t.id })) && chatOpen === t.key) {
+          gmError = tr('Could not load earlier messages.');
+          paintChats(UI.state, true);
+        }
+      }, 'small'));
+      if (t.google && !t.loaded && gmError) msgs.push(UI.button(tr('Retry history'), () => {
+        gmHistory = '';
+        paintChats(UI.state, true);
+      }, 'small'));
       let lastDay = '';
       for (const m of t.msgs || []) {
         const day = new Date(m.at).toDateString();
         if (day !== lastDay) { lastDay = day; msgs.push(el('div', { class: 'hub-day', text: UI.clock(m.at) })); }
         msgs.push(el('div', { class: `hub-bubble ${m.me ? 'out' : 'in'}`, title: new Date(m.at).toLocaleString() }, [
           t.group && !m.me && m.from ? el('div', { class: 'hub-from', text: m.from }) : null,
+          ...(t.google ? (m.photos || []).map((part) => {
+            const key = JSON.stringify([t.id, m.id, part]);
+            const picture = (src) => el('img', { class: 'hub-pic', src, alt: tr('Picture') });
+            if (gmPhotos.has(key)) return picture(gmPhotos.get(key));
+            return UI.button(tr('Load photo'), async () => {
+              const gm = UI.state.googleMessages;
+              const data = await gmAct('photo', { chat: t.id, message: m.id, part }, gm);
+              if (chatOpen !== t.key || UI.state.googleMessages?.owner !== gm.owner || UI.state.googleMessages?.state !== 'connected') return;
+              if (typeof data === 'string') {
+                gmPhotos.set(key, data);
+                if (gmPhotos.size > 8) gmPhotos.delete(gmPhotos.keys().next().value);
+              } else gmError = tr('Could not load the photo.');
+              paintChats(UI.state, true);
+            }, 'small');
+          }) : []),
           m.pic ? el('div', { class: 'hub-text', text: tr('Picture') }) : null,
           m.text ? el('div', { class: 'hub-text', text: m.text }) : null,
+          m.receipt ? el('div', { class: 'hub-status', text: m.receipt === 'read' ? tr('Read') : tr('Delivered') }) : null,
           m.pic && m.pic !== 'sent' ? el('div', { class: 'hub-status', text: m.pic === 'sending' ? tr('Sending…') : m.pic === 'opened' ? tr('Open on the phone: tap Send there') : m.error ? tr('Not sent: {error}', { error: tr(m.error) }) : tr('Not sent') }) : null,
         ]));
       }
@@ -327,16 +527,31 @@ UI.tab({
         msgs.push(el('div', { class: 'hub-bubble in' }, [el('div', { text: h.body || h.subtitle || '' }), el('div', { class: 'hub-status', text: UI.clock(h.at) })]));
         for (const r of h.replies || []) msgs.push(el('div', { class: 'hub-bubble out' }, [el('div', { text: r.text }), el('div', { class: 'hub-status', text: UI.clock(r.at) })]));
       }
+      if (t.google && t.typing) msgs.push(el('div', { class: 'hint', text: tr('Typing…'), attrs: { role: 'status' } }));
+      if (t.google && gmError) msgs.push(el('div', { class: 'hint', text: gmError, attrs: { role: 'status' } }));
+      const wasAtBottom = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 40;
       chatBubbles.replaceChildren(...msgs);
-      chatScroll.scrollTop = chatScroll.scrollHeight;
-      const canReply = (t.msgs ? t.reply || t.pic : t.items.some((h) => h.reply)) && !!api.notifReply;
+      if (!t.google || wasAtBottom) chatScroll.scrollTop = chatScroll.scrollHeight;
+      const canReply = t.google ? t.loaded && t.reply : (t.msgs ? t.reply || t.pic : t.items.some((h) => h.reply)) && !!api.notifReply;
       chatCompose.hidden = !canReply;
       chatNote.hidden = canReply;
+      chatSend.disabled = !!(t.google && gmSend);
       chatPic.show(!!(t.msgs && t.pic));
-      chatNote.textContent = t.msgs ? tr('Reply here once the phone shows this chat’s notification again.') : tr('Answer this one on the phone: its notification has no Reply.');
+      if (t.google) {
+        chatNote.textContent = t.loaded ? tr('This conversation is read-only.') : gmError ? '' : tr('Loading conversation…');
+      } else chatNote.textContent = t.msgs ? tr('Reply here once the phone shows this chat’s notification again.') : tr('Answer this one on the phone: its notification has no Reply.');
     }
 
-    body.append(top.el, pills, appsPanel, layout, chatLayout, chatsCard); // the messages first, the setting under them
+    chatBox.addEventListener('input', () => {
+      if (!chatBox.value.trim() || Date.now() - gmTypingAt < 4000) return;
+      const t = paired(UI.state).find((c) => c.key === chatOpen);
+      if (!t?.loaded || !t.reply) return;
+      gmTypingAt = Date.now();
+      gmAct('typing', { chat: t.id });
+    });
+    body.append(top.el);
+    if (gmCard) body.append(gmCard);
+    body.append(pills, appsPanel, layout, chatLayout, chatsCard);
     chatLayout.hidden = true;
 
     let threads = [];
@@ -533,6 +748,8 @@ UI.tab({
     UI.onShown(page, (shown) => {
       if (!shown) return;
       api.hub({ do: 'seen' });
+      const t = UI.state && paired(UI.state).find((c) => c.key === chatOpen);
+      if (t) markGoogleRead(t);
       if (UI.hubReady(UI.state, 'messages')) load();
     });
     renderList();
@@ -543,6 +760,12 @@ UI.tab({
       chatOpen = '';
       chatKey = '';
       chatBox.value = '';
+      gmSend = null;
+      gmError = '';
+      gmWipeError = false;
+      gmHistory = '';
+      gmRead = '';
+      gmPhotos.clear();
       threads = [];
       openId = null;
       items = [];

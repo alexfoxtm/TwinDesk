@@ -27,6 +27,7 @@ if [ -z "${MAC_IDENTITY:-}" ] && [ "${MAC_ADHOC:-0}" != 1 ]; then
 fi
 
 ../mac-helper/build.sh "$ARCH"
+./gmessages/build.sh "$ARCH"
 # iPhone app signing's helper (ios-signer/, shared/iossign.js). Optional: without cargo, or its target,
 # the app leaves that page's work out.
 TWINDESK_SIGNER_ANY_IPA=1 ../ios-signer/build.sh "$ARCH" || echo "note: no iOS signing helper in this build" >&2
@@ -73,6 +74,11 @@ cp "$ROOT"/mac-helper/.build/release/macshare-helper "$ROOT"/mac-helper/.build/r
 if [ -f "$ROOT/ios-signer/bin/$ARCH/twindesk-ios-signer" ]; then
   mkdir -p "$STAGE/ios-signer/bin/$ARCH" && cp "$ROOT/ios-signer/bin/$ARCH/twindesk-ios-signer" "$STAGE/ios-signer/bin/$ARCH/"
 fi
+cp "$ROOT"/mac-helper/.build/release/twindesk-gmessages "$ROOT"/mac-helper/.build/release/twindesk-gmessages-transport "$STAGE/mac-helper/.build/release/"
+(
+  cd gmessages
+  GOWORK=off GOTOOLCHAIN=local go mod vendor -o "../$STAGE/mac/gmessages/vendor"
+)
 cp -R node_modules/ws "$STAGE/node_modules/"
 mkdir -p "$STAGE/mac/node_modules" && cp -R node_modules/ws "$STAGE/mac/node_modules/"
 cp "$ROOT/LICENSE" "$STAGE/"

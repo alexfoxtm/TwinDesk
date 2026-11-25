@@ -40,7 +40,7 @@
 
 const { lanType } = require('../../shared/lantype.js'); // Wi-Fi or Ethernet for Overview (#140)
 const path = require('path');
-const { app, BrowserWindow, Tray, Menu, nativeImage, nativeTheme, systemPreferences, Notification, dialog, globalShortcut } = require('electron');
+const { app, ipcMain, BrowserWindow, Tray, Menu, nativeImage, nativeTheme, systemPreferences, Notification, dialog, globalShortcut } = require('electron');
 
 // ../main.js has set the command-line switches (WebRTC, autoplay) and the user data folder before handing over.
 if (!app.requestSingleInstanceLock()) {
@@ -102,6 +102,7 @@ let autoJoin, settings, id, server, pairing, discovery, links, hub, mesh, layout
 let proximityLock = null;
 let web = null; // TwinDesk Web (shared/web/webwire.js), beside the mesh as in the one-to-one app
 let localsend = null; // files with LocalSend-compatible apps (mac/localsend.js), off until turned on in Files
+let googleMessages = null;
 let phoneHub = null; // Calls, Messages and Photos (loadHub); svc.hub is not used: the mesh's hub is `hub`
 let fileShelf = null;
 let devctl = null; // Overview's controls of the selected device (shared/devctl.js)
@@ -266,7 +267,8 @@ function publishState() {
     state.rezume = svc ? { ...(svc.rz ? svc.rz.view : { ...settings.rezume, connected: false }), mesh: svc.rzSolo ? svc.rzSolo.blocked() : '', meshWith: svc.rzSolo ? svc.rzSolo.view() : null } : null;
     state.web = web ? web.view() : { cfg: { ...settings.web }, devices: [] }; // TwinDesk Web
     state.localsend = localsend ? localsend.view() : { cfg: { on: !!(settings.localsend && settings.localsend.on) }, peers: [], offers: [], transfers: [] }; // Files › LocalSend-compatible devices
-    state.chats = chats ? chats.view() : null; // Messages' WhatsApp, Instagram… conversations
+    state.googleMessages = googleMessages?.view() || null;
+    state.chats = chats ? chats.view(state.googleMessages?.state === 'connected') : null; // Messages' WhatsApp, Instagram… conversations
     state.chatsMessaging = !!(chats && chats.messaging());
     if (svc) {
       const { secret, ...smb } = settings.smb; // never send the share password to the window
@@ -740,6 +742,11 @@ app.whenReady().then(() => {
         get current() { return peer.current; },
       }, dir: app.getPath('userData'), socket: () => peer.outbound(), want: () => settings.ui.chats === true, onChange: pushState });
     peer.route.onState(() => chats.sync());
+    googleMessages = require('../google-messages').setupGoogleMessages({
+      app, ipcMain, window: () => win,
+      current: () => peer.current?.os === P.OS.ANDROID ? peer.current.deviceId : '',
+      enabled: () => settings.hub.messages === true, change: pushState,
+    });
   }
   hub.start();
 

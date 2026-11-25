@@ -26,6 +26,7 @@ const ACTIONS = [
 
 const api = {
   getState: () => ipcRenderer.invoke('getState'),
+  googleMessages: (arg) => ipcRenderer.invoke('googleMessages', arg),
   phoneAssets: () => ipcRenderer.invoke('phoneAssets'),
   onState: (fn) => ipcRenderer.on('state', (_e, s) => fn(s)),
   onShowUpdate: (fn) => ipcRenderer.on('show-update', () => fn()),

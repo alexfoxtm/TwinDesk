@@ -95,6 +95,29 @@ test('Messages opens on All for recent notification chats and keeps the carrier 
   assert.equal(asked.at(-1).t, 'sms.send');
   assert.equal(asked.at(-1).to, '2025550100');
   assert.equal(replies.length, 1);
+
+  const at = 7000;
+  const addrs = ['2025550100'];
+  state.chatsMessaging = false;
+  state.notifs.history = [
+    { app: 'com.google.android.apps.messaging', at, title: 'Matched fixture', body: 'Fixture body' },
+    { app: 'com.google.android.apps.messaging', at, title: 'Distinct fixture', body: 'Other fixture' },
+  ];
+  state.chats = [
+    { app: 'com.google.android.apps.messaging', key: 'structured', name: 'Matched fixture', at,
+      items: [{ id: 'structured-item', at, text: 'Fixture body', match: 'synthetic-fingerprint' }] },
+  ];
+  state.googleMessages = {
+    owner: 'paired-fixture', state: 'connected',
+    rows: [{ id: 'paired', name: 'Matched fixture', addrs: ['+12025550100'], at, snippet: 'Fixture body',
+      fingerprints: [{ at, matches: ['synthetic-fingerprint'] }] }],
+  };
+  received.get('sms.threads')({ items: [{ id: 'carrier', addrs, at, snippet: 'Fixture body' }] });
+  findPill('All').onclick();
+  assert.equal(rows().length, 2, 'paired, SMS and both fallback sources fold into the paired and distinct rows');
+  state.googleMessages = { owner: 'paired-fixture', state: 'offline', rows: [] };
+  paint(state);
+  assert.equal(rows().length, 4, 'failed helper restores all phone sources');
 });
 
 test('keeps RCS notification history without structured messaging, and hides it once the phone delivers it', () => {
