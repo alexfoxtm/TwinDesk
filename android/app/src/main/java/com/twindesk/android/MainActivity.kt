@@ -1727,7 +1727,7 @@ private fun NotificationsPage(core: Core, v: Int) {
     MacCard {
         DirHead(me, true, name, false)
         SwitchRow(tr("Show this device’s notifications on {name}", "name" to name), tr("{count} sent", "count" to sent), outOn, first = true) { core.sync.set("notifs", "out", it) }
-        SwitchRow(tr("Hide the message text"), tr("Only the app name and title are shown on {name}", "name" to name), hideText) { core.store.setFlag("notifs.hideText", it); core.changed() }
+        SwitchRow(tr("Hide the message text"), tr("Only the app name and title are shown on {name}", "name" to name), hideText) { core.store.setFlag("notifs.hideText", it); core.notifs.messagePrefsChanged(); core.changed() }
         if (supported && !access) MacRow(tr("Notification access"), tr("Required to read notifications")) { Primary(tr("Allow")) { ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } }
         if (companion.supported) {
             SwitchRow(tr("Sensitive notifications"), companionHint, protectedReady, enabled = canToggleSensitive) { on ->

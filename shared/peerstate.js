@@ -1,7 +1,7 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // Multi-device: remembers each connected peer's latest audio/screen policy or state while it is
 // unselected, bound to the exact live primary socket it arrived on, and tears down active outbound
-// audio/screen policies when a route or facade leaves a still-connected peer.
+// audio, screen and Messages chat policies when a route or facade leaves a still-connected peer.
 //
 // Scope (#313): strictly limited to audio.policy, screen.state and screen.policy. Excludes
 // hub.state (Save As requires true ingress), call state, clipboard and other authenticated
@@ -23,6 +23,7 @@ const REMEMBER = new Set([
 const GOODBYE = {
   'audio.policy': 'accept',
   'screen.policy': 'accept',
+  'chat.want': 'on',
 };
 
 function socketLive(ws) {

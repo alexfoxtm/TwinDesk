@@ -84,12 +84,14 @@ class Hub(core: Core) : Feature(core) {
             Proto.T.HUB_POLICY -> {
                 peer = true
                 callsOn = m.optBoolean("calls")
+                val messagesChanged = messagesOn != m.optBoolean("messages")
                 messagesOn = m.optBoolean("messages")
                 mediaOn = m.optBoolean("media")
                 mediaAlertsOn = m.optBoolean("mediaAlerts") // only a computer that shows them sends it
                 filesOn = m.optBoolean("files")
                 btAudio = m.optBoolean("bt")
                 apply()
+                if (messagesChanged) core.notifs.messagePolicyChanged()
                 lastState = ""
                 sendState()
                 core.changed()
@@ -121,6 +123,10 @@ class Hub(core: Core) : Feature(core) {
             else -> return false
         }
         return true
+    }
+
+    internal fun matchChat(m: JSONObject, route: Link.TrustedRoute?) {
+        messages?.matchChat(m, route)
     }
 
     fun savePhotoAs(m: JSONObject, source: okhttp3.WebSocket) {
