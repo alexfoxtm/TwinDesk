@@ -51,10 +51,10 @@ after(() => { Module._load = realLoad; });
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const mirror = `t:${P.T.PHONE_MIRROR}`;
-function fixture({ platform = 0, mesh = false, os = 'ios', autoRotate = true } = {}) {
+function fixture({ platform = 0, mesh = false, os = 'ios', autoRotate = true, control = false } = {}) {
   ipcMain.removeAllListeners();
   NativeScreen.airplay = () => ''; // no platform probes / opening System Settings
-  const peer = (id) => ({ deviceId: id, os, authed: true, name: id, transport: 'ip', conn: {} });
+  const peer = (id) => ({ deviceId: id, os, authed: true, name: id, transport: 'ip', conn: control ? { readyState: 1 } : {} });
   let current = peer('tablet');
   const server = new EventEmitter();
   Object.defineProperty(server, 'current', { get: () => mesh ? { ...current } : current });
@@ -66,6 +66,7 @@ function fixture({ platform = 0, mesh = false, os = 'ios', autoRotate = true } =
   });
   const phone = Object.assign(new EventEmitter(), { info: { platform: 'ipados' }, infoId: 'tablet' });
   const pairing = Object.assign(new EventEmitter(), { paired: [{ id: 'tablet', os }] });
+  if (control) pairing.list = () => pairing.paired;
   phone.pairing = pairing;
   pairing.previews = new PhonePreviews(pairing);
   pairing.previews.authorize(current, pairing.paired[0]);
@@ -262,5 +263,42 @@ test('a paired iPad snapshot reaches the oriented card, stays after Stop and cle
     assert.equal(style.get('--ios-width'), '105px');
     assert.equal(style.get('--ios-height'), '140px');
     assert.equal(style.has('--phone-wall'), false);
+  } finally { f.views.closeAll(); }
+});
+
+test('the paired control viewer keeps ReplayKit retry, preview and sizing on the exact owner', async () => {
+  const f = fixture({ mesh: true, control: true });
+  try {
+    f.open();
+    const v = f.current();
+    const owner = f.server.current;
+    const state = { key: v.session.secret, on: true, w: 1200, h: 900, sw: 2048, sh: 1536 };
+    const mirrorState = `t:${P.T.PHONE_MIRROR_STATE}`;
+    assert.equal(v.win.query.screenOS, 'ios');
+    assert.equal(v.win.query.ipad, '1');
+    assert.equal(v.ipadOwner.socket, owner.conn);
+    assert.equal(v.queue[0][1].mirrorPreview, v.id);
+    f.server.emit(mirrorState, state, { ...owner, conn: { readyState: 1 } });
+    assert.equal(v.ipadGeometry, undefined);
+    f.server.emit(mirrorState, state, owner);
+    assert.deepEqual(v.ipadGeometry, { w: 2048, h: 1536 });
+    f.state(v, state);
+    await tick();
+    assert.equal(v.win.aspect.extra.height, 64);
+    const req = Object.assign(new EventEmitter(), { method: 'POST', url: '/twindesk/mirror',
+      headers: { 'x-twindesk-mirror': v.session.secret }, destroy() {} });
+    NativeScreen.request(req, { writeHead() {}, end() {} });
+    f.preview(v.win.webContents, { capture: v.id, jpeg: 'data:image/jpeg;base64,/9j/2Q==' });
+    assert.equal(f.phone.pairing.previews.list(true).length, 1);
+    const abort = new AbortController();
+    v.ipadLease = { abort, stream: req, closed() {} };
+    f.state(v, { on: false });
+    assert.equal(abort.signal.aborted, true);
+    assert.equal(v.ipadLease, null);
+    f.click(v);
+    assert.notEqual(f.current(), v);
+    assert.equal(f.current().ipadOwner.socket, owner.conn);
+    assert.equal(f.current().ipadLease, undefined);
+    assert.equal(f.offers().length, 2);
   } finally { f.views.closeAll(); }
 });

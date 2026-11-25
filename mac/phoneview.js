@@ -77,10 +77,11 @@ class PhoneViews extends EventEmitter {
     };
     server.on('client', checkIPads);
     server.on('transport', checkIPads);
-    server.on(`t:${T.PHONE_MIRROR_STATE}`, (m, ctx) => {
+    server.on(`t:${T.PHONE_MIRROR_STATE}`, (m, ctx, ws) => {
+      const socket = this.server.route ? ctx?.conn : ws;
       for (const v of this.views.values()) {
         if (!v.ipadOwner || !m || m.key !== v.session?.secret || ctx?.authed !== true || ctx.deviceId !== v.ipadOwner.pair.id
-            || !matchesIPad(this, v.ipadOwner) || !m.on || !Number.isInteger(m.sw) || !Number.isInteger(m.sh)) continue;
+            || socket !== v.ipadOwner.socket || !v.session.owns() || !matchesIPad(this, v.ipadOwner) || !m.on || !Number.isInteger(m.sw) || !Number.isInteger(m.sh)) continue;
         if (v.ipadGeometry?.w !== m.sw || v.ipadGeometry?.h !== m.sh) v.ipadGeometry = { w: m.sw, h: m.sh };
       }
     });
@@ -775,9 +776,9 @@ class PhoneViews extends EventEmitter {
   }
 
   _input(v, m) {
+    if (quitting && v.ipadOwner) return;
     if (m.t === 'mirrorPreview') return this._saveIosPreview(v, m);
     if (m.t === 'retryIpad') return this._retryIos(v);
-    if (quitting && v.ipadOwner) return;
     if (handleIPad(this, v, m, dialog)) return;
     // Keep on top (the title bar's pin): the window's own, no phone needed. 'floating': over other
     // apps' windows, under menus and the Dock.

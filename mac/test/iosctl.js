@@ -220,7 +220,7 @@ test('rejects a wrong runner, duplicate owner, stale generation and reconnect du
   await assert.rejects(new IpadControl({ udid, owns: () => true }).connect(), /busy/);
   const socket = { readyState: 1 };
   const peer = { deviceId: 'ipad-1', os: 'ios', authed: true, conn: socket };
-  const views = { server: { current: peer }, phone: { info: { platform: 'ipados' },
+  const views = { server: { current: peer }, phone: { info: { platform: 'ipados' }, infoId: 'ipad-1',
     pairing: { list: () => [{ id: 'ipad-1', os: 'ios', pairedAt: 42 }] } }, _send() {} };
   const { conn, ...directPeer } = peer;
   assert.equal(pairedIPad(views, { ...directPeer, ws: socket }).socket, conn);
@@ -237,6 +237,8 @@ test('rejects a wrong runner, duplicate owner, stale generation and reconnect du
   handleIPad(views, v, { t: 'ipadInput', op: 'home', generation: 'current' }); // queued
   owns = false;
   views.server.current = { ...peer, conn: { readyState: 1 } }; // same Mesh peer id, new connection
+  assert.equal(handleIPad(views, v, { t: 'pin' }), false);
+  assert.equal(handleIPad(views, v, { t: 'resetVideo' }), false);
   assert.equal(handleIPad(views, v, { t: 'nav', key: 'home' }), true);
   rectReply({ value: { x: 0, y: 0, width: 820, height: 1180 } });
   await controller.stopping;

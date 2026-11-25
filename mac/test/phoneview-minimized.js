@@ -12,13 +12,14 @@ const { TYPE } = require('../scrcpy.js');
 
 const code = fs.readFileSync(path.join(__dirname, '../phoneview-renderer.js'), 'utf8');
 
-function fixture(kind = 'app', { screenOS, actualRail = false } = {}) {
+function fixture(kind = 'app', { screenOS, actualRail = false, ipad = false } = {}) {
   const events = new Map(), handlers = new Map(), decoders = [], sent = [], painted = [], blanks = [], pushed = [], statusKeys = [];
   const controls = new Map(), previewDraws = [], pointers = new Map();
   const timers = [];
   let now = 5000;
   const canvas = {
     width: 100, height: 200, style: {}, focus() {}, addEventListener(name, fn) { pointers.set(name, fn); },
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 300, height: 600 }),
     getContext: () => ({
       fillStyle: '',
       drawImage: (frame) => painted.push(frame.id),
@@ -38,6 +39,7 @@ function fixture(kind = 'app', { screenOS, actualRail = false } = {}) {
     const retryButton = element();
     nodes['retry-ipad'] = Object.assign(element(), { querySelector: () => retryButton, retryButton });
   }
+  if (ipad) for (const id of ['ipad-controls', 'ipad-control', 'ipad-control-status']) nodes[id] = element();
   let recording = false;
   class Decoder {
     constructor(callbacks) { this.callbacks = callbacks; this.state = 'unconfigured'; this.decodeQueueSize = 0; this.resets = 0; decoders.push(this); }
@@ -97,12 +99,13 @@ function fixture(kind = 'app', { screenOS, actualRail = false } = {}) {
         getContext: () => ({ drawImage: (frame, _x, _y, w, h) => previewDraws.push([frame.id, w, h]) }),
         toDataURL: () => 'data:image/jpeg;base64,/9j/2Q==',
       }) },
-    location: { search: '?kind=' + kind + (screenOS ? '&screenOS=' + screenOS : '') }, URLSearchParams, devicePixelRatio: 2, VideoDecoder: Decoder,
+    location: { search: '?kind=' + kind + (screenOS ? '&screenOS=' + screenOS : '') + (ipad ? '&ipad=1' : '') }, URLSearchParams, devicePixelRatio: 2, VideoDecoder: Decoder,
     EncodedVideoChunk: class { constructor(data) { Object.assign(this, data); } },
     ResizeObserver: class { observe() {} }, performance: { now: () => now }, console,
     setTimeout: later, clearTimeout: cancel,
   });
   if (actualRail) vm.runInContext(fs.readFileSync(require.resolve('../../shared/mirror-rail.js'), 'utf8'), env);
+  if (ipad) vm.runInContext(fs.readFileSync(require.resolve('../phoneview-ipad-renderer.js'), 'utf8'), env);
   vm.runInContext(code, env);
   const recv = (name, value) => { for (const fn of handlers.get(name) || []) fn(value); };
   const config = () => recv('video', { config: true, data: Uint8Array.from([0, 0, 1, 0x67, 0x42, 0, 0x1f]) });
@@ -515,4 +518,29 @@ test('iOS rail keeps local tools and removes legacy phone inputs, while Android 
   assert.equal(retry.hidden, false);
   retry.retryButton.click();
   assert.deepEqual(ipad.sent, [{ t: 'pin' }, { t: 'retryIpad' }]);
+});
+
+test('iPad control waits for a freshly painted frame after a minimized gap', () => {
+  const f = fixture('screen', { screenOS: 'ios', actualRail: true, ipad: true });
+  f.recv('opts', { ipadState: 'connected', ipadGeneration: 'lease', mirrorPreview: 11 });
+  f.recv('size', { width: 300, height: 600 });
+  f.config();
+  const home = () => f.pointers.get('pointerdown')({ button: 1, clientX: 20, clientY: 20 });
+  const inputs = () => f.sent.filter((m) => m.t === 'ipadInput');
+  home();
+  assert.deepEqual(inputs(), []);
+  f.recv('video', { key: true, pts: 1, data: Uint8Array.of(1) });
+  f.output(f.frame(1, 1));
+  home();
+  assert.deepEqual(inputs(), [{ t: 'ipadInput', op: 'home', generation: 'lease' }]);
+  assert.equal(f.sent.find((m) => m.t === 'mirrorPreview')?.capture, 11);
+  f.recv('opts', { minimized: true });
+  f.recv('opts', { minimized: false });
+  f.recv('video', { key: true, pts: 2, data: Uint8Array.of(1) });
+  home();
+  assert.equal(inputs().length, 1, 'the accepted keyframe has yet to paint');
+  f.output(f.frame(2, 2));
+  home();
+  assert.equal(inputs().length, 2);
+  assert.equal(f.sent.some((m) => m.t === 'nav' || m.t === 'touch'), false);
 });

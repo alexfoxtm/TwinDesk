@@ -9,7 +9,8 @@ const { developerIPads } = require('./iosctl-xctest');
 function pairedIPad(views, peer = views.server.current) {
   const socket = peer && Object.hasOwn(peer, 'conn') ? peer.conn : peer?.ws;
   if (peer?.os !== 'ios' || peer.authed !== true || peer.released || !peer.deviceId
-      || socket?.readyState !== 1 || socket.released || socket.detached || views.phone.info?.platform !== 'ipados') return null;
+      || socket?.readyState !== 1 || socket.released || socket.detached
+      || views.phone.infoId !== peer.deviceId || views.phone.info?.platform !== 'ipados') return null;
   const pair = views.phone.pairing?.list().find((p) => p.id === peer.deviceId && p.os === 'ios');
   return pair ? { pair, socket } : null;
 }
@@ -36,7 +37,7 @@ function stopIPad(views, v, reason = 'off', immediate = false) {
 async function startIPad(views, v, dialog) {
   if (v.ipadLease || !v.ipadOwner || !matchesIPad(views, v.ipadOwner)) return;
   const { session, win } = v;
-  if (!session?.req || session.req.destroyed || session.closed || !v.size || !v.ipadGeometry) {
+  if (!session?.req || session.req.destroyed || session.closed || !session.owns?.() || !v.size || !v.ipadGeometry) {
     return ipadState(views, v, 'picture');
   }
   const template = views.ipadRunnerTemplate();
@@ -45,7 +46,7 @@ async function startIPad(views, v, dialog) {
   const lease = { abort: new AbortController(), stream: session.req, generation: randomUUID() };
   const owns = () => v.ipadLease === lease && views.views.get(v.id) === v && !v.ending
     && !win.isDestroyed() && win.webContents === contents && !contents.isDestroyed()
-    && v.session === session && !session.closed && session.req === lease.stream
+    && v.session === session && !session.closed && session.owns() && session.req === lease.stream
     && !lease.stream.destroyed && matchesIPad(views, v.ipadOwner);
   lease.closed = () => stopIPad(views, v, 'lost');
   v.ipadLease = lease;
@@ -102,7 +103,7 @@ function handleIPad(views, v, m, dialog) {
   if (!matchesIPad(views, v.ipadOwner)) {
     if (v.ipadLease) stopIPad(views, v, 'lost');
     else if (m.t === 'ipadControl') ipadState(views, v, 'lost');
-    return true;
+    return m.t !== 'resetVideo' && m.t !== 'pin';
   }
   if (m.t === 'ipadControl') {
     if (m.on === true) void startIPad(views, v, dialog);
