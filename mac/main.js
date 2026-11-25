@@ -322,6 +322,7 @@ function pushState() {
     state.silence = svc && svc.silence ? { ...svc.silence.view, mac: svc.silence.mac.view } : null; // Notifications › Silence together
     state.history = svc && svc.history ? svc.history.view() : null; // Keep history (shared/histkeeper.js)
     state.chats = svc && svc.chats ? svc.chats.view() : null; // Messages' WhatsApp, Instagram… conversations
+    state.chatsMessaging = !!(svc && svc.chats && svc.chats.messaging());
     if (svc) {
       const { secret, ...smb } = settings.smb; // never send the share password to the window
       state.smb = { ...smb, ...svc.smb.view };

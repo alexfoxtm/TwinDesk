@@ -52,7 +52,10 @@ test('Messages opens on All for recent notification chats and keeps the carrier 
   const rows = () => chat.children[0].children[1].children;
   const snippet = (row) => row.children[1].children[1].text;
   paint(state);
-  assert.equal(findPill('Texts').attrs['aria-selected'], 'true');
+  assert.equal(findPill('All').attrs['aria-selected'], 'true', 'history RCS still appears without structured messaging');
+  assert.equal(findPill('Messages (Chat)').hidden, false, 'legacy peers can still open notification history');
+  state.chatsMessaging = true;
+  paint(state);
   assert.equal(findPill('Messages (Chat)').hidden, true, 'unclassified notification history is not a chat');
 
   state.chats = [{
@@ -92,4 +95,57 @@ test('Messages opens on All for recent notification chats and keeps the carrier 
   assert.equal(asked.at(-1).t, 'sms.send');
   assert.equal(asked.at(-1).to, '2025550100');
   assert.equal(replies.length, 1);
+});
+
+test('keeps RCS notification history without structured messaging, and hides it once the phone delivers it', () => {
+  const el = (tag, props = {}, children = []) => ({
+    tag, ...props, children: children.filter(Boolean), attrs: { ...props.attrs },
+    style: {}, classList: { add() {}, toggle() {} },
+    addEventListener() {}, focus() {},
+    setAttribute(key, value) { this.attrs[key] = value; },
+    append(...nodes) { this.children.push(...nodes); },
+    replaceChildren(...nodes) { this.children = nodes; },
+  });
+  const history = [{ app: 'com.google.android.apps.messaging', at: 4000, title: 'History fixture', body: 'RCS from history' }];
+  const state = {
+    ui: { chats: true },
+    hub: { messages: true, perm: { messages: { mms: true } } },
+    notifs: { history },
+    chats: [{ app: 'com.whatsapp', key: 'wa', name: 'Chat app fixture', at: 1000, items: [{ text: 'WA', at: 1000 }] }],
+  };
+  let tab;
+  const UI = {
+    el, state, api: { setChats() {} },
+    tab(def) { tab = def; },
+    hubTop: () => ({ el: el('div'), render() {} }),
+    button(text, onclick) { return el('button', { text, onclick }); },
+    switch: () => ({ set() {} }),
+    select: () => ({ el: el('select'), options() {} }),
+    row: (label, hint) => { const n = el('div'); n.setHint = (t) => { n.hint = t; }; n.setHint(hint); return n; },
+    card: () => el('div'),
+    avatar: () => el('span'),
+    clock: (at) => String(at),
+    hubOn() {},
+    hubAsk() {},
+    hubReady: (s) => s.hub.messages,
+    onShown() {},
+    onDeviceChange() {},
+  };
+  vm.runInNewContext(source, { UI, window: {}, localStorage: { getItem() {} } });
+  const body = el('section');
+  const paint = tab.build(body, {});
+  const pills = body.children[1];
+  const chatsRow = body.children[2] && body.children[2].children && body.children[2].children[0];
+  const chat = body.children[4];
+  const findPill = (label) => pills.children.find((b) => b.text === label);
+  const rows = () => chat.children[0].children[1].children;
+  const snippet = (row) => row.children[1].children[1].text;
+  paint(state);
+  assert.deepEqual(Array.from(rows(), snippet), ['Chat · RCS from history', 'WhatsApp · WA']);
+  assert.equal(findPill('Messages (Chat)').hidden, false);
+  state.chatsMessaging = true;
+  paint(state);
+  assert.equal(findPill('Messages (Chat)').hidden, true, 'structured messaging replaces the history fallback');
+  findPill('All').onclick();
+  assert.deepEqual(Array.from(rows(), snippet), ['WhatsApp · WA']);
 });

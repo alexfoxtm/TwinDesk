@@ -52,6 +52,24 @@ internal object MessageChat {
         return if (text.isEmpty()) null else digest(dest, out.toString(), text)
     }
 
+    // Incoming MMS addr rows usually include the user's own number, so addrs.singleOrNull()
+    // is null. Use the thread's one recipient, and only when it is the same destination as from.
+    // Prefer from: it often carries the country code, matching a notification tel: URI.
+    fun sameDestination(a: String?, b: String?): Boolean {
+        val left = destination(a) ?: return false
+        val right = destination(b) ?: return false
+        if (left == right) return true
+        val digitsA = left.filter { it in '0'..'9' }
+        val digitsB = right.filter { it in '0'..'9' }
+        val n = minOf(digitsA.length, digitsB.length)
+        return n >= 10 && digitsA.takeLast(10) == digitsB.takeLast(10)
+    }
+
+    fun incomingMmsAddress(from: String?, threadPeer: String?): String? {
+        if (!sameDestination(from, threadPeer)) return null
+        return if (destination(from) != null) from else threadPeer
+    }
+
     data class Candidate(val id: String, val at: Long, val match: String)
     data class Row(val at: Long, val match: String, val mms: Boolean)
 

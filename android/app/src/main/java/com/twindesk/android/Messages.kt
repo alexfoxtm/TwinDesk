@@ -153,11 +153,13 @@ class Messages(private val hub: Hub, private val core: Core) {
                 MessageChat.fingerprint(c.getString(1), c.getInt(4) == 2, c.getString(2).orEmpty())
                     ?.let { rows.add(MessageChat.Row(c.getLong(3), it, mms = false)) }
             }
+            val peers = HashMap<Long, String?>()
             queryDates("content://mms", MMS_COLS, candidates.map { it.at / 1000 }.distinct(), "msg_box IN (1, 2) AND m_type IN (128, 132)") { c ->
                 val out = c.getInt(2) == 2
                 val detail = mmsDetail(c.getLong(0), !out)
                 if (!detail.attachment) {
-                    val address = detail.addrs.singleOrNull()?.takeIf { out || it == detail.from }
+                    val address = if (out) detail.addrs.singleOrNull()
+                    else MessageChat.incomingMmsAddress(detail.from, threadPeer(c.getLong(3), peers))
                     MessageChat.fingerprint(address, out, detail.text)
                         ?.let { rows.add(MessageChat.Row(c.getLong(1) * 1000, it, mms = true)) }
                 }
@@ -279,6 +281,24 @@ class Messages(private val hub: Hub, private val core: Core) {
 
     private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val addrs: List<String>, val attachment: Boolean) {
         val images get() = parts.size
+    }
+
+    // The one canonical address on a 1:1 thread, or null if the thread is a group or unknown.
+    private fun threadPeer(threadId: Long, cache: MutableMap<Long, String?>): String? {
+        if (threadId in cache) return cache[threadId]
+        var ids = ""
+        cr.query(Uri.parse("content://mms-sms/conversations?simple=true"), arrayOf("recipient_ids"), "_id = ?", arrayOf(threadId.toString()), null)?.use { c ->
+            if (c.moveToFirst()) ids = c.getString(0) ?: ""
+        }
+        val parts = ids.split(' ').filter { it.isNotBlank() }
+        var address: String? = null
+        if (parts.size == 1) {
+            cr.query(Uri.parse("content://mms-sms/canonical-addresses"), arrayOf("address"), "_id = ?", arrayOf(parts[0]), null)?.use { c ->
+                if (c.moveToFirst()) address = c.getString(0)?.takeIf { it.isNotBlank() }
+            }
+        }
+        cache[threadId] = address
+        return address
     }
 
     // An MMS's text, pictures and who sent it (incoming) or the people in it.

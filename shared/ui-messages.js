@@ -178,7 +178,10 @@ UI.tab({
     appsPanel.append(...appsRows);
     pills.append(appsBtn);
     const chatsSw = UI.switch((v) => api.setChats && api.setChats(v), { label: tr('Chat apps in Messages') });
-    const chatsRow = UI.row(tr('Chat apps in Messages'), tr('See notifications from Google Messages, Samsung Messages and other chat apps alongside your texts.'), [chatsSw]);
+    const chatsHint = (messaging) => tr(messaging
+      ? 'See notifications from Google Messages, Samsung Messages and other chat apps alongside your texts.'
+      : 'WhatsApp, Instagram, Telegram and Messenger next to your texts. Reply from here.');
+    const chatsRow = UI.row(tr('Chat apps in Messages'), chatsHint(false), [chatsSw]);
     const chatsCard = UI.card('', [chatsRow]);
     chatsCard.hidden = !api.setChats;
     const chatList = el('div', { class: 'hub-threads' });
@@ -208,7 +211,9 @@ UI.tab({
       const by = new Map();
       for (const h of ((s && s.notifs) || {}).history || []) {
         const app = appOf(h.app);
-        if (!app || app === 'rcs' || synced(s)) continue; // Messages requires a structured conversation
+        // Skip RCS from history only once the phone is delivering structured messaging conversations.
+        // Windows, Linux and older phones have no socket, so they keep the previous history fallback.
+        if (!app || (s.chatsMessaging ? (app === 'rcs' || synced(s)) : (synced(s) && app !== 'rcs'))) continue;
         if (h.live || BUSY.test(h.body || '') || BUSY.test(h.title || '')) continue; // the app at work, not a message
         const key = app + '|' + (h.title || h.appName);
         const t = by.get(key) || { key, pkg: h.app, avatar: h.avatar || '', app, name: h.title || h.appName, items: [], at: 0 };
@@ -265,6 +270,7 @@ UI.tab({
       chatsCard.hidden = on || !api.setChats;
       if (!on && pill !== 'texts') pill = 'texts';
       const all = chatThreads(s);
+      if (chatsRow.setHint) chatsRow.setHint(chatsHint(!!(s && s.chatsMessaging)));
       if (on && !chosePill) pill = all.some((t) => t.app === 'rcs') ? 'all' : 'texts';
       for (const [id, b] of pillBtns) {
         b.classList.toggle('on', id === pill);

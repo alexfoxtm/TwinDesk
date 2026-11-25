@@ -66,4 +66,18 @@ class MessageChatTest {
             sms.copy(at = 10022),
         )))
     }
+
+    @Test fun incomingMmsAddressUsesTheThreadPeerWhenAddrRowsIncludeTheUser() {
+        val from = "+1 (202) 555-0100"
+        val peer = "2025550100"
+        val own = "+12025550999"
+        // The addr list for an incoming 1:1 MMS is [from] plus type-151 "to" rows (often the user).
+        assertNull(listOf(from, own).singleOrNull())
+        assertEquals("+12025550100", MessageChat.destination(MessageChat.incomingMmsAddress(from, peer)))
+        assertEquals(MessageChat.fingerprint(from, false, "Fixture MMS"), MessageChat.fingerprint(MessageChat.incomingMmsAddress(from, peer), false, "Fixture MMS"))
+        assertNull(MessageChat.incomingMmsAddress(from, null))
+        assertNull(MessageChat.incomingMmsAddress(from, own))
+        assertNull(MessageChat.incomingMmsAddress(null, peer))
+        assertNull(MessageChat.incomingMmsAddress("Fixture contact", peer))
+    }
 }

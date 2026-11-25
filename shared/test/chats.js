@@ -18,6 +18,7 @@ let socket = {};
 const c = new Chats({ link, dir, want: () => want, socket: () => socket });
 
 assert.strictEqual(c.view(), null, 'nothing heard: null (Messages falls back to notifications)');
+assert.strictEqual(c.messaging(), false);
 on.welcome();
 assert.deepStrictEqual(sent, [{ t: 'chat.want', on: true, messaging: true }]);
 c.sync();
@@ -28,6 +29,7 @@ on['chat.conv'](conv([{ at: 1000, from: 'Mum', text: 'Dinner?' }, { at: 2000, fr
 on['chat.conv'](conv([{ at: 2000, from: 'Dad', text: 'Yes' }, { at: 3000, from: 'Mum', text: 'At 8' }]));
 let v = c.view();
 assert.strictEqual(v.length, 1);
+assert.strictEqual(c.messaging(), false, 'WhatsApp is not structured messaging');
 assert.deepStrictEqual(v[0].items.map((x) => x.text), ['Dinner?', 'Yes', 'At 8'], 'merged, no doubles');
 assert.strictEqual(v[0].reply, true);
 
@@ -54,6 +56,7 @@ const google = messages('com.google.android.apps.messaging', [first, second]);
 on['chat.conv'](google, {});
 assert.equal(c.view().length, 2, 'a retired socket cannot deliver a projection');
 on['chat.conv'](google, socket);
+assert.strictEqual(c.messaging(), true, 'a live Google projection arms the structured-messaging flag');
 on['chat.conv'](google, socket);
 on['chat.conv'](messages('com.samsung.android.messaging', [{ ...first, id: 'c'.repeat(64), at: 32000 }], { id: 'r:two', reply: false }), socket);
 const googleView = () => c.view().find((x) => x.app === google.app);
@@ -81,11 +84,13 @@ on['chat.match']({ ref: request.ref, ids: [second.id] }, socket);
 link.current = { deviceId: 'phone1' };
 
 on.closed();
+assert.strictEqual(c.messaging(), false, 'the flag is session-scoped');
 assert.strictEqual(c.view()[0].reply, false, 'no Reply without a session');
 on.welcome();
 assert.strictEqual(googleView().reply, false, 'cached history cannot offer Reply after reconnect');
 c.stop();
 const again = new Chats({ link, dir, want: () => false });
 assert.strictEqual(again.view().length, 4, 'kept after a restart');
+assert.strictEqual(again.messaging(), false, 'a client without a socket never claims structured messaging');
 fs.rmSync(dir, { recursive: true, force: true });
 console.log('chats ok');

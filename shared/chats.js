@@ -49,6 +49,7 @@ class Chats {
     this.sessionUp = false;
     this.sentWant = null; // what the phone was told (null: nothing this session)
     this.heard = false; // the phone sent one this session: it knows chat.conv
+    this.heardMessaging = false; // a Google/Samsung projection arrived on the exact socket
     this.messageReplies = new Map(); // live notification tokens, never from disk
     this.matchCount = 0;
     try {
@@ -58,6 +59,7 @@ class Chats {
     link.on('welcome', () => {
       this.sessionUp = true;
       this.sentWant = null;
+      this.heardMessaging = false;
       this.messageReplies.clear();
       this.matchRequest = null;
       this.sync();
@@ -65,6 +67,7 @@ class Chats {
     link.on('closed', () => {
       this.sessionUp = false;
       this.sentWant = null;
+      this.heardMessaging = false;
       this.messageReplies.clear();
       this.matchRequest = null;
     });
@@ -90,6 +93,7 @@ class Chats {
       if (socket !== this.chatSocket) {
         this.chatSocket = socket;
         this.sentWant = null;
+        this.heardMessaging = false;
         this.messageReplies.clear();
         this.matchRequest = null;
       }
@@ -113,6 +117,7 @@ class Chats {
     if (!key || !dev || !Array.isArray(m.items)) return;
     if (messaging ? (m.source !== 'messaging' || !this.sessionUp || !this.want()) : !isChatApp(app)) return;
     this.heard = true;
+    if (messaging) this.heardMessaging = true;
     const convs = (this.phones[dev] = this.phones[dev] || {});
     const k = app + '|' + key;
     const c = convs[k] || { key: k, app, items: [] };
@@ -275,6 +280,11 @@ class Chats {
         console.log('[chats] save: ' + e.message);
       }
     }, 1500);
+  }
+
+  // True once this session's exact socket has delivered a Google/Samsung projection.
+  messaging() {
+    return !!(this.socket && this.heardMessaging);
   }
 
   // For the state: this phone's, newest first (null: the phone hasn't sent any, ever).

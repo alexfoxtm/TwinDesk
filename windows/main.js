@@ -1375,6 +1375,7 @@ function buildState() {
     notifs: { ...settings.notifs, ...notifs.view() },
     history: historyKeeper ? historyKeeper.view() : null,
     chats: chats ? chats.view() : null, // Messages' WhatsApp, Instagram… conversations
+    chatsMessaging: !!(chats && chats.messaging()),
     apps: link.peerOs !== P.OS.MAC ? peerApps.view() : apps.view(), // A PC's (or Linux computer's) apps come through peerapps.js
     startup: getStartup(),
     portable: require('./portable').view(), // TwinDesk Portable: its pill and General's card (null: installed)

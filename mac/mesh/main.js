@@ -267,6 +267,7 @@ function publishState() {
     state.web = web ? web.view() : { cfg: { ...settings.web }, devices: [] }; // TwinDesk Web
     state.localsend = localsend ? localsend.view() : { cfg: { on: !!(settings.localsend && settings.localsend.on) }, peers: [], offers: [], transfers: [] }; // Files › LocalSend-compatible devices
     state.chats = chats ? chats.view() : null; // Messages' WhatsApp, Instagram… conversations
+    state.chatsMessaging = !!(chats && chats.messaging());
     if (svc) {
       const { secret, ...smb } = settings.smb; // never send the share password to the window
       state.smb = { ...smb, ...svc.smb.view };
