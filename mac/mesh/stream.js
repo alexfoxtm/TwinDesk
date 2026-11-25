@@ -205,7 +205,7 @@ class Stream extends EventEmitter {
     if (!this.scopedScreen || !this._currentIosMessage(ctx)) return;
     const sharing = this.getSettings().sharing;
     if (msg.share === false) {
-      if (msg.close === true || sharing.remote !== false) this.stop('off', true);
+      if (msg.close === true || sharing.remote !== false) this.stop('off', !!sharing.on);
       return;
     }
     const mode = this._scopedMode();

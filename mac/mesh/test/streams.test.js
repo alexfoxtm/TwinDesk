@@ -172,6 +172,24 @@ test('a non-selected iPad can receive its own screen again after reconnect', asy
     assert.strictEqual(settings.sharing.on, false);
     assert.strictEqual(A.hub.selectedId, other.id);
     assert.strictEqual(other.client.count(T.STREAM_INFO), 0);
+
+    // Stopping the iPad's separate share must not veto a later Mac Share Screen action.
+    settings.sharing.on = true;
+    await set.restart('sharing on');
+    assert.ok(st.active, 'the Mac can start global sharing after the iPad stops a scoped share');
+
+    // A Stop during an active global share applies until that share ends.
+    const stopped = next.until((m) => m.t === T.STREAM_STOP);
+    next.send({ t: T.SCREEN_CTL, share: false });
+    await stopped;
+    await waitFor(() => !st.active, 'iPad can stop receiving the current global share');
+    await set.restart('bitrate changed');
+    assert.strictEqual(st.active, null, 'a restart of the same global share must respect the iPad Stop');
+    settings.sharing.on = false;
+    set.stop('off');
+    settings.sharing.on = true;
+    await set.restart('sharing on');
+    assert.ok(st.active, 'the next Mac share is independent of the previous stop');
   } finally {
     close(A);
   }
