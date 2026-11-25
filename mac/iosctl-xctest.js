@@ -5,6 +5,8 @@ const { execFile, spawn } = require('node:child_process');
 const { randomInt, randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const http = require('node:http');
+const net = require('node:net');
+const os = require('node:os');
 const path = require('node:path');
 const { promisify } = require('node:util');
 const { Mux } = require('../shared/iosnet');
@@ -13,6 +15,64 @@ const exec = promisify(execFile);
 const RUNNER_ID = 'net.waypair.twindesk.ipadcontrol.wda';
 const UDID = /^[\da-f]{8}-[\da-f]{16}$/i;
 const BUILD_PIN = '30aac069ecf7891fe1673482d3e962b181e714b5';
+
+function pairedWifiAddress(detail, udid) {
+  const connection = detail?.connectionProperties;
+  const serial = detail?.hardwareProperties?.udid;
+  const address = connection?.tunnelIPAddress;
+  if (typeof serial !== 'string' || serial.toUpperCase() !== udid || detail.hardwareProperties.deviceType !== 'iPad'
+      || detail.deviceProperties?.developerModeStatus !== 'enabled' || connection?.pairingState !== 'paired'
+      || connection.transportType !== 'localNetwork' || connection.tunnelState !== 'connected'
+      || net.isIP(address) !== 6 || !/^fd[\da-f]{2}:[\da-f]{1,4}:[\da-f]{1,4}::1$/i.test(address)) return null;
+  return address.toLowerCase();
+}
+
+function wifiSource(address, route, interfaces) {
+  const iface = /^\s*interface:\s*(utun\d+)\s*$/m.exec(route)?.[1];
+  const flags = /^\s*flags:\s*<([^>]+)>/m.exec(route)?.[1]?.split(',') || [];
+  const destination = /^\s*destination:\s*([^\s]+)\s*$/m.exec(route)?.[1]?.toLowerCase();
+  const source = address.replace(/::1$/, '::2');
+  if (!iface || destination !== address || !flags.includes('UP') || !flags.includes('HOST')
+      || flags.some((f) => ['GATEWAY', 'REJECT', 'BLACKHOLE'].includes(f))) return null;
+  return interfaces[iface]?.some((item) => item.address.toLowerCase() === source && item.cidr?.endsWith('/64')) ? source : null;
+}
+
+async function routedWifiSource(address, signal) {
+  try {
+    const { stdout } = await exec('/sbin/route', ['-n', 'get', '-inet6', address], { signal, timeout: 800 });
+    return wifiSource(address, stdout, os.networkInterfaces());
+  } catch { return null; }
+}
+
+async function pairedWifi(udid, signal) {
+  const { stdout } = await exec('/usr/bin/xcrun', ['devicectl', 'device', 'info', 'details', '--device', udid,
+    '-q', '--timeout', '8', '--json-output', '/dev/stdout'], { signal, timeout: 9000 });
+  const address = pairedWifiAddress(JSON.parse(stdout).result, udid);
+  const source = address && await routedWifiSource(address, signal);
+  if (!source) throw new Error('route');
+  return { address, source };
+}
+
+async function dialWifi(wifi, port, signal) {
+  if (await routedWifiSource(wifi.address, signal) !== wifi.source) throw new Error('route');
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const socket = net.createConnection({ host: wifi.address, port, family: 6, localAddress: wifi.source });
+    const canceled = () => socket.destroy(new Error('WDA connection canceled'));
+    const cleanup = () => signal.removeEventListener('abort', canceled);
+    signal.addEventListener('abort', canceled, { once: true });
+    socket.once('error', (error) => { cleanup(); reject(error); });
+    socket.once('connect', () => {
+      cleanup();
+      if (socket.remoteAddress !== wifi.address || socket.localAddress !== wifi.source) {
+        socket.destroy();
+        return reject(new Error('route'));
+      }
+      socket.pause();
+      resolve(socket);
+    });
+  });
+}
 
 async function developerIPads(signal) {
   const { stdout } = await exec('/usr/bin/xcrun', ['devicectl', 'list', 'devices', '-q',
@@ -93,8 +153,8 @@ function requestWda(agent, method, route, body, signal, timeout) {
   });
 }
 
-// Xcode owns installation and XCTest. Each connection uses the existing usbmux pairing directly.
-// No TCP listener on the Mac, including during startup. The exact peer must be visible to usbmux.
+// Xcode owns installation and XCTest. Existing usbmux takes precedence. A Wi-Fi-only device
+// must have a CoreDevice-attested point-to-point route. Each session pins that one address pair.
 async function startXCTest(udid, signal) {
   const template = process.env.TWINDESK_IPAD_WDA_XCTESTRUN;
   if (!template || !path.isAbsolute(template)) throw new Error('setup');
@@ -102,8 +162,6 @@ async function startXCTest(udid, signal) {
   const device = (await developerIPads(signal)).find((d) => d.udid === udid);
   if (!device) throw new Error('device');
   if (!device.developerMode) throw new Error('developerMode');
-  if (!await muxDevice(udid, AbortSignal.any([signal, AbortSignal.timeout(2000)]))) throw new Error('route');
-
   const marker = `${BUILD_PIN}:${randomUUID()}`;
   const port = randomInt(54000, 64000);
   const { stdout } = await exec('/usr/bin/plutil', ['-convert', 'json', '-o', '-', template], { signal, timeout: 3000 });
@@ -113,9 +171,12 @@ async function startXCTest(udid, signal) {
       runner?.TestHostBundleIdentifier !== `${RUNNER_ID}.xctrunner`) throw new Error('setup');
   const env = runner.EnvironmentVariables;
   if (!env || runner.CommandLineArguments?.length) throw new Error('setup');
+  const target = await muxDevice(udid, AbortSignal.any([signal, AbortSignal.timeout(2000)])).catch(() => null);
+  signal.throwIfAborted();
+  const wifi = target ? null : await pairedWifi(udid, signal).catch(() => { throw new Error('route'); });
   delete env.ENABLE_AUTOMATIC_SCREENSHOTS;
   delete env.ENABLE_AUTOMATIC_SCREEN_RECORDINGS;
-  Object.assign(env, { USE_IP: '127.0.0.1', USE_PORT: String(port), MJPEG_SERVER_PORT: '0',
+  Object.assign(env, { USE_IP: wifi?.address || '127.0.0.1', USE_PORT: String(port), MJPEG_SERVER_PORT: '0',
     WDA_PRODUCT_BUNDLE_IDENTIFIER: RUNNER_ID, UPGRADE_TIMESTAMP: marker });
 
   // __TESTROOT__ in the generated manifest is relative to the xctestrun file.
@@ -136,17 +197,18 @@ async function startXCTest(udid, signal) {
   let sealed = false;
   agent.createConnection = (_options, callback) => {
     if (sealed) return callback(new Error('WDA connection closed'));
-    const deadline = AbortSignal.any([closeDial.signal, AbortSignal.timeout(1500)]);
+    const deadline = AbortSignal.any([closeDial.signal, AbortSignal.timeout(1000)]);
     (async () => {
-      const target = await muxDevice(udid, deadline);
-      if (!target) throw new Error('route');
-      return muxRequest({ MessageType: 'Connect', DeviceID: target.DeviceID, PortNumber: ((port & 255) << 8) | (port >> 8) },
+      if (wifi) return dialWifi(wifi, port, deadline);
+      const live = await muxDevice(udid, deadline);
+      if (!live || live.DeviceID !== target.DeviceID) throw new Error('route');
+      return muxRequest({ MessageType: 'Connect', DeviceID: live.DeviceID, PortNumber: ((port & 255) << 8) | (port >> 8) },
         (reply) => {
           if (reply.MessageType !== 'Result' || reply.Number !== 0) throw new Error('WDA port unavailable');
           return true;
         }, deadline);
     })().then((socket) => {
-      if (closeDial.signal.aborted) {
+      if (closeDial.signal.aborted || sealed) {
         socket.destroy();
         return callback(new Error('WDA connection closed'));
       }
@@ -181,4 +243,4 @@ async function startXCTest(udid, signal) {
   };
 }
 
-module.exports = { developerIPads, startXCTest, RUNNER_ID };
+module.exports = { developerIPads, startXCTest, RUNNER_ID, pairedWifiAddress, wifiSource };

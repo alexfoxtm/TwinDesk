@@ -74,7 +74,10 @@ class IpadControl {
       this.transport.exited.then(() => { if (!this.abort.signal.aborted) this.stop(this.session ? 'lost' : 'startup'); });
       let verified = false;
       while (this.owns() && !deadline.aborted) {
-        const r = await this.transport.request('GET', '/status', undefined, deadline, 1200).catch(() => null);
+        const r = await this.transport.request('GET', '/status', undefined, deadline, 1200).catch((error) => {
+          if (error.message === 'route') throw error;
+          return null; // The signed runner may still be starting on this route.
+        });
         if (r && (r.value?.device !== 'ipad' || r.value?.build?.productBundleIdentifier !== RUNNER_ID ||
           r.value?.build?.upgradedAt !== this.transport.marker || r.sessionId != null)) {
           code = 'endpoint';

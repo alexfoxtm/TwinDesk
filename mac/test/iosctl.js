@@ -4,7 +4,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { IpadControl } = require('../iosctl');
-const { RUNNER_ID } = require('../iosctl-xctest');
+const { RUNNER_ID, pairedWifiAddress, wifiSource } = require('../iosctl-xctest');
 const { handleIPad, pairedIPad } = require('../phoneview-ipad');
 
 const udid = '12345678-1234567890ABCDEF';
@@ -34,6 +34,25 @@ function wda({ marker = 'expected', window = { x: 0, y: 0, width: 820, height: 1
 
 const frameArgs = (frame, rect) => ({ width: frame.width, height: frame.height, rect });
 const actions = (calls) => calls.filter((c) => c.path.endsWith('/actions')).map((c) => c.body.actions[0].actions);
+
+test('attests only the paired iPad’s exact Wi-Fi tunnel host route', () => {
+  const detail = { hardwareProperties: { udid, deviceType: 'iPad' }, deviceProperties: { developerModeStatus: 'enabled' },
+    connectionProperties: { pairingState: 'paired', transportType: 'localNetwork', tunnelState: 'connected', tunnelIPAddress: 'fd12:abcd:1234::1' } };
+  const address = pairedWifiAddress(detail, udid);
+  assert.equal(address, 'fd12:abcd:1234::1');
+  const route = `destination: ${address}\n  interface: utun13\n      flags: <UP,HOST,IFSCOPE>\n`;
+  const source = 'fd12:abcd:1234::2';
+  const interfaces = { utun13: [{ address: source, cidr: `${source}/64` }] };
+  assert.equal(wifiSource(address, route, interfaces), source);
+  assert.equal(pairedWifiAddress(detail, '87654321-1234567890ABCDEF'), null);
+  for (const tunnelIPAddress of ['::', '192.168.4.145', 'fe80::1%en0', 'fd12:abcd:1234::2']) {
+    assert.equal(pairedWifiAddress({ ...detail, connectionProperties: { ...detail.connectionProperties, tunnelIPAddress } }, udid), null);
+  }
+  for (const other of [route.replace('utun13', 'en0'), route.replace(address, 'default'), route.replace('HOST', 'HOST,GATEWAY')]) {
+    assert.equal(wifiSource(address, other, interfaces), null);
+  }
+  assert.equal(wifiSource(address, route, { utun12: interfaces.utun13 }), null);
+});
 
 test('verified WDA session maps upright portrait and landscape video, gestures, typing and Home', async (t) => {
   const { calls, transport, window } = wda();
@@ -86,6 +105,16 @@ test('verified WDA session maps upright portrait and landscape video, gestures, 
 
 test('rejects a wrong runner, duplicate owner, stale generation and reconnect during in-flight geometry', async (t) => {
   const statuses = [];
+  const withdrawn = wda();
+  let routeChecks = 0;
+  withdrawn.transport.request = async () => { routeChecks++; throw new Error('route'); };
+  const withdrawnController = new IpadControl({ udid, owns: () => true, status: (s) => statuses.push(s),
+    log() {}, start: async () => withdrawn.transport });
+  await withdrawnController.connect();
+  assert.deepEqual(statuses.splice(0), ['route']);
+  assert.equal(routeChecks, 1);
+  assert.equal(withdrawn.transport.stops, 1);
+
   const spoof = wda({ marker: 'another-runner' });
   const spoofController = new IpadControl({ udid, owns: () => true, status: (s) => statuses.push(s),
     log() {}, start: async () => spoof.transport });

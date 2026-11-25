@@ -17,7 +17,7 @@ window.PhoneViewIPad = (api, I, canvas, displayedFrame) => {
     setup: ['Set up XCUITest', 'Set TWINDESK_IPAD_WDA_XCTESTRUN to the staged runner’s .xctestrun file.'],
     device: ['iPad unavailable', 'Check the iPad’s developer pairing in Xcode.'],
     developerMode: ['Developer Mode off', 'On the iPad, open Settings › Privacy & Security › Developer Mode.'],
-    route: ['No developer route', 'Connect the associated iPad using trusted USB or an available network usbmux route.'],
+    route: ['No developer route', 'Check the associated iPad’s paired Wi-Fi connection in Xcode, or use trusted USB.'],
     busy: ['iPad control busy', 'Stop control in the other window or wait for its session to close.'],
     endpoint: ['Runner mismatch', 'Check the staged TwinDesk XCUITest runner.'],
     startup: ['Couldn’t start control', 'Check Xcode provisioning, unlock the iPad and check Settings › Developer › Enable UI Automation.'],

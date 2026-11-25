@@ -1,16 +1,74 @@
+diff --git a/WebDriverAgentLib/Routing/FBTCPSocket.m b/WebDriverAgentLib/Routing/FBTCPSocket.m
+index b4541f1f..9a33bc75 100644
+--- a/WebDriverAgentLib/Routing/FBTCPSocket.m
++++ b/WebDriverAgentLib/Routing/FBTCPSocket.m
+@@ -10,0 +11,2 @@
++#include <arpa/inet.h>
++
+@@ -42 +44,9 @@
+-    nw_endpoint_t localEndpoint = nw_endpoint_create_host(interfaceCString, portCString);
++    struct sockaddr_in6 tunnel = { .sin6_len = sizeof(tunnel), .sin6_family = AF_INET6, .sin6_port = htons(self.port) };
++    const BOOL onTunnel = inet_pton(AF_INET6, interfaceCString, &tunnel.sin6_addr) == 1;
++    nw_endpoint_t localEndpoint;
++    if (onTunnel) {
++      localEndpoint = nw_endpoint_create_address((const struct sockaddr *)&tunnel);
++      nw_parameters_set_required_interface_type(parameters, nw_interface_type_other);
++    } else {
++      localEndpoint = nw_endpoint_create_host(interfaceCString, portCString);
++    }
 diff --git a/WebDriverAgentLib/Routing/FBWebServer.m b/WebDriverAgentLib/Routing/FBWebServer.m
-index 78200ace..6e6b6e55 100644
+index 78200ace..6162498b 100644
 --- a/WebDriverAgentLib/Routing/FBWebServer.m
 +++ b/WebDriverAgentLib/Routing/FBWebServer.m
-@@ -69 +68,0 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
+@@ -10,0 +11,4 @@
++#include <arpa/inet.h>
++#include <ifaddrs.h>
++#include <net/if.h>
++
+@@ -28,0 +33,31 @@
++static BOOL FBTwinDeskIsLocalEndpoint(NSString *address)
++{
++  if ([address isEqualToString:@"127.0.0.1"]) {
++    return YES;
++  }
++  struct in6_addr expected;
++  if (address.length == 0 || inet_pton(AF_INET6, address.UTF8String, &expected) != 1 ||
++      expected.s6_addr[0] != 0xfd || expected.s6_addr[15] != 1) {
++    return NO;
++  }
++  struct ifaddrs *interfaces = NULL;
++  if (getifaddrs(&interfaces) != 0) {
++    return NO;
++  }
++  BOOL found = NO;
++  const unsigned int required = IFF_UP | IFF_POINTOPOINT;
++  for (const struct ifaddrs *entry = interfaces; entry != NULL; entry = entry->ifa_next) {
++    if (entry->ifa_addr == NULL || entry->ifa_addr->sa_family != AF_INET6 ||
++        (entry->ifa_flags & required) != required || strncmp(entry->ifa_name, "utun", 4) != 0) {
++      continue;
++    }
++    const struct sockaddr_in6 *local = (const struct sockaddr_in6 *)entry->ifa_addr;
++    if (IN6_ARE_ADDR_EQUAL(&expected, &local->sin6_addr)) {
++      found = YES;
++      break;
++    }
++  }
++  freeifaddrs(interfaces);
++  return found;
++}
++
+@@ -69 +103,0 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
 -  [self initScreenshotsBroadcaster];
-@@ -95,3 +94,4 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
+@@ -95,3 +129,4 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
 -  if (bindingIP != nil) {
 -    [self.server setInterface:bindingIP];
 -    [FBLogger logFmt:@"Using custom binding IP address: %@", bindingIP];
-+  if (![bindingIP isEqualToString:@"127.0.0.1"] || serverPortRange.length != 1 ||
++  if (!FBTwinDeskIsLocalEndpoint(bindingIP) || serverPortRange.length != 1 ||
 +      serverPortRange.location < 54000 || serverPortRange.location >= 64000) {
-+    [FBLogger log:@"TwinDesk WDA requires an explicit loopback address and a scoped port"];
++    [FBLogger log:@"TwinDesk WDA requires loopback or the attested local tunnel address and a scoped port"];
 +    return NO;
-@@ -98,0 +99 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
+@@ -98,0 +134 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
 +  [self.server setInterface:bindingIP];
+@@ -125 +161 @@ static NSString *const FBServerURLEndMarker = @"<-ServerURLHere";
+-  NSString *serverHost = bindingIP ?: ([XCUIDevice sharedDevice].fb_wifiIPAddress ?: @"127.0.0.1");
++  NSString *serverHost = [bindingIP containsString:@":"] ? [NSString stringWithFormat:@"[%@]", bindingIP] : bindingIP;
