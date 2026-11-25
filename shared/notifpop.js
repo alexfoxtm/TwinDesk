@@ -101,8 +101,11 @@ class NotifPop {
     if (!item || !item.id) return;
     this._wire();
     if (item.live && this.closed.has(item.id)) return; // closed while it was filling
-    const had = this.wins.find((w) => w.id === item.id);
-    if (had) {
+    // An open Reply draft stays bound to its own device, session and offer: a reused ID from
+    // another phone or a new offer gets its own window instead of replacing the draft's target.
+    const had = this.wins.find((w) => w.id === item.id && !w.pinned);
+    if (had && had.typing && (had.item.from !== item.from || had.item.replySession !== item.replySession)) had.pinned = true;
+    else if (had) {
       had.item = item;
       had.extra = { ...had.extra, ...extra };
       if (had.win && !had.win.isDestroyed()) had.win.webContents.send('notifpop:state', this._view(had));
@@ -118,7 +121,7 @@ class NotifPop {
   }
 
   gone(id) {
-    const w = this.wins.find((x) => x.id === id);
+    const w = this.wins.find((x) => x.id === id && !x.pinned) || this.wins.find((x) => x.id === id);
     if (w) this._close(w);
   }
 

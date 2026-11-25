@@ -15,14 +15,15 @@ function inbox(state, api = {}, globals = {}) {
   const el = (tag, props = {}, children = []) => ({
     tag, ...props, children: children.filter(Boolean), attrs: { ...props.attrs },
     style: {}, dataset: {}, classList: { add() {}, toggle() {} },
-    addEventListener() {}, focus() {}, querySelectorAll() { return []; },
+    addEventListener(type, fn) { this.listeners = this.listeners || {}; (this.listeners[type] = this.listeners[type] || []).push(fn); },
+    focus() {}, querySelectorAll() { return []; },
     setAttribute(key, value) { this.attrs[key] = value; },
     append(...nodes) { this.children.push(...nodes); },
     replaceChildren(...nodes) { this.children = nodes; },
   });
   let tab;
   const UI = {
-    el, state, api: { setChats() {}, hub() {}, notifReply: (msg) => replies.push(msg), ...api },
+    el, state, api: { setChats() {}, hub() {}, notifReply: (msg) => { replies.push(msg); return true; }, ...api },
     tab(def) { tab = def; },
     hubTop: () => ({ el: el('div'), render() {} }),
     button(text, onclick) { return el('button', { text, onclick }); },
@@ -234,7 +235,12 @@ test('one reply uses its exact Google conversation or an independently verified 
   const google = [];
   let result = true;
   const { received, asked, replies, paint, chat, rows } = inbox(state, {
-    async googleMessages(msg) { google.push(msg); return result; },
+    async googleMessages(msg) {
+      google.push(msg);
+      // The helper dropped: the paired conversation is no longer available.
+      if (result === 'not-dispatched') state.googleMessages = { owner: phone, enabled: true, state: 'offline', rows: [] };
+      return result;
+    },
   });
   paint(state);
   received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [dest], at: 500 }] });
@@ -401,4 +407,201 @@ test('late photo conversion cannot populate or send in another conversation or r
   assert.equal(chip.hidden, false);
   await composer.children[3].onclick();
   assert.equal(asked.filter((m) => m.t === 'sms.send').length, 1);
+});
+
+const fire = (node, type, event = {}) => { for (const fn of node.listeners?.[type] || []) fn(event); };
+const bubbleTexts = (chat) => Array.from(chat.children[1].children[1].children[0].children)
+  .filter((node) => node.class?.startsWith('hub-bubble'))
+  .map((node) => Array.from(node.children, (child) => child.text));
+const hints = (chat) => Array.from(chat.children[1].children[1].children[0].children)
+  .filter((node) => node.class === 'hint').map((node) => node.text);
+
+test('a notification draft keeps its pinned offer when a newer same-title notice arrives, and keeps the draft on refusal', async () => {
+  const app = 'com.whatsapp';
+  const first = { id: 'n1', app, title: 'Fixture title', body: 'First body', at: 100, from: 'phone-a', reply: true, replySession: 's1' };
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: 'phone-a', session: 1, messages: true, perm: { messages: {} } },
+    notifs: { history: [first] },
+  };
+  let refuse = false;
+  const sent = [];
+  const { paint, chat, rows } = inbox(state, { notifReply: (msg) => { sent.push(msg); return !refuse; } });
+  paint(state);
+  rows()[0].onclick();
+  const composer = chat.children[1].children[3];
+  const box = composer.children[2].children[1];
+  box.value = 'Synthetic draft';
+  fire(box, 'input');
+  state.notifs.history = [{ ...first, id: 'n2', body: 'Newer body', at: 200, from: 'phone-b', replySession: 's2' }, first];
+  paint(state);
+  await composer.children[3].onclick();
+  assert.equal(sent.length, 1);
+  assert.ok(sent[0].id === 'n1' && sent[0].from === 'phone-a' && sent[0].replySession === 's1', 'the draft stays on its pinned offer');
+  assert.equal(box.value, '');
+
+  const newer = state.notifs.history[0];
+  state.notifs.history = [first];
+  paint(state);
+  box.value = 'Second draft';
+  fire(box, 'input');
+  state.notifs.history = [newer, { ...first, reply: false }];
+  paint(state);
+  await composer.children[3].onclick();
+  assert.equal(sent.length, 1, 'an expired pinned offer is never retargeted to the newer notice');
+  assert.equal(box.value, 'Second draft', 'the draft is kept');
+  assert.equal(hints(chat).length, 1, 'the failure is shown');
+
+  box.value = '';
+  fire(box, 'input');
+  box.value = 'Third draft';
+  fire(box, 'input');
+  refuse = true;
+  await composer.children[3].onclick();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].id, 'n2');
+  assert.equal(box.value, 'Third draft', 'a refused Reply keeps the draft');
+  assert.equal(hints(chat).length, 1, 'and shows the failure');
+});
+
+test('a New Message picture cannot move to a different To while it converts or after it is attached', async () => {
+  const state = { hub: { deviceId: 'fixture-phone', session: 1, messages: true, perm: { messages: { mms: true } } } };
+  let finish;
+  class FileReader {
+    readAsDataURL() { finish = () => { this.result = 'data:image/jpeg;base64,AA=='; this.onload(); }; }
+  }
+  class Image {
+    constructor() { this.naturalWidth = this.naturalHeight = 1; }
+    set src(_) { this.onload(); }
+  }
+  const document = { createElement: () => ({
+    getContext: () => ({ fillRect() {}, drawImage() {} }), toDataURL: () => 'data:image/jpeg;base64,AA==',
+  }) };
+  const { asked, paint, texts } = inbox(state, {}, { FileReader, Image, document });
+  paint(state);
+  texts.children[0].children[0].children[1].onclick();
+  const conv = texts.children[1];
+  const to = conv.children[0].children[0];
+  const compose = conv.children[3];
+  const chip = compose.children[2].children[0];
+  const box = compose.children[2].children[1];
+  const start = () => { compose.children[4].files = [{ type: 'image/jpeg' }]; compose.children[4].onchange(); };
+  const end = async () => { finish(); await Promise.resolve(); };
+  to.value = '+12025550100';
+  start();
+  to.value = '+12025550101';
+  fire(to, 'input');
+  await end();
+  assert.equal(chip.hidden, true, 'conversion finishing after a To edit is dropped');
+  start();
+  await end();
+  assert.equal(chip.hidden, false);
+  to.value = '+12025550100';
+  fire(to, 'input');
+  box.value = 'Synthetic text';
+  compose.children[3].onclick();
+  const sends = asked.filter((m) => m.t === 'sms.send');
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].to, '+12025550100');
+  assert.equal(sends[0].image, undefined, 'the picture attached for the first To is not transferred');
+});
+
+test('a structured conversation fully matched to carrier history keeps its live phone Reply ahead of SMS', async () => {
+  const phone = 'fixture-phone';
+  const dest = '+12025550100';
+  const app = 'com.google.android.apps.messaging';
+  const state = {
+    ui: { chats: true }, chatsMessaging: true,
+    hub: { deviceId: phone, session: 1, messages: true, perm: { messages: {} } },
+    chats: [{ key: 'structured', app, name: 'Fixture', messagePeer: dest, from: phone, replySession: 'r:live', reply: true, at: 100, items: [] }],
+  };
+  const { received, asked, replies, paint, chat, rows } = inbox(state);
+  paint(state);
+  received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [dest], at: 100 }] });
+  assert.equal(rows().length, 1);
+  rows()[0].onclick();
+  received.get('sms.thread')({ id: 'carrier', items: [{ id: 's1', at: 100, body: 'Shared text' }] });
+  assert.deepEqual(bubbleTexts(chat), [['Shared text', 'Text']], 'no duplicated history');
+  const composer = chat.children[1].children[3];
+  composer.children[2].children[1].value = 'Synthetic reply';
+  fire(composer.children[2].children[1], 'input');
+  await composer.children[3].onclick();
+  assert.equal(replies.length, 1);
+  assert.ok(replies[0].chat === 'structured' && replies[0].replySession === 'r:live');
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0);
+});
+
+test('not-dispatched does not send SMS when the same Google conversation is writable again', async () => {
+  const phone = 'fixture-phone';
+  const dest = '+12025550100';
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: phone, session: 1, messages: true, perm: { messages: {} } },
+    googleMessages: {
+      owner: phone, state: 'connected', enabled: true,
+      rows: [{ id: 'paired', addrs: [dest], reply: true, at: 100 }],
+      history: { chat: 'paired', loaded: true, items: [] },
+    },
+  };
+  const { received, asked, paint, chat, rows } = inbox(state, {
+    googleMessages: async (msg) => msg.op === 'send' ? 'not-dispatched' : true,
+  });
+  paint(state);
+  received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [dest], at: 50 }] });
+  rows()[0].onclick();
+  const composer = chat.children[1].children[3];
+  composer.children[2].children[1].value = 'Synthetic draft';
+  await composer.children[3].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0);
+  assert.equal(composer.children[2].children[1].value, 'Synthetic draft');
+});
+
+test('a group with an unresolved member is never sent to the resolved subset', () => {
+  const state = { hub: { deviceId: 'fixture-phone', session: 1, messages: true, perm: { messages: { mms: true } } } };
+  const { received, asked, paint, texts } = inbox(state);
+  paint(state);
+  received.get('sms.threads')({ items: [{ id: 'g', group: true, unresolved: true, addrs: ['+12025550100', '+12025550101'], at: 100 }] });
+  texts.children[0].children[1].children[0].onclick();
+  const compose = texts.children[1].children[3];
+  compose.children[2].children[1].value = 'Synthetic group text';
+  compose.children[3].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0);
+  assert.equal(compose.hidden, true);
+});
+
+test('matching older history cannot remove a new send before its failure receipt', () => {
+  const dest = '+12025550100';
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: 'fixture-phone', session: 1, messages: true, perm: { messages: { mms: true } } },
+  };
+  const { received, asked, paint, chat, rows } = inbox(state);
+  paint(state);
+  received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [dest], at: 100 }] });
+  rows()[0].onclick();
+  received.get('sms.thread')({ id: 'carrier', items: [] });
+  const composer = chat.children[1].children[3];
+  composer.children[2].children[1].value = 'Same text';
+  composer.children[3].onclick();
+  const send = asked.findLast((m) => m.t === 'sms.send');
+  received.get('sms.new')({ thread: 'carrier', msg: { id: 's-old', at: Date.now() - 60000, body: 'Same text', out: true } });
+  received.get('sms.sent')({ ref: send.ref, ok: false, error: 'No service' });
+  const failed = bubbleTexts(chat).filter((b) => b.some((t) => typeof t === 'string' && t.startsWith('Not sent')));
+  assert.equal(failed.length, 1, 'the failed send keeps its visible failure row');
+});
+
+test('a captioned attachment MMS does not collapse into a plain text projection', () => {
+  const dest = '+12025550100';
+  const app = 'com.google.android.apps.messaging';
+  const state = {
+    ui: { chats: true }, chatsMessaging: true,
+    hub: { deviceId: 'fixture-phone', session: 1, messages: true, perm: { messages: {} } },
+    chats: [{ key: 'structured', app, name: 'Fixture', messagePeer: dest, at: 5000, items: [{ id: 'x', text: 'Caption', at: 5000 }] }],
+  };
+  const { received, paint, chat, rows } = inbox(state);
+  paint(state);
+  received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [dest], at: 5000 }] });
+  rows()[0].onclick();
+  received.get('sms.thread')({ id: 'carrier', items: [{ id: 'm1', at: 5000, body: 'Caption', attachment: true, parts: [] }] });
+  assert.equal(bubbleTexts(chat).length, 2);
 });

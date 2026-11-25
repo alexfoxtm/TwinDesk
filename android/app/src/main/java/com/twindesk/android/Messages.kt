@@ -28,7 +28,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 
-class Messages(private val hub: Hub, private val core: Core) {
+// route: the authenticated route whose hub.policy turned Messages on. Observer output and carrier
+// send results go only to it (a replacement link gets none of this instance's provider output).
+class Messages(private val hub: Hub, private val core: Core, internal val route: Link.TrustedRoute? = null) {
     private val ctx = core.ctx
     private val cr = ctx.contentResolver
     private val main = Handler(Looper.getMainLooper())
@@ -43,6 +45,8 @@ class Messages(private val hub: Hub, private val core: Core) {
         var sent: List<String>? = null // only touched on Hub's query thread
     }
     @Volatile private var chatMatchRequest: ChatMatchRequest? = null
+    // A dispatched send's ref -> the route that asked for it (its sms.sent goes only there).
+    private val sendRoutes = java.util.concurrent.ConcurrentHashMap<String, Link.TrustedRoute>()
 
     fun start() {
         if (observer != null || !hub.granted(Manifest.permission.READ_SMS)) return
@@ -61,6 +65,7 @@ class Messages(private val hub: Hub, private val core: Core) {
             override fun onReceive(c: Context, i: Intent) {
                 if (i.action == MMS_SENT) {
                     i.getStringExtra("file")?.let { f -> runCatching { java.io.File(mmsDir(), f).delete() } }
+                    val route = i.getStringExtra("ref")?.let { sendRoutes.remove(it) }
                     val error = when (resultCode) {
                         Activity.RESULT_OK -> null
                         SmsManager.MMS_ERROR_NO_DATA_NETWORK -> "Mobile data is off"
@@ -69,17 +74,19 @@ class Messages(private val hub: Hub, private val core: Core) {
                         SmsManager.MMS_ERROR_UNABLE_CONNECT_MMS, SmsManager.MMS_ERROR_IO_ERROR, SmsManager.MMS_ERROR_RETRY -> "Couldn't reach the carrier"
                         else -> "Not sent"
                     }
-                    core.send(msg(Proto.T.SMS_SENT, "ref" to i.getStringExtra("ref"), "ok" to (error == null), "error" to error))
+                    core.link.sendFor(route, msg(Proto.T.SMS_SENT, "ref" to i.getStringExtra("ref"), "ok" to (error == null), "error" to error))
                     return
                 }
                 if (!i.getBooleanExtra("last", false) && resultCode == Activity.RESULT_OK) return
+                val ref = i.getStringExtra("ref")
+                val route = ref?.let { if (i.getBooleanExtra("last", false)) sendRoutes.remove(it) else sendRoutes[it] }
                 val error = when (resultCode) {
                     Activity.RESULT_OK -> null
                     SmsManager.RESULT_ERROR_NO_SERVICE -> "No service"
                     SmsManager.RESULT_ERROR_RADIO_OFF -> "Airplane mode is on"
                     else -> "Not sent"
                 }
-                core.send(msg(Proto.T.SMS_SENT, "ref" to i.getStringExtra("ref"), "ok" to (error == null), "error" to error))
+                core.link.sendFor(route, msg(Proto.T.SMS_SENT, "ref" to ref, "ok" to (error == null), "error" to error))
             }
         }
         receiver = r
@@ -91,6 +98,7 @@ class Messages(private val hub: Hub, private val core: Core) {
         receiver?.let { runCatching { ctx.unregisterReceiver(it) } }
         observer = null
         chatMatchRequest = null
+        sendRoutes.clear()
         receiver = null
         main.removeCallbacksAndMessages(null)
         synchronized(names) { names.clear() }
@@ -115,7 +123,7 @@ class Messages(private val hub: Hub, private val core: Core) {
         for (m in found.sortedBy { it.optLong("at") }) {
             if (m.optLong("at") <= newest) continue
             newest = m.optLong("at")
-            core.send(msg(Proto.T.SMS_NEW, "thread" to m.remove("thread"), "msg" to m))
+            core.link.sendFor(route, msg(Proto.T.SMS_NEW, "thread" to m.remove("thread"), "msg" to m))
         }
     }
 
@@ -206,7 +214,11 @@ class Messages(private val hub: Hub, private val core: Core) {
                 val list = recipients.mapNotNull { addrs[it]?.takeIf { a -> a.isNotBlank() } }
                 if (list.isEmpty()) continue
                 out.add(thread(c.getLong(0), list, c.getString(3) ?: "", c.getLong(1), c.getInt(4) == 0)
-                    .apply { if (includeIdentity && recipients.size > 1) put("group", true) })
+                    .apply {
+                        if (includeIdentity && recipients.size > 1) put("group", true)
+                        // A member without an address: the computer must not send to the rest alone.
+                        if (list.size < recipients.size) put("group", true).put("unresolved", true)
+                    })
             }
         } ?: return null
         return out
@@ -298,6 +310,7 @@ class Messages(private val hub: Hub, private val core: Core) {
         return JSONObject().put("id", "m$id").put("thread", c.getLong(3).toString()).put("body", d.text.take(5000)).put("at", c.getLong(1) * 1000)
             .put("out", box != 1).put("from", d.from).put("fromName", if (d.from.isNotEmpty()) name(d.from) else "")
             .put("status", when (box) { 4 -> "sending"; 5 -> "failed"; else -> "" }).put("parts", parts)
+            .apply { if (d.attachment && d.parts.isEmpty()) put("attachment", true) } // video, audio, a contact card…
     }
 
     private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val recipients: List<String>, val attachment: Boolean) {
@@ -384,15 +397,17 @@ class Messages(private val hub: Hub, private val core: Core) {
 
     // A text from the computer, sent by this phone (Android adds it to the conversation). With a
     // picture, or to a group (addrs: everyone in it), an MMS instead (sendMms).
-    fun send(m: JSONObject) {
+    // Bound to the route that asked: a retired link cannot send, and it is checked again at dispatch.
+    fun send(m: JSONObject, route: Link.TrustedRoute?) {
         val ref = m.str("ref", 60)
         val to = address(m.str("to", 60))
         val body = m.str("body", 5000)
-        val fail = { why: String -> core.send(msg(Proto.T.SMS_SENT, "ref" to ref, "ok" to false, "error" to why)); Unit }
+        val fail = { why: String -> core.link.sendFor(route, msg(Proto.T.SMS_SENT, "ref" to ref, "ok" to false, "error" to why)); Unit }
+        if (!core.link.accepts(route)) return
         if (!hub.granted(Manifest.permission.SEND_SMS)) return fail("Allow sending messages on the phone")
         val group = m.optJSONArray("addrs")?.let { a -> (0 until a.length()).map { address(a.optString(it).take(60)) }.filter { it.isNotEmpty() }.distinct().take(20) }.orEmpty()
         val image = m.str("image", 6_000_000)
-        if (image.isNotEmpty() || group.size > 1) return hub.run { runCatching { sendMms(m, ref, group.ifEmpty { listOf(to) }.filter { it.isNotEmpty() }, body, image) }.onFailure { fail(it.message ?: "Not sent") } }
+        if (image.isNotEmpty() || group.size > 1) return hub.run { runCatching { sendMms(m, ref, group.ifEmpty { listOf(to) }.filter { it.isNotEmpty() }, body, image, route) }.onFailure { fail(it.message ?: "Not sent") } }
         if (to.isEmpty() || body.isBlank()) return fail("Nothing to send")
         runCatching {
             val sm = manager(m)
@@ -403,6 +418,8 @@ class Messages(private val hub: Hub, private val core: Core) {
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_ONE_SHOT,
                 )
             })
+            if (!core.link.accepts(route)) return
+            sendRoutes[ref] = route!!
             sm.sendMultipartTextMessage(to, null, parts, sent, null)
         }.onFailure { fail(it.message ?: "Not sent") }
     }
@@ -411,8 +428,9 @@ class Messages(private val hub: Hub, private val core: Core) {
 
     // One MMS to everyone in `to`: the text and the picture (a data: URL), the picture shrunk to fit
     // the carrier's limit. Android's result comes to the receiver (MMS_SENT).
-    private fun sendMms(m: JSONObject, ref: String, to: List<String>, body: String, image: String) {
-        val fail = { why: String -> core.send(msg(Proto.T.SMS_SENT, "ref" to ref, "ok" to false, "error" to why)); Unit }
+    private fun sendMms(m: JSONObject, ref: String, to: List<String>, body: String, image: String, route: Link.TrustedRoute?) {
+        val fail = { why: String -> core.link.sendFor(route, msg(Proto.T.SMS_SENT, "ref" to ref, "ok" to false, "error" to why)); Unit }
+        if (!core.link.accepts(route)) return
         if (to.isEmpty() || (body.isBlank() && image.isEmpty())) return fail("Nothing to send")
         val sm = manager(m)
         val text = body.trim()
@@ -433,6 +451,8 @@ class Messages(private val hub: Hub, private val core: Core) {
             ctx, 8000 + (req++ % 1000), Intent(MMS_SENT).setPackage(ctx.packageName).putExtra("ref", ref).putExtra("file", name),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_ONE_SHOT,
         )
+        if (!core.link.accepts(route)) { file.delete(); return }
+        sendRoutes[ref] = route!!
         sm.sendMultimediaMessage(ctx, uri, null, null, sent)
     }
 

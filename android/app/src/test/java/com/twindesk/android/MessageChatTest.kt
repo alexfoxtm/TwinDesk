@@ -1,5 +1,6 @@
 package com.twindesk.android
 
+import android.Manifest
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Person
@@ -200,4 +201,136 @@ class MessageChatTest {
         }
     }
 
+    private fun fixtureSocket(types: MutableList<String>) = Proxy.newProxyInstance(
+        WebSocket::class.java.classLoader, arrayOf(WebSocket::class.java)
+    ) { self, method, args ->
+        when (method.name) {
+            "hashCode" -> System.identityHashCode(self)
+            "equals" -> self === args[0]
+            "send" -> { types += JSONObject(args[0] as String).optString("t"); true }
+            else -> error(method.name)
+        }
+    } as WebSocket
+
+    private fun connect(core: Core, socket: WebSocket) {
+        core.link.write("ws", socket)
+        core.link.write("host", Host("fixture", "Fixture", "mac", "192.0.2.1", 47800, "fixture-pin", "fixture-token", 0))
+        core.link.write("state", "connected")
+    }
+
+    @Test fun carrierSendDispatchesOnlyOnItsAuthenticatedRoute() {
+        val core = core()
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.SEND_SMS)
+        val first = mutableListOf<String>()
+        val replacement = mutableListOf<String>()
+        val original = fixtureSocket(first)
+        val next = fixtureSocket(replacement)
+        connect(core, original)
+        val route = core.link.currentTrustedRoute()
+        core.hub.write("messagesOn", true)
+        core.hub.write("messages", Messages(core.hub, core))
+        fun send(ref: String) = core.onMessage(msg(Proto.T.SMS_SEND, "to" to "+12025550100", "body" to "Synthetic", "ref" to ref), route, original)
+        try {
+            // A replacement link takes over before the queued request runs: no dispatch, no output anywhere.
+            send("r-replaced")
+            core.link.write("ws", next)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(replacement.isEmpty())
+            assertTrue(first.isEmpty())
+            // The initiating route reaches dispatch, and its result (here: no SMS service) goes only to it.
+            core.link.write("ws", original)
+            send("r-current")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(listOf(Proto.T.SMS_SENT), first)
+            assertTrue(replacement.isEmpty())
+        } finally {
+            core.bg.shutdownNow()
+            core.timers.shutdownNow()
+        }
+    }
+
+    @Test fun carrierObserverResultsStayOnTheirRoute() {
+        val core = core()
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.READ_SMS, Manifest.permission.SEND_SMS)
+        val worker = Executors.newSingleThreadExecutor()
+        val first = mutableListOf<String>()
+        val replacement = mutableListOf<String>()
+        val original = fixtureSocket(first)
+        val next = fixtureSocket(replacement)
+        var latest = 1000L
+        provider("sms") { _, cols ->
+            MatrixCursor(cols).apply {
+                if (cols.size == 1) addRow(arrayOf<Any>(1000L))
+                else addRow(arrayOf<Any>(latest, "+12025550100", "Synthetic", latest, 1, 7L))
+            }
+        }
+        provider("mms") { _, cols -> MatrixCursor(cols) }
+        core.hub.write("io", worker)
+        connect(core, original)
+        fun drain() {
+            shadowOf(Looper.getMainLooper()).idle()
+            worker.submit {}.get(5, TimeUnit.SECONDS)
+        }
+        try {
+            core.onMessage(msg(Proto.T.HUB_POLICY, "messages" to true), core.link.currentTrustedRoute(), original)
+            drain()
+            val field = core.hub.javaClass.getDeclaredField("messages").apply { isAccessible = true }
+            val service = field.get(core.hub)
+            assertNotNull(service)
+            core.onMessage(msg(Proto.T.HUB_POLICY, "messages" to true), core.link.currentTrustedRoute(), original)
+            drain()
+            assertSame("a repeated policy on the same route keeps the running observer", service, field.get(core.hub))
+            val check = Messages::class.java.getDeclaredMethod("check").apply { isAccessible = true }
+            latest = 2000L
+            worker.submit { check.invoke(service) }.get(5, TimeUnit.SECONDS)
+            assertTrue(Proto.T.SMS_NEW in first)
+            core.link.write("ws", next)
+            latest = 3000L
+            worker.submit { check.invoke(service) }.get(5, TimeUnit.SECONDS)
+            assertFalse("a replacement link received the old observer's output", Proto.T.SMS_NEW in replacement)
+        } finally {
+            worker.shutdownNow()
+            core.bg.shutdownNow()
+            core.timers.shutdownNow()
+        }
+    }
+
+    @Test fun groupWithAnUnresolvedMemberIsMarkedSoItIsNeverSentToASubset() {
+        val core = core()
+        val service = Messages(core.hub, core)
+        var ids = "1 2 3"
+        provider("mms-sms") { uri, cols ->
+            MatrixCursor(cols).apply {
+                when (uri.lastPathSegment) {
+                    "canonical-addresses" -> { addRow(arrayOf<Any>("1", "+12025550100")); addRow(arrayOf<Any>("2", "+12025550101")) }
+                    "conversations" -> addRow(arrayOf<Any>(7L, 100L, ids, "", 1))
+                }
+            }
+        }
+        fun row() = service.threads(10, "US").getJSONObject(0)
+        assertTrue(row().optBoolean("group"))
+        assertTrue(row().optBoolean("unresolved"))
+        assertEquals(2, row().getJSONArray("addrs").length())
+        ids = "1 2"
+        assertFalse(row().optBoolean("unresolved"))
+    }
+
+    @Test fun captionedNonImageMmsKeepsItsAttachmentMetadata() {
+        val core = core()
+        val service = Messages(core.hub, core)
+        provider("sms") { _, cols -> MatrixCursor(cols) }
+        provider("mms") { uri, cols ->
+            MatrixCursor(cols).apply {
+                when (uri.lastPathSegment) {
+                    null -> addRow(arrayOf<Any>(9L, 100L, 1, 7L))
+                    "part" -> { addRow(arrayOf<Any?>(1L, "text/plain", "Synthetic caption")); addRow(arrayOf<Any?>(2L, "video/mp4", null)) }
+                    "addr" -> addRow(arrayOf<Any>("+12025550100", 137))
+                }
+            }
+        }
+        val item = service.thread(msg(Proto.T.SMS_THREAD, "id" to "7")).getJSONArray("items").getJSONObject(0)
+        assertEquals("Synthetic caption", item.optString("body"))
+        assertTrue(item.optBoolean("attachment"))
+        assertEquals(0, item.getJSONArray("parts").length())
+    }
 }

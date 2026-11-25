@@ -33,6 +33,7 @@ const APPS = /^(?:com\.whatsapp(?:\.w4b)?|com\.instagram\.android|org\.telegram\
 const PKG = /^[A-Za-z][\w]*(?:\.[\w]+)+$/;
 const SMS_APPS = /^(?:com\.google\.android\.apps\.messaging|com\.samsung\.android\.messaging|com\.android\.mms|com\.android\.messaging)$/;
 const MESSAGING = /^(?:com\.google\.android\.apps\.messaging|com\.samsung\.android\.messaging)$/;
+const exactPeer = (c) => !!(c.messagePeer && !c.group && c.items.length);
 const isChatApp = (app) => APPS.test(app) || (PKG.test(app) && app.length <= 200 && !SMS_APPS.test(app));
 const MAX_CONVS = 100; // per phone
 const MAX_ITEMS = 150; // per conversation
@@ -230,7 +231,8 @@ class Chats {
     const t = typeof text === 'string' ? text.trim().slice(0, 5000) : '';
     if (c && MESSAGING.test(c.app)) {
       const id = this._messageReply(key);
-      return !!(id && from === this.who() && session === id && t && !image && c.items.some((i) => !i.carrier) && this.link.send({ t: 'notif.reply', id, text: t }) !== false);
+      return !!(id && from === this.who() && session === id && t && !image && (c.items.some((i) => !i.carrier) || exactPeer(c)) &&
+        this.link.send({ t: 'notif.reply', id, text: t }) !== false);
     }
     if (image) return this.picture(c, t, image);
     if (!c || !c.id || !c.reply || !t || !this.sessionUp) return false;
@@ -313,10 +315,11 @@ class Chats {
     return Object.values(convs || {}).flatMap((c) => {
       const messaging = MESSAGING.test(c.app);
       const items = messaging ? c.items.filter((i) => !i.carrier) : c.items;
-      if (messaging && !items.length) return [];
       const replySession = messaging ? this._messageReply(c.key) : '';
+      // Every item matched carrier history: the row stays only for a live exact phone Reply, without items.
+      if (messaging && !items.length && !(replySession && exactPeer(c))) return [];
       const reply = messaging ? !!replySession : !!(c.reply && this.sessionUp);
-      const at = messaging ? items[items.length - 1].at : c.at;
+      const at = messaging ? (items.at(-1) || c.items.at(-1))?.at || c.at : c.at;
       const shown = items.slice(-VIEW_ITEMS);
       return [{ key: c.key, app: c.app, appName: c.appName, name: c.name, group: c.group, reply, pic: !!(c.pic && this.sessionUp), avatar: c.avatar || '', at,
         ...(replySession ? { from: this.who(), replySession } : {}),

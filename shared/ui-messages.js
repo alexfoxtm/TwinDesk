@@ -235,8 +235,10 @@ UI.tab({
     const pic = attacher(UI, conv, box, () => {
       const hub = UI.state?.hub;
       return pill === 'texts' && openId !== null && carrierSend(UI.state) && mmsOk()
-        ? JSON.stringify([hub.deviceId, hub.session, openId, thread()?.addrs]) : '';
+        ? JSON.stringify([hub.deviceId, hub.session, openId, openId === '' ? to.value.trim() : thread()?.addrs]) : '';
     });
+    // A picture belongs to the recipients it was attached for: editing To drops it, even mid-conversion.
+    to.addEventListener('input', () => pic.show(mmsOk()));
     const compose = el('div', { class: 'hub-compose-row' }, [simPick.el, pic.btn, el('div', { class: 'hub-compose-col' }, [pic.chip, box]), send, pic.input]);
     conv.append(head, scroll, groupNote, compose);
     const empty = el('div', { class: 'hub-empty hub-conv-empty', text: tr('Choose a conversation') });
@@ -326,6 +328,7 @@ UI.tab({
     }, 'small');
     const chatLayout = el('div', { class: 'card hub-msgs' }, [el('div', { class: 'hub-side' }, [el('div', { class: 'hub-side-head' }, [chatSearch, chatNew]), chatList]), chatConv, chatEmpty]);
     let chatOpen = '';
+    let chatDraft = null; // {key, offer}: the notification offer a draft started on
     let openContact = null;
     let chatEpoch = 0;
     let carrierHistory = new Map();
@@ -403,6 +406,7 @@ UI.tab({
     };
     function closeChat() {
       chatOpen = '';
+      chatDraft = null;
       openContact = null;
       chatEpoch++;
       chatBox.value = '';
@@ -516,12 +520,22 @@ UI.tab({
       const sms = t.textThreads.length === 1 ? t.textThreads[0] : null;
       dispatchText([t.dest], text, image, chatSim.el, sms?.id, t.key);
       chatBox.value = '';
+      chatDraft = null;
       chatPic.clear();
       paintChats(UI.state, true);
     }
-    function notificationReply(t, image) {
+    function notificationReply(t, image, pinned) {
       if (!api.notifReply) return null;
       const candidates = t.dest ? t.sources : [t];
+      if (pinned) {
+        // A title groups unverified notifications for display only: a draft stays on its exact offer.
+        for (const c of candidates) {
+          const h = !c.carrier && !c.google && !c.msgs && c.items.find((h) => h.reply && h.id === pinned.id &&
+            h.from === pinned.from && h.replySession === pinned.replySession);
+          if (h) return pinned;
+        }
+        return null;
+      }
       for (const c of candidates) {
         if (c.carrier || c.google) continue;
         if (c.msgs) {
@@ -534,12 +548,31 @@ UI.tab({
       return null;
     }
     const chatPictureAllowed = (t) => !!googleOf(t)?.reply || !!notificationReply(t, true) || canText(t, true);
-    function sendFallback(t, text, image) {
-      const offer = notificationReply(t, image);
+    const replyRefused = () => {
+      gmError = tr('Reply here once the phone shows this chat’s notification again.');
+      paintChats(UI.state, true);
+    };
+    async function sendFallback(t, text, image) {
+      const pinned = !image && chatDraft?.key === t.key ? chatDraft.offer : null;
+      const offer = notificationReply(t, image, pinned);
+      if (pinned && !offer) {
+        // The draft's offer expired: keep the draft rather than retarget a newer notification.
+        replyRefused();
+        return true;
+      }
       if (offer) {
-        api.notifReply({ ...offer, text, ...(image ? { image } : {}) });
-        chatBox.value = '';
-        chatPic.clear();
+        const epoch = chatEpoch;
+        const ok = await api.notifReply({ ...offer, text, ...(image ? { image } : {}) });
+        if (epoch !== chatEpoch) return true;
+        if (ok === false) {
+          replyRefused();
+          return true;
+        }
+        if (chatBox.value.trim() === text) {
+          chatBox.value = '';
+          chatDraft = null;
+        }
+        if (image && chatPic.get() === image) chatPic.clear();
         return true;
       }
       if (!canText(t, image)) return false;
@@ -553,7 +586,8 @@ UI.tab({
       if (!t || (!text && !image) || gmSend?.key === t.key) return;
       const google = googleOf(t);
       if (!google?.reply) {
-        sendFallback(t, text, image);
+        gmError = '';
+        await sendFallback(t, text, image);
         return;
       }
       if (!google.loaded || gmSend || gmBusy) return;
@@ -577,12 +611,13 @@ UI.tab({
       }
       const current = selectedChat();
       const currentGoogle = current && googleOf(current);
+      // Fall back only while that same conversation is still unavailable. Writable again: no SMS.
       const sameGoogle = currentGM.state === 'connected'
-        ? currentGoogle?.id === google.id && currentGoogle.reply
+        ? currentGoogle?.id === google.id && !currentGoogle.reply
         : googleUnavailable(currentGM) && !currentGoogle && openContact?.googleId === google.id;
       if (ok === 'not-dispatched' && allowCarrier && !gmBusy && currentGM.enabled && sameGoogle &&
           sameDestination(current?.dest, t.dest) && chatBox.value.trim() === text && chatPic.get() === image &&
-          sendFallback(current, text, image)) return;
+          await sendFallback(current, text, image)) return;
       if (ok === true) {
         if (image && chatPic.get() === image) chatPic.clear();
         if (!image && chatBox.value.trim() === text) chatBox.value = '';
@@ -772,6 +807,13 @@ UI.tab({
     }
 
     chatBox.addEventListener('input', () => {
+      if (!chatBox.value.trim()) { chatDraft = null; return; }
+      const t = selectedChat();
+      if (!t || chatDraft?.key === t.key) return;
+      const offer = notificationReply(t, false);
+      chatDraft = { key: t.key, offer: offer?.id ? offer : null }; // only a notification's own offer is pinned
+    });
+    chatBox.addEventListener('input', () => {
       if (!chatBox.value.trim() || Date.now() - gmTypingAt < 4000) return;
       const row = selectedChat();
       const t = row && googleOf(row);
@@ -836,7 +878,8 @@ UI.tab({
       to.hidden = !isNew;
       head.replaceChildren(...(isNew ? [to] : t ? [avatar(t.name, t.photo), el('div', { class: 'hub-conv-title' }, [el('div', { class: 'hub-conv-name', text: t.name || t.addrs.join(', ') }), el('div', { class: 'hint', text: t.name ? t.addrs.join(', ') : '' })]), delText] : []));
       const group = !!(t?.group || t?.addrs?.length > 1);
-      const groupBlocked = group && (!mmsOk() || t.addrs.length < 2);
+      // A member the phone could not resolve: never send to the resolved subset.
+      const groupBlocked = !!t?.unresolved || (group && (!mmsOk() || t.addrs.length < 2));
       groupNote.hidden = !groupBlocked;
       pic.show(mmsOk());
       const sims = simOptions(UI.state);
@@ -902,7 +945,7 @@ UI.tab({
       const addrs = openId === '' ? to.value.split(/[,;]/).map((x) => x.trim()).filter(Boolean) : (t && t.addrs) || [];
       const dest = addrs[0];
       if (!dest) return to.focus();
-      if ((t?.group && addrs.length < 2) || ((addrs.length > 1 || image) && !mmsOk())) return;
+      if (t?.unresolved || (t?.group && addrs.length < 2) || ((addrs.length > 1 || image) && !mmsOk())) return;
       if (!carrierSend(UI.state)) return;
       dispatchText(addrs, text, image, simPick.el, openId);
       box.value = '';
@@ -977,6 +1020,10 @@ UI.tab({
       if (!p) return;
       if (m.ok) p.status = 'sent';
       else { p.status = 'failed'; p.error = m.error || ''; }
+      const contact = m.ok && p.contact ? selectedChat() : null;
+      if (contact?.key === p.contact) {
+        for (const c of contact.textThreads || []) if (carrierHistory.get(c.id)) reconcileContact(contact, c.id, carrierHistory.get(c.id).items);
+      }
       // A new conversation: the phone's store has it now.
       if (!p.thread && m.ok) setTimeout(() => UI.hubAsk({ t: 'sms.threads', n: 80 }), 800);
       if (openId === p.thread) renderConv();
@@ -986,7 +1033,8 @@ UI.tab({
     // The phone's copy of one sent from here: the same text, and a picture if it had one.
     const sameAs = (p, msg) => p.body.trim() === String(msg.body || '').trim() && !!p.image === !!(msg.parts && msg.parts.length);
     function reconcileContact(contact, id, arrived) {
-      const sent = pending.filter((p) => p.contact === contact.key && p.status !== 'failed' && (!p.thread || p.thread === id));
+      // Only after the send's own receipt: matching older history cannot hide a send that then fails.
+      const sent = pending.filter((p) => p.contact === contact.key && p.status === 'sent' && (!p.thread || p.thread === id));
       const matches = (p, m) => m.out && Math.abs(p.at - m.at) < 120000 && sameAs(p, m);
       for (const m of arrived) {
         const candidates = sent.filter((p) => matches(p, m));

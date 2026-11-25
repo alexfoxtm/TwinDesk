@@ -282,7 +282,11 @@ func (b *inbox) offline() {
 	b.out.send(event{"type": "offline"})
 }
 
-func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error)) (map[string]*gmproto.Conversation, error) {
+// Each page has its own deadline. A later page that fails or times out ends the listing with the
+// pages already collected (complete == false); a failed first page or root cancellation is an error.
+var rcsPageTimeout = 15 * time.Second
+
+func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error)) (map[string]*gmproto.Conversation, bool, error) {
 	const maxPages = 20
 	next := make(map[string]*gmproto.Conversation)
 	type position struct {
@@ -293,13 +297,21 @@ func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConver
 	var cursor *gmproto.Cursor
 	for page := 0; page < maxPages; page++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		resp, err := list(ctx, &gmproto.ListConversationsRequest{
+		call, cancel := context.WithTimeout(ctx, rcsPageTimeout)
+		resp, err := list(call, &gmproto.ListConversationsRequest{
 			Count: 100, Folder: gmproto.ListConversationsRequest_INBOX, Cursor: cursor,
 		})
+		cancel()
+		if rootErr := ctx.Err(); rootErr != nil {
+			return nil, false, rootErr
+		}
 		if err != nil {
-			return nil, err
+			if page == 0 {
+				return nil, false, err
+			}
+			return next, false, nil
 		}
 		for _, c := range resp.GetConversations() {
 			if id := c.GetConversationID(); isRCS(c) && id != "" && next[id] == nil {
@@ -314,20 +326,37 @@ func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConver
 		seen[pos] = true
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return next, nil
+	return next, true, nil
 }
 
-func (b *inbox) sync(ctx context.Context) {
-	next, err := listRCS(ctx, b.client.ListConversations)
+// Returns whether the inbox now holds a complete listing.
+func (b *inbox) sync(ctx context.Context) bool {
+	next, complete, err := listRCS(ctx, b.client.ListConversations)
+	return b.apply(ctx, next, complete, err)
+}
+
+func (b *inbox) apply(ctx context.Context, next map[string]*gmproto.Conversation, complete bool, err error) bool {
+	if ctx.Err() != nil {
+		// Root cancellation: this owner is ending. Nothing stale is published.
+		return false
+	}
 	if err != nil {
 		b.offline()
-		return
+		return false
+	}
+	if !complete && b.ready {
+		// Later pages failed: keep the previous coherent list, refreshed by the pages that arrived.
+		for id, c := range next {
+			b.convs[id] = c
+		}
+		next = b.convs
 	}
 	b.convs = next
 	b.ready = true
 	b.publish()
+	return complete
 }
 
 func (b *inbox) remember(chat string, m *gmproto.Message) item {
@@ -533,10 +562,7 @@ func run(ctx context.Context, auth *libgm.AuthData, commands <-chan command, out
 			b.offline()
 			syncTimer.Reset(0)
 		case <-syncTimer.C:
-			call, cancel := context.WithTimeout(ctx, 25*time.Second)
-			b.sync(call)
-			cancel()
-			if b.ready {
+			if b.sync(ctx) && b.ready {
 				syncTimer.Reset(time.Minute)
 			} else {
 				syncTimer.Reset(8 * time.Second)

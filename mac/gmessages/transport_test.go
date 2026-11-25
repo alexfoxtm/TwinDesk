@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"reflect"
 	"testing"
+	"time"
 
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
@@ -56,17 +57,86 @@ func TestListRCSFollowsCursorAndStopsOnRepeatedCursorOrCancellation(t *testing.T
 			},
 		}, nil
 	}
-	rows, err := listRCS(ctx, list)
-	if err != nil || calls != 2 || len(rows) != 2 {
+	rows, complete, err := listRCS(ctx, list)
+	if err != nil || !complete || calls != 2 || len(rows) != 2 {
 		t.Fatal("did not collect both pages and stop on a repeated cursor")
 	}
 	calls = 0
-	_, err = listRCS(ctx, func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+	_, _, err = listRCS(ctx, func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
 		cancel()
 		return list(ctx, req)
 	})
 	if !errors.Is(err, context.Canceled) || calls != 1 {
 		t.Fatal("canceled listing fetched additional pages")
+	}
+}
+
+func TestListRCSUsesPageTimeoutAndKeepsEarlierPages(t *testing.T) {
+	previous := rcsPageTimeout
+	rcsPageTimeout = 20 * time.Millisecond
+	defer func() { rcsPageTimeout = previous }()
+	page := func(id string, cursor *gmproto.Cursor) *gmproto.ListConversationsResponse {
+		return &gmproto.ListConversationsResponse{Cursor: cursor,
+			Conversations: []*gmproto.Conversation{{Type: gmproto.ConversationType_RCS, ConversationID: id}}}
+	}
+	for _, failure := range []string{"error", "timeout"} {
+		calls := 0
+		rows, complete, err := listRCS(context.Background(), func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+			calls++
+			if calls == 1 {
+				if _, ok := ctx.Deadline(); !ok {
+					t.Fatal("page request has no per-page deadline")
+				}
+				return page("first", &gmproto.Cursor{LastItemID: "one", LastItemTimestamp: 1}), nil
+			}
+			if failure == "error" {
+				return nil, errors.New("synthetic page failure")
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+		if err != nil || complete || calls != 2 || len(rows) != 1 || rows["first"] == nil {
+			t.Fatalf("later-page %s discarded successful pages", failure)
+		}
+	}
+	if _, _, err := listRCS(context.Background(), func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+		return nil, errors.New("synthetic first page failure")
+	}); err == nil {
+		t.Fatal("first-page failure was not reported")
+	}
+}
+
+func TestPartialSyncKeepsCoherentListOnline(t *testing.T) {
+	var buf bytes.Buffer
+	old := &gmproto.Conversation{Type: gmproto.ConversationType_RCS, ConversationID: "old", Name: "before"}
+	kept := &gmproto.Conversation{Type: gmproto.ConversationType_RCS, ConversationID: "kept"}
+	b := inbox{out: &output{w: &buf}, ready: true, convs: map[string]*gmproto.Conversation{"old": old, "kept": kept}}
+	fresh := &gmproto.Conversation{Type: gmproto.ConversationType_RCS, ConversationID: "old", Name: "after"}
+	if b.apply(context.Background(), map[string]*gmproto.Conversation{"old": fresh}, false, nil) {
+		t.Fatal("partial listing reported complete")
+	}
+	if bytes.Contains(buf.Bytes(), []byte(`"offline"`)) || !b.ready {
+		t.Fatal("partial listing marked the inbox offline")
+	}
+	if b.convs["kept"] != kept || b.convs["old"] != fresh {
+		t.Fatal("partial listing dropped the previous coherent list or ignored the fresh page")
+	}
+	buf.Reset()
+	cold := inbox{out: &output{w: &buf}, convs: map[string]*gmproto.Conversation{}}
+	cold.apply(context.Background(), map[string]*gmproto.Conversation{"old": fresh}, false, nil)
+	if !cold.ready || cold.convs["old"] != fresh || bytes.Contains(buf.Bytes(), []byte(`"offline"`)) {
+		t.Fatal("successful pages were not published without a previous list")
+	}
+	buf.Reset()
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	b.apply(canceled, nil, false, context.Canceled)
+	if buf.Len() != 0 || b.convs["kept"] != kept {
+		t.Fatal("root cancellation published stale state")
+	}
+	b.apply(context.Background(), nil, false, errors.New("synthetic first page failure"))
+	if b.ready || !bytes.Contains(buf.Bytes(), []byte(`"offline"`)) {
+		t.Fatal("a failed first page did not go offline")
 	}
 }
 

@@ -48,6 +48,7 @@ class Hub(core: Core) : Feature(core) {
         callsOn && (calls?.appPosted(sbn, appName, title) ?: false)
     fun appCallRemoved(key: String) { calls?.appRemoved(key) }
     @Volatile private var messages: Messages? = null
+    @Volatile private var policyRoute: Link.TrustedRoute? = null // the route whose hub.policy is in force
     private var media: Media? = null
     private var alerts: MediaAlerts? = null
     private var fs: FsBrowse? = null
@@ -72,6 +73,7 @@ class Hub(core: Core) : Feature(core) {
         callsOn = false; messagesOn = false; mediaOn = false; mediaAlertsOn = false; filesOn = false; btAudio = false
         btAddress = ""
         lastState = ""
+        policyRoute = null
         apply()
     }
 
@@ -85,6 +87,8 @@ class Hub(core: Core) : Feature(core) {
         when (t) {
             Proto.T.HUB_POLICY -> {
                 peer = true
+                // Each message carries a fresh route object: keep the one in force while it is the same socket and pair.
+                if (policyRoute?.let { r -> route?.matches(r.marker, r.id, r.fp) } != true) policyRoute = route
                 callsOn = m.optBoolean("calls")
                 val messagesChanged = messagesOn != m.optBoolean("messages")
                 messagesOn = m.optBoolean("messages")
@@ -117,7 +121,7 @@ class Hub(core: Core) : Feature(core) {
                 val id = m.str("id", 40)
                 msg(Proto.T.SMS_PART, "id" to id, "data" to s.part(id))
             }
-            Proto.T.SMS_SEND -> messages?.send(m) ?: core.send(msg(Proto.T.SMS_SENT, "ref" to m.str("ref", 60), "ok" to false, "error" to "off"))
+            Proto.T.SMS_SEND -> messages?.send(m, route) ?: core.link.sendFor(route, msg(Proto.T.SMS_SENT, "ref" to m.str("ref", 60), "ok" to false, "error" to "off"))
             // Pictures never go through Bluetooth (they held up everything else): USB, Wi-Fi, Wi-Fi Direct.
             Proto.T.MEDIA_ALBUMS -> if (mediaOn && !core.link.ble) media().let { md -> run { core.send(md.albums()) } }
             Proto.T.MEDIA_LIST -> if (mediaOn && !core.link.ble) media().let { md -> run { core.send(md.list(m)) } }
@@ -178,7 +182,9 @@ class Hub(core: Core) : Feature(core) {
             core.files.photoRouteChanged()
         }
         if (live && callsOn) (calls ?: Calls(this, core).also { calls = it }).start() else { calls?.stop(); calls = null }
-        if (live && messagesOn) (messages ?: Messages(this, core).also { messages = it }).start() else { messages?.stop(); messages = null }
+        // Messages' observer belongs to the route whose policy started it; a new route gets a new one.
+        if (live && messagesOn && messages != null && messages?.route !== policyRoute) { messages?.stop(); messages = null }
+        if (live && messagesOn) (messages ?: Messages(this, core, policyRoute).also { messages = it }).start() else { messages?.stop(); messages = null }
         if (!(live && mediaOn)) { media?.stop(); media = null }
         synchronized(this) {
             if (alertsLive()) (alerts ?: MediaAlerts(this, core).also { alerts = it }).start() else { alerts?.stop(); alerts = null }
