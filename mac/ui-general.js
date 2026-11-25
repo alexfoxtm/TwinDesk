@@ -179,17 +179,21 @@ UI.tab({
           row.hidden = !s.notifs?.receive;
           button.hidden = ok;
         }
-        const unknown = v === null || v === undefined || v === 'unknown';
+        const location = p.kind === 'location';
+        const pending = location && s.permissions?.locationPending;
+        if (location) button.disabled = !!pending;
+        const unknown = v === null || v === undefined || v === 'unknown' || (location && v === 'notDetermined');
         const request = !ok && (['screen', 'accessibility', 'inputMonitoring', 'localNetwork', 'camera', 'microphone', 'location'].includes(p.kind)
           || (p.kind === 'notifications' && s.notifs?.nativeAccess?.authorization === 'not-determined'));
         setRequest(request);
         button.textContent = t(request ? 'Allow' : 'Open');
-        pill.className = `pill ${unknown ? 'muted' : ok ? 'good' : 'bad'}`;
+        pill.className = `pill ${pending || unknown ? 'muted' : ok ? 'good' : 'bad'}`;
         // macOS counts Accessibility as enough for TwinDesk's keyboard tap: Input Monitoring reads
         // as allowed then, with its own switch in System Settings still off (that's fine).
         const viaAx = p.kind === 'inputMonitoring' && ok && s.permissions?.accessibility === true;
         pill.hidden = unknown && !!p.state; // macOS doesn't tell: Open shows it
-        pill.textContent = unknown ? t('Unknown') : viaAx ? t('Allowed by Accessibility') : ok ? t('Allowed') : t('Not allowed');
+        pill.textContent = pending ? t('Waiting for {name}…', { name: 'macOS' })
+          : unknown ? t('Unknown') : viaAx ? t('Allowed by Accessibility') : ok ? t('Allowed') : t('Not allowed');
       }
       if (s.app) {
         loginSw.set(s.app.openAtLogin);

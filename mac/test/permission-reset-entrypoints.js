@@ -89,6 +89,68 @@ async function requestRoute(file, granted, unavailable = false) {
   assert.equal(refreshes, 5);
 }
 
+async function locationRoute(file, result) {
+  const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const start = source.indexOf('    async allowPermission(kind) {');
+  const end = source.indexOf('    skipSetup(', start);
+  const opened = [], requests = [], rendered = [];
+  let decision, refreshes = 0;
+  let location = result.openSettings ? 'denied' : 'notDetermined';
+  const state = { permissions: { location } };
+  const ctx = {
+    state,
+    helper: { running: true, request(cmd) {
+      requests.push(cmd);
+      if (cmd === 'wifiLocation') return Promise.resolve({});
+      return new Promise((resolve, reject) => { decision = { resolve, reject }; });
+    } },
+    refreshPermissions() {
+      refreshes++;
+      state.permissions.location = location;
+      pushState();
+    },
+  };
+  const shell = { openExternal(url) { opened.push(url); } };
+  const pushState = () => rendered.push({ ...state.permissions });
+  const settingsUrl = 'location-settings';
+  const wiring = source.match(/^  const requestLocation = .*$/m)?.[0] ?? '';
+  const actions = vm.runInNewContext(wiring + '\n({' + source.slice(start, end) + '})', {
+    SETTINGS_URLS: { location: settingsUrl }, ctx, shell, pushState,
+    createLocationRequest: wiring && require('../location-permission').createLocationRequest,
+  }, { filename: file });
+  const first = actions.allowPermission('location');
+  const repeated = actions.allowPermission('location');
+  // An old helper acknowledgement returns immediately, exposing the premature Settings launch.
+  if (!decision) await Promise.all([first, repeated]);
+  assert.deepEqual(opened, [], 'Settings stays closed while the system prompt is pending');
+  assert.equal(refreshes, 0, 'the action waits for a decision');
+  assert.deepEqual(requests, ['requestLocation'], 'repeated Allow waits on one request');
+  assert.equal(rendered.at(-1)?.locationPending, true);
+  location = result.location ?? 'notDetermined';
+  if (result instanceof Error) decision.reject(result);
+  else decision.resolve({ openSettings: result.openSettings === true });
+  await Promise.all([first, repeated]);
+  assert.equal(refreshes, 1, 'completion refreshes the row without a focus event');
+  assert.equal(rendered.at(-1).locationPending, false, 'Allow becomes available again');
+  assert.equal(rendered.at(-1).location, location);
+  assert.deepEqual(opened, result.openSettings ? [settingsUrl] : []);
+
+  if (result.openSettings || location === 'notDetermined') {
+    const serviceFile = file.replace('ipc.js', 'services.js');
+    const service = fs.readFileSync(path.join(__dirname, '..', serviceFile), 'utf8');
+    const listener = service.match(/^  helper\.on\('event', \(event\) => \{[\s\S]*?^  \}\);/m);
+    assert.ok(listener, 'service listens for helper authorization changes');
+    let emit;
+    vm.runInNewContext(listener[0], {
+      helper: { on(_name, callback) { emit = callback; } },
+      onHelperReady: ctx.refreshPermissions,
+    }, { filename: serviceFile });
+    location = 'granted';
+    emit('locationChanged');
+    assert.equal(rendered.at(-1).location, 'granted', 'Settings or a late grant refreshes without focus');
+  }
+}
+
 function localNetworkEvidence() {
   const { Discovery } = require('../discovery');
   const networkInterfaces = os.networkInterfaces;
@@ -119,12 +181,20 @@ function localNetworkEvidence() {
 
 async function main() {
   for (const file of ['main.js', 'mesh/main.js']) await entrypoints(file, true);
-  for (const file of ['ipc.js', 'mesh/ipc.js']) await requestRoute(file, true);
+  for (const file of ['ipc.js', 'mesh/ipc.js']) {
+    await locationRoute(file, { location: 'granted' });
+    await requestRoute(file, true);
+  }
 }
 
 async function failure() {
   for (const file of ['main.js', 'mesh/main.js']) await entrypoints(file, false);
   for (const file of ['ipc.js', 'mesh/ipc.js']) {
+    await locationRoute(file, { location: 'denied' });
+    await locationRoute(file, { location: 'denied', openSettings: true });
+    await locationRoute(file, { location: 'notDetermined' });
+    await locationRoute(file, new Error('helper exited'));
+    await locationRoute(file, new Error('helper: requestLocation timed out'));
     await requestRoute(file, false);
     await requestRoute(file, false, true);
   }
@@ -135,5 +205,5 @@ async function failure() {
   await main();
   await failure();
   localNetworkEvidence();
-  console.log('permission entrypoints: app-owned Screen Recording and Accessibility requests, no automatic resets');
+  console.log('permission entrypoints: app-owned grants, Location completion and Settings recovery, no automatic resets');
 })().catch((err) => { console.error(err); process.exitCode = 1; });

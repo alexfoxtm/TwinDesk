@@ -85,6 +85,14 @@ function render(locale) {
   general({ ...s, permissions: { ...s.permissions, screen: 'denied' } });
   screenButton.click();
   assert.deepStrictEqual(calls.at(-1), ['allowPermission', 'screen'], 'missing permission requests access');
+  const location = nodes.find((n) => n.tag === 'row' && n.label === translated('Location'));
+  general({ ...s, permissions: { ...s.permissions, location: 'notDetermined', locationPending: true } });
+  assert.strictEqual(location.children[0].className, 'pill muted');
+  assert.strictEqual(location.children[0].textContent, t('Waiting for {name}…', { name: 'macOS' }));
+  assert.strictEqual(location.children[1].disabled, true);
+  general({ ...s, permissions: { ...s.permissions, location: 'granted', locationPending: false } });
+  assert.strictEqual(location.children[0].className, 'pill good');
+  assert.strictEqual(location.children[1].disabled, false);
   assert.strictEqual(ui.setup.render(s), false, 'Setup closes after permissions are granted');
   const denied = { ...s, permissions: { screen: 'denied', accessibility: false, inputMonitoring: false } };
   assert.strictEqual(ui.setup.render(denied), true);

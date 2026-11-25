@@ -8,12 +8,14 @@
 //   q screen.start {maxSize}  →  screen.ready (host's screen)  …  screen.stop / screen.state {on, error}
 package com.twindesk.android
 
+import android.Manifest
 import android.app.Activity
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.hardware.display.DisplayManager
@@ -42,6 +44,7 @@ import android.view.SurfaceView
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.Toast
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
@@ -173,8 +176,24 @@ object PeerScreen {
         if (peer.connected) peer.send(msg(Proto.T.PEER_SOUND_STATE, "on" to on, "error" to soundError, "udpPort" to port, "udpToken" to token))
     }
 
+    fun wantsAudio(peer: Peer) = peer.shareSound && (remoteWantsAudio || standaloneSoundActive)
+
+    fun canCaptureAudio(peer: Peer, ctx: Context): Boolean {
+        if (!wantsAudio(peer)) return false
+        if (RuntimeGrant.granted(ctx, Manifest.permission.RECORD_AUDIO)) return true
+
+        val error = "Microphone permission required for sound capture"
+        if (standaloneSoundActive || soundError != error) {
+            standaloneSoundActive = false
+            soundError = error
+            tellSoundState(peer)
+            peer.core.changed()
+        }
+        return false
+    }
+
     fun startStandaloneSound(peer: Peer, ctx: Context) {
-        if (!peer.connected) return
+        if (!peer.connected || !peer.shareSound) return
         standaloneSoundActive = true
         soundError = ""
         val c = capture
@@ -379,25 +398,31 @@ class PeerGrantActivity : Activity() {
         super.onCreate(savedInstanceState)
         Notify.cancelPeer(this)
         val peer = Core.get(this).peer
-        val needAudio = peer.shareSound && (PeerScreen.remoteWantsAudio || PeerScreen.standaloneSoundActive || PeerScreen.screenActive)
-        val mic = android.Manifest.permission.RECORD_AUDIO
-        if (needAudio && !RuntimeGrant.granted(this, mic)) {
-            if (RuntimeGrant.requestable(this, peer.core.store, listOf(mic)).isNotEmpty()) {
-                requestPermissions(arrayOf(mic), 2)
-                return
-            }
-            android.widget.Toast.makeText(this, tr("Allow Microphone in General › Permissions to share this device’s sound"), android.widget.Toast.LENGTH_LONG).show()
+        val mic = Manifest.permission.RECORD_AUDIO
+        if (PeerScreen.wantsAudio(peer) && RuntimeGrant.requestable(this, peer.core.store, listOf(mic)).isNotEmpty()) {
+            requestPermissions(arrayOf(mic), 2)
+        } else {
+            continueGrant(peer)
         }
-        ask()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != 2) return
+        val peer = Core.get(this).peer
         grantResults.firstOrNull()?.let {
-            RuntimeGrant.record(Core.get(this).store, android.Manifest.permission.RECORD_AUDIO, it == android.content.pm.PackageManager.PERMISSION_GRANTED)
+            RuntimeGrant.record(peer.core.store, Manifest.permission.RECORD_AUDIO, it == PackageManager.PERMISSION_GRANTED)
         }
-        ask()
+        continueGrant(peer)
+    }
+
+    private fun continueGrant(peer: Peer) {
+        val wantsAudio = PeerScreen.wantsAudio(peer)
+        val audioAllowed = PeerScreen.canCaptureAudio(peer, this)
+        if (wantsAudio && !audioAllowed) {
+            Toast.makeText(this, tr("Allow Microphone in General › Permissions to share this device’s sound"), Toast.LENGTH_LONG).show()
+        }
+        if (peer.connected && (audioAllowed || PeerScreen.screenActive)) ask() else finish()
     }
 
     private fun ask() {
@@ -410,7 +435,9 @@ class PeerGrantActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         val peer = Core.get(this).peer
         if (requestCode == 1 && resultCode == RESULT_OK && data != null && peer.connected) {
-            startForegroundService(Intent(this, PeerCaptureService::class.java).putExtra("code", resultCode).putExtra("data", data))
+            if (PeerScreen.canCaptureAudio(peer, this) || PeerScreen.screenActive) {
+                startForegroundService(Intent(this, PeerCaptureService::class.java).putExtra("code", resultCode).putExtra("data", data))
+            }
         } else if (requestCode == 1) {
             PeerScreen.standaloneSoundActive = false
             if (PeerScreen.screenActive) PeerScreen.tell(peer, false, "${Core.get(this).store.deviceName} didn’t share its screen")
@@ -500,7 +527,10 @@ class PeerCaptureService : Service() {
         }
         @Suppress("DEPRECATION") val data: Intent? = intent?.getParcelableExtra("data")
         val code = intent?.getIntExtra("code", 0) ?: 0
-        if (data == null) { stopSelf(); return START_NOT_STICKY }
+        if (data == null || (!PeerScreen.canCaptureAudio(peer, this) && !PeerScreen.screenActive)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         try {
             val p = getSystemService(MediaProjectionManager::class.java).getMediaProjection(code, data) ?: throw IllegalStateException("no capture grant")
             projection = p
@@ -524,7 +554,7 @@ class PeerCaptureService : Service() {
 
     fun update() {
         val p = projection ?: return
-        val wantAudio = peer.shareSound && (PeerScreen.remoteWantsAudio || PeerScreen.standaloneSoundActive)
+        val wantAudio = PeerScreen.canCaptureAudio(peer, this)
         val wantScreen = PeerScreen.screenActive
         if (!wantAudio && !wantScreen) {
             stopSelf()
@@ -560,10 +590,6 @@ class PeerCaptureService : Service() {
     }
 
     private fun beginAudio(p: MediaProjection) {
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            PeerScreen.soundError = "Microphone permission required for sound capture"
-            return
-        }
         val rate = 48000
         val frame = 960 // 20 ms
         val cfg = AudioPlaybackCaptureConfiguration.Builder(p)

@@ -68,7 +68,10 @@ function startServices({ server, getSettings, pushState, onHelperReady, clipboar
       });
     }, 100);
   };
-  helper.on('event', (event) => { if (event === 'activeSpaceChanged') invalidateLook(); });
+  helper.on('event', (event) => {
+    if (event === 'activeSpaceChanged') invalidateLook();
+    if (event === 'locationChanged') onHelperReady();
+  });
   const desktopRefresh = new DesktopRefresh({
     listen: (fn) => server.on(`t:${P.T.SCREEN_DESKTOPS}`, fn),
     authorize: (ctx) => Spaces.streamInputGate(ctx, () => server.current),

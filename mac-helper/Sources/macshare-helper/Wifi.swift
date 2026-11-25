@@ -14,6 +14,8 @@ final class WifiCtl: NSObject, CLLocationManagerDelegate {
 
   private let work = DispatchQueue(label: "macshare.wifi")
   private var loc: CLLocationManager? // main thread
+  private var locationRequests: [(Bool) -> Void] = []
+  private var locationTimeout: DispatchWorkItem?
   private var powerBefore = true
   private var joined = ""
 
@@ -32,16 +34,49 @@ final class WifiCtl: NSObject, CLLocationManagerDelegate {
 
   // Main thread (CLLocationManager wants the thread it was made on to have a run loop). When In
   // Use is all Wi-Fi names need.
-  func askLocation() {
-    if loc == nil {
-      loc = CLLocationManager()
-      loc?.delegate = self
-    }
-    if loc?.authorizationStatus == .notDetermined { loc?.requestWhenInUseAuthorization() }
+  private func locationManager() -> CLLocationManager {
+    if let loc { return loc }
+    let manager = CLLocationManager()
+    loc = manager
+    manager.delegate = self
+    return manager
   }
 
-  func locationState() -> String {
-    switch CLLocationManager().authorizationStatus {
+  func askLocation() {
+    let manager = locationManager()
+    if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
+  }
+
+  // The explicit permission action can wait. Wi-Fi Direct still dispatches and returns immediately.
+  func requestLocation(done: @escaping (Bool) -> Void) {
+    let status = locationManager().authorizationStatus
+    guard status == .notDetermined else { return done(status == .denied || status == .restricted) }
+    locationRequests.append(done)
+    guard locationTimeout == nil else { return }
+    let timeout = DispatchWorkItem { self.finishLocationRequests() }
+    locationTimeout = timeout
+    DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: timeout)
+    askLocation()
+  }
+
+  func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    if manager.authorizationStatus != .notDetermined { finishLocationRequests() }
+    // Covers Settings changes and decisions that arrive after the request's deadline.
+    emit(["event": "locationChanged"])
+  }
+
+  private func finishLocationRequests() {
+    locationTimeout?.cancel()
+    locationTimeout = nil
+    let requests = locationRequests
+    locationRequests.removeAll()
+    for reply in requests { reply(false) }
+  }
+
+  func locationState(watchChanges: Bool = false) -> String {
+    // The permissions command is on the main run loop. Wi-Fi work reads without a delegate.
+    let manager = watchChanges ? locationManager() : CLLocationManager()
+    switch manager.authorizationStatus {
     case .authorizedAlways: return "granted"
     case .denied, .restricted: return "denied"
     case .notDetermined: return "notDetermined"

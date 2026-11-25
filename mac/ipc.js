@@ -15,6 +15,7 @@ const LINKS = {
   upstream: 'https://github.com/InukaAsith/TwinDesk/releases',
 };
 const store = require('./store');
+const { createLocationRequest } = require('./location-permission');
 const { planConnect, settleConnect, sessionIsUp } = require('./connect-plan');
 
 const SETTINGS_URLS = {
@@ -142,6 +143,7 @@ function setupIpc(ctx) {
   }
 
   const fork = ctx.fork || {};
+  const requestLocation = createLocationRequest(ctx, pushState, () => shell.openExternal(SETTINGS_URLS.location));
   const actions = {
     async connectAddress(text) {
       const address = String(text || '').trim();
@@ -268,6 +270,7 @@ function setupIpc(ctx) {
     // Ask first (that puts TwinDesk in the System Settings list), then open the pane.
     async allowPermission(kind) {
       if (!SETTINGS_URLS[kind]) return;
+      if (kind === 'location') return requestLocation();
       let granted = false;
       if (kind === 'screen') {
         try { granted = ctx.notifs.nativePermission.requestScreen(); }
@@ -279,8 +282,6 @@ function setupIpc(ctx) {
         const status = systemPreferences.getMediaAccessStatus(kind);
         try { granted = status === 'granted' || (status === 'not-determined' && await systemPreferences.askForMediaAccess(kind)); }
         catch (err) { console.warn(`[permissions] ${kind} request failed: ${err.message}`); }
-      } else if (kind === 'location' && ctx.helper.running) {
-        await ctx.helper.request('wifiLocation').catch(() => {});
       } else if (kind === 'inputMonitoring' && ctx.helper.running) {
         try {
           granted = !!(await ctx.helper.request('requestAccess', { kind })).granted;

@@ -74,7 +74,10 @@ function startServices({ server, getSettings, pushState, onHelperReady, hub: mes
       if (opts.still()) spaceLook.demand({ ...opts, invalidated: true });
     }, 100);
   };
-  helper.on('event', (event) => { if (event === 'activeSpaceChanged') invalidateLook(); });
+  helper.on('event', (event) => {
+    if (event === 'activeSpaceChanged') invalidateLook();
+    if (event === 'locationChanged') onHelperReady();
+  });
   const desktopRefresh = new DesktopRefresh({
     listen: (fn) => meshHub.bus.on(P.T.SCREEN_DESKTOPS, (msg, id, source) => fn(msg, { id, source })),
     authorize: (ctx) => Spaces.meshGate(() => meshHub.sessions.get(ctx && ctx.id), ctx && ctx.source),

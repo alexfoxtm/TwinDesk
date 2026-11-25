@@ -284,7 +284,7 @@ func handle(_ line: String) {
       "accessibility": AXIsProcessTrusted(),
       "inputMonitoring": IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted,
       "screen": CGPreflightScreenCaptureAccess(),
-      "location": WifiCtl.shared.locationState(),
+      "location": WifiCtl.shared.locationState(watchChanges: true),
     ])
   case "textFocus":
     helperWorkQueue.async { reply(id, textFocus()) }
@@ -502,6 +502,8 @@ func handle(_ line: String) {
   case "wifiLocation":
     WifiCtl.shared.askLocation()
     reply(id)
+  case "requestLocation":
+    WifiCtl.shared.requestLocation { openSettings in reply(id, ["openSettings": openSettings]) }
   case "wifiJoin":
     WifiCtl.shared.join(ssid: (msg["ssid"] as? String) ?? "", password: (msg["password"] as? String) ?? "") { err in
       if let err = err { replyError(id, err) } else { reply(id) }
