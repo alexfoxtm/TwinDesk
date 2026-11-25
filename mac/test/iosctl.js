@@ -90,7 +90,7 @@ test('existing network usbmux records use the paired tunnel while genuine USB us
   const realRequire = createRequire(file);
 
   for (const [records, expected] of [[[record('Network')], address], [[], address],
-    [[record('Network'), record('USB')], '127.0.0.1']]) {
+    [[record('Network'), record('USB')], '127.0.0.1'], [[], null]]) {
     let attested = false;
     let bound;
     class FakeMux extends EventEmitter {
@@ -103,6 +103,10 @@ test('existing network usbmux records use the paired tunnel while genuine USB us
       if (binary === '/usr/bin/codesign') return { stdout: '' };
       if (binary === '/usr/bin/plutil') return { stdout: args.includes('json') ? await fs.readFile(template, 'utf8') : '' };
       if (binary === '/usr/bin/xcrun' && args.includes('list')) return { stdout: JSON.stringify({ result: { devices: [device] } }) };
+      if (binary === '/usr/bin/xcrun' && args.includes('lockState')) {
+        assert(args.includes(udid));
+        return { stdout: JSON.stringify({ result: { passcodeRequired: expected === null } }) };
+      }
       if (binary === '/usr/bin/xcrun' && args.includes('details')) {
         assert(args.includes(udid));
         attested = true;
@@ -129,7 +133,13 @@ test('existing network usbmux records use the paired tunnel while genuine USB us
         if (name === '../shared/iosnet') return { Mux: FakeMux };
         return realRequire(name);
       } });
-    const transport = await module.exports.startXCTest(udid, new AbortController().signal, template);
+    const startup = module.exports.startXCTest(udid, new AbortController().signal, template);
+    if (expected === null) {
+      await assert.rejects(startup.then(async (transport) => transport.stop()), { message: 'locked' });
+      assert.equal(bound, undefined, 'a locked iPad never starts the XCTest runner');
+      continue;
+    }
+    const transport = await startup;
     await transport.stop();
     assert.equal(bound, expected);
     assert.equal(attested, expected === address);
@@ -144,6 +154,7 @@ test('verified WDA session maps upright portrait and landscape video, gestures, 
   t.after(() => controller.stop());
   await controller.connect();
   assert.deepEqual(statuses, ['connected']);
+  assert.equal(logs[0], '[ipad control] connected');
   assert(transport.sealed);
   assert.deepEqual(calls[2], { method: 'POST', path: '/session/own-session/appium/settings', body: {
     settings: { animationCoolOffTimeout: 0 },
@@ -181,8 +192,9 @@ test('verified WDA session maps upright portrait and landscape video, gestures, 
     ['/session/own-session/wda/element/0/keyboardInput', { keys: ['XCUIKeyboardKeyDelete'] }],
     ['/session/own-session/wda/pressButton', { name: 'home' }],
   ]);
-  assert.equal(logs.length, 7);
-  assert(logs.every((line) => /^\[ipad control\] (tap|long-press|drag|scroll|key|home) \d+ms$/.test(line)));
+  const actionLogs = logs.slice(1);
+  assert.equal(actionLogs.length, 7);
+  assert(actionLogs.every((line) => /^\[ipad control\] (tap|long-press|drag|scroll|key|home) \d+ms$/.test(line)));
   await controller.stop();
   assert.equal(calls.at(-1).path, '/wda/shutdown');
   assert.equal(transport.stops, 1);
@@ -190,6 +202,10 @@ test('verified WDA session maps upright portrait and landscape video, gestures, 
 
 test('rejects a wrong runner, duplicate owner, stale generation and reconnect during in-flight geometry', async (t) => {
   const statuses = [];
+  const locked = new IpadControl({ udid, owns: () => true, status: (s) => statuses.push(s),
+    log() {}, start: async () => { throw new Error('locked'); } });
+  await locked.connect();
+  assert.deepEqual(statuses.splice(0), ['locked']);
   const withdrawn = wda();
   let routeChecks = 0;
   withdrawn.transport.request = async () => { routeChecks++; throw new Error('route'); };
@@ -271,7 +287,7 @@ test('drops a rejected action, keeps its session, and stops on invalid session o
   assert.equal(keyAttempts, 1);
   assert.equal(calls.at(-1).path, '/session/own-session/wda/pressButton');
   assert.deepEqual(status, ['connected']);
-  assert.equal(logs[0], '[ipad control] key rejected invalid_element_state');
+  assert(logs.includes('[ipad control] key rejected invalid_element_state'));
   controller.input({ op: 'key', down: true, key: 'Q' });
   await tick();
   await controller.stopping;

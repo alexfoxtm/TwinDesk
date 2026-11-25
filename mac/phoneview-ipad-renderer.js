@@ -27,6 +27,7 @@ window.PhoneViewIPad = (api, I, canvas, displayedFrame) => {
     starting: ['Connecting…'], connected: ['Connected'], picture: ['Waiting for video', 'Wait for the iPad’s screen to appear.'],
     setup: ['Set up XCUITest', 'Stage the signed XCUITest runner in this TwinDesk profile’s ipad-control folder.'],
     device: ['iPad unavailable', 'Check the iPad’s developer pairing in Xcode.'],
+    locked: ['Unlock the iPad', 'Unlock the iPad, then choose Control this iPad again.'],
     developerMode: ['Developer Mode off', 'On the iPad, open Settings › Privacy & Security › Developer Mode.'],
     route: ['No developer route', 'Check the associated iPad’s paired Wi-Fi connection in Xcode, or use trusted USB.'],
     busy: ['iPad control busy', 'Stop control in the other window or wait for its session to close.'],

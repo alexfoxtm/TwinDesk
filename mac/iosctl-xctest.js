@@ -164,6 +164,20 @@ async function developerIPads(signal) {
   });
 }
 
+async function isIPadLocked(udid, signal) {
+  try {
+    const { stdout } = await exec('/usr/bin/xcrun', ['devicectl', 'device', 'info', 'lockState',
+      '-q', '--device', udid, '--timeout', '5', '--json-output', '/dev/stdout'], { signal, timeout: 6000 });
+    signal.throwIfAborted();
+    return JSON.parse(stdout).result?.passcodeRequired === true;
+  } catch {
+    // Some device or Xcode versions do not expose lock state. Only a positive
+    // result may block startup, and cancellation must still propagate.
+    signal.throwIfAborted();
+    return false;
+  }
+}
+
 function muxRequest(message, take, signal) {
   return new Promise((resolve, reject) => {
     signal.throwIfAborted();
@@ -236,6 +250,7 @@ async function startXCTest(udid, signal, template = process.env.TWINDESK_IPAD_WD
   const device = (await developerIPads(signal)).find((d) => d.udid === udid);
   if (!device) throw new Error('device');
   if (!device.developerMode) throw new Error('developerMode');
+  if (await isIPadLocked(udid, signal)) throw new Error('locked');
   const marker = `${BUILD_PIN}:${randomUUID()}`;
   const port = randomInt(54000, 64000);
   let root, run;

@@ -146,10 +146,11 @@ class IpadControl {
       if (settings.value?.animationCoolOffTimeout !== 0 || !this.owns()) throw new Error(code);
       deadline.throwIfAborted();
       this.session = session;
+      this.log('[ipad control] connected');
       this.status('connected');
       this.heartbeat = setInterval(() => this.enqueue('heartbeat', () => this.send('GET', '')), 3000);
     } catch (error) {
-      if (['setup', 'device', 'developerMode', 'route'].includes(error.message)) code = error.message;
+      if (['setup', 'device', 'developerMode', 'route', 'locked'].includes(error.message)) code = error.message;
       await this.stop(this.abort.signal.aborted ? undefined : code);
     } finally {
       // A window can stop while the async launcher is still unwinding.
