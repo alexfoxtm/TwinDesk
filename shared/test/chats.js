@@ -84,13 +84,16 @@ on['chat.match']({ ref: request.ref, ids: [second.id] }, socket);
 link.current = { deviceId: 'phone1' };
 
 on.closed();
-assert.strictEqual(c.messaging(), false, 'the flag is session-scoped');
+assert.strictEqual(c.messaging(), true, 'a phone that already sent projections stays marked after disconnect');
 assert.strictEqual(c.view()[0].reply, false, 'no Reply without a session');
 on.welcome();
+assert.strictEqual(c.messaging(), true, 'reconnect does not require a fresh projection to keep the flag');
 assert.strictEqual(googleView().reply, false, 'cached history cannot offer Reply after reconnect');
 c.stop();
 const again = new Chats({ link, dir, want: () => false });
 assert.strictEqual(again.view().length, 4, 'kept after a restart');
 assert.strictEqual(again.messaging(), false, 'a client without a socket never claims structured messaging');
+const againWithSocket = new Chats({ link, dir, want: () => false, socket: () => socket });
+assert.strictEqual(againWithSocket.messaging(), true, 'the stored mark survives a process restart');
 fs.rmSync(dir, { recursive: true, force: true });
 console.log('chats ok');

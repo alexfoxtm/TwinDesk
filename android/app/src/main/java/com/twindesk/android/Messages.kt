@@ -286,17 +286,19 @@ class Messages(private val hub: Hub, private val core: Core) {
     // The one canonical address on a 1:1 thread, or null if the thread is a group or unknown.
     private fun threadPeer(threadId: Long, cache: MutableMap<Long, String?>): String? {
         if (threadId in cache) return cache[threadId]
-        var ids = ""
-        cr.query(Uri.parse("content://mms-sms/conversations?simple=true"), arrayOf("recipient_ids"), "_id = ?", arrayOf(threadId.toString()), null)?.use { c ->
-            if (c.moveToFirst()) ids = c.getString(0) ?: ""
-        }
-        val parts = ids.split(' ').filter { it.isNotBlank() }
-        var address: String? = null
-        if (parts.size == 1) {
-            cr.query(Uri.parse("content://mms-sms/canonical-addresses"), arrayOf("address"), "_id = ?", arrayOf(parts[0]), null)?.use { c ->
-                if (c.moveToFirst()) address = c.getString(0)?.takeIf { it.isNotBlank() }
+        val address = runCatching {
+            var ids = ""
+            cr.query(Uri.parse("content://mms-sms/conversations?simple=true"), arrayOf("recipient_ids"), "_id = ?", arrayOf(threadId.toString()), null)?.use { c ->
+                if (c.moveToFirst()) ids = c.getString(0) ?: ""
             }
-        }
+            val parts = ids.split(' ').filter { it.isNotBlank() }
+            if (parts.size != 1) return@runCatching null
+            var found: String? = null
+            cr.query(Uri.parse("content://mms-sms/canonical-addresses"), arrayOf("address"), "_id = ?", arrayOf(parts[0]), null)?.use { c ->
+                if (c.moveToFirst()) found = c.getString(0)?.takeIf { it.isNotBlank() }
+            }
+            found
+        }.getOrNull()
         cache[threadId] = address
         return address
     }

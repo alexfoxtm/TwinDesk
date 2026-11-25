@@ -46,16 +46,21 @@ class Chats {
     this.who = who || (() => (link.current && link.current.deviceId) || '');
     this.file = path.join(dir, 'chats.json');
     this.phones = {}; // deviceId -> {key -> conv}
+    this.messagingPhones = {}; // deviceId -> true once this phone has sent a structured messaging projection
     this.sessionUp = false;
     this.sentWant = null; // what the phone was told (null: nothing this session)
     this.heard = false; // the phone sent one this session: it knows chat.conv
-    this.heardMessaging = false; // a Google/Samsung projection arrived on the exact socket
+    this.heardMessaging = false; // a Google/Samsung projection arrived this session
     this.messageReplies = new Map(); // live notification tokens, never from disk
     this.matchCount = 0;
     try {
       const j = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       if (j && typeof j.phones === 'object') this.phones = j.phones;
+      if (j && j.messaging && typeof j.messaging === 'object') this.messagingPhones = j.messaging;
     } catch {}
+    for (const [dev, convs] of Object.entries(this.phones)) {
+      if (convs && Object.values(convs).some((c) => MESSAGING.test(c.app))) this.messagingPhones[dev] = true;
+    }
     link.on('welcome', () => {
       this.sessionUp = true;
       this.sentWant = null;
@@ -117,7 +122,10 @@ class Chats {
     if (!key || !dev || !Array.isArray(m.items)) return;
     if (messaging ? (m.source !== 'messaging' || !this.sessionUp || !this.want()) : !isChatApp(app)) return;
     this.heard = true;
-    if (messaging) this.heardMessaging = true;
+    if (messaging) {
+      this.heardMessaging = true;
+      this.messagingPhones[dev] = true;
+    }
     const convs = (this.phones[dev] = this.phones[dev] || {});
     const k = app + '|' + key;
     const c = convs[k] || { key: k, app, items: [] };
@@ -264,6 +272,7 @@ class Chats {
 
   clear() {
     delete this.phones[this.who()];
+    delete this.messagingPhones[this.who()];
     this._requestMatches();
     this._save();
     this.onChange();
@@ -274,7 +283,7 @@ class Chats {
     this.saveTimer = setTimeout(() => {
       const tmp = this.file + '.tmp';
       try {
-        fs.writeFileSync(tmp, JSON.stringify({ phones: this.phones }));
+        fs.writeFileSync(tmp, JSON.stringify({ phones: this.phones, messaging: this.messagingPhones }));
         fs.renameSync(tmp, this.file);
       } catch (e) {
         console.log('[chats] save: ' + e.message);
@@ -284,7 +293,7 @@ class Chats {
 
   // True once this session's exact socket has delivered a Google/Samsung projection.
   messaging() {
-    return !!(this.socket && this.heardMessaging);
+    return !!(this.socket && this.messagingPhones[this.who()]);
   }
 
   // For the state: this phone's, newest first (null: the phone hasn't sent any, ever).
@@ -306,7 +315,7 @@ class Chats {
 
   stop() {
     clearTimeout(this.saveTimer);
-    try { fs.writeFileSync(this.file, JSON.stringify({ phones: this.phones })); } catch {}
+    try { fs.writeFileSync(this.file, JSON.stringify({ phones: this.phones, messaging: this.messagingPhones })); } catch {}
   }
 }
 
