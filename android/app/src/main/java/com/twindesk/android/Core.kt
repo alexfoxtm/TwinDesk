@@ -548,6 +548,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     fun disconnect() {
+        screen.stopViewerRecovery()
         silence.stop() // the phone silenced for the computer is let go now (and the computer told)
         stopReturn()
         resumeUntil = 0
@@ -603,6 +604,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     fun forget(id: String) {
+        screen.forgetViewerRecovery(id)
         clip.forgetQueue(id)
         photos.forget(id)
         silence.forget(id)
@@ -709,10 +711,14 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     override fun onClosed(host: Host, code: String?) {
+        val accidental = code == null || code !in setOf("local", "paused", "reclaim", Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN, Proto.E.BUSY, Proto.E.ASLEEP)
+        val retainViewer = accidental && link.state != "failed"
         main.post {
             // bad_token forgets the pair in Link before this runs. A drop keeps the while-away queue.
             clip.onSessionEnded(code, host.id)
-            for (f in features) runCatching { f.onClosed() }
+            for (f in features) runCatching {
+                if (f === screen) screen.onLinkClosed(host, retainViewer) else f.onClosed()
+            }
             changed()
         }
         // Capable Macs can be reclaimed without taking another session. Keep this intent across
@@ -729,7 +735,6 @@ class Core private constructor(val ctx: Context) : Link.Events {
             return
         }
         // Legacy peers retain the existing thirty-second retry behavior.
-        val accidental = code == null || code !in setOf("local", "paused", "reclaim", Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN, Proto.E.BUSY, Proto.E.ASLEEP)
         if (!accidental || link.state == "failed") return
         if (inBackground()) { resumeLater = host; Log.i("TwinDesk", "dropped in the background: reconnecting when TwinDesk opens"); return }
         if (resumeUntil == 0L) resumeUntil = System.currentTimeMillis() + Proto.PHONE_GRACE_MS

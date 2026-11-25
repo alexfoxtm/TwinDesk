@@ -63,6 +63,111 @@ class IdleWiringTest {
         javaClass.getDeclaredField(name).apply { isAccessible = true }.set(this, value)
     }
 
+    private fun viewerSocket(core: Core, host: Host, policies: MutableList<Boolean>): WebSocket {
+        val socket = Proxy.newProxyInstance(WebSocket::class.java.classLoader, arrayOf(WebSocket::class.java)) { self, method, args ->
+            when (method.name) {
+                "hashCode" -> System.identityHashCode(self)
+                "equals" -> self === args[0]
+                "send" -> {
+                    val message = JSONObject(args[0] as String)
+                    if (message.optString("t") == "screen.policy") policies += message.optBoolean("accept")
+                    true
+                }
+                else -> error(method.name)
+            }
+        } as WebSocket
+        core.link.write("host", host)
+        core.link.write("ws", socket)
+        core.link.write("state", "connected")
+        return socket
+    }
+
+    private fun sharing(core: Core, source: WebSocket) {
+        core.onMessage(msg("screen.state", "on" to true), core.link.currentTrustedRoute(), source)
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    private fun dropViewerSocket(core: Core, host: Host, code: String? = null) {
+        core.link.write("ws", null)
+        core.link.write("state", "idle")
+        core.onClosed(host, code)
+        core.write("resumeUntil", 0L) // keeps the fixture's Core from dialing an actual network
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    @Test fun normalViewerAndNegotiatingReconnectDoNotBouncePolicy() {
+        val core = core()
+        val owner = Host("fixture-mac", "Fixture Mac", "mac", "192.0.2.1", 47800, "pin", "token", 0)
+        val main = shadowOf(Looper.getMainLooper())
+        val first = mutableListOf<Boolean>()
+        val viewer = WebHost(context, "viewer.html", core)
+        try {
+            val socket = viewerSocket(core, owner, first)
+            sharing(core, socket)
+            core.screen.attach(viewer, 640, 480)
+            main.idleFor(Duration.ofSeconds(10))
+            assertEquals(listOf(true), first)
+
+            dropViewerSocket(core, owner)
+            val reconnect = mutableListOf<Boolean>()
+            val next = viewerSocket(core, owner.copy(), reconnect)
+            core.screen.onWelcome(owner)
+            sharing(core, next)
+            main.idleFor(Duration.ofSeconds(4))
+            core.screen.onOffer(msg("rtc.offer", "session" to 2), core.link.currentTrustedRoute())
+            main.idleFor(Duration.ofSeconds(6))
+            assertEquals(listOf(true), reconnect)
+        } finally {
+            core.screen.detach(viewer)
+            viewer.destroy()
+            core.bg.shutdownNow()
+            core.timers.shutdownNow()
+        }
+    }
+
+    @Test fun onlyTheRetainedPairCanRenewBeforeOfferAndStopCancelsOldWork() {
+        val core = core()
+        val owner = Host("fixture-mac", "Fixture Mac", "mac", "192.0.2.1", 47800, "pin", "token", 0)
+        val main = shadowOf(Looper.getMainLooper())
+        val viewer = WebHost(context, "viewer.html", core)
+        try {
+            val socket = viewerSocket(core, owner, mutableListOf())
+            sharing(core, socket)
+            core.screen.attach(viewer, 640, 480)
+            val stale = core.link.currentTrustedRoute()
+            dropViewerSocket(core, owner)
+            val reconnect = mutableListOf<Boolean>()
+            val next = viewerSocket(core, owner.copy(), reconnect)
+            core.screen.onWelcome(owner)
+            sharing(core, next)
+            core.screen.onOffer(msg("rtc.offer", "session" to 1), stale)
+            main.idleFor(Duration.ofMillis(4600))
+            assertEquals(listOf(true, false, true), reconnect)
+            core.screen.control(share = false)
+            main.idleFor(Duration.ofSeconds(5))
+            assertEquals(listOf(true, false, true), reconnect)
+
+            for (other in listOf(owner.copy(id = "fixture-other"), owner.copy(token = "replacement-token"))) {
+                val original = viewerSocket(core, owner, mutableListOf())
+                sharing(core, original)
+                // A fresh explicit viewer attach grants acceptance for this exact pairing again.
+                core.screen.attach(viewer, 640, 480)
+                dropViewerSocket(core, owner)
+                val replacement = mutableListOf<Boolean>()
+                val otherSocket = viewerSocket(core, other, replacement)
+                core.screen.onWelcome(other)
+                sharing(core, otherSocket)
+                main.idleFor(Duration.ofSeconds(14))
+                assertTrue(replacement.isEmpty())
+            }
+        } finally {
+            core.screen.detach(viewer)
+            viewer.destroy()
+            core.bg.shutdownNow()
+            core.timers.shutdownNow()
+        }
+    }
+
     @Test fun sendOnQuietSocketArmsProbeAndShortensBeatDelay() {
         val core = core()
         val link = core.link
