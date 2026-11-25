@@ -18,10 +18,13 @@ const store = require('./store');
 const { planConnect, settleConnect, sessionIsUp } = require('./connect-plan');
 
 const SETTINGS_URLS = {
+  camera: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Camera',
+  microphone: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
   screen: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
   accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
   inputMonitoring: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent',
   localNetwork: 'x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork',
+  automation: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Automation',
   fullDisk: 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles',
   bluetooth: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth',
   location: 'x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices',
@@ -272,7 +275,13 @@ function setupIpc(ctx) {
       } else if (kind === 'accessibility') {
         try { granted = systemPreferences.isTrustedAccessibilityClient(true); }
         catch (err) { console.warn(`[permissions] Accessibility request failed: ${err.message}`); }
-      } else if (kind !== 'localNetwork' && ctx.helper.running) {
+      } else if (kind === 'camera' || kind === 'microphone') {
+        const status = systemPreferences.getMediaAccessStatus(kind);
+        try { granted = status === 'granted' || (status === 'not-determined' && await systemPreferences.askForMediaAccess(kind)); }
+        catch (err) { console.warn(`[permissions] ${kind} request failed: ${err.message}`); }
+      } else if (kind === 'location' && ctx.helper.running) {
+        await ctx.helper.request('wifiLocation').catch(() => {});
+      } else if (kind === 'inputMonitoring' && ctx.helper.running) {
         try {
           granted = !!(await ctx.helper.request('requestAccess', { kind })).granted;
         } catch {}

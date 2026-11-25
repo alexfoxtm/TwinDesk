@@ -13,6 +13,9 @@ Everyone who sent code, reported a problem or tested is thanked under their vers
 
 ### New
 
+- Mac setup and General guide you to TwinDesk Fork’s privacy switches and show live grant status
+  when available. Android setup and General explain microphone access and open the right Settings
+  page when Android can no longer prompt for a needed grant.
 - **Keep phone screen off while using apps** (Mac, Mirroring, off by default): the
   Android screen stays dark while Mac app windows are open. Opening an app from sleep may
   briefly light the phone or require an unlock (#247, #284).

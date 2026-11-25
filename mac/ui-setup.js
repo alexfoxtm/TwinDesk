@@ -18,17 +18,19 @@ UI.setup = (() => {
     { kind: 'localNetwork', label: t('Local Network'), note: t('To find your other computers'), missing: (s) => !!s.discovery && s.discovery.localNetwork === false },
   ];
   const rows = ITEMS.map((it) => {
-    const pill = el('span', { class: 'pill good', text: t('Allowed') });
+    const pill = el('span', { class: 'pill', attrs: { role: 'status' } });
     const btn = UI.button(t('Allow'), () => api.allowPermission(it.kind), 'small primary');
     return { it, pill, btn, row: UI.row(it.label, it.note, [pill, btn]) };
   });
   let missingKey = '';
+  const restartHint = el('p', { text: t('If you’ve enabled access in System Settings and it still shows as missing, restart TwinDesk.') });
   const page = el('section', { class: 'setup-page', hidden: true }, [
     el('div', { class: 'app-mark', attrs: { 'aria-hidden': 'true' } }),
     el('h1', { text: t('Set up TwinDesk') }),
-    el('p', { text: t('macOS needs your OK for a few things.') }),
+    el('p', { text: t('When System Settings opens, turn on the switch for TwinDesk Fork.') }),
     UI.card('', [UI.row(t('Language'), t('Changing the language restarts TwinDesk.'), [language])]),
     UI.card('', rows.map((r) => r.row)),
+    restartHint,
     el('div', { class: 'setup-foot' }, [
       UI.button(t('Restart TwinDesk'), () => api.relaunch(), ''),
       UI.button(t('Skip for now'), () => api.skipSetup(missingKey), ''),
@@ -48,14 +50,18 @@ UI.setup = (() => {
       page.hidden = !show;
       document.body.classList.toggle('setup', show);
       document.getElementById('pages').hidden = show;
+      restartHint.hidden = !m.includes('screen') && !m.includes('inputMonitoring');
       for (const r of rows) {
         const miss = m.includes(r.it.kind);
-        r.pill.hidden = miss;
-        // Accessibility covers the keyboard tap, so macOS reads Input Monitoring as allowed with its switch off.
-        if (r.it.kind === 'inputMonitoring') r.pill.textContent = s.permissions && s.permissions.accessibility ? t('Allowed by Accessibility') : t('Allowed');
+        const p = s.permissions;
+        const unknown = !p || (r.it.kind === 'inputMonitoring' && p.inputMonitoring == null)
+          || (r.it.kind === 'screen' && p.screen === 'unknown');
+        r.pill.hidden = miss && !unknown;
+        r.pill.className = `pill ${unknown ? 'muted' : 'good'}`;
+        r.pill.textContent = unknown ? t('Unknown')
+          : r.it.kind === 'inputMonitoring' && p.accessibility && !miss ? t('Allowed by Accessibility') : t('Allowed');
         r.btn.hidden = !miss;
-        // Local Network only matters when it's actually blocked.
-        r.row.hidden = r.it.kind === 'localNetwork' && !miss;
+        r.row.hidden = r.it.kind === 'localNetwork' && !(miss || s.discovery?.localNetworkWasBlocked);
       }
       return show;
     },

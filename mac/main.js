@@ -513,12 +513,15 @@ function refreshPermissions() {
   if (svc && svc.notifs) void svc.notifs.nativePermission.refresh();
   const prevScreen = state.permissions.screen;
   state.permissions.screen = systemPreferences.getMediaAccessStatus('screen');
+  state.permissions.camera = systemPreferences.getMediaAccessStatus('camera');
+  state.permissions.microphone = systemPreferences.getMediaAccessStatus('microphone');
   // A capture that was failing for Screen Recording tries again the moment it is allowed.
   if (prevScreen !== 'granted' && state.permissions.screen === 'granted' && svc && svc.stream && typeof svc.stream.nudge === 'function') svc.stream.nudge('permission granted');
   state.permissions.accessibility = systemPreferences.isTrustedAccessibilityClient(false);
   if (svc && svc.helper.running) {
     svc.helper.request('permissions').then((r) => {
-      state.permissions.inputMonitoring = !!r.inputMonitoring;
+      state.permissions.inputMonitoring = typeof r.inputMonitoring === 'boolean' ? r.inputMonitoring : null;
+      state.permissions.location = r.location;
       setupSeen();
       pushState();
       permArm();
@@ -533,7 +536,8 @@ function refreshPermissions() {
 // Setup shows once: when everything is allowed it's done for good (like Skip for now).
 function setupSeen() {
   const p = state.permissions;
-  if (settings.ui.setupDone || p.screen !== 'granted' || !p.accessibility || p.inputMonitoring !== true) return;
+  if (settings.ui.setupDone || p.screen !== 'granted' || !p.accessibility || p.inputMonitoring !== true
+      || discovery?.status.localNetwork === false) return;
   settings.ui.setupDone = true;
   store.saveSettings(settings);
 }
@@ -805,7 +809,10 @@ app.whenReady().then(() => {
     canInvite: (d, wokeAt) => d.lastSeen >= wokeAt && !P.isPhoneOs(d.os)
       && pairing.list().some((p) => p.id === d.id && p.os === d.os),
   });
-  discovery.on('change', pushState);
+  discovery.on('change', () => {
+    setupSeen();
+    pushState();
+  });
   discovery.start();
   link = new Link(id, {
     canConnect: () => !server.current && !(pairing && pairing.pending) && !server.phoneHolds(),

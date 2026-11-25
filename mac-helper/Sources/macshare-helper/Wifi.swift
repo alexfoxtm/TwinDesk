@@ -40,7 +40,7 @@ final class WifiCtl: NSObject, CLLocationManagerDelegate {
     if loc?.authorizationStatus == .notDetermined { loc?.requestWhenInUseAuthorization() }
   }
 
-  private func locationState() -> String {
+  func locationState() -> String {
     switch CLLocationManager().authorizationStatus {
     case .authorizedAlways: return "granted"
     case .denied, .restricted: return "denied"

@@ -1470,5 +1470,8 @@
   "Looking for nearby devices…": "Procurando dispositivos por perto…",
   "No reachable devices": "Nenhum dispositivo acessível",
   "Verified on this network": "Verificado nesta rede",
-  "Checking availability…": "Verificando disponibilidade…"
+  "Checking availability…": "Verificando disponibilidade…",
+  "Record voice notes and share this device’s sound": "Gravar notas de voz e compartilhar o som deste dispositivo",
+  "Allow Microphone in General › Permissions to share this device’s sound": "Permita o microfone em Geral › Permissões para compartilhar o som deste dispositivo",
+  "Microphone": "Microfone"
 }

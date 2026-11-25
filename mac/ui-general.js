@@ -12,7 +12,7 @@ UI.tab({
   badge: (s) => {
     const p = s.permissions;
     if (p && (p.screen !== 'granted' || !p.accessibility || p.inputMonitoring === false)) return '!';
-    return '';
+    return s.discovery?.localNetwork === false ? '!' : '';
   },
   build(body) {
     const { el, api } = UI;
@@ -25,16 +25,26 @@ UI.tab({
       { kind: 'screen', label: t('Screen Recording'), note: t('To share your screen') },
       { kind: 'accessibility', label: t('mac.accessibility'), note: t('So the other computer can control this one') },
       { kind: 'inputMonitoring', label: t('Input Monitoring'), note: t('To use this keyboard on the other computer') },
+      { kind: 'localNetwork', label: t('Local Network'), note: t('To find your other computers and phones'), state: (s) => s.discovery?.localNetwork ?? null },
+      { kind: 'camera', label: t('Camera'), note: t('To share this Mac’s camera with your other computer') },
+      { kind: 'microphone', label: t('Microphone'), note: t('To share this Mac’s microphone with your other computer') },
+      { kind: 'notifications', label: t('macOS notifications'), note: t('Allow macOS notifications to see alerts from your paired device.'),
+        state: (s) => {
+          const access = s.notifs?.nativeAccess;
+          if (!access || access.authorization === 'unknown') return null;
+          return access.authorization === 'authorized' && access.alerts === 'enabled';
+        } },
       // Every other permission a feature uses, in one place (each is asked for when the feature is used).
-      { kind: 'localNetwork', label: t('Local Network'), note: t('To find your other computers and phones'), state: (s) => (s.discovery ? s.discovery.localNetwork !== false : null) },
-      { kind: 'bluetooth', label: t('Bluetooth'), note: t('For a phone or computer that isn’t on this network'), state: (s) => (s.net && s.net.radio ? s.net.radio !== 'denied' && s.net.radio !== 'unauthorized' : null) },
-      { kind: 'location', label: t('Location'), note: t('To join a phone’s or PC’s Wi-Fi Direct (macOS shows Wi-Fi networks only with it)'), state: () => null },
+      { kind: 'bluetooth', label: t('Bluetooth'), note: t('For a phone or computer that isn’t on this network'), state: (s) => ({ on: true, denied: false, unauthorized: false })[s.net?.radio] ?? null },
+      { kind: 'location', label: t('Location'), note: t('To join a phone’s or PC’s Wi-Fi Direct (macOS shows Wi-Fi networks only with it)') },
+      { kind: 'automation', label: t('Automation'), note: t('Requested when TwinDesk uses Finder or controls another app'), state: () => null },
       { kind: 'fullDisk', label: t('Full Disk Access'), note: t('Optional: to share any folder with the other computer'), state: () => null },
     ];
     const perms = PERMS.map((p) => {
-      const pill = el('span', { class: 'pill' });
+      const pill = el('span', { class: 'pill', attrs: { role: 'status' } });
       let request = false;
-      const button = UI.button(t('Open'), () => request ? api.allowPermission(p.kind) : api.openSettings(p.kind), 'small');
+      const button = UI.button(t('Open'), () => p.kind === 'notifications' ? api.allowNativeNotifications()
+        : request ? api.allowPermission(p.kind) : api.openSettings(p.kind), 'small');
       const row = UI.row(p.label, p.note, [pill, button]);
       return { p, pill, row, button, setRequest: (v) => { request = v; } };
     });
@@ -108,7 +118,7 @@ UI.tab({
     const sections = UI.sections([
       UI.card(t('Permissions'), [
         ...perms.map((x) => x.row),
-        UI.row(t('Changed a permission?'), t('Restart to apply it'), [UI.button(t('Restart'), () => api.relaunch(), 'small')]),
+        UI.row(t('Restart TwinDesk'), t('If you’ve enabled access in System Settings and it still shows as missing, restart TwinDesk.'), [UI.button(t('Restart'), () => api.relaunch(), 'small')]),
       ]),
       UI.card(t('Startup'), [
         UI.row(t('Open at login'), '', [loginSw]),
@@ -161,17 +171,23 @@ UI.tab({
       wallSw.set(!s.phone || !s.phone.settings || s.phone.settings.wallpaper !== false);
       const ov = (s.ui && s.ui.overview) || {};
       for (const k of Object.keys(partSw)) partSw[k].set(ov[k] !== false);
-      for (const { p, pill, button, setRequest } of perms) {
-        const v = p.state ? p.state(s) : s.permissions[p.kind];
-        const ok = p.kind === 'screen' ? v === 'granted' : v === true;
+      for (const { p, pill, row, button, setRequest } of perms) {
+        const v = p.state ? p.state(s) : s.permissions?.[p.kind];
+        const ok = v === 'granted' || v === true;
+        row.hidden = p.kind === 'localNetwork' && !(v === false || s.discovery?.localNetworkWasBlocked);
+        if (p.kind === 'notifications') {
+          row.hidden = !s.notifs?.receive;
+          button.hidden = ok;
+        }
         const unknown = v === null || v === undefined || v === 'unknown';
-        const request = !ok && ['screen', 'accessibility', 'inputMonitoring'].includes(p.kind);
+        const request = !ok && (['screen', 'accessibility', 'inputMonitoring', 'localNetwork', 'camera', 'microphone', 'location'].includes(p.kind)
+          || (p.kind === 'notifications' && s.notifs?.nativeAccess?.authorization === 'not-determined'));
         setRequest(request);
         button.textContent = t(request ? 'Allow' : 'Open');
         pill.className = `pill ${unknown ? 'muted' : ok ? 'good' : 'bad'}`;
         // macOS counts Accessibility as enough for TwinDesk's keyboard tap: Input Monitoring reads
         // as allowed then, with its own switch in System Settings still off (that's fine).
-        const viaAx = p.kind === 'inputMonitoring' && ok && s.permissions.accessibility === true;
+        const viaAx = p.kind === 'inputMonitoring' && ok && s.permissions?.accessibility === true;
         pill.hidden = unknown && !!p.state; // macOS doesn't tell: Open shows it
         pill.textContent = unknown ? t('Unknown') : viaAx ? t('Allowed by Accessibility') : ok ? t('Allowed') : t('Not allowed');
       }

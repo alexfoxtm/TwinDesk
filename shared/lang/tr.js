@@ -2538,4 +2538,10 @@
   "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.": "Telefondaki TwinDesk bildiriminde İzin ver’e dokunun, ardından Android’in VPN isteğini onaylayın.",
   "It stopped.": "Durdu.",
   "Starting on the phone…": "Telefonda başlatılıyor…",
+  "When System Settings opens, turn on the switch for TwinDesk Fork.": "Sistem Ayarları açıldığında TwinDesk Fork anahtarını açın.",
+  "If you’ve enabled access in System Settings and it still shows as missing, restart TwinDesk.": "Sistem Ayarları’nda erişime izin verdiyseniz ancak izin hâlâ eksik görünüyorsa TwinDesk’i yeniden başlatın.",
+  "To share this Mac’s camera with your other computer": "Bu Mac’in kamerasını diğer bilgisayarınızla paylaşmak için",
+  "To share this Mac’s microphone with your other computer": "Bu Mac’in mikrofonunu diğer bilgisayarınızla paylaşmak için",
+  "Automation": "Otomasyon",
+  "Requested when TwinDesk uses Finder or controls another app": "TwinDesk, Finder’ı kullandığında veya başka bir uygulamayı denetlediğinde izin ister",
 });

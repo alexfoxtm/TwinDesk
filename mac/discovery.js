@@ -12,8 +12,8 @@ const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 
 const RETRY_BIND_MS = 5000;
-// Errors that mean macOS's Local Network permission is missing.
-const LOCAL_NETWORK_ERRORS = new Set(['EHOSTUNREACH', 'EPERM', 'EACCES', 'ENETUNREACH']);
+// macOS reports these when Local Network privacy blocks a directed LAN broadcast.
+const LOCAL_NETWORK_ERRORS = new Set(['EHOSTUNREACH', 'EPERM', 'EACCES']);
 
 function ipToInt(ip) {
   return ip.split('.').reduce((n, o) => ((n << 8) | Number(o)) >>> 0, 0);
@@ -176,8 +176,12 @@ class Discovery extends EventEmitter {
   _send(msg, address, port = P.DISCOVERY_PORT) {
     if (!this.sock) return;
     this.sock.send(Buffer.from(JSON.stringify(msg)), port, address, (err) => {
+      if (!err && this.status.localNetwork) return;
+      // A wildcard broadcast or a unicast send to a peer (or a /32 VPN adapter) doesn't establish LAN access.
+      const lanBroadcast = address !== '255.255.255.255' &&
+        interfaces().some((i) => i.broadcast === address && i.address !== i.broadcast);
       if (!err) {
-        if (!this.status.localNetwork && address !== '255.255.255.255') {
+        if (lanBroadcast) {
           this.status.localNetwork = true;
           this.emit('change');
         }
@@ -188,10 +192,9 @@ class Discovery extends EventEmitter {
         this.sendErrors.add(key);
         console.error(`[discovery] send to ${address} failed: ${err.code || err.message}`);
       }
-      // Only a broadcast tells: a probe to one address (a phone asleep or off Wi-Fi, a computer
-      // that left) fails with EHOSTUNREACH too, and that isn't the permission.
-      if (LOCAL_NETWORK_ERRORS.has(err.code) && this.status.localNetwork && this._targets().has(address)) {
+      if (lanBroadcast && LOCAL_NETWORK_ERRORS.has(err.code) && this.status.localNetwork) {
         this.status.localNetwork = false;
+        this.status.localNetworkWasBlocked = true;
         this.emit('change');
       }
     });

@@ -2538,4 +2538,10 @@
   "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.": "Нажмите «Разрешить» в уведомлении TwinDesk на телефоне, затем подтвердите запрос VPN от Android.",
   "It stopped.": "Остановлено.",
   "Starting on the phone…": "Запуск на телефоне…",
+  "When System Settings opens, turn on the switch for TwinDesk Fork.": "Когда откроются Системные настройки, включите переключатель TwinDesk Fork.",
+  "If you’ve enabled access in System Settings and it still shows as missing, restart TwinDesk.": "Если вы уже дали разрешение в Системных настройках, но оно всё ещё не отображается, перезапустите TwinDesk.",
+  "To share this Mac’s camera with your other computer": "Чтобы использовать камеру этого Mac на другом компьютере",
+  "To share this Mac’s microphone with your other computer": "Чтобы использовать микрофон этого Mac на другом компьютере",
+  "Automation": "Автоматизация",
+  "Requested when TwinDesk uses Finder or controls another app": "TwinDesk запрашивает разрешение при обращении к Finder или управлении другим приложением",
 });

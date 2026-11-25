@@ -95,18 +95,27 @@ class SoundActivity : Activity() {
         val s = SoundService.running
         if (s != null) { s.update(); finish(); return } // already held: it takes what's wanted now
         // The microphone permission only for the sound (Android wants it for any sound capture).
-        if (core.sound.wanted && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
-        else ask()
+        if (!core.sound.wanted || RuntimeGrant.granted(this, Manifest.permission.RECORD_AUDIO)) {
+            ask()
+        } else if (RuntimeGrant.requestable(this, core.store, listOf(Manifest.permission.RECORD_AUDIO)).isNotEmpty()) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+        } else {
+            if (!core.mirror.wanted) RuntimeGrant.openSettings(this)
+            microphoneMissing(core)
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) ask()
-        else {
-            val core = Core.get(this)
-            core.sound.failed("Allow the microphone permission for TwinDesk on the phone (Android asks it for any sound capture)")
-            if (core.mirror.wanted) ask() else finish() // the screen goes on without it
-        }
+        if (requestCode != 1) return
+        val core = Core.get(this)
+        grantResults.firstOrNull()?.let { RuntimeGrant.record(core.store, Manifest.permission.RECORD_AUDIO, it == PackageManager.PERMISSION_GRANTED) }
+        if (RuntimeGrant.granted(this, Manifest.permission.RECORD_AUDIO)) ask() else microphoneMissing(core)
+    }
+
+    private fun microphoneMissing(core: Core) {
+        core.sound.failed("Allow the microphone permission for TwinDesk on the phone (Android asks it for any sound capture)")
+        if (core.mirror.wanted) ask() else finish() // the screen goes on without it
     }
 
     private fun ask() {

@@ -284,6 +284,7 @@ func handle(_ line: String) {
       "accessibility": AXIsProcessTrusted(),
       "inputMonitoring": IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted,
       "screen": CGPreflightScreenCaptureAccess(),
+      "location": WifiCtl.shared.locationState(),
     ])
   case "textFocus":
     helperWorkQueue.async { reply(id, textFocus()) }

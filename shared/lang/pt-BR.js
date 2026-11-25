@@ -2538,4 +2538,10 @@
   "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.": "Toque em Permitir na notificação do TwinDesk no celular e confirme o pedido de VPN do Android.",
   "It stopped.": "Parou.",
   "Starting on the phone…": "Iniciando no celular…",
+  "When System Settings opens, turn on the switch for TwinDesk Fork.": "Quando os Ajustes do Sistema abrirem, ative a opção TwinDesk Fork.",
+  "If you’ve enabled access in System Settings and it still shows as missing, restart TwinDesk.": "Se você já concedeu acesso nos Ajustes do Sistema e a permissão ainda aparece como pendente, reinicie o TwinDesk.",
+  "To share this Mac’s camera with your other computer": "Para compartilhar a câmera deste Mac com seu outro computador",
+  "To share this Mac’s microphone with your other computer": "Para compartilhar o microfone deste Mac com seu outro computador",
+  "Automation": "Automação",
+  "Requested when TwinDesk uses Finder or controls another app": "O TwinDesk pede permissão ao usar o Finder ou controlar outro app",
 });

@@ -7,7 +7,6 @@ package com.twindesk.android
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
@@ -15,8 +14,6 @@ import android.os.PowerManager
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -83,11 +80,13 @@ object SetupCheck {
         val pm = ctx.getSystemService(PowerManager::class.java)
         val c = { a: Long, b: Long -> listOf(Color(a), Color(b)) }
         val list = mutableListOf<Item>()
-        if (Build.VERSION.SDK_INT >= 33) list += Item(
+        list += Item(
             "notify", tr("Notifications"), tr("Incoming files, clipboard and notifications from your computer"),
             Ico.bell, c(0xFFFF6961, 0xFFFF3B30), true,
-            ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED,
+            RuntimeGrant.notificationsEnabled(ctx),
         )
+        list += Item("microphone", tr("Microphone"), tr("Record voice notes and share this device’s sound"),
+            Ico.mic, c(0xFF5AC8FA, 0xFF0A84FF), false, RuntimeGrant.granted(ctx, Manifest.permission.RECORD_AUDIO))
         if (core.notifs.supported) list += Item("listener", tr("Notification access"), tr("Show this device’s notifications on your computer"), Ico.bell, c(0xFFFFB340, 0xFFFF9500), true, core.notifs.hasAccess)
         list += Item("battery", tr("Run in the background"), tr("Lets your computer connect to this device at any time"), Ico.general, c(0xFFAEAEB2, 0xFF636366), true, pm.isIgnoringBatteryOptimizations(ctx.packageName))
         list += Item("overlay", tr("Show the pointer"), tr("Shows your computer’s pointer over other apps"), Ico.cursor, c(0xFFFFB340, 0xFFFF9500), true, core.pointer.allowed)
@@ -109,10 +108,9 @@ object SetupCheck {
         core.changed()
     }
 
-    fun open(ctx: Context, core: Core, id: String, askNotify: () -> Unit) {
+    fun open(ctx: Context, core: Core, id: String) {
         val pkg = Uri.parse("package:${ctx.packageName}")
         when (id) {
-            "notify" -> askNotify()
             "listener" -> ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
             "battery" -> @Suppress("BatteryLife") ctx.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg))
             "overlay" -> ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkg))
@@ -139,7 +137,10 @@ internal fun setupDebuggingChanges(ctx: Context): Int {
 
 @Composable
 fun SetupScreen(core: Core, ctx: Context, items: List<SetupCheck.Item>, permissionResult: () -> Unit, done: () -> Unit) {
-    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { permissionResult(); core.changed() }
+    val notify = runtimeGrantAction(core, ctx,
+        if (Build.VERSION.SDK_INT >= 33) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList(),
+        notifications = true, onResult = permissionResult)
+    val mic = runtimeGrantAction(core, ctx, listOf(Manifest.permission.RECORD_AUDIO), onResult = permissionResult)
     val ready = items.none { it.required && !it.done }
     Box(Modifier.fillMaxSize().background(pal.content).safeDrawingPadding(), contentAlignment = Alignment.TopCenter) {
         Column(
@@ -164,9 +165,20 @@ fun SetupScreen(core: Core, ctx: Context, items: List<SetupCheck.Item>, permissi
                             }
                             if (it.done) Pill(tr("Allowed"), "good")
                             else Button(
-                                onClick = { SetupCheck.open(ctx, core, it.id) { askNotify.launch(Manifest.permission.POST_NOTIFICATIONS) } },
+                                onClick = {
+                                    when (it.id) {
+                                        "notify" -> notify.second()
+                                        "microphone" -> mic.second()
+                                        else -> SetupCheck.open(ctx, core, it.id)
+                                    }
+                                },
                                 colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White), shape = RoundedCornerShape(8.dp),
-                            ) { Text(if (it.id == "adb") tr("Turn on") else tr("Allow")) }
+                            ) { Text(when (it.id) {
+                                "adb" -> tr("Turn on")
+                                "notify" -> notify.first
+                                "microphone" -> mic.first
+                                else -> tr("Allow")
+                            }) }
                         }
                     }
                 }

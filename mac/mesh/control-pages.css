@@ -150,6 +150,11 @@ body.setup #sidebar { display: none; }
 .setup-page .row .controls .pill { margin-left: 0; }
 .setup-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
 .setup-page:not([hidden]) .card { animation: rise 0.42s var(--ease) both; }
+@media (max-height: 600px) {
+  .setup-page { padding-top: 16px; padding-bottom: 20px; }
+  .setup-page .app-mark { width: 40px; height: 40px; margin: 0 auto 8px; transform: none; }
+  .setup-page > p, .setup-page .card { margin-bottom: 12px; }
+}
 
 /* Send files drop zone, shortcut recorder */
 .dropzone { margin: 12px 14px; height: 96px; border: 1.5px dashed var(--control-line); border-radius: 10px; display: grid; place-items: center; text-align: center; color: var(--muted); transition: border-color 0.2s, background-color 0.2s, transform 0.25s var(--spring); }

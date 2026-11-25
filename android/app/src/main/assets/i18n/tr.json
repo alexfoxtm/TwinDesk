@@ -1470,5 +1470,8 @@
   "Looking for nearby devices…": "Yakındaki cihazlar aranıyor…",
   "No reachable devices": "Ulaşılabilir cihaz yok",
   "Verified on this network": "Bu ağda doğrulandı",
-  "Checking availability…": "Erişilebilirlik kontrol ediliyor…"
+  "Checking availability…": "Erişilebilirlik kontrol ediliyor…",
+  "Record voice notes and share this device’s sound": "Sesli not kaydetmek ve bu cihazın sesini paylaşmak için",
+  "Allow Microphone in General › Permissions to share this device’s sound": "Bu cihazın sesini paylaşmak için Genel › İzinler bölümünden mikrofona izin verin",
+  "Microphone": "Mikrofon"
 }

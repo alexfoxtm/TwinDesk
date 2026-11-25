@@ -18,6 +18,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -1054,7 +1055,15 @@ private fun PhotoBackupCard(core: Core, v: Int) {
     @Suppress("UNUSED_EXPRESSION") v
     val pb = core.photos
     val name = them(core)
+    val ctx = LocalContext.current
+    val activity = LocalActivity.current
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        val partial = PbPermissions.photoAccess(Build.VERSION.SDK_INT) { RuntimeGrant.granted(ctx, it) } == "partial"
+        grants.forEach { (permission, granted) ->
+            if (!partial || permission == Manifest.permission.ACCESS_MEDIA_LOCATION) {
+                RuntimeGrant.record(core.store, permission, granted)
+            }
+        }
         pb.onPermissionResult(grants.isNotEmpty())
     }
     MacCard(tr("Back up new camera photos")) {
@@ -1067,7 +1076,20 @@ private fun PhotoBackupCard(core: Core, v: Int) {
             enabled = pb.canToggle() || pb.on(),
         ) { want ->
             if (!want) pb.setOn(false)
-            else pb.enableFromUi().takeIf { it.isNotEmpty() }?.let { ask.launch(it.toTypedArray()) }
+            else {
+                val permissions = pb.enableFromUi()
+                if (permissions.isNotEmpty()) {
+                    val missingRequired = permissions.filter {
+                        it != Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED && !RuntimeGrant.granted(ctx, it)
+                    }
+                    if (activity != null && RuntimeGrant.requestable(activity, core.store, missingRequired).size < missingRequired.size) {
+                        pb.onPermissionResult(false)
+                        RuntimeGrant.openSettings(ctx)
+                    } else {
+                        ask.launch(permissions.toTypedArray())
+                    }
+                }
+            }
         }
     }
 }
@@ -1693,10 +1715,9 @@ private fun NotificationsPage(core: Core, v: Int) {
     val taskHint = if (taskCanNotify)
         tr("Receive completion alerts for tasks you start on {name}.", "name" to name)
     else tr("Allow notifications in Android settings to receive task alerts.")
-    val askTaskNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        core.taskAlerts.linkChanged()
-        core.changed()
-    }
+    val (_, askTaskNotify) = runtimeGrantAction(core, ctx,
+        if (Build.VERSION.SDK_INT >= 33) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList(),
+        notifications = true)
     if (!supported) Note(
         tr("This version of TwinDesk can’t read notifications, as Play Protect restricts downloaded apps. ") +
             tr("Once wireless debugging is set up, install the full version from the Phone page on {name}. Your settings and pairings are kept.", "name" to name),
@@ -1733,7 +1754,7 @@ private fun NotificationsPage(core: Core, v: Int) {
                     if (Build.VERSION.SDK_INT >= 33 &&
                         ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
                     ) {
-                        askTaskNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        askTaskNotify()
                     } else {
                         val intent = if (Notify.nm(ctx).areNotificationsEnabled()) {
                             Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
@@ -2063,22 +2084,21 @@ private fun GeneralPage(core: Core, v: Int) {
     fun Setup(label: String, hint: String, done: Boolean, action: String, first: Boolean = false, onClick: () -> Unit) =
         MacRow(label, hint, first) { if (done) Pill(tr("Allowed"), "good") else Primary(action, onClick) }
     // Bluetooth and Wi-Fi Direct, for a computer not on this network.
-    val nearbyPerms = (Ble.permissions() + BleServe.permissions() + Direct.permission()).distinct().toTypedArray()
-    val nearbyAllowed = nearbyPerms.all { ctx.checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
-    val askNearby = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
-    ) { core.changed() }
-    val askNotify = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
-    ) { core.taskAlerts.linkChanged(); core.changed() }
+    val nearbyPerms = (Ble.permissions() + BleServe.permissions() + Direct.permission()).distinct()
+    val nearbyAllowed = nearbyPerms.all { RuntimeGrant.granted(ctx, it) }
+    val (nearbyAction, askNearby) = runtimeGrantAction(core, ctx, nearbyPerms)
+    val (notifyAction, askNotify) = runtimeGrantAction(core, ctx,
+        if (Build.VERSION.SDK_INT >= 33) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList(),
+        notifications = true)
+    val (micAction, askMic) = runtimeGrantAction(core, ctx, listOf(Manifest.permission.RECORD_AUDIO))
     // Every permission and feature in one place: each is asked for only when switched on elsewhere,
     // or here.
     MacCard(tr("Permissions")) {
         @Suppress("UNUSED_EXPRESSION") v // capture the revision in this remembered content
-        if (Build.VERSION.SDK_INT >= 33) Setup(tr("Notifications"), tr("Incoming files, pairing requests and connection status"),
-            ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED, tr("Allow")) {
-            askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        Setup(tr("Notifications"), tr("Incoming files, pairing requests and connection status"),
+            RuntimeGrant.notificationsEnabled(ctx), notifyAction, onClick = askNotify)
+        Setup(tr("Microphone"), tr("Record voice notes and share this device’s sound"),
+            RuntimeGrant.granted(ctx, Manifest.permission.RECORD_AUDIO), micAction, onClick = askMic)
         // Calls, Messages, Photos and Files on $name (Hub): what each needs, asked here too.
         for ((what, hint) in listOf(
             "calls" to tr("Answer and make calls on {name}", "name" to name),
@@ -2145,9 +2165,7 @@ private fun GeneralPage(core: Core, v: Int) {
             },
             core.adb.autoOffEnabled, enabled = core.adb.canEnable,
         ) { core.adb.setAutoOff(it) }
-        Setup(tr("Nearby devices"), tr("Bluetooth and Wi-Fi Direct, when {name} isn’t on this network", "name" to name), nearbyAllowed, tr("Allow")) {
-            askNearby.launch(nearbyPerms)
-        }
+        Setup(tr("Nearby devices"), tr("Bluetooth and Wi-Fi Direct, when {name} isn’t on this network", "name" to name), nearbyAllowed, nearbyAction, onClick = askNearby)
         if (core.input.supported) Setup(tr("Mouse and keyboard"), tr("Accessibility service: control from {name} without wireless debugging", "name" to name), core.input.on, tr("Allow")) { core.input.openSettings() }
         else MacRow(tr("Mouse and keyboard"), tr("Uses wireless debugging. The Accessibility service requires the full version of TwinDesk"))
         Setup(tr("Display over other apps"), tr("Shows the pointer from {name}", "name" to name), core.pointer.allowed, tr("Allow")) {

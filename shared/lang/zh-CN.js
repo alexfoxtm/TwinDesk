@@ -2539,4 +2539,10 @@
   "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.": "在手机上的 TwinDesk 通知中点按“允许”，然后确认 Android 的 VPN 请求。",
   "It stopped.": "已停止。",
   "Starting on the phone…": "正在手机上启动…",
+  "When System Settings opens, turn on the switch for TwinDesk Fork.": "系统设置打开后，开启 TwinDesk Fork 的开关。",
+  "If you’ve enabled access in System Settings and it still shows as missing, restart TwinDesk.": "如果已在系统设置中开启权限，但这里仍显示未授权，请重新启动 TwinDesk。",
+  "To share this Mac’s camera with your other computer": "将这台 Mac 的摄像头共享给另一台电脑",
+  "To share this Mac’s microphone with your other computer": "将这台 Mac 的麦克风共享给另一台电脑",
+  "Automation": "自动化",
+  "Requested when TwinDesk uses Finder or controls another app": "TwinDesk 使用 Finder 或控制其他应用时会请求权限",
 });

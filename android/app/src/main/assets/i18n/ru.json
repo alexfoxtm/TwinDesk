@@ -1470,5 +1470,8 @@
   "Looking for nearby devices…": "Поиск устройств поблизости…",
   "No reachable devices": "Нет доступных устройств",
   "Verified on this network": "Проверено в этой сети",
-  "Checking availability…": "Проверка доступности…"
+  "Checking availability…": "Проверка доступности…",
+  "Record voice notes and share this device’s sound": "Запись голосовых заметок и передача звука этого устройства",
+  "Allow Microphone in General › Permissions to share this device’s sound": "Разрешите доступ к микрофону в разделе «Основные › Разрешения», чтобы передавать звук этого устройства",
+  "Microphone": "Микрофон"
 }

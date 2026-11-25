@@ -2539,4 +2539,10 @@
   "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.": "Tap Allow in TwinDesk’s notification on the phone, then confirm Android’s VPN request.",
   "It stopped.": "It stopped.",
   "Starting on the phone…": "Starting on the phone…",
+  "When System Settings opens, turn on the switch for TwinDesk Fork.": "When System Settings opens, turn on the switch for TwinDesk Fork.",
+  "If you’ve enabled access in System Settings and it still shows as missing, restart TwinDesk.": "If you’ve enabled access in System Settings and it still shows as missing, restart TwinDesk.",
+  "To share this Mac’s camera with your other computer": "To share this Mac’s camera with your other computer",
+  "To share this Mac’s microphone with your other computer": "To share this Mac’s microphone with your other computer",
+  "Automation": "Automation",
+  "Requested when TwinDesk uses Finder or controls another app": "Requested when TwinDesk uses Finder or controls another app",
 });

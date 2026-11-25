@@ -68,6 +68,12 @@ function render(locale) {
   assert.ok(nodes.some((n) => n.label === translated('Screen Recording')));
   assert.strictEqual(nodes.filter((n) => n.tag === 'row' && n.label === t('mac.accessibility')).length, 2, 'both macOS permission lists use the contextual Accessibility label');
   assert.ok(nodes.some((n) => n.textContent === translated('Allowed by Accessibility')));
+  const setupPage = nodes.find((n) => n.class === 'setup-page');
+  assert.ok(setupPage.children.some((n) => n.textContent === translated('When System Settings opens, turn on the switch for TwinDesk Fork.')));
+  const restartHint = setupPage.children.find((n) => n.textContent === translated('If you’ve enabled access in System Settings and it still shows as missing, restart TwinDesk.'));
+  const [setupNetwork, generalNetwork] = nodes.filter((n) => n.tag === 'row' && n.label === translated('Local Network'));
+  assert.strictEqual(setupNetwork.hidden, true);
+  assert.strictEqual(generalNetwork.hidden, true);
   for (const [screen, expected] of [['denied', 'Not allowed'], ['unknown', 'Unknown'], ['granted', 'Allowed']]) {
     general({ ...s, permissions: { ...s.permissions, screen } });
     assert.ok(nodes.some((n) => n.textContent === translated(expected)), 'permission status is translated: ' + expected);
@@ -94,6 +100,25 @@ function render(locale) {
   const error = 'Native diagnostic {name} $&';
   about({ ...s, updates: { error } });
   assert.strictEqual(updateRow.hint, t('Couldn’t check: {error}', { error }));
+  const blocked = { ...s, discovery: { localNetwork: false, localNetworkWasBlocked: true } };
+  assert.strictEqual(ui.setup.render(blocked), true);
+  general(blocked);
+  assert.strictEqual(setupNetwork.hidden, false);
+  assert.strictEqual(generalNetwork.hidden, false);
+  assert.strictEqual(tabs.general.badge(blocked), '!');
+  generalNetwork.children[1].click();
+  assert.deepStrictEqual(calls.at(-1), ['allowPermission', 'localNetwork']);
+  const recovered = { ...blocked, discovery: { localNetwork: true, localNetworkWasBlocked: true } };
+  assert.strictEqual(ui.setup.render(recovered), false);
+  general(recovered);
+  assert.strictEqual(generalNetwork.children[0].className, 'pill good');
+  assert.strictEqual(tabs.general.badge(recovered), '');
+
+  ui.setup.render({ ...denied, permissions: { ...denied.permissions, inputMonitoring: null } });
+  const setupInput = nodes.find((n) => n.tag === 'row' && n.label === translated('Input Monitoring'));
+  assert.strictEqual(setupInput.children[0].textContent, translated('Unknown'));
+  assert.strictEqual(restartHint.hidden, false);
+  assert.strictEqual(ui.setup.render({ ...denied, ui: { setupDone: true } }), false);
   const allow = nodes.find((n) => n.label === translated('Allow'));
   allow.click();
   assert.ok(calls.some(([key, value]) => key === 'allowPermission' && value === 'screen'));

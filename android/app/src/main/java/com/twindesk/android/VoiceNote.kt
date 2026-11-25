@@ -45,14 +45,23 @@ class VoiceNoteActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (savedInstanceState != null) return finish()
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        if (RuntimeGrant.granted(this, Manifest.permission.RECORD_AUDIO)) {
+            begin()
+        } else if (RuntimeGrant.requestable(this, Core.get(this).store, listOf(Manifest.permission.RECORD_AUDIO)).isNotEmpty()) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
-        } else begin()
+        } else {
+            RuntimeGrant.openSettings(this)
+            finish()
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) begin() else finish()
+        if (requestCode != 1) return
+        grantResults.firstOrNull()?.let {
+            RuntimeGrant.record(Core.get(this).store, Manifest.permission.RECORD_AUDIO, it == PackageManager.PERMISSION_GRANTED)
+        }
+        if (RuntimeGrant.granted(this, Manifest.permission.RECORD_AUDIO)) begin() else finish()
     }
 
     private fun begin() {

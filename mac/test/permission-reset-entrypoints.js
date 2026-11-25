@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const os = require('node:os');
 const { NotificationPermission } = require('../notification-permission');
 
 async function entrypoints(file, allowed) {
@@ -17,10 +18,10 @@ async function entrypoints(file, allowed) {
   const context = {
     state,
     svc: { notifs: { nativePermission: { refresh() {} } }, helper: {
-      running: true, request: async () => ({ screen: !allowed, inputMonitoring: true }),
+      running: true, request: async () => ({ screen: !allowed, inputMonitoring: true, location: 'granted' }),
     } },
     systemPreferences: {
-      getMediaAccessStatus: () => allowed ? 'granted' : 'denied',
+      getMediaAccessStatus: (kind) => kind === 'screen' ? allowed ? 'granted' : 'denied' : kind === 'camera' ? 'not-determined' : 'restricted',
       isTrustedAccessibilityClient: () => true,
     },
     setupSeen() {}, pushState() {},
@@ -31,6 +32,9 @@ async function entrypoints(file, allowed) {
   await Promise.resolve();
   assert.equal(state.permissions.screen, allowed ? 'granted' : 'denied', 'only the capturing app decides Screen Recording access');
   assert.equal(state.permissions.inputMonitoring, true);
+  assert.equal(state.permissions.location, 'granted');
+  assert.equal(state.permissions.camera, 'not-determined');
+  assert.equal(state.permissions.microphone, 'restricted');
 }
 
 async function requestRoute(file, granted, unavailable = false) {
@@ -38,7 +42,7 @@ async function requestRoute(file, granted, unavailable = false) {
   const start = source.indexOf('    async allowPermission(kind) {');
   const end = source.indexOf('    skipSetup(', start);
   assert.ok(start >= 0 && end > start);
-  let nativeRequests = 0, accessibilityRequests = 0, helperRequests = 0, refreshes = 0, warnings = 0;
+  let nativeRequests = 0, accessibilityRequests = 0, helperRequests = 0, mediaRequests = 0, refreshes = 0, warnings = 0;
   const opened = [];
   const nativePermission = new NotificationPermission({ requestScreenAccess() {
     nativeRequests++;
@@ -46,13 +50,16 @@ async function requestRoute(file, granted, unavailable = false) {
     return granted;
   } });
   const actions = vm.runInNewContext('({' + source.slice(start, end) + '})', {
-    SETTINGS_URLS: { screen: 'screen-settings', accessibility: 'accessibility-settings', inputMonitoring: 'input-settings', localNetwork: 'network-settings' },
+    SETTINGS_URLS: { screen: 'screen-settings', accessibility: 'accessibility-settings', inputMonitoring: 'input-settings', localNetwork: 'network-settings', camera: 'camera-settings', microphone: 'microphone-settings' },
     systemPreferences: { isTrustedAccessibilityClient(prompt) {
       assert.equal(prompt, true, 'Allow asks macOS to register the main app');
       accessibilityRequests++;
       if (unavailable) throw new Error('Accessibility request unavailable');
       return granted;
-    } },
+    },
+    getMediaAccessStatus: (kind) => kind === 'camera' ? 'not-determined' : 'denied',
+    askForMediaAccess: async (kind) => { assert.equal(kind, 'camera'); mediaRequests++; return granted; },
+    },
     ctx: { notifs: { nativePermission }, helper: { running: true, request: async () => { helperRequests++; return { granted: true }; } },
       refreshPermissions() { refreshes++; } },
     shell: { openExternal(url) { opened.push(url); } },
@@ -73,6 +80,41 @@ async function requestRoute(file, granted, unavailable = false) {
   await actions.allowPermission('inputMonitoring');
   assert.equal(helperRequests, 1, 'Input Monitoring still asks the capturing helper');
   assert.equal(refreshes, 3);
+  await actions.allowPermission('camera');
+  assert.equal(mediaRequests, 1);
+  assert.deepEqual(opened, granted ? [] : ['screen-settings', 'accessibility-settings', 'camera-settings']);
+  await actions.allowPermission('microphone');
+  assert.equal(mediaRequests, 1, 'a past denial goes to Settings');
+  assert.equal(opened.at(-1), 'microphone-settings');
+  assert.equal(refreshes, 5);
+}
+
+function localNetworkEvidence() {
+  const { Discovery } = require('../discovery');
+  const networkInterfaces = os.networkInterfaces;
+  os.networkInterfaces = () => ({
+    en0: [{ family: 'IPv4', address: '192.0.2.1', netmask: '255.255.255.0' }],
+    utun0: [{ family: 'IPv4', address: '100.64.0.1', netmask: '255.255.255.255' }],
+  });
+  try {
+    const discovery = new Discovery({ macId: 'fixture' });
+    let reply;
+    discovery.sock = { send: (_payload, _port, _address, cb) => cb(reply) };
+    reply = { code: 'ENETUNREACH' };
+    discovery.probe('192.0.2.255');
+    assert.equal(discovery.status.localNetwork, true, 'an unavailable route does not establish a privacy block');
+    reply = { code: 'EHOSTUNREACH' };
+    discovery.probe('192.0.2.255');
+    assert.equal(discovery.status.localNetwork, false);
+    reply = null;
+    discovery.probe('100.64.0.1');
+    assert.equal(discovery.status.localNetwork, false, 'a point-to-point adapter does not establish LAN recovery');
+    discovery.probe('192.0.2.255');
+    assert.equal(discovery.status.localNetwork, true);
+    assert.equal(discovery.status.localNetworkWasBlocked, true);
+  } finally {
+    os.networkInterfaces = networkInterfaces;
+  }
 }
 
 async function main() {
@@ -92,5 +134,6 @@ async function failure() {
 (async () => {
   await main();
   await failure();
+  localNetworkEvidence();
   console.log('permission entrypoints: app-owned Screen Recording and Accessibility requests, no automatic resets');
 })().catch((err) => { console.error(err); process.exitCode = 1; });

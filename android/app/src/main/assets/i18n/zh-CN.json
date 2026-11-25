@@ -1470,5 +1470,8 @@
   "Looking for nearby devices…": "正在查找附近的设备…",
   "No reachable devices": "没有可连接的设备",
   "Verified on this network": "已在此网络上验证",
-  "Checking availability…": "正在检查是否可连接…"
+  "Checking availability…": "正在检查是否可连接…",
+  "Record voice notes and share this device’s sound": "录制语音留言并共享此设备的声音",
+  "Allow Microphone in General › Permissions to share this device’s sound": "在“通用 › 权限”中允许使用麦克风，即可共享此设备的声音",
+  "Microphone": "麦克风"
 }

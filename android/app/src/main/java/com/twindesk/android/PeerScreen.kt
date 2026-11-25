@@ -380,13 +380,23 @@ class PeerGrantActivity : Activity() {
         Notify.cancelPeer(this)
         val peer = Core.get(this).peer
         val needAudio = peer.shareSound && (PeerScreen.remoteWantsAudio || PeerScreen.standaloneSoundActive || PeerScreen.screenActive)
-        if (needAudio && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 2)
-        } else ask()
+        val mic = android.Manifest.permission.RECORD_AUDIO
+        if (needAudio && !RuntimeGrant.granted(this, mic)) {
+            if (RuntimeGrant.requestable(this, peer.core.store, listOf(mic)).isNotEmpty()) {
+                requestPermissions(arrayOf(mic), 2)
+                return
+            }
+            android.widget.Toast.makeText(this, tr("Allow Microphone in General › Permissions to share this device’s sound"), android.widget.Toast.LENGTH_LONG).show()
+        }
+        ask()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != 2) return
+        grantResults.firstOrNull()?.let {
+            RuntimeGrant.record(Core.get(this).store, android.Manifest.permission.RECORD_AUDIO, it == android.content.pm.PackageManager.PERMISSION_GRANTED)
+        }
         ask()
     }
 
