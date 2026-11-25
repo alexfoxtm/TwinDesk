@@ -13,7 +13,6 @@
   const q = new URLSearchParams(location.search);
   const kind = q.get('kind') || 'screen';
   const iosScreen = kind === 'screen' && q.get('screenOS') === 'ios';
-  const ipad = iosScreen && q.get('ipad') === '1';
   // A camera's window opens hidden: its picture goes to the Camera tab, and to the virtual camera
   // while that's on (shared/vcam-feed.js); Camera › Rotate turns it here too.
   const vcam = kind === 'camera' && window.CamOut ? window.CamOut() : null;
@@ -27,7 +26,6 @@
     else I.text(element, 'Phone');
   }
   const canvas = document.getElementById('screen');
-  let paintedIPad = null;
   const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
   const status = document.getElementById('status');
   const retry = document.getElementById('retry-ipad');
@@ -78,7 +76,6 @@
   // does the same, so the frame from before the gap is not left up. Clicks still go to the phone
   // once its size is known, as they do while the first picture is on its way.
   function showWaitingPicture() {
-    paintedIPad = null;
     if (canvas.width > 0 && canvas.height > 0) {
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -168,7 +165,6 @@
       fit();
     }
     ctx.drawImage(frame, 0, 0);
-    if (ipad) paintedIPad = { width: frame.displayWidth, height: frame.displayHeight };
   }
 
   function paintHeldFrame() {
@@ -280,9 +276,6 @@
   });
 
   api.on('size', (s) => {
-    if (ipad && (size?.width !== s.width || size?.height !== s.height)) {
-      paintedIPad = null;
-    }
     size = s;
     fit();
   });
@@ -433,10 +426,6 @@
     if (!iosScreen) canvas.addEventListener(type, handler, options);
   }
 
-  const ipadInput = ipad ? window.PhoneViewIPad(api, I, canvas, () =>
-    !ended && !minimized && !waitingKey && paintedIPad?.width === size?.width && paintedIPad?.height === size?.height
-      ? size : null) : null;
-
   const at = (e) => {
     const r = canvas.getBoundingClientRect();
     const w = (size && size.width) || canvas.width;
@@ -585,8 +574,7 @@
   for (const k of ['back', 'home', 'recents', 'notifs', 'rotate']) {
     const el = document.getElementById(`b-${k}`);
     if (!el) continue;
-    if (k === 'home' && ipadInput) el.onclick = () => ipadInput.home();
-    else if (iosScreen) el.hidden = true;
+    if (iosScreen) el.hidden = true;
     else el.onclick = () => api.send({ t: 'nav', key: k === 'notifs' ? 'notifications' : k });
   }
 

@@ -266,7 +266,7 @@ test('a paired iPad snapshot reaches the oriented card, stays after Stop and cle
   } finally { f.views.closeAll(); }
 });
 
-test('the paired control viewer keeps ReplayKit retry, preview and sizing on the exact owner', async () => {
+test('the paired viewer keeps ReplayKit retry, preview and sizing on the exact owner', async () => {
   const f = fixture({ mesh: true, control: true });
   try {
     f.open();
@@ -275,7 +275,7 @@ test('the paired control viewer keeps ReplayKit retry, preview and sizing on the
     const state = { key: v.session.secret, on: true, w: 1200, h: 900, sw: 2048, sh: 1536 };
     const mirrorState = `t:${P.T.PHONE_MIRROR_STATE}`;
     assert.equal(v.win.query.screenOS, 'ios');
-    assert.equal(v.win.query.ipad, '1');
+    assert.equal(v.win.webContents.listenerCount('before-input-event'), 0);
     assert.equal(v.ipadOwner.socket, owner.conn);
     assert.equal(v.queue[0][1].mirrorPreview, v.id);
     f.server.emit(mirrorState, state, { ...owner, conn: { readyState: 1 } });
@@ -284,7 +284,7 @@ test('the paired control viewer keeps ReplayKit retry, preview and sizing on the
     assert.deepEqual(v.ipadGeometry, { w: 2048, h: 1536 });
     f.state(v, state);
     await tick();
-    assert.equal(v.win.aspect.extra.height, 64);
+    assert.deepEqual(v.win.aspect, { ratio: 4 / 3, extra: { width: 0, height: 32 } });
     const req = Object.assign(new EventEmitter(), { method: 'POST', url: '/twindesk/mirror',
       headers: { 'x-twindesk-mirror': v.session.secret }, destroy() {} });
     NativeScreen.request(req, { writeHead() {}, end() {} });

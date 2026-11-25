@@ -42,10 +42,6 @@ function fixture(kind = 'app', { screenOS, actualRail = false, ipad = false } = 
     const retryButton = element();
     nodes['retry-ipad'] = Object.assign(element(), { querySelector: () => retryButton, retryButton });
   }
-  if (ipad) {
-    for (const id of ['ipad-controls', 'ipad-control', 'ipad-control-status', 'ipad-pointer', 'ipad-shortcuts',
-      'ipad-spotlight', 'ipad-volume-down', 'ipad-volume-up']) nodes[id] = element();
-  }
   let recording = false;
   class Decoder {
     constructor(callbacks) { this.callbacks = callbacks; this.state = 'unconfigured'; this.decodeQueueSize = 0; this.resets = 0; decoders.push(this); }
@@ -111,7 +107,6 @@ function fixture(kind = 'app', { screenOS, actualRail = false, ipad = false } = 
     setTimeout: later, clearTimeout: cancel,
   });
   if (actualRail) vm.runInContext(fs.readFileSync(require.resolve('../../shared/mirror-rail.js'), 'utf8'), env);
-  if (ipad) vm.runInContext(fs.readFileSync(require.resolve('../phoneview-ipad-renderer.js'), 'utf8'), env);
   vm.runInContext(code, env);
   const recv = (name, value) => { for (const fn of handlers.get(name) || []) fn(value); };
   const config = () => recv('video', { config: true, data: Uint8Array.from([0, 0, 1, 0x67, 0x42, 0, 0x1f]) });
@@ -526,67 +521,25 @@ test('iOS rail keeps local tools and removes legacy phone inputs, while Android 
   assert.deepEqual(ipad.sent, [{ t: 'pin' }, { t: 'retryIpad' }]);
 });
 
-test('iPad control waits for a freshly painted frame after a minimized gap', () => {
+test('the iPad viewer paints and previews while ignoring legacy control state and input', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../phoneview.html'), 'utf8');
+  assert.doesNotMatch(html, /Control this iPad|id="ipad-(?:control|shortcuts|pointer)|phoneview-ipad-renderer[.]js/);
   const f = fixture('screen', { screenOS: 'ios', actualRail: true, ipad: true });
-  f.recv('opts', { ipadState: 'connected', ipadGeneration: 'lease', mirrorPreview: 11 });
+  f.recv('opts', { ipadState: 'connected', ipadGeneration: 'lease', ipadHardwareKeys: true, mirrorPreview: 11 });
   f.recv('size', { width: 300, height: 600 });
   f.config();
-  const home = () => f.pointers.get('pointerdown')({ button: 1, clientX: 20, clientY: 20 });
-  const inputs = () => f.sent.filter((m) => m.t === 'ipadInput');
-  home();
-  assert.deepEqual(inputs(), []);
   f.recv('video', { key: true, pts: 1, data: Uint8Array.of(1) });
   f.output(f.frame(1, 1));
-  home();
-  assert.deepEqual(inputs(), [{ t: 'ipadInput', op: 'home', generation: 'lease' }]);
+  assert.deepEqual(f.painted, [1]);
   assert.equal(f.sent.find((m) => m.t === 'mirrorPreview')?.capture, 11);
-  f.recv('opts', { minimized: true });
-  f.recv('opts', { minimized: false });
-  f.recv('video', { key: true, pts: 2, data: Uint8Array.of(1) });
-  home();
-  assert.equal(inputs().length, 1, 'the accepted keyframe has yet to paint');
-  f.output(f.frame(2, 2));
-  home();
-  assert.equal(inputs().length, 2);
-  assert.equal(f.sent.some((m) => m.t === 'nav' || m.t === 'touch'), false);
-  const event = (x, y, button = 0) => ({ clientX: x, clientY: y, pointerId: 1, button, preventDefault() {} });
-  const emit = (type, ...args) => f.pointers.get(type)(event(...args));
-  const click = (button) => { emit('pointerdown', 34, 52, button); emit('pointerup', 34, 52, button); };
-  emit('pointermove', 34, 52);
-  assert.equal(f.nodes['ipad-pointer'].style.transform, 'translate(34px, 52px)');
-  assert.equal(f.nodes['ipad-pointer'].hidden, false);
-  click(0);
-  f.advance(219);
-  assert.equal(inputs().length, 2);
-  click(0);
-  assert.equal(inputs().at(-1).op, 'doubleTap');
-  f.advance(220);
-  assert.equal(inputs().length, 3);
-  click(2);
-  assert.equal(inputs().at(-1).op, 'longPress');
-  emit('pointerdown', 34, 52);
-  f.advance(500);
-  emit('pointerup', 34, 52);
-  assert.equal(inputs().at(-1).op, 'longPress');
-  emit('pointerdown', 34, 52);
-  f.advance(200);
-  emit('pointermove', 54, 92);
-  emit('pointerup', 80, 100);
-  assert.equal(inputs().at(-1).op, 'gesture');
-  assert.equal(inputs().at(-1).duration, 200);
-  const wheel = (deltaY) => f.pointers.get('wheel')({ ...event(34, 52), deltaY, deltaX: 0, deltaMode: 0 });
-  wheel(60);
-  wheel(145);
-  f.advance(40);
-  assert.equal(inputs().at(-1).dy, 175);
-  assert.deepEqual(inputs().at(-1).points, [{ x: 34, y: 52 }]);
-  click(0);
-  wheel(145);
-  const beforeBlur = inputs().length;
-  // Canvas blur sends no pending tap, wheel batch, or stale hover overlay.
-  f.pointers.get('blur')();
-  f.advance(220);
-  assert.equal(inputs().length, beforeBlur + 1);
-  assert.equal(inputs().at(-1).op, 'cancel');
-  assert.equal(f.nodes['ipad-pointer'].hidden, true);
+  assert.equal(f.nodes['b-home'].hidden, true);
+  for (const type of ['pointerdown', 'pointerup', 'pointermove', 'wheel']) {
+    assert.equal(f.pointers.has(type), false);
+  }
+  const sent = f.sent.length;
+  const key = { key: 'a', code: 'KeyA', preventDefault() { assert.fail('iPad viewer intercepted the key'); } };
+  f.events.get('keydown')({ ...key, type: 'keydown' });
+  f.events.get('keyup')({ ...key, type: 'keyup' });
+  f.events.get('blur')();
+  assert.equal(f.sent.length, sent);
 });

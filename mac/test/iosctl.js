@@ -200,7 +200,52 @@ test('verified WDA session maps upright portrait and landscape video, gestures, 
   assert.equal(transport.stops, 1);
 });
 
-test('rejects a wrong runner, duplicate owner, stale generation and reconnect during in-flight geometry', async (t) => {
+test('viewer activation is a no-op and legacy input never reaches the controller', () => {
+  const req = new EventEmitter();
+  const socket = { readyState: 1 };
+  const peer = { deviceId: 'ipad-1', os: 'ios', authed: true, conn: socket };
+  const operations = [];
+  const views = {
+    server: { current: peer },
+    phone: { info: { platform: 'ipados' }, infoId: peer.deviceId,
+      pairing: { list: () => [{ id: peer.deviceId, os: 'ios', pairedAt: 42 }] } },
+    ipadRunnerTemplate() {
+      operations.push('runner lookup');
+      return path.join(__dirname, 'nonexistent-viewer-runner.xctestrun');
+    },
+    _send() { operations.push('viewer status'); },
+  };
+  const v = { ipadOwner: pairedIPad(views), win: { isFocused: () => true },
+    session: { req, owns: () => true }, size: { width: 820, height: 1180 }, ipadGeometry: { w: 1640, h: 2360 } };
+  assert.ok(v.ipadOwner);
+  assert.equal(handleIPad(views, v, { t: 'ipadControl', on: true }), true);
+  assert.equal(v.ipadLease, undefined);
+  assert.deepEqual(operations, []);
+  const lease = {
+    generation: 'current', abort: new AbortController(), stream: req, closed() {},
+    controller: {
+      input() { operations.push('controller input'); },
+      stop(reason) { operations.push(reason); },
+    },
+  };
+  v.ipadLease = lease;
+  req.once('close', lease.closed);
+  for (const generation of ['old', 'current']) {
+    assert.equal(handleIPad(views, v, { t: 'ipadInput', op: 'home', generation }), true);
+  }
+  views.server.current = { ...peer, conn: { readyState: 1 } };
+  assert.equal(handleIPad(views, v, { t: 'ipadControl', on: true }), true);
+  assert.equal(handleIPad(views, v, { t: 'ipadInput', op: 'home', generation: 'current' }), true);
+  assert.equal(v.ipadLease, lease);
+  assert.deepEqual(operations, []);
+  assert.equal(handleIPad(views, v, { t: 'ipadControl', on: false }), true);
+  assert.equal(v.ipadLease, null);
+  assert.equal(lease.abort.signal.aborted, true);
+  assert.equal(req.listenerCount('close'), 0);
+  assert.deepEqual(operations, ['off']);
+});
+
+test('rejects a wrong runner and duplicate owner, and stops on reconnect during in-flight geometry', async (t) => {
   const statuses = [];
   const locked = new IpadControl({ udid, owns: () => true, status: (s) => statuses.push(s),
     log() {}, start: async () => { throw new Error('locked'); } });
@@ -244,13 +289,12 @@ test('rejects a wrong runner, duplicate owner, stale generation and reconnect du
   const v = { ipadOwner: pairedIPad(views), win: { isFocused: () => true },
     size: { width: 820, height: 1180 }, ipadGeometry: { w: 1640, h: 2360 } };
   v.ipadLease = { generation: 'current', abort: new AbortController(), controller, stream: { removeListener() {} } };
-  const input = { t: 'ipadInput', op: 'gesture', generation: 'old',
-    ...frameArgs(v.size, { left: 0, top: 0, width: 410, height: 590 }), points: [{ x: 20, y: 20 }] };
-  assert.equal(handleIPad(views, v, input), true);
-  assert.equal(rectReply, undefined);
-  assert.equal(handleIPad(views, v, { ...input, generation: 'current' }), true);
+  const frame = v.size;
+  controller.input({ op: 'gesture',
+    ...frameArgs(frame, { left: 0, top: 0, width: 410, height: 590 }), points: [{ x: 20, y: 20 }] },
+  () => ({ frame, source: v.ipadGeometry }));
   assert.equal(typeof rectReply, 'function');
-  handleIPad(views, v, { t: 'ipadInput', op: 'home', generation: 'current' }); // queued
+  controller.input({ op: 'home' }); // queued
   owns = false;
   views.server.current = { ...peer, conn: { readyState: 1 } }; // same Mesh peer id, new connection
   assert.equal(handleIPad(views, v, { t: 'pin' }), false);

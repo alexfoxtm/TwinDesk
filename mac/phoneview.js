@@ -14,7 +14,7 @@
 
 const path = require('path');
 const { existsSync } = require('node:fs');
-const { app, BrowserWindow, clipboard, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
 const I18n = require('../shared/i18n.js');
@@ -33,7 +33,6 @@ const { runnerTemplate } = require('./iosctl-xctest');
 
 const T = P.T;
 const PHONEVIEW_BAR = 32; // #stage inset in phoneview.css
-const IPAD_CONTROL_BAR = 32;
 const NOTIFIED_MS = 60000; // how long a clicked notification waits for the unlock and wireless debugging
 let nextId = 1;
 let quitting = false; // a camera's window hides on close, but not on quit
@@ -64,7 +63,7 @@ class PhoneViews extends EventEmitter {
       this.a11y = true;
     });
     server.on('closed', () => {
-      for (const v of this.views.values()) stopIPad(this, v, 'lost');
+      for (const v of this.views.values()) stopIPad(v, 'lost');
       this.activeApp = '';
       this.multipleApps = true;
       this.a11y = false;
@@ -72,7 +71,7 @@ class PhoneViews extends EventEmitter {
     });
     const checkIPads = () => {
       for (const v of this.views.values()) {
-        if (v.ipadLease && !matchesIPad(this, v.ipadOwner)) stopIPad(this, v, 'lost');
+        if (v.ipadLease && !matchesIPad(this, v.ipadOwner)) stopIPad(v, 'lost');
       }
     };
     server.on('client', checkIPads);
@@ -261,14 +260,14 @@ class PhoneViews extends EventEmitter {
     if (owner) this._openIosNative(o, owner);
   }
 
-  _iosSize(o, usbModel = '', bar = PHONEVIEW_BAR) {
+  _iosSize(o, usbModel = '') {
     const height = o.height || Math.min(860, screen.getPrimaryDisplay().workAreaSize.height - 80);
     const info = this.phone.info;
     const pad = info?.platform === 'ipados' || /^iPad/i.test(info?.model || usbModel);
     const iphone = !pad && (info?.platform === 'ios' || /^iPhone/i.test(info?.model || usbModel));
     const display = screenSize(info?.display?.w, info?.display?.h);
     const aspect = display ? display.width / display.height : iphone ? 9 / 19.5 : 3 / 4;
-    return { pad, height, width: o.width || Math.round((height - bar) * aspect) };
+    return { pad, height, width: o.width || Math.round((height - PHONEVIEW_BAR) * aspect) };
   }
 
   _openIosNative(o, owner) {
@@ -276,8 +275,7 @@ class PhoneViews extends EventEmitter {
     if (!owner || owner !== this._iosOwner(c)) return;
     this.openingIos = null;
     const ipadOwner = pairedIPad(this, c);
-    const bar = ipadOwner ? PHONEVIEW_BAR + IPAD_CONTROL_BAR : PHONEVIEW_BAR;
-    const { pad, width, height } = this._iosSize(o, '', bar);
+    const { pad, width, height } = this._iosSize(o);
     return this._open({ kind: 'screen', native: true, ipadOwner, ios: { owner, pad, deviceId: c.deviceId }, title: c.name || this._i18n().t('Phone'),
       width, height, opts: this.bridge.sessionOpts('screen') });
   }
@@ -465,7 +463,7 @@ class PhoneViews extends EventEmitter {
     const v = this.views.get(id);
     if (!v || !v.win || v.win.isDestroyed()) return;
     v.ending = true;
-    stopIPad(this, v, 'off', quitting);
+    stopIPad(v, 'off', quitting);
     v.win.close();
   }
 
@@ -503,7 +501,7 @@ class PhoneViews extends EventEmitter {
     this.views.set(id, v);
     if (kind === 'app') setImmediate(() => this._stubs());
     const tellMinimized = () => this._send(v, 'phoneview:opts', { minimized: win.isMinimized() });
-    win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, ...(ios || usb ? { screenOS: P.OS.IOS } : {}), ...(ipadOwner ? { ipad: '1' } : {}), ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
+    win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, ...(ios || usb ? { screenOS: P.OS.IOS } : {}), ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
     if (!hidden) win.once('ready-to-show', () => win.show());
     win.webContents.once('did-finish-load', () => {
       v.ready = true;
@@ -520,19 +518,11 @@ class PhoneViews extends EventEmitter {
       for (const ev of ['restore', 'unmaximize', 'leave-full-screen']) win.on(ev, refit);
     }
     if (ipadOwner) {
-      win.on('blur', () => v.ipadLease?.controller?.clearInput());
-      win.webContents.on('before-input-event', (event, input) => {
-        if (quitting || !win.isFocused() || input.type !== 'keyDown' || input.meta !== true || input.alt || input.control || input.isComposing) return;
-        const accepted = v.ipadLease?.controller?.input({
-          op: 'key', down: true, meta: true, key: input.key, code: input.code, shift: input.shift, repeat: input.isAutoRepeat,
-        }, null, () => clipboard.readText());
-        if (accepted) event.preventDefault();
-      });
-      win.on('close', () => stopIPad(this, v, 'off', quitting));
+      win.on('close', () => stopIPad(v, 'off', quitting));
       win.webContents.on('did-start-navigation', (_e, _url, inPlace, mainFrame) => {
-        if (mainFrame && !inPlace) stopIPad(this, v, 'off', quitting);
+        if (mainFrame && !inPlace) stopIPad(v, 'off', quitting);
       });
-      win.webContents.on('render-process-gone', () => stopIPad(this, v, 'lost'));
+      win.webContents.on('render-process-gone', () => stopIPad(v, 'lost'));
     }
     // A camera's window: closed, it only hides (the camera stops with Camera's switch).
     if (kind === 'camera') {
@@ -605,7 +595,7 @@ class PhoneViews extends EventEmitter {
     s.on('audio', (p) => !p.config && this._send(v, 'phoneview:audio', p.data));
     s.on('closed', (why, metadata) => {
       if (v.session !== s) return; // one a flip replaced
-      stopIPad(this, v, 'lost', quitting);
+      stopIPad(v, 'lost', quitting);
       v.appFrame = null;
       if (this.appPanel.remove(v)) this._sendOpts();
       if (v.ios) v.failed = true;
@@ -655,11 +645,10 @@ class PhoneViews extends EventEmitter {
     const bounds = win.getBounds();
     const content = win.getContentBounds();
     const work = screen.getDisplayMatching(bounds).workArea;
-    const bar = v.ipadOwner ? PHONEVIEW_BAR + IPAD_CONTROL_BAR : PHONEVIEW_BAR;
     const extraW = bounds.width - content.width;
-    const extraH = bounds.height - content.height + bar;
+    const extraH = bounds.height - content.height + PHONEVIEW_BAR;
     const [minW, minH] = win.getMinimumSize();
-    const long = Math.max(content.width, content.height - bar);
+    const long = Math.max(content.width, content.height - PHONEVIEW_BAR);
     const w = aspect >= 1 ? long : long * aspect;
     const h = w / aspect;
     const maxScale = Math.min((work.width - extraW) / w, (work.height - extraH) / h);
@@ -670,7 +659,7 @@ class PhoneViews extends EventEmitter {
     const x = Math.max(work.x, Math.min(work.x + work.width - width, bounds.x + Math.round((bounds.width - width) / 2)));
     const y = Math.max(work.y, Math.min(work.y + work.height - height, bounds.y + Math.round((bounds.height - height) / 2)));
     v.videoAspect = aspect;
-    win.setAspectRatio(aspect, { width: 0, height: bar });
+    win.setAspectRatio(aspect, { width: 0, height: PHONEVIEW_BAR });
     if (bounds.x !== x || bounds.y !== y || bounds.width !== width || bounds.height !== height) {
       win.setBounds({ x, y, width, height });
     }
@@ -787,7 +776,7 @@ class PhoneViews extends EventEmitter {
     if (quitting && v.ipadOwner) return;
     if (m.t === 'mirrorPreview') return this._saveIosPreview(v, m);
     if (m.t === 'retryIpad') return this._retryIos(v);
-    if (handleIPad(this, v, m, dialog)) return;
+    if (handleIPad(this, v, m)) return;
     // Keep on top (the title bar's pin): the window's own, no phone needed. 'floating': over other
     // apps' windows, under menus and the Dock.
     if (m.t === 'pin') {
