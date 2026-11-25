@@ -17,7 +17,7 @@ const P = require('../shared/protocol.js');
 const SSH_DIR = path.join(os.homedir(), '.ssh');
 const AUTH_KEYS = path.join(SSH_DIR, 'authorized_keys');
 const KEY_RE = /^(ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ssh-rsa) ([A-Za-z0-9+/]+={0,3})(?: .*)?$/;
-const OPTIONS = 'no-agent-forwarding,no-X11-forwarding';
+const OPTIONS = 'no-agent-forwarding,no-X11-forwarding,no-port-forwarding';
 const marker = (id) => `alexfoxtm-twindesk:${String(id).replace(/[^A-Za-z0-9._-]/g, '')}`;
 
 function sshdUp() {
