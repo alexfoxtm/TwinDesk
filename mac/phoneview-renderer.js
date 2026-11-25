@@ -12,6 +12,7 @@
   I.translate();
   const q = new URLSearchParams(location.search);
   const kind = q.get('kind') || 'screen';
+  const iosScreen = kind === 'screen' && q.get('screenOS') === 'ios';
   // A camera's window opens hidden: its picture goes to the Camera tab, and to the virtual camera
   // while that's on (shared/vcam-feed.js); Camera › Rotate turns it here too.
   const vcam = kind === 'camera' && window.CamOut ? window.CamOut() : null;
@@ -419,7 +420,11 @@
     }
   });
 
-  // ---- input ----
+  // ---- Android screen input ----
+
+  function onAndroidPointer(type, handler, options) {
+    if (!iosScreen) canvas.addEventListener(type, handler, options);
+  }
 
   const at = (e) => {
     const r = canvas.getBoundingClientRect();
@@ -433,7 +438,7 @@
   let rightDragging = false;
   let rightStart = null;
 
-  canvas.addEventListener('pointerdown', (e) => {
+  onAndroidPointer('pointerdown', (e) => {
     canvas.focus();
     if (e.button === 1) return api.send({ t: 'nav', key: 'home' });
     if (e.button === 2) {
@@ -449,7 +454,7 @@
     api.send({ t: 'touch', action: ACTION.DOWN, pointer: FINGER, ...at(e) });
   });
 
-  canvas.addEventListener('pointermove', (e) => {
+  onAndroidPointer('pointermove', (e) => {
     if (rightDown && rightStart) {
       const dist = Math.hypot(e.clientX - rightStart.clientX, e.clientY - rightStart.clientY);
       if (!rightDragging && dist > 5) {
@@ -483,8 +488,8 @@
     down = false;
     api.send({ t: 'touch', action: ACTION.UP, pointer: FINGER, ...at(e) });
   };
-  canvas.addEventListener('pointerup', up);
-  canvas.addEventListener('pointercancel', (e) => {
+  onAndroidPointer('pointerup', up);
+  onAndroidPointer('pointercancel', (e) => {
     try { if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId); } catch {}
     if (rightDown) {
       if (rightDragging) api.send({ t: 'touch', action: ACTION.UP, pointer: FINGER, ...at(e) });
@@ -499,15 +504,15 @@
   });
   // Off the picture: the mouse stops hovering there (left hovering, the phone's edges and gesture
   // navigation stop answering touches until it restarts).
-  canvas.addEventListener('pointerleave', (e) => {
+  onAndroidPointer('pointerleave', (e) => {
     if (!down && !rightDown) api.send({ t: 'touch', action: ACTION.HOVER_EXIT, pointer: -1, ...at(e) });
   });
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  onAndroidPointer('contextmenu', (e) => e.preventDefault());
 
   // Scroll, and pinch (Chromium turns a trackpad pinch into ctrl+wheel): two fingers around the
   // pointer, moving apart or together, lifted when the pinch stops.
   let pinch = null;
-  canvas.addEventListener('wheel', (e) => {
+  onAndroidPointer('wheel', (e) => {
     e.preventDefault();
     const p = at(e);
     if (e.ctrlKey) {
@@ -535,13 +540,14 @@
   // Keys go to the phone; ⌘W closes the window like any other. Return in a chat app and the
   // arrows that swipe are worked out in phoneview.js (shared/phonechat.js).
   const onKey = (e) => {
-    if (e.metaKey && (e.code === 'KeyW' || e.code === 'KeyQ') && e.type === 'keydown') return;
+    if (iosScreen || (e.metaKey && (e.code === 'KeyW' || e.code === 'KeyQ') && e.type === 'keydown')) return;
     e.preventDefault();
     api.send({ t: 'key', code: e.code, down: e.type === 'keydown', repeat: e.repeat, key: e.key, shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey, altGr: !!(e.getModifierState && e.getModifierState('AltGraph')) }); // key: what it types here (shared/phonetype.js)
   };
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKey);
   window.addEventListener('blur', () => {
+    if (iosScreen) return;
     if (rightDown) {
       if (rightDragging) api.send({ t: 'touch', action: ACTION.UP, pointer: FINGER, x: 0, y: 0 });
       rightDown = false;
@@ -567,13 +573,16 @@
 
   for (const k of ['back', 'home', 'recents', 'notifs', 'rotate']) {
     const el = document.getElementById(`b-${k}`);
-    if (el) el.onclick = () => api.send({ t: 'nav', key: k === 'notifs' ? 'notifications' : k });
+    if (!el) continue;
+    if (iosScreen) el.hidden = true;
+    else el.onclick = () => api.send({ t: 'nav', key: k === 'notifs' ? 'notifications' : k });
   }
 
   // The phone's screen off (its picture stays here; right click: the power key), Return sends in
   // chat apps, the arrows swipe: lit while on (phoneview.js says, 'opts').
   const powerBtn = document.getElementById('b-power');
-  if (powerBtn) {
+  if (iosScreen && powerBtn) powerBtn.hidden = true;
+  else if (powerBtn) {
     powerBtn.onclick = () => api.send({ t: 'nav', key: 'screenPower' });
     powerBtn.oncontextmenu = (e) => {
       e.preventDefault();
@@ -581,9 +590,11 @@
     };
   }
   const enterBtn = document.getElementById('b-enter-send');
-  if (enterBtn) enterBtn.onclick = () => api.send({ t: 'toggle', what: 'enterSends' });
+  if (iosScreen && enterBtn) enterBtn.hidden = true;
+  else if (enterBtn) enterBtn.onclick = () => api.send({ t: 'toggle', what: 'enterSends' });
   const swipeBtn = document.getElementById('b-swipe');
-  if (swipeBtn) swipeBtn.onclick = () => api.send({ t: 'toggle', what: 'arrowSwipe' });
+  if (iosScreen && swipeBtn) swipeBtn.hidden = true;
+  else if (swipeBtn) swipeBtn.onclick = () => api.send({ t: 'toggle', what: 'arrowSwipe' });
   // Keep on top: this window over the others (phoneview.js toggles it), lit while it is.
   const pinBtn = document.getElementById('b-pin');
   if (pinBtn) pinBtn.onclick = () => { api.send({ t: 'pin' }); canvas.focus(); };
@@ -649,7 +660,7 @@
   // The side rail (shared/mirror-rail.js): Screenshot, Record, volume, Rotate, Power; the title bar's
   // rail button shows or hides it. Not in the hidden sound and mic windows.
   if (window.MirrorRail && kind !== 'sound' && kind !== 'mic' && kind !== 'netsound') {
-    rail = window.MirrorRail({ api, canvas, kind, sound: () => (actx && player ? { actx, node: player } : null) });
+    rail = window.MirrorRail({ api, canvas, kind, deviceControls: !iosScreen, sound: () => (actx && player ? { actx, node: player } : null) });
     // Screenshots and new recordings consume the canvas, including a static frame held while minimized.
     for (const control of rail.controls) {
       if (control.k === 'shot' || control.k === 'rec') {

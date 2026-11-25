@@ -2481,6 +2481,7 @@
   "Record (saved in Movies › TwinDesk)": "Record (saved in Movies › TwinDesk)",
   "Record (saved in Videos › TwinDesk)": "Record (saved in Videos › TwinDesk)",
   "Stop recording": "Stop recording",
+  "Side rail: screenshot and record": "Side rail: screenshot and record",
   "Side rail: screenshot, record, volume": "Side rail: screenshot, record, volume",
   "Side panel: screenshot, record, volume": "Side panel: screenshot, record, volume",
   "Screenshot copied, and saved in {folder}": "Screenshot copied, and saved in {folder}",

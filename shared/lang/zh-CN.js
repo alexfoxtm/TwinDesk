@@ -2481,6 +2481,7 @@
   "Record (saved in Movies › TwinDesk)": "录制（保存到“影片 › TwinDesk”）",
   "Record (saved in Videos › TwinDesk)": "录制（保存到“视频 › TwinDesk”）",
   "Stop recording": "停止录制",
+  "Side rail: screenshot and record": "侧栏：截屏和录制",
   "Side rail: screenshot, record, volume": "侧栏：截图、录制、音量",
   "Side panel: screenshot, record, volume": "侧边面板：截图、录制、音量",
   "Screenshot copied, and saved in {folder}": "截图已复制，并保存到 {folder}",

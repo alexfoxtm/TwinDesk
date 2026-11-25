@@ -2480,6 +2480,7 @@
   "Record (saved in Movies › TwinDesk)": "Gravar (salvo em Filmes › TwinDesk)",
   "Record (saved in Videos › TwinDesk)": "Gravar (salvo em Vídeos › TwinDesk)",
   "Stop recording": "Parar gravação",
+  "Side rail: screenshot and record": "Barra lateral: captura e gravação de tela",
   "Side rail: screenshot, record, volume": "Barra lateral: captura, gravação, volume",
   "Side panel: screenshot, record, volume": "Painel lateral: captura, gravação, volume",
   "Screenshot copied, and saved in {folder}": "Captura copiada e salva em {folder}",

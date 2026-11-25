@@ -190,6 +190,7 @@ test('a paired iPad snapshot reaches the oriented card, stays after Stop and cle
   try {
     f.open();
     const v = f.current();
+    assert.equal(v.win.query.screenOS, 'ios');
     assert.equal(v.queue[0][1].mirrorPreview, v.id);
     f.state(v, { on: true, w: 1200, h: 900, sw: 2048, sh: 1536 });
     await tick();

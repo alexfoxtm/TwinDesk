@@ -471,7 +471,7 @@ class PhoneViews extends EventEmitter {
     this.views.set(id, v);
     if (kind === 'app') setImmediate(() => this._stubs());
     const tellMinimized = () => this._send(v, 'phoneview:opts', { minimized: win.isMinimized() });
-    win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
+    win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, ...(ios || usb ? { screenOS: P.OS.IOS } : {}), ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
     if (!hidden) win.once('ready-to-show', () => win.show());
     win.webContents.once('did-finish-load', () => {
       v.ready = true;

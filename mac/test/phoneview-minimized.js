@@ -12,22 +12,32 @@ const { TYPE } = require('../scrcpy.js');
 
 const code = fs.readFileSync(path.join(__dirname, '../phoneview-renderer.js'), 'utf8');
 
-function fixture(kind = 'app') {
+function fixture(kind = 'app', { screenOS, actualRail = false } = {}) {
   const events = new Map(), handlers = new Map(), decoders = [], sent = [], painted = [], blanks = [], pushed = [], statusKeys = [];
-  const controls = new Map(), previewDraws = [];
+  const controls = new Map(), previewDraws = [], pointers = new Map();
   const timers = [];
   let now = 5000;
   const canvas = {
-    width: 100, height: 200, style: {}, focus() {}, addEventListener() {},
+    width: 100, height: 200, style: {}, focus() {}, addEventListener(name, fn) { pointers.set(name, fn); },
     getContext: () => ({
       fillStyle: '',
       drawImage: (frame) => painted.push(frame.id),
       fillRect: () => blanks.push(`${canvas.width}x${canvas.height}`),
     }),
   };
-  const element = () => ({ hidden: true, style: {}, classList: { add() {}, toggle() {} },
-    setAttribute() {}, addEventListener() {} });
+  const element = (hidden = true) => ({
+    hidden, style: {}, dataset: {}, children: [], classList: { add() {}, toggle() {} },
+    setAttribute() {}, addEventListener(_name, fn) { this.click = fn; },
+    append(...children) { this.children.push(...children); },
+  });
   const nodes = { screen: canvas, stage: { clientWidth: 400, clientHeight: 800 }, status: element(), title: element() };
+  const toolbar = element();
+  const body = element();
+  if (actualRail) {
+    for (const k of ['back', 'home', 'recents', 'notifs', 'rotate', 'pin']) nodes[`b-${k}`] = element(false);
+    const retryButton = element();
+    nodes['retry-ipad'] = Object.assign(element(), { querySelector: () => retryButton, retryButton });
+  }
   let recording = false;
   class Decoder {
     constructor(callbacks) { this.callbacks = callbacks; this.state = 'unconfigured'; this.decodeQueueSize = 0; this.resets = 0; decoders.push(this); }
@@ -81,21 +91,23 @@ function fixture(kind = 'app') {
     }
     now = end;
   }
-  vm.runInNewContext(code, {
-    window, document: { body: element(), getElementById: key => nodes[key] || null, querySelector: () => element(), addEventListener() {},
-      createElement: () => ({
+  const env = vm.createContext({
+    window, document: { body, getElementById: key => nodes[key] || null, querySelector: () => toolbar, addEventListener() {},
+      createElement: (name) => name !== 'canvas' ? element() : ({
         getContext: () => ({ drawImage: (frame, _x, _y, w, h) => previewDraws.push([frame.id, w, h]) }),
         toDataURL: () => 'data:image/jpeg;base64,/9j/2Q==',
       }) },
-    location: { search: '?kind=' + kind }, URLSearchParams, devicePixelRatio: 2, VideoDecoder: Decoder,
+    location: { search: '?kind=' + kind + (screenOS ? '&screenOS=' + screenOS : '') }, URLSearchParams, devicePixelRatio: 2, VideoDecoder: Decoder,
     EncodedVideoChunk: class { constructor(data) { Object.assign(this, data); } },
     ResizeObserver: class { observe() {} }, performance: { now: () => now }, console,
     setTimeout: later, clearTimeout: cancel,
   });
+  if (actualRail) vm.runInContext(fs.readFileSync(require.resolve('../../shared/mirror-rail.js'), 'utf8'), env);
+  vm.runInContext(code, env);
   const recv = (name, value) => { for (const fn of handlers.get(name) || []) fn(value); };
   const config = () => recv('video', { config: true, data: Uint8Array.from([0, 0, 1, 0x67, 0x42, 0, 0x1f]) });
   const frame = (id, timestamp) => ({ id, timestamp, displayWidth: 300, displayHeight: 600, closed: 0, close() { this.closed++; } });
-  return { recv, config, frame, canvas, decoders, sent, painted, blanks, pushed, statusKeys, previewDraws, status: nodes.status, events, controls, rail, advance,
+  return { recv, config, frame, canvas, decoders, sent, painted, blanks, pushed, statusKeys, previewDraws, pointers, nodes, body, status: nodes.status, events, controls, rail, advance,
     record(on) { recording = on; }, output(f) { decoders.at(-1).callbacks.output(f); } };
 }
 
@@ -475,4 +487,32 @@ test('the preview reuses decoded frames and samples once per interval while the 
   f.output(f.frame(4, 4));
   assert.deepEqual(f.previewDraws, [[1, 100, 200], [3, 100, 200]]);
   assert.deepEqual(f.sent.filter((m) => m.t === 'mirrorPreview').map((m) => m.capture), [8, 8]);
+});
+
+test('iOS rail keeps local tools and removes legacy phone inputs, while Android keeps its controls', () => {
+  const ipad = fixture('screen', { screenOS: 'ios', actualRail: true });
+  const android = fixture('screen', { actualRail: true });
+  const keys = (f) => f.body.children.find((n) => n.id === 'rail').children.map((b) => b.dataset.k);
+  assert.deepEqual(keys(ipad), ['shot', 'rec']);
+  assert.deepEqual(keys(android), ['shot', 'rec', 'volumeUp', 'volumeDown', 'rotate', 'autoRotate', 'power', 'screenOff']);
+  for (const id of ['b-back', 'b-home', 'b-recents', 'b-notifs', 'b-rotate']) {
+    assert.equal(ipad.nodes[id].hidden, true);
+    assert.equal(android.nodes[id].hidden, false);
+  }
+  assert.equal(ipad.pointers.has('pointerdown'), false);
+  assert.equal(android.pointers.has('pointerdown'), true);
+  let prevented = false;
+  const key = { code: 'Tab', type: 'keydown', preventDefault() { prevented = true; } };
+  ipad.events.get('keydown')(key);
+  assert.equal(prevented, false, 'Tab moves through the local controls');
+  android.events.get('keydown')(key);
+  assert.equal(prevented, true);
+  assert.equal(android.sent.at(-1).t, 'key');
+  assert.equal(ipad.sent.length, 0);
+  ipad.nodes['b-pin'].onclick();
+  ipad.recv('status', { error: 'Declined', retryIpad: true });
+  const retry = ipad.nodes['retry-ipad'];
+  assert.equal(retry.hidden, false);
+  retry.retryButton.click();
+  assert.deepEqual(ipad.sent, [{ t: 'pin' }, { t: 'retryIpad' }]);
 });

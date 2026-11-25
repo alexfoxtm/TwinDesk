@@ -2480,6 +2480,7 @@
   "Record (saved in Movies › TwinDesk)": "Kaydet (Filmler › TwinDesk içine kaydedilir)",
   "Record (saved in Videos › TwinDesk)": "Kaydet (Videolar › TwinDesk içine kaydedilir)",
   "Stop recording": "Kaydı durdur",
+  "Side rail: screenshot and record": "Yan çubuk: ekran görüntüsü ve kayıt",
   "Side rail: screenshot, record, volume": "Yan şerit: ekran görüntüsü, kayıt, ses",
   "Side panel: screenshot, record, volume": "Yan panel: ekran görüntüsü, kayıt, ses",
   "Screenshot copied, and saved in {folder}": "Ekran görüntüsü kopyalandı ve {folder} içine kaydedildi",

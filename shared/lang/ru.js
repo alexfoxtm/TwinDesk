@@ -2480,6 +2480,7 @@
   "Record (saved in Movies › TwinDesk)": "Запись (сохраняется в «Фильмы › TwinDesk»)",
   "Record (saved in Videos › TwinDesk)": "Запись (сохраняется в «Видео › TwinDesk»)",
   "Stop recording": "Остановить запись",
+  "Side rail: screenshot and record": "Боковая панель: снимок и запись экрана",
   "Side rail: screenshot, record, volume": "Боковая панель: снимок, запись, громкость",
   "Side panel: screenshot, record, volume": "Боковая панель: снимок, запись, громкость",
   "Screenshot copied, and saved in {folder}": "Снимок скопирован и сохранён в {folder}",
