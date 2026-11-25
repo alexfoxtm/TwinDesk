@@ -52,6 +52,9 @@ test('Google Messages scopes the inbox and invalidates it on helper outage or Di
   const count = sent.length;
   assert.equal(await gm.action(send), 'not-dispatched');
   assert.equal(sent.length, count);
+  event({ type: 'conversations', items: [{ id: 'replacement', reply: true }] });
+  assert.equal(await gm.action(send), false, 'a removed conversation never grants fallback while connected');
+  assert.equal(sent.length, count);
   const disconnected = gm.action({ op: 'disconnect', owner });
   assert.equal(sent.at(-1).op, 'disconnect');
   event({ type: 'state', state: 'disconnected', wipe: true });

@@ -217,11 +217,13 @@ class GoogleMessages {
     if (this.wiped || !commands.has(arg.op)) return false;
     const child = this.child;
     const available = child && child.exitCode == null && child.signalCode == null && child.stdin.writable;
-    if (!available || this.state !== 'connected' || !this.rows.has(arg.chat)) {
+    const row = this.rows.get(arg.chat);
+    if (!available || this.state !== 'connected' || !row) {
       // The renderer may use its independently verified carrier route. This result
       // must only be returned before the helper could have received a send command.
       if (arg.op === 'send' && arg.allowCarrier === true &&
-        (this.state === 'connected' || this.state === 'offline' || this.state === 'helper-error')) return 'not-dispatched';
+        ((this.state === 'connected' && row?.reply === true) ||
+         this.state === 'offline' || this.state === 'helper-error')) return 'not-dispatched';
       return false;
     }
     const { op, chat } = arg;
@@ -234,7 +236,7 @@ class GoogleMessages {
     const part = Number.isInteger(arg.part) ? arg.part : 0;
     const text = typeof arg.text === 'string' ? arg.text.trim().slice(0, 5000) : '';
     const image = typeof arg.image === 'string' && arg.image.length <= 6000000 && arg.image.startsWith('data:image/jpeg;') && imageURL.test(arg.image) ? arg.image : '';
-    if (op === 'send' && (!this.rows.get(chat).reply || (!text && !image) || (arg.image && !image))) return false;
+    if (op === 'send' && (!row.reply || (!text && !image) || (arg.image && !image))) return false;
     const ref = ++this.ref;
     return new Promise((resolve) => {
       const finish = (value) => {
