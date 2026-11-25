@@ -146,17 +146,18 @@ UI.tab({
     // Texts are the phone's SMS and MMS (above); the chat apps are their conversations as the phone
     // sends them (s.chats: shared/chats.js), kept here, or with an older phone their notifications
     // (Notifications on). Answered with their own Reply (notif.reply). All: everything.
-    const CHAT = [['all', tr('All')], ['texts', tr('Texts')], ['whatsapp', 'WhatsApp'], ['instagram', 'Instagram'], ['telegram', 'Telegram'], ['messenger', 'Messenger'], ['signal', 'Signal'], ['other', tr('Other apps')]];
-    const OPTIONAL = ['messenger', 'signal', 'other']; // their pill only once one of their chats is here
+    const CHAT = [['all', tr('All')], ['texts', tr('Texts')], ['rcs', tr('Messages (Chat)')], ['whatsapp', 'WhatsApp'], ['instagram', 'Instagram'], ['telegram', 'Telegram'], ['messenger', 'Messenger'], ['signal', 'Signal'], ['other', tr('Other apps')]];
+    const OPTIONAL = ['rcs', 'messenger', 'signal', 'other']; // their pill only once one of their chats is here
     const appOf = (pkg) => (/^com\.whatsapp/.test(pkg) ? 'whatsapp' : /^(?:org\.telegram|org\.thunderdog\.challegram)/.test(pkg) ? 'telegram' : /^com\.instagram/.test(pkg) ? 'instagram'
       : pkg === 'com.facebook.orca' ? 'messenger' : pkg === 'org.thoughtcrime.securesms' ? 'signal'
       : pkg === 'com.google.android.apps.messaging' || pkg === 'com.samsung.android.messaging' ? 'rcs' : '');
-    const APP_NAME = { whatsapp: 'WhatsApp', telegram: 'Telegram', instagram: 'Instagram', messenger: 'Messenger', signal: 'Signal', rcs: tr('Messages (RCS)') };
+    const APP_NAME = { whatsapp: 'WhatsApp', telegram: 'Telegram', instagram: 'Instagram', messenger: 'Messenger', signal: 'Signal', rcs: tr('Chat') };
     let pill = 'texts';
+    let chosePill = false;
     const pills = el('div', { class: 'msg-pills', attrs: { role: 'tablist' } });
     const pillBtns = CHAT.map(([id, label]) => {
       const b = el('button', { class: 'msg-pill', text: label, attrs: { role: 'tab' } });
-      b.onclick = () => { pill = id; chatOpen = ''; chatKey = ''; paintChats(UI.state); if (UI.state) layout.hidden = pill !== 'texts' || !UI.hubReady(UI.state, 'messages'); };
+      b.onclick = () => { chosePill = true; pill = id; chatOpen = ''; chatKey = ''; paintChats(UI.state); if (UI.state) layout.hidden = pill !== 'texts' || !UI.hubReady(UI.state, 'messages'); };
       pills.append(b);
       return [id, b];
     });
@@ -164,7 +165,7 @@ UI.tab({
     const appsBtn = el('button', { class: 'msg-pill msg-apps-btn', text: tr('Apps…'), attrs: { 'aria-expanded': 'false' } });
     const appsPanel = el('div', { class: 'msg-apps', hidden: true });
     appsBtn.onclick = () => { appsPanel.hidden = !appsPanel.hidden; appsBtn.setAttribute('aria-expanded', String(!appsPanel.hidden)); };
-    const appsRows = CHAT.filter(([id]) => id !== 'all' && id !== 'texts').concat([['rcs', tr('Messages (RCS)')]]).map(([id, label]) => {
+    const appsRows = CHAT.filter(([id]) => id !== 'all' && id !== 'texts').map(([id, label]) => {
       const sw = UI.switch((v) => {
         if (v) hiddenApps.delete(id); else hiddenApps.add(id);
         keep('td.msg.hiddenApps', [...hiddenApps]);
@@ -177,7 +178,7 @@ UI.tab({
     appsPanel.append(...appsRows);
     pills.append(appsBtn);
     const chatsSw = UI.switch((v) => api.setChats && api.setChats(v), { label: tr('Chat apps in Messages') });
-    const chatsRow = UI.row(tr('Chat apps in Messages'), tr('WhatsApp, Instagram, Telegram and Messenger next to your texts. Reply from here.'), [chatsSw]);
+    const chatsRow = UI.row(tr('Chat apps in Messages'), tr('See notifications from Google Messages, Samsung Messages and other chat apps alongside your texts.'), [chatsSw]);
     const chatsCard = UI.card('', [chatsRow]);
     chatsCard.hidden = !api.setChats;
     const chatList = el('div', { class: 'hub-threads' });
@@ -207,7 +208,7 @@ UI.tab({
       const by = new Map();
       for (const h of ((s && s.notifs) || {}).history || []) {
         const app = appOf(h.app);
-        if (!app || (synced(s) && app !== 'rcs')) continue; // synced: only RCS from notifications
+        if (!app || app === 'rcs' || synced(s)) continue; // Messages requires a structured conversation
         if (h.live || BUSY.test(h.body || '') || BUSY.test(h.title || '')) continue; // the app at work, not a message
         const key = app + '|' + (h.title || h.appName);
         const t = by.get(key) || { key, pkg: h.app, avatar: h.avatar || '', app, name: h.title || h.appName, items: [], at: 0 };
@@ -215,7 +216,8 @@ UI.tab({
         t.at = Math.max(t.at, h.at);
         by.set(key, t);
       }
-      return own.concat([...by.values()]).filter((t) => !hiddenApps.has(t.app) && !isGone(t.key, t.at)).sort((a, b) => b.at - a.at);
+      return own.concat([...by.values()]).filter((t) => (t.app !== 'rcs' || !!(s.hub && s.hub.messages)) &&
+        !hiddenApps.has(t.app) && !isGone(t.key, t.at)).sort((a, b) => b.at - a.at);
     }
     // A chat app's notice that isn't a message: "Sending video…", "Deleting chats… 100%".
     const BUSY = /^(?:sending|uploading|downloading|deleting|backing up|restoring|checking for new messages|preparing|syncing)\b|\b\d{1,3}\s?%\s*$/i;
@@ -263,6 +265,7 @@ UI.tab({
       chatsCard.hidden = on || !api.setChats;
       if (!on && pill !== 'texts') pill = 'texts';
       const all = chatThreads(s);
+      if (on && !chosePill) pill = all.some((t) => t.app === 'rcs') ? 'all' : 'texts';
       for (const [id, b] of pillBtns) {
         b.classList.toggle('on', id === pill);
         b.setAttribute('aria-selected', String(id === pill));
@@ -271,9 +274,10 @@ UI.tab({
       appsBtn.hidden = !on;
       if (!on) appsPanel.hidden = true;
       chatLayout.hidden = pill === 'texts';
+      layout.hidden = pill !== 'texts' || !UI.hubReady(s, 'messages');
       if (pill === 'texts') return;
       const shown = all.filter((t) => (pill === 'all' || t.app === pill) && (matches(t.name, snippetOf(t)) || t.key === chatOpen));
-      const sum = (t) => (t.msgs ? [t.msgs.length, t.reply, t.pic, t.msgs.map((m) => m.pic || '').join()] : [t.items.length, t.items.map((h) => (h.replies || []).length)]);
+      const sum = (t) => (t.msgs ? [t.msgs.length, t.reply, t.pic, t.msgs.map((m) => m.id || m.pic || '').join()] : [t.items.length, t.items.map((h) => (h.replies || []).length)]);
       const k = JSON.stringify([pill, chatOpen, query, shown.map((t) => [t.key, t.at, sum(t), !!t.avatar]), pill === 'all' ? threads.map((t) => t.id + t.at) : 0, (s.notifs || {}).receive, synced(s), Object.keys((s.notifs || {}).historyIcons || {}).length]);
       if (k === chatKey) return;
       chatKey = k;
@@ -282,7 +286,7 @@ UI.tab({
       const rows = shown.map((t) => ({ at: t.at, el: threadRow(t.name, t.at, (APP_NAME[t.app] || '') + ' · ' + snippet(t), t.key === chatOpen, () => { chatOpen = t.key; paintChats(UI.state); }, t.avatar, t.pkg) }));
       if (pill === 'all') {
         for (const t of visibleThreads()) {
-          rows.push({ at: t.at || 0, el: threadRow(t.name || (t.addrs || []).join(', '), t.at, tr('Text · {message}', { message: t.snippet || '' }), false, () => { pill = 'texts'; paintChats(UI.state); layout.hidden = false; openThread(t.id); }, t.photo) });
+          rows.push({ at: t.at || 0, el: threadRow(t.name || (t.addrs || []).join(', '), t.at, tr('Texts · {message}', { message: t.snippet || '' }), false, () => { chosePill = true; pill = 'texts'; paintChats(UI.state); openThread(t.id); }, t.photo) });
         }
       }
       rows.sort((a, b) => b.at - a.at);
@@ -455,6 +459,7 @@ UI.tab({
     UI.hubOn('sms.threads', (m) => {
       threads = (m.items || []).filter((t) => t && t.id);
       renderList();
+      paintChats(UI.state, true);
       if (openId) renderConv();
     });
     UI.hubOn('sms.thread', (m) => {
@@ -527,6 +532,11 @@ UI.tab({
     renderList();
     renderConv();
     UI.onDeviceChange(() => { // another device: its conversations, not the previous one's
+      pill = 'texts';
+      chosePill = false;
+      chatOpen = '';
+      chatKey = '';
+      chatBox.value = '';
       threads = [];
       openId = null;
       items = [];

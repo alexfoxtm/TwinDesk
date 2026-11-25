@@ -32,13 +32,17 @@ class Messages(private val hub: Hub, private val core: Core) {
     private val ctx = core.ctx
     private val cr = ctx.contentResolver
     private val main = Handler(Looper.getMainLooper())
-    private var observer: ContentObserver? = null
+    @Volatile private var observer: ContentObserver? = null
     private var receiver: BroadcastReceiver? = null
     @Volatile private var newest = 0L // the newest message's time (ms) already told about
     private var checking = false
     private var req = 0
     private val names = HashMap<String, String>() // address -> contact name ("" when none)
     private val photos = HashMap<String, String>() // address -> the contact's photo, a small JPEG data: URL ("" when none)
+    private class ChatMatchRequest(val ref: String, val plan: SensitiveNotif.Plan, val candidates: List<MessageChat.Candidate>) {
+        var sent: List<String>? = null // only touched on Hub's query thread
+    }
+    @Volatile private var chatMatchRequest: ChatMatchRequest? = null
 
     fun start() {
         if (observer != null || !hub.granted(Manifest.permission.READ_SMS)) return
@@ -86,6 +90,7 @@ class Messages(private val hub: Hub, private val core: Core) {
         observer?.let { runCatching { cr.unregisterContentObserver(it) } }
         receiver?.let { runCatching { ctx.unregisterReceiver(it) } }
         observer = null
+        chatMatchRequest = null
         receiver = null
         main.removeCallbacksAndMessages(null)
         synchronized(names) { names.clear() }
@@ -98,6 +103,8 @@ class Messages(private val hub: Hub, private val core: Core) {
     // Something changed in the store: messages newer than the last one told about go to the computer.
     private fun check() {
         if (observer == null) return
+        // Reconcile even when the written row precedes the sms.new watermark.
+        runCatching { refreshChatMatches() }
         val found = ArrayList<JSONObject>()
         cr.query(Uri.parse("content://sms"), SMS_COLS, "date > ? AND type != 3", arrayOf(newest.toString()), "date ASC")?.use { c ->
             while (c.moveToNext() && found.size < 20) found.add(sms(c))
@@ -109,6 +116,56 @@ class Messages(private val hub: Hub, private val core: Core) {
             if (m.optLong("at") <= newest) continue
             newest = m.optLong("at")
             core.send(msg(Proto.T.SMS_NEW, "thread" to m.remove("thread"), "msg" to m))
+        }
+    }
+
+    fun matchChat(m: JSONObject, route: Link.TrustedRoute?) {
+        if (observer == null || !hub.granted(Manifest.permission.READ_SMS)) return
+        val plan = core.notifs.messageMatchPlan(route) ?: return
+        val ref = m.str("ref", 24)
+        val items = m.optJSONArray("items") ?: return
+        if (ref.isEmpty()) return
+        val candidates = (0 until minOf(items.length(), 120)).mapNotNull { i ->
+            val item = items.optJSONObject(i) ?: return@mapNotNull null
+            val id = item.optString("id")
+            val match = item.optString("match")
+            val at = item.optLong("at")
+            if (at > 0 && DIGEST.matches(id) && DIGEST.matches(match)) MessageChat.Candidate(id, at, match) else null
+        }.distinctBy { it.id }
+        val request = ChatMatchRequest(ref, plan, candidates)
+        chatMatchRequest = request
+        hub.run { if (chatMatchRequest === request) runCatching { refreshChatMatches() } }
+    }
+
+    private fun refreshChatMatches() {
+        val request = chatMatchRequest ?: return
+        fun current() = observer != null && request === chatMatchRequest && core.notifs.messageMatchAllowed(request.plan)
+        if (!current()) return
+        val rows = ArrayList<MessageChat.Row>()
+        val candidates = request.candidates
+        if (candidates.isNotEmpty()) {
+            fun queryDates(uri: String, cols: Array<String>, dates: List<Long>, where: String, row: (android.database.Cursor) -> Unit) {
+                val holes = dates.joinToString(",") { "?" }
+                cr.query(Uri.parse(uri), cols, "date IN ($holes) AND $where", dates.map(Long::toString).toTypedArray(), null)
+                    ?.use { c -> while (c.moveToNext()) { if (!current()) return; row(c) } }
+            }
+            queryDates("content://sms", SMS_COLS, candidates.map { it.at }.distinct(), "type IN (1, 2)") { c ->
+                MessageChat.fingerprint(c.getString(1), c.getInt(4) == 2, c.getString(2).orEmpty())
+                    ?.let { rows.add(MessageChat.Row(c.getLong(3), it, mms = false)) }
+            }
+            queryDates("content://mms", MMS_COLS, candidates.map { it.at / 1000 }.distinct(), "msg_box IN (1, 2) AND m_type IN (128, 132)") { c ->
+                val out = c.getInt(2) == 2
+                val detail = mmsDetail(c.getLong(0), !out)
+                if (!detail.attachment) {
+                    val address = detail.addrs.singleOrNull()?.takeIf { out || it == detail.from }
+                    MessageChat.fingerprint(address, out, detail.text)
+                        ?.let { rows.add(MessageChat.Row(c.getLong(1) * 1000, it, mms = true)) }
+                }
+            }
+        }
+        val ids = MessageChat.matches(candidates, rows)
+        if (current() && request.sent != ids && core.link.sendFor(request.plan.recipient.marker, msg("chat.match", "ref" to request.ref, "ids" to jsonArray(ids)))) {
+            request.sent = ids
         }
     }
 
@@ -220,7 +277,7 @@ class Messages(private val hub: Hub, private val core: Core) {
             .put("status", when (box) { 4 -> "sending"; 5 -> "failed"; else -> "" }).put("parts", parts)
     }
 
-    private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val addrs: List<String>) {
+    private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val addrs: List<String>, val attachment: Boolean) {
         val images get() = parts.size
     }
 
@@ -228,12 +285,14 @@ class Messages(private val hub: Hub, private val core: Core) {
     private fun mmsDetail(id: Long, incoming: Boolean): Mms {
         val text = StringBuilder()
         val parts = ArrayList<Pair<Long, String>>()
+        var attachment = false
         cr.query(Uri.parse("content://mms/part"), arrayOf("_id", "ct", "text"), "mid = ?", arrayOf(id.toString()), null)?.use { c ->
             while (c.moveToNext()) {
                 val ct = c.getString(1) ?: ""
                 when {
                     ct == "text/plain" -> c.getString(2)?.let { if (text.isNotEmpty()) text.append('\n'); text.append(it) }
-                    ct.startsWith("image/") -> parts.add(c.getLong(0) to ct)
+                    ct.startsWith("image/") -> { parts.add(c.getLong(0) to ct); attachment = true }
+                    ct != "application/smil" -> attachment = true
                 }
             }
         }
@@ -247,7 +306,7 @@ class Messages(private val hub: Hub, private val core: Core) {
             }
         }
         if (!incoming) from = ""
-        return Mms(text.toString(), parts, from, (listOf(from) + addrs).filter { it.isNotEmpty() }.distinct())
+        return Mms(text.toString(), parts, from, (listOf(from) + addrs).filter { it.isNotEmpty() }.distinct(), attachment)
     }
 
     // An MMS picture, at most 1024 px, as a data: URL.
@@ -361,6 +420,7 @@ class Messages(private val hub: Hub, private val core: Core) {
     }
 
     companion object {
+        private val DIGEST = Regex("[a-f0-9]{64}")
         private const val SENT = "com.twindesk.android.SMS_SENT"
         private const val MMS_SENT = "com.twindesk.android.MMS_SENT"
         private val SMS_COLS = arrayOf("_id", "address", "body", "date", "type", "thread_id")

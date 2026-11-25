@@ -79,6 +79,7 @@ class NotifListener : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         if (running === this) running = null
+        runCatching { Core.get(this).notifs.listenerLost() }
         CompanionApproval.listenerDisconnected(this)
     }
 
@@ -107,7 +108,7 @@ class NotifListener : NotificationListenerService() {
         CompanionApproval.noteBind(CompanionApproval.associationCount(this))
         running = this
         CompanionApproval.listenerConnected(this)
-        runCatching { Core.get(this).also { it.nowPlaying.retry(); it.changed() } }
+        runCatching { Core.get(this).also { it.notifs.messagePolicyChanged(); it.nowPlaying.retry(); it.changed() } }
     }
 }
 

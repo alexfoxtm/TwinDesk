@@ -682,6 +682,15 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // Still the socket thread. Pointer compares this with the time it runs on its overlay worker (after the main-thread hop).
         val pointerAt = if (t == Proto.T.PHONE_POINTER) SystemClock.uptimeMillis() else -1L
         main.post {
+            if (t == "chat.want") {
+                notifs.chatWant(m, route)
+                return@post
+            }
+            if (t == "chat.match") {
+                hub.matchChat(m, route)
+                return@post
+            }
+            if (t == "notif.reply" && m.optString("id").startsWith("r:") && !link.accepts(route)) return@post
             if (t == Proto.T.MEDIA_SAVE_AS) {
                 if (link.photoRoute(source)) hub.savePhotoAs(m, source)
                 return@post

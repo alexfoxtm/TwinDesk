@@ -751,10 +751,11 @@ app.whenReady().then(() => {
     });
     const { Chats } = require('../../shared/chats.js');
     chats = new Chats({ link: {
-        on: (ev, fn) => (ev === 'welcome' ? peer.on('client', fn) : ev === 'closed' ? peer.on('closed', fn) : peer.on('t:' + ev, fn)),
+        on: (ev, fn) => (ev === 'welcome' ? peer.on('client', fn) : ev === 'closed' ? peer.on('closed', fn) : peer.on('t:' + ev, (m, ctx) => fn(m, ctx?.conn))),
         send: (m) => peer.sendToClient(m),
         get current() { return peer.current; },
-      }, dir: app.getPath('userData'), want: () => settings.ui.chats === true, onChange: pushState });
+      }, dir: app.getPath('userData'), socket: () => peer.outbound(), want: () => settings.ui.chats === true, onChange: pushState });
+    peer.route.onState(() => chats.sync());
   }
   hub.start();
 

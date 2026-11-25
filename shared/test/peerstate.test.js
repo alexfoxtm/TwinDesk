@@ -45,10 +45,10 @@ function fakeHub(ids) {
   return { sessions, selectedId: null, heard: new Heard() };
 }
 
-// 1. Scope: REMEMBER strictly limited to audio.policy, screen.state, screen.policy; GOODBYE to audio.policy & screen.policy.
+// 1. Scope: chat.want may be revoked on leave and is never replayed.
 {
   assert.deepStrictEqual([...REMEMBER].sort(), ['audio.policy', 'screen.policy', 'screen.state']);
-  assert.deepStrictEqual(Object.keys(GOODBYE).sort(), ['audio.policy', 'screen.policy']);
+  assert.deepStrictEqual(Object.keys(GOODBYE).sort(), ['audio.policy', 'chat.want', 'screen.policy']);
 }
 
 // 2. Heard: remembers latest of allowed types on live primary socket, strips ask, ignores excluded payloads.
@@ -132,7 +132,7 @@ function fakeHub(ids) {
   assert.deepStrictEqual(h.replay(g), [], 'detached socket rejected');
 }
 
-// 4. Said: tracks only active audio.policy & screen.policy, emits once, ignores excluded policies.
+// 4. Said: tracks active policies, emits once, ignores excluded policies.
 {
   const s = new Said();
   s.note('B', { t: 'audio.policy', accept: true });
@@ -171,6 +171,7 @@ function fakeHub(ids) {
   hub.heard.note(sC, { t: 'audio.policy', accept: true, ask: true, meshLeave: true }, sC.ctx.ws);
   hub.heard.note(sC, { t: 'screen.state', on: true }, sC.ctx.ws); // route has no listener for screen.state
   assert.strictEqual(route.send({ t: 'audio.policy', accept: true }), true);
+  assert.strictEqual(route.send({ t: 'chat.want', on: true, messaging: true }), true);
 
   got.length = 0;
   hub.selectedId = 'C';
@@ -182,8 +183,10 @@ function fakeHub(ids) {
   ], 'closed, single client, then replayed audio.policy with verified delivery stamp (no re-entrant duplicate)');
   assert.deepStrictEqual(sB.sent, [
     { t: 'audio.policy', accept: true, meshLeave: true },
+    { t: 'chat.want', on: true, messaging: true },
     { t: 'audio.policy', accept: false },
-  ], 'B receives teardown accept: false');
+    { t: 'chat.want', on: false },
+  ], 'B receives audio and chat teardown');
 
   // Replacement drop(id): even if sC.connected is momentarily true during setCtx, no goodbye goes out.
   route.send({ t: 'audio.policy', accept: true });

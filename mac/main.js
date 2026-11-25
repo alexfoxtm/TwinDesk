@@ -1063,10 +1063,11 @@ app.whenReady().then(() => {
   // Messages' chat apps from a phone, kept per phone (shared/chats.js).
   const { Chats } = require('../shared/chats.js');
   svc.chats = new Chats({ link: {
-      on: (ev, fn) => (ev === 'welcome' ? peer.on('client', fn) : ev === 'closed' ? peer.on('closed', fn) : peer.on('t:' + ev, fn)),
+      on: (ev, fn) => (ev === 'welcome' ? peer.on('client', fn) : ev === 'closed' ? peer.on('closed', fn) : peer.on('t:' + ev, (m, ctx, ws) => fn(m, ws))),
       send: (m) => peer.sendToClient(m),
       get current() { return peer.current; },
-    }, dir: app.getPath('userData'), want: () => settings.ui.chats === true, onChange: pushState });
+    }, dir: app.getPath('userData'), socket: () => peer.outbound(peer.current), want: () => settings.ui.chats === true, onChange: pushState });
+  peer.on('transport', () => svc.chats.sync());
   // Connection › Pair a phone with a QR code (shared/ui-qrpair.js), and wireless debugging's (shared/adbqr.js).
   svc.qrPair = () => {
     if (!qrPair || Date.now() > qrPair.until) qrPair = { nonce: require('crypto').randomBytes(8).toString('hex'), until: Date.now() + 10 * 60000 };
