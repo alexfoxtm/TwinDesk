@@ -126,6 +126,7 @@
       let exact = '';
       let macSigner = false;
       let peerId = '';
+      let offlineUdid = '';
       const localButton = UI.button(tr('Install TwinDesk'), () => act({ a: 'installDeveloper', udid: exact }), 'primary');
       const localStatus = UI.row(tr('TwinDesk'), '', [localButton], { literalHint: true });
       const localCard = UI.card('', [localStatus]);
@@ -133,6 +134,8 @@
       const bindRow = UI.row(tr('Refresh from the device'), '', [bindButton], { literalHint: true });
       const deviceAuto = UI.switch((v) => act({ a: 'set', udid: exact, deviceAuto: v }));
       const deviceAutoRow = UI.row(tr('Refresh this device automatically'), '', [deviceAuto.el]);
+      const offlineAuto = UI.switch((v) => act({ a: 'set', udid: offlineUdid, deviceAuto: v }));
+      const offlineAutoRow = UI.row('', '', [offlineAuto.el], { literal: true });
       const store = mac ? tr('the macOS Keychain') : linux ? tr('the system keyring') : tr('Windows Data Protection (DPAPI)');
 
       // ---- the switch; the warning under it while it's off ----
@@ -210,7 +213,7 @@
       const refreshBtn = UI.button(tr('Refresh now'), () => act({ a: 'refresh', ...(macSigner ? { udid: exact } : {}) }), 'primary');
       const refreshRow = UI.row(tr('TwinDesk'), '', [refreshBtn], { literalHint: true });
       // A newer release than the TwinDesk on the device: signed and installed over it (its data stays).
-      const updateBtn = UI.button(tr('Update'), () => act({ a: 'update' }), 'primary');
+      const updateBtn = UI.button(tr('Update'), () => act({ a: 'update', ...(macSigner ? { udid: exact } : {}) }), 'primary');
       const updateRow = UI.row(tr('Update TwinDesk'), '', [updateBtn], { literalHint: true });
       const appList = el('div');
       const refreshCard = UI.card(tr('Installed apps'), [refreshRow, updateRow, appList]);
@@ -236,7 +239,7 @@
       const cacheRow = UI.row(tr('Store IPAs on {computer}', { computer: here }), tr('Each IPA installed from here is kept, so TwinDesk and other apps are signed again from it instead of being downloaded again. Turning this off deletes the stored IPAs.'), [cacheSw.el], { literal: true });
       const updSw = UI.switch((v) => act({ a: 'set', update: v }));
       const updAutoRow = UI.row(tr('Update TwinDesk automatically'), tr('When a new release is out, {computer} signs and installs it on the device the same way as a refresh. The app and its data stay.', { computer: Here }), [updSw.el]);
-      const autoCard = UI.card(tr('Automatic refresh'), [autoRow, deviceAutoRow, daysRow, howRow, whichRow, retryRow, updAutoRow, cacheRow]);
+      const autoCard = UI.card(tr('Automatic refresh'), [autoRow, deviceAutoRow, offlineAutoRow, daysRow, howRow, whichRow, retryRow, updAutoRow, cacheRow]);
 
       // ---- keep a copy (on by default) ----
       const keepSw = UI.switch((v) => act({ a: 'set', keep: v }));
@@ -276,6 +279,9 @@
         const local = v.mode === 'developer';
         const devs = v.devices || [];
         const chosen = devs.find((d) => d.udid === v.udid);
+        const eligible = (d) => !v.developer || (local ? !!d.coreId : !!d.muxUdid);
+        const eligibleCount = devs.filter(eligible).length;
+        if (v.developer && exact !== (v.udid || '')) email.value = pass.value = '';
         exact = v.udid || '';
         macSigner = !!v.developer;
         peerId = v.session?.id || '';
@@ -299,10 +305,16 @@
         bindButton.disabled = !!run;
         localButton.disabled = !chosen?.coreId || !v.bundled || !!run;
         localButton.textContent = chosen?.installed ? tr('Refresh now') : tr('Install TwinDesk');
-        localStatus.setHint(!chosen && devs.length > 1 ? tr('Select a device above')
+        localStatus.setHint(!chosen && eligibleCount > 1 ? tr('Select a device above')
           : !chosen?.coreId ? connectText(chosen) : chosen.result?.done ? tr('Installed') : deviceStatus(chosen));
         deviceAutoRow.hidden = !v.developer || !chosen || !v.auto;
         deviceAuto.set(chosen?.auto !== false);
+        offlineUdid = !local && !v.session?.udid ? v.session?.boundUdid || '' : '';
+        offlineAutoRow.hidden = !v.developer || !offlineUdid || !v.auto;
+        if (offlineUdid) {
+          offlineAutoRow.label.textContent = tr('Refresh {name} automatically', { name: v.session.name });
+          offlineAuto.set(v.session.auto !== false);
+        }
         autoRow.setHint(local ? tr('Refreshes when Xcode has a newer copy ready for the device.')
           : tr('{computer} sends refresh requests to TwinDesk on the device.', { computer: Here }));
         updAutoRow.hidden = cacheRow.hidden = local;
@@ -316,21 +328,30 @@
         const dk = JSON.stringify([devs, near, sess, v.udid, local]);
         if (dk !== devKey) {
           devKey = dk;
-          const pick = devs.length > 1;
+          const pick = !!v.developer || devs.length > 1;
           const rows = devs.map((d) => {
-            const eligible = !v.developer || (local ? !!d.coreId : !!d.muxUdid);
+            const enabled = eligible(d);
             const via = [d.usb ? tr('Cable') : '', d.wifi ? tr('Wi-Fi') : '',
-              eligible ? deviceStatus(d) : connectText(d)].filter(Boolean).join(' · ');
+              enabled ? deviceStatus(d) : connectText(d)].filter(Boolean).join(' · ');
             const mine = d.udid === v.udid;
+            const choose = () => act({ a: 'set', udid: d.udid });
             const r = UI.row(d.name || d.udid, via, [el('span', { class: 'tick', attrs: { 'aria-hidden': 'true' } })], {
-              literal: true, onClick: pick && eligible ? () => act({ a: 'set', udid: d.udid }) : undefined,
+              literal: true, onClick: pick && enabled ? choose : undefined,
             });
             r.classList.add('ios-dev');
-            r.classList.toggle('pick', pick && eligible);
+            r.classList.toggle('pick', pick && enabled);
             r.classList.toggle('on', mine);
             r.setAttribute('role', pick ? 'radio' : 'listitem');
             if (pick) r.setAttribute('aria-checked', String(mine));
-            if (pick && !eligible) r.setAttribute('aria-disabled', 'true');
+            if (pick && !enabled) r.setAttribute('aria-disabled', 'true');
+            if (pick && enabled) {
+              r.tabIndex = 0;
+              r.onkeydown = (e) => {
+                if (e.key !== ' ' && e.key !== 'Enter') return;
+                e.preventDefault();
+                choose();
+              };
+            }
             return r;
           });
           // TwinDesk on an iPhone this computer can't install to right now.
@@ -338,7 +359,7 @@
           for (const n of near) rows.push(UI.row(n.name, tr('Nearby over Bluetooth — for automatic refresh only. To install TwinDesk for the first time, connect by cable and tap Trust.'), [el('span', { class: 'pill muted', text: 'Bluetooth' })], { literal: true }));
           if (near.length && !devs.length) rows.push(UI.row(tr('No cable connection'), !mac && !linux ? tr('Connect by cable, unlock it and tap Trust. Install Apple Devices or iTunes from the Microsoft Store if the iPhone or iPad is not detected.') : tr('Connect by cable, unlock it and tap Trust. Wi-Fi sync then works without the cable.'), [], { literal: true }));
           if (!rows.length) rows.push(UI.row(tr('No devices found'), !mac && !linux ? tr('Connect the iPhone or iPad by cable, unlock it and tap Trust. Install Apple Devices or iTunes from the Microsoft Store if it is not detected. Wi-Fi sync then works without the cable.') : tr('Connect the iPhone or iPad by cable, unlock it and tap Trust. It is then also reachable over Wi-Fi if Wi-Fi sync is enabled in Finder, Apple Devices or iTunes.'), [], { literal: true }));
-          if (pick && !v.udid) rows.unshift(UI.row(tr('Select a device'), tr('Several devices are available. Select the one to install to.'), [], { literal: true }));
+          if (eligibleCount > 1 && !v.udid) rows.unshift(UI.row(tr('Select a device'), tr('Several devices are available. Select the one to install to.'), [], { literal: true }));
           devList.replaceChildren(...rows);
         }
 
@@ -351,7 +372,7 @@
         const before = missingTd ? refreshCard : how;
         if (!local && installCard.nextSibling !== before) body.insertBefore(installCard, before);
         installCard.querySelector('.card-title span').textContent = missingTd ? tr('Install TwinDesk') : tr('Reinstall');
-        installHead.label.textContent = !v.udid ? (devs.length ? tr('Select a device above') : tr('No device connected'))
+        installHead.label.textContent = !v.udid ? (eligibleCount ? tr('Select a device above') : tr('No device connected'))
           : missingTd ? tr('TwinDesk is not installed on {device}', { device: devName }) : tr('Reinstall TwinDesk or install another app');
         installHead.setHint(!v.udid ? tr('Then sign in with your Apple ID to install TwinDesk.')
           : missingTd ? tr('Sign in with your Apple ID to install it. The TwinDesk iOS app then requests future refreshes through {computer}.', { computer: here })
@@ -428,7 +449,7 @@
           appKey = ak;
           appList.replaceChildren(...apps.filter((a) => !a.twindesk).map((a) => UI.row(a.name, [a.version, a.teamName].filter(Boolean).join(' · '), [
             // No stored IPA needed: new profiles are enough unless it has to be signed again.
-            v.anyIpa && (kept || (phone && phone.signedIn)) ? UI.button(tr('Refresh'), () => act({ a: 'app', bundleId: a.bundleId }), 'small') : null,
+            v.anyIpa && (kept || (phone && phone.signedIn)) ? UI.button(tr('Refresh'), () => act({ a: 'app', bundleId: a.bundleId, ...(macSigner ? { udid: v.udid } : {}) }), 'small') : null,
             el('span', { class: daysLeft(a.expires) < 2 ? 'pill bad' : 'pill muted', text: leftText(a.expires) }),
           ].filter(Boolean), { literal: true })));
         }

@@ -58,6 +58,7 @@ const MAX_IPA = 4 * 1024 * 1024 * 1024;
 const RELEASE_API = 'https://api.github.com/repos/InukaAsith/TwinDesk/releases/latest';
 const RELEASE_MS = 6 * 60 * 60 * 1000;
 const { compare } = require('./updates.js');
+const DEVICE_UDID = /^(?:[a-f0-9]{8}-[a-f0-9]{16}|[a-f0-9]{40})$/i;
 const str = (v, n = 200) => (typeof v === 'string' ? v.slice(0, n) : '');
 const b64 = (v, n) => (typeof v === 'string' && v.length <= n && /^[A-Za-z0-9+/]+=*$/.test(v) ? v : '');
 
@@ -66,7 +67,7 @@ function mergeDevices(mux, core) {
   const devices = new Map();
   const classes = ['iPhone', 'iPad'];
   for (const d of [...mux.map((d) => ({ ...d, muxUdid: d?.udid, wifi: !!d?.ip })), ...core]) {
-    if (!/^(?:[a-f0-9]{8}-[a-f0-9]{16}|[a-f0-9]{40})$/i.test(d?.udid)) continue;
+    if (!DEVICE_UDID.test(d?.udid)) continue;
     const udid = d.udid.toUpperCase();
     const old = devices.get(udid) || {};
     devices.set(udid, {
@@ -240,12 +241,13 @@ class IosSign extends EventEmitter {
   // What the window and the timers need about a kept copy (the Apple ID, how long the session lasts)
   // is kept in the plain settings, so the vault itself (a Keychain prompt on a Mac) is only opened
   // when a refresh actually uses the copy, or a new one is stored.
-  _factsOf(udid) {
+  _factsOf(udid, { exact = false } = {}) {
     if (!udid || !this._keep()) return null;
     const all = this.cfg().keptFacts;
     if (all && typeof all === 'object') return all[udid] || all[this._wireUdid(udid)] ||
       all[Object.keys(all).find((u) => u.toUpperCase() === udid)] || null;
     if (this._kept) return this._kept[udid] ? stateFacts(this._kept[udid]) : null;
+    if (exact) return null;
     // Kept before these facts were: there is a copy when the vault file is there.
     return this.vault && this.vault.exists && this.vault.exists() ? { signedIn: true, email: '', until: 0 } : null;
   }
@@ -280,9 +282,8 @@ class IosSign extends EventEmitter {
     }
   }
 
-  _invite() {
+  _invite(list = this._near()) {
     if (!this.near || Date.now() - this.invitedAt < INVITE_MS) return false;
-    const list = this._near();
     if (!list.length) return false;
     this.invitedAt = Date.now();
     for (const d of list) { try { this.near.invite(d.id); } catch {} }
@@ -312,6 +313,8 @@ class IosSign extends EventEmitter {
     const udid = this._udid();
     const r = this.run;
     const local = this._local();
+    const bound = this._boundUdid();
+    const ipa = this._chosenIpa(udid);
     const devices = this.devices.map((d) => {
       const result = this.results.get(`${local}:${d.udid}`);
       const install = local ? (c.localInstalls || {})[d.udid] : (this.apps[d.udid] || []).find((a) => a.twindesk);
@@ -327,61 +330,69 @@ class IosSign extends EventEmitter {
       retry: RETRY_HOURS.includes(c.retry) ? c.retry : 6, retries: RETRY_HOURS,
       keep: !local && c.keep !== false && (c.on === true ? this._vaultOk() : !!this.vault), canKeep: !local && (c.on === true ? this._vaultOk() : !!this.vault), cache: c.cache !== false,
       devices, udid, near: !local && c.on === true ? this._near() : [],
-      session: !local && this._ios() ? { id: str(this.link.current.id, 64), name: str(this.link.current.name, 80), udid: this._udid({ session: true }) } : null,
-      apps: (local ? [] : (udid && this.apps[udid]) || []).map((a) => ({ ...a, cached: !!this._cached(a.bundleId) })),
+      session: !local && this._ios() ? {
+        id: str(this.link.current.id, 64), name: str(this.link.current.name, 80),
+        udid: this._udid({ session: true }), boundUdid: bound, auto: c.deviceAuto?.[bound] !== false,
+      } : null,
+      apps: (local ? [] : (udid && this.apps[udid]) || []).map((a) => ({ ...a, cached: !!this._cached(a.bundleId, udid) })),
       phone: !this.developer || udid === this._udid({ session: true }) ? this.phone : null,
-      kept: this._factsOf(udid),
+      kept: this._factsOf(udid, { exact: !!this.developer }),
       pending: !!(this.pending && this.pending.udid === udid),
       ids: this.ids || null, twindeskIpa: !!this._twindeskIpa(udid),
       update: this._update(udid), latest: this.latest, autoUpdate: c.update === true,
-      ipa: this.ipa ? path.basename(this.ipa) : '',
+      ipa: ipa ? path.basename(ipa) : '',
       run: r ? { from: r.from, step: r.step, percent: r.percent, need: r.need, seen: r.seen.slice(), note: r.note || '', ipa: r.ipa ? path.basename(r.ipa) : '' } : null,
       last: this.developer ? this.results.get(`${local}:${udid}`) || (!this.last?.udid ? this.last : null) : this.last,
     };
   }
 
-  // The iPhone or iPad this session is with, among the ones the system sees: the one on the cable
-  // the session runs through, the one picked for this phone before, or the only one there is.
+  _boundUdid(peer = this._ios() ? this.link.current.id : '') {
+    return peer ? str((this.cfg().device || {})[peer], 64).toUpperCase() : '';
+  }
+
+  // The picker may suggest the sole eligible device. Apple ID sessions always use their exact binding.
   _udid({ session = false } = {}) {
     const c = this.cfg();
-    if (this._local()) {
-      const exact = str(c.localDevice, 64).toUpperCase();
-      if (exact) return this.devices.some((d) => d.udid === exact) ? exact : '';
-      return this.devices.length === 1 ? this.devices[0].udid : '';
-    }
-    const have = new Set(this.devices.filter((d) => !this.developer || d.muxUdid).map((d) => d.udid));
-    const cur = this._ios() && this.link.current;
-    const bound = str(cur && (c.device || {})[cur.id], 64).toUpperCase();
-    if (this.developer && session) return have.has(bound) ? bound : '';
-    const picked = this.developer ? c.appleDevice || bound || c.alone : cur ? bound : c.alone;
+    const local = this._local();
+    const have = new Set(this.devices.filter((d) => local ? d.coreId : !this.developer || d.muxUdid).map((d) => d.udid));
+    const bound = this._boundUdid();
+    if (this.developer && session) return !local && have.has(bound) ? bound : '';
+    const picked = local ? c.localDevice : this.developer ? c.appleDevice || bound || c.alone : this._ios() ? bound : c.alone;
     const exact = str(picked, 64).toUpperCase();
-    if (this.developer && exact) return have.has(exact) ? exact : '';
     if (!this.developer) {
       const wired = this.usbSerials().map((u) => u.toUpperCase()).find((u) => have.has(u));
       if (wired) return wired;
-      if (have.has(exact)) return exact;
     }
+    if (have.has(exact)) return exact;
     return have.size === 1 ? [...have][0] : '';
   }
 
   _wireUdid(udid) { return this.devices.find((d) => d.udid === udid)?.muxUdid || udid; }
 
+  // Older Mac caches have no record of the device that supplied the IPA.
+  _cacheDirectory(udid) {
+    if (!this.cacheDir || !this.developer) return this.cacheDir;
+    return DEVICE_UDID.test(udid) ? path.join(this.cacheDir, udid) : '';
+  }
+
   // The IPA kept for an app, by its bundle id as installed ('' none).
-  _cached(bundleId) {
-    if (!this.cacheDir || !/^[A-Za-z0-9.-]{1,200}$/.test(bundleId || '')) return '';
-    const f = path.join(this.cacheDir, `${bundleId}.ipa`);
+  _cached(bundleId, udid) {
+    const dir = this._cacheDirectory(udid);
+    if (!dir || !/^[A-Za-z0-9.-]{1,200}$/.test(bundleId || '')) return '';
+    const f = path.join(dir, `${bundleId}.ipa`);
     try { return fs.statSync(f).isFile() ? f : ''; } catch { return ''; }
   }
 
   // After an install: the IPA it came from is kept (or, TwinDesk's own release installed, its older copy goes).
   _cache(r, done) {
-    if (!this.cacheDir || !/^[A-Za-z0-9.-]{1,200}$/.test(done.bundleId || '')) return;
+    const dir = this._cacheDirectory(r.udid);
+    if (!dir || !/^[A-Za-z0-9.-]{1,200}$/.test(done.bundleId || '')) return;
     // A TwinDesk build installed from a file becomes the TwinDesk this computer refreshes with.
-    const to = path.join(this.cacheDir, TWINDESK.test(done.bundleId) ? TWINDESK_IPA : `${done.bundleId}.ipa`);
+    const to = path.join(dir, TWINDESK.test(done.bundleId) ? TWINDESK_IPA : `${done.bundleId}.ipa`);
     try {
       if (!r.ipa) return; // TwinDesk from the kept copy, or downloaded and kept by the helper
       if (this.cfg().cache === false || path.resolve(r.ipa) === to) return;
-      fs.mkdirSync(this.cacheDir, { recursive: true });
+      fs.mkdirSync(dir, { recursive: true });
       fs.copyFileSync(r.ipa, to);
     } catch {}
   }
@@ -401,7 +412,7 @@ class IosSign extends EventEmitter {
       // (only then does an iPhone that is on follow it off).
       on: v.on, switched: this.switched,
       t: T.INFO, available: v.on && v.ready, seen: !!udid, anyIpa: v.anyIpa, anisette: v.anisette, keep: v.on && v.keep && (!this.developer || !!udid), days: v.days,
-      apps: (this.apps[udid] || []).map((a) => ({ ...a, cached: !!this._cached(a.bundleId) })), busy: !!v.run, latest: v.latest, autoUpdate: v.autoUpdate,
+      apps: (this.apps[udid] || []).map((a) => ({ ...a, cached: !!this._cached(a.bundleId, udid) })), busy: !!v.run, latest: v.latest, autoUpdate: v.autoUpdate,
     });
   }
 
@@ -467,10 +478,11 @@ class IosSign extends EventEmitter {
   // TwinDesk's own IPA as this computer keeps it (Store IPAs on): the last release downloaded, or a
   // build installed from a file. The helper checks it is TwinDesk before using it.
   _twindeskIpa(udid) {
-    if (!this.cacheDir || this.cfg().cache === false) return '';
-    const f = path.join(this.cacheDir, TWINDESK_IPA);
+    const dir = this._cacheDirectory(udid);
+    if (!dir || this.cfg().cache === false) return '';
+    const f = path.join(dir, TWINDESK_IPA);
     try { if (fs.statSync(f).isFile()) return f; } catch {}
-    return this._cached(((this.apps[udid] || []).find((a) => a.twindesk) || {}).bundleId);
+    return this._cached(((this.apps[udid] || []).find((a) => a.twindesk) || {}).bundleId, udid);
   }
 
   // A refresh of an app that is on the device: the helper installs Apple's new profiles only, and
@@ -488,7 +500,10 @@ class IosSign extends EventEmitter {
   _twinDesk(req, udid, fresh = false) {
     const kept = fresh || this._update(udid) ? '' : this._twindeskIpa(udid);
     if (kept) req.twindesk_ipa = kept;
-    else if (this.cacheDir && this.cfg().cache !== false) req.save_ipa = path.join(this.cacheDir, TWINDESK_IPA);
+    else {
+      const dir = this._cacheDirectory(udid);
+      if (dir && this.cfg().cache !== false) req.save_ipa = path.join(dir, TWINDESK_IPA);
+    }
     return req;
   }
 
@@ -510,6 +525,7 @@ class IosSign extends EventEmitter {
     const local = this._local();
     this._release();
     try {
+      const before = this._udid();
       const [mux, core] = await Promise.all([
         this.bin ? this._once({ op: 'devices' }) : null,
         this.developer ? this.developer.list(signal).catch(() => []) : [],
@@ -517,7 +533,8 @@ class IosSign extends EventEmitter {
       if (signal.aborted) return;
       this.devices = mergeDevices(Array.isArray(mux?.devices) ? mux.devices : [], core).slice(0, 20);
       const udid = this._udid();
-      if (!local && udid && this.seed && !this.pending) { this.pending = { udid, state: this.seed }; this.seed = null; this._handOver(); }
+      if (this.developer && before !== udid) this.ids = null;
+      if (!local && udid && (!this.developer || udid === this._udid({ session: true })) && this.seed && !this.pending) { this.pending = { udid, state: this.seed }; this.seed = null; this._handOver(); }
       const devices = this.developer ? this.devices : this.devices.filter((d) => d.udid === udid);
       for (let i = 0; i < devices.length && !signal.aborted; i += 4) {
         await Promise.all(devices.slice(i, i + 4).map(async (d) => {
@@ -725,7 +742,7 @@ class IosSign extends EventEmitter {
     if (m.fresh === true) req.new_cert = true; // Start over, from the iPhone: TwinDesk's certificate revoked, a new one made
     // An app installed from here before, by its kept IPA; TwinDesk itself too when its IPA is kept
     // (a build installed from a file stays that build), else TwinDesk's latest release.
-    const again = m.app ? this._cached(str(m.app)) : '';
+    const again = m.app ? this._cached(str(m.app), udid) : '';
     if (m.update === true && !m.app && !m.ipa) this._twinDesk(req, udid, true); // Update TwinDesk: the release, signed and installed
     else if (!m.app && !m.ipa) { this._twinDesk(req, udid); this._refreshOnly(req, udid); }
     else if (again && this.info.anyIpa) { req.ipa = again; this._refreshOnly(req, udid, str(m.app)); }
@@ -747,7 +764,8 @@ class IosSign extends EventEmitter {
     const req = { op: 'install', udid, email: str(email, 200), password: str(password, 500) };
     const known = (this.pending && this.pending.udid === udid && this.pending.state) || (this._hasKept(udid) ? this.kept[udid] : null);
     if (known) req.state = known; // the same certificate and identity as before
-    if (this.ipa) req.ipa = this.ipa;
+    const ipa = this._chosenIpa(udid);
+    if (ipa) req.ipa = ipa;
     else this._twinDesk(req, udid);
     this.ipa = '';
     this._start({ from: 'here', udid }, req);
@@ -766,12 +784,12 @@ class IosSign extends EventEmitter {
       return;
     }
     if (app) {
-      const file = this._cached(app);
+      const file = this._cached(app, udid);
       if (file) req.ipa = file;
       else req.no_ipa = true;
       this._refreshOnly(req, udid, app);
-    } else if (!automatic && this.ipa) {
-      req.ipa = this.ipa;
+    } else if (!automatic && this._chosenIpa(udid)) {
+      req.ipa = this._chosenIpa(udid);
       this.ipa = '';
     } else {
       this._twinDesk(req, udid);
@@ -822,20 +840,22 @@ class IosSign extends EventEmitter {
     if (this.developer && expected !== udid) return;
     if (this._local()) return;
     if (this._hasKept(udid)) return this.refreshKept();
-    if (this._ios() && (!this.developer || (udid && udid === this._udid({ session: true }))) && this.phone && this.phone.signedIn && !this.ipa) return this._want({ now: true });
+    if (this._ios() && (!this.developer || (udid && udid === this._udid({ session: true }))) && this.phone && this.phone.signedIn && !this._chosenIpa(udid)) return this._want({ now: true });
     // The iPhone is only near over Bluetooth: it's invited, and asked once it's back.
-    if (!this._ios() && this._near().length) {
+    const near = this._near().filter((d) => !this.developer || (udid && this._boundUdid(d.id) === udid));
+    if (!this._ios() && near.length) {
       this.queued = { now: true, udid };
       this.invitedAt = 0;
-      this._invite();
+      this._invite(near);
       this.last = { info: 'Waking TwinDesk on the iPhone over Bluetooth…' };
       this.emit('change');
     }
   }
 
   // Update TwinDesk on the device to the latest release: this computer's copy, or the iPhone's app.
-  updateTwinDesk() {
+  updateTwinDesk(expected) {
     const udid = this._udid();
+    if (this.developer && expected !== udid) return;
     if (this._local() || this.run || !this.info || !this._update(udid)) return;
     this.tried.set(`${udid} update`, Date.now());
     if ((this._factsOf(udid) || {}).signedIn) return this.refreshKept({ update: true });
@@ -845,8 +865,9 @@ class IosSign extends EventEmitter {
   // One app again, from its kept IPA: with this computer's copy of the session, or by asking the iPhone.
   // Without its IPA too: a refresh installs Apple's new profiles only, and the IPA is needed only
   // when the app has to be signed again (the helper says so then).
-  refreshApp(bundleId) {
+  refreshApp(bundleId, expected) {
     const udid = this._udid();
+    if (this.developer && expected !== udid) return;
     if (this._local() || !udid || this.run || !this.info || !this.info.anyIpa || !(this.apps[udid] || []).some((a) => a.bundleId === bundleId)) return;
     this.tried.set(`${udid} ${bundleId}`, Date.now());
     if ((this._factsOf(udid) || {}).signedIn) return this.refreshKept({ app: bundleId });
@@ -854,7 +875,13 @@ class IosSign extends EventEmitter {
   }
 
   // An IPA chosen in this window ('' none): the next run typed here, or with the kept copy, installs it.
-  setIpa(file) {
+  _chosenIpa(udid) {
+    return !this.developer || (udid && udid === this.ipaDevice) ? this.ipa : '';
+  }
+
+  setIpa(file, udid = this._udid()) {
+    if (this.developer && (!udid || udid !== this._udid())) return;
+    this.ipaDevice = udid;
     this.ipa = !this._local() && file && this.info && this.info.anyIpa ? this._ipa({ path: file }) : '';
     this.emit('change');
   }
@@ -867,12 +894,12 @@ class IosSign extends EventEmitter {
     else if (o.a === 'signin') this.signIn(o);
     else if (o.a === 'refresh' && !this._local()) this.refresh(o.udid);
     else if (o.a === 'installDeveloper') this.installDeveloper(str(o.udid));
-    else if (o.a === 'update') this.updateTwinDesk();
+    else if (o.a === 'update') this.updateTwinDesk(o.udid);
     else if (o.a === 'release') this._release(true);
     else if (o.a === 'answer') this.answer(o);
     else if (o.a === 'stop') this.stop();
     else if (o.a === 'ipa') this.setIpa('');
-    else if (o.a === 'app') this.refreshApp(str(o.bundleId));
+    else if (o.a === 'app') this.refreshApp(str(o.bundleId), o.udid);
     else if (o.a === 'appids') this.listIds();
   }
 
@@ -918,51 +945,53 @@ class IosSign extends EventEmitter {
       return;
     }
     if (!this.info) return;
-    const udid = this._udid();
+    const selected = this._udid();
+    const udid = this.developer && c.deviceAuto?.[selected] === false ? '' : selected;
+    const bound = this._boundUdid();
+    const sessionUdid = this._udid({ session: true });
+    const canAskPhone = this._ios() && this.phone?.signedIn && this.phone.auto
+      && (!this.developer || (bound && c.deviceAuto?.[bound] !== false));
+    const viaPhone = canAskPhone && (!this.developer || udid === sessionUdid);
+    const hasCopy = (u) => !!this._factsOf(u, { exact: !!this.developer })?.signedIn;
+    const dueApp = (u) => (this.apps[u] || []).find((a) => soon(a.expires) && rested(`${u} ${a.bundleId}`)
+      && (a.twindesk || (c.which !== 'twindesk' && this._cached(a.bundleId, u))));
     if (this.developer) {
-      const admitted = new Set([udid, c.alone, c.appleDevice, ...Object.values(c.device || {}), ...Object.keys(c.keptFacts || {})]
-        .filter((u) => typeof u === 'string' && u).map((u) => u.toUpperCase()));
       for (const d of this.devices) {
-        if (!d.muxUdid || d.udid === udid || !admitted.has(d.udid) || c.deviceAuto?.[d.udid] === false || !this._factsOf(d.udid)?.signedIn) continue;
+        if (!d.muxUdid || d.udid === selected || c.deviceAuto?.[d.udid] === false || !hasCopy(d.udid)) continue;
         const update = c.update === true && this._update(d.udid) && rested(`${d.udid} update`);
-        const due = (this.apps[d.udid] || []).find((a) => soon(a.expires) && rested(`${d.udid} ${a.bundleId}`)
-          && (a.twindesk || (this.info.anyIpa && c.which !== 'twindesk' && this._cached(a.bundleId))));
-        if (!update && !due) continue;
+        const due = dueApp(d.udid);
+        if (!update && (!due || (!due.twindesk && !this.info.anyIpa))) continue;
         this.tried.set(update ? `${d.udid} update` : `${d.udid} ${due.bundleId}`, Date.now());
         return this.refreshKept({
           update, target: d.udid, automatic: true, app: !update && !due.twindesk ? due.bundleId : '',
         });
       }
-      if (c.deviceAuto?.[udid] === false) return;
     }
-    const apps = udid ? this.apps[udid] || [] : [];
     // Update TwinDesk by itself (cfg.update): before any refresh, as installing the release refreshes it too.
-    if (c.update === true && this._update(udid) && rested(`${udid} update`)) {
-      const viaCopy = !!(this._factsOf(udid) || {}).signedIn;
-      const viaPhone = this._ios() && (!this.developer || udid === this._udid({ session: true })) && this.phone && this.phone.signedIn && this.phone.auto;
-      if (viaCopy || viaPhone) {
-        this.tried.set(`${udid} update`, Date.now());
-        if (viaCopy) return this.refreshKept({ update: true, automatic: true });
-        return this._want({ update: this.latest });
+    const viaCopy = hasCopy(udid);
+    if (c.update === true && this._update(udid) && rested(`${udid} update`) && (viaCopy || viaPhone)) {
+      this.tried.set(`${udid} update`, Date.now());
+      if (viaCopy) return this.refreshKept({ update: true, automatic: true });
+      return this._want({ update: this.latest });
+    }
+    // The authenticated device may become visible over Wi-Fi after receiving the request.
+    if (canAskPhone && !(this.developer ? sessionUdid : udid) && soon(this.phone.expires)) {
+      const key = `phone ${this.link.current.id}`;
+      if (rested(key)) {
+        this.tried.set(key, Date.now());
+        return this._want({ expires: this.phone.expires });
       }
     }
-    const due = apps.filter((a) => soon(a.expires) && (a.twindesk || (c.which !== 'twindesk' && this._cached(a.bundleId))) && rested(`${udid} ${a.bundleId}`))[0];
-    // The system doesn't see the device (no cable, no Wi-Fi sync right now), but the iPhone said
-    // when its TwinDesk runs out: asked anyway, as it comes to the front for it and is seen then.
-    const phoneDue = !udid && this._ios() && this.phone && soon(this.phone.expires) && rested(`phone ${this.link.current.id}`);
-    if (!due && !phoneDue) {
-      // Not in a session: an iPhone near over Bluetooth is woken when this computer has a copy of
-      // its apps' dates and one is due (its session then comes back, and with it this check).
-      if (!this._ios() && Object.values(this.apps).flat().some((a) => a.twindesk && soon(a.expires))) this._invite();
-      return;
+    const due = dueApp(udid);
+    if (!due && !this._ios()) {
+      const twinDue = (apps) => apps.some((a) => a.twindesk && soon(a.expires));
+      if (this.developer) this._invite(this._near().filter((d) => {
+        const u = this._boundUdid(d.id);
+        return u && c.deviceAuto?.[u] !== false && twinDue(this.apps[u] || []);
+      }));
+      else if (Object.values(this.apps).some(twinDue)) this._invite();
     }
-    const viaPhone = this._ios() && (!this.developer || udid === this._udid({ session: true })) && this.phone && this.phone.signedIn && this.phone.auto;
-    const viaCopy = !!(this._factsOf(udid) || {}).signedIn;
-    if (!viaPhone && !viaCopy) return;
-    if (phoneDue) {
-      this.tried.set(`phone ${this.link.current.id}`, Date.now());
-      return this._want({ expires: this.phone.expires });
-    }
+    if (!due || (!viaPhone && !viaCopy)) return;
     if (!due.twindesk && this.info.anyIpa) {
       this.tried.set(`${udid} ${due.bundleId}`, Date.now());
       if (viaCopy) return this.refreshKept({ automatic: true, app: due.bundleId });
@@ -1009,7 +1038,11 @@ class IosSign extends EventEmitter {
       if (!o.keep) { this._kept = {}; this._saveKept(); } // switched off: this computer's copies go
     }
     const selected = this.devices.find((d) => d.udid === o.udid);
-    if (selected) {
+    if (this.developer && typeof o.deviceAuto === 'boolean') {
+      if (this._local() ? selected?.coreId : selected?.muxUdid || (o.udid && o.udid === this._boundUdid())) {
+        patch.deviceAuto = { ...this.cfg().deviceAuto, [o.udid]: o.deviceAuto };
+      }
+    } else if (selected) {
       const cur = this.link.current;
       if (this._local()) {
         if (selected.coreId) patch.localDevice = selected.udid;
@@ -1019,8 +1052,6 @@ class IosSign extends EventEmitter {
           patch.device = { ...(this.cfg().device || {}), [cur.id]: selected.udid };
         else patch.alone = selected.udid;
       }
-      if (this.developer && typeof o.deviceAuto === 'boolean')
-        patch.deviceAuto = { ...this.cfg().deviceAuto, [selected.udid]: o.deviceAuto };
     }
     const local = this._local();
     const prior = this._udid();

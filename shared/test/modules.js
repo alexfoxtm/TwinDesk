@@ -15,6 +15,7 @@ for (const id of M.FIXED) assert.strictEqual(M.ofPage(id), null, `${id} is never
 assert.strictEqual(M.ofPage('pc-mac'), 'share');
 assert.strictEqual(M.ofPage('mac-pc'), 'receive');
 assert.strictEqual(M.ofPage('ios-mirror'), 'mirror');
+assert.strictEqual(M.LIST.find((m) => m.id === 'iossign').label, 'TwinDesk for iPhone & iPad');
 assert.ok(M.pageOff(['web'], 'wd-overview'));
 assert.ok(!M.pageOff(['web'], 'general'));
 

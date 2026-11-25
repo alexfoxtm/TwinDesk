@@ -190,3 +190,96 @@ test('unpaired, locked, wrong certificate or wrong profile cannot start installa
   assert.deepEqual(calls, [IPAD]);
   service.close();
 });
+
+for (const mode of ['developer', 'apple']) test(`the sole eligible device replaces a missing ${mode} selection without inheriting it`, async (t) => {
+  const ipad = { ...target, muxUdid: IPAD };
+  const phone = { udid: IPHONE, name: 'Remembered iPhone', coreId: 'phone', muxUdid: IPHONE };
+  const ineligible = { udid: '00008111-CCCCCCCCCCCCCCCC', coreId: 'other' };
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'ios-selection-test-'));
+  t.after(() => fs.rm(temp, { force: true, recursive: true }));
+  const file = path.join(temp, 'Remembered.ipa');
+  await fs.writeFile(file, '');
+  await fs.writeFile(path.join(temp, 'TwinDesk.ipa'), '');
+  await fs.mkdir(path.join(temp, IPHONE));
+  await fs.writeFile(path.join(temp, IPHONE, 'TwinDesk.ipa'), '');
+
+  const link = Object.assign(new EventEmitter(), { current: { os: 'ios', id: 'old-phone' }, send() {} });
+  const config = { mode, on: false, localDevice: IPHONE, appleDevice: IPHONE, device: { 'old-phone': IPHONE } };
+  let cfg = config;
+  const installs = [];
+  const developer = { bundled: () => true, install: async (d) => { installs.push(d.udid); return null; } };
+  let vaultReads = 0;
+  const vault = { exists: () => true, load: () => {
+    vaultReads++;
+    return JSON.stringify({ [IPHONE]: { xcode_token: 'old-phone-fixture' } });
+  } };
+  const sign = new IosSign({ link, developer, vault, cfg: () => cfg, setCfg: (x) => { cfg = { ...cfg, ...x }; }, cacheDir: temp });
+  t.after(() => sign.close());
+  sign._look = () => {};
+  sign.info = { anyIpa: true };
+  sign.devices = [phone];
+  cfg = { ...cfg, on: true };
+  if (mode === 'apple') {
+    assert.equal(sign.view.twindeskIpa, true, 'the exact device’s stored IPA is still usable');
+    sign.setIpa(file);
+  }
+  sign.pending = { udid: IPHONE, state: { token: 'old-phone-fixture' } };
+  sign.apps[IPAD] = [{ bundleId: APP + '.TESTTEAM12', expires: 1, twindesk: true }];
+  sign.devices = [ipad, mode === 'apple' ? ineligible : { ...ineligible, coreId: '', muxUdid: ineligible.udid }];
+
+  assert.equal(sign.view.udid, IPAD, mode + ' exposes the only eligible app-install target');
+  assert.equal(sign.view.ipa, '', 'the previous device’s IPA is unavailable');
+  assert.equal(sign.view.twindeskIpa, false, 'the unscoped cache has no exact device owner');
+  assert.equal(sign.view.pending, false);
+  assert.equal(sign.view.session?.udid || '', '', 'the authenticated session is still bound to the missing device');
+  assert.deepEqual(cfg.device, config.device);
+  assert.equal(cfg.localDevice, IPHONE);
+  assert.equal(cfg.appleDevice, IPHONE);
+  if (mode === 'apple') {
+    const requests = [];
+    sign._start = (run, req) => requests.push(req);
+    sign._auto();
+    assert.deepEqual(requests, []);
+    assert.equal(vaultReads, 0, 'a vault without exact consent metadata cannot authorize fallback refresh');
+    sign.setIpa(file, IPHONE); // A dialog opened for the old device completed late.
+    assert.equal(sign.view.ipa, '');
+    sign.signIn({ udid: IPAD, email: 'fixture@example.test', password: 'fixture' });
+    assert.equal(requests[0].udid, IPAD);
+    for (const key of ['ipa', 'twindesk_ipa', 'state']) assert.equal(requests[0][key], undefined);
+  } else {
+    sign._auto();
+    assert.deepEqual(installs, [], 'a fallback is not automatically enrolled');
+    await sign.installDeveloper(IPAD);
+    assert.deepEqual(installs, [IPAD]);
+    assert.equal(cfg.localInstalls, undefined);
+  }
+
+  sign.devices = [ipad, phone];
+  assert.equal(sign.view.udid, IPHONE, 'the explicit choice wins again when it reconnects');
+  sign.set({ udid: IPAD });
+  assert.equal(sign.view.udid, IPAD);
+  assert.deepEqual(cfg.device, config.device, 'the picker cannot rebind an app session');
+  assert.equal(cfg.localInstalls, undefined, 'the picker cannot enroll automatic installs');
+});
+
+test('a bound legacy device can pause its offline refresh while another device is selected', (t) => {
+  const messages = [];
+  const link = Object.assign(new EventEmitter(), { current: { os: 'ios', id: 'bound', name: 'My iPhone' }, send: (m) => messages.push(m) });
+  let cfg = { mode: 'apple', on: false, appleDevice: IPHONE, device: { bound: IPHONE } };
+  const sign = new IosSign({ link, developer: { bundled: () => true }, cfg: () => cfg, setCfg: (x) => { cfg = { ...cfg, ...x }; } });
+  t.after(() => sign.close());
+  sign._look = () => {};
+  sign.info = {};
+  sign.devices = [{ ...target, muxUdid: IPAD }];
+  cfg = { ...cfg, on: true };
+  sign.set({ udid: IPHONE, deviceAuto: false });
+  assert.equal(cfg.deviceAuto?.[IPHONE], false);
+  assert.equal(sign.view.session.auto, false);
+  link.emit(T.STATE, { expires: 1, signedIn: true });
+  assert.ok(!messages.some((m) => m.t === T.WANT));
+  sign.set({ udid: IPHONE, deviceAuto: true });
+  sign._auto();
+  assert.equal(messages.filter((m) => m.t === T.WANT).length, 1);
+  assert.equal(sign.view.udid, IPAD);
+  assert.equal(cfg.appleDevice, IPHONE, 'changing the offline toggle cannot select another device');
+});

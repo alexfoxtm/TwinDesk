@@ -122,8 +122,9 @@ async function revoke(sign, dialog, serial) {
 // Choose an IPA… (builds that install other apps).
 async function pickIpa(sign, dialog, win) {
   if (!sign) return;
+  const udid = sign.developer ? sign.view.udid : undefined;
   const r = await dialog.showOpenDialog(win || undefined, { title: 'IPA', properties: ['openFile'], filters: [{ name: 'IPA', extensions: ['ipa'] }] });
-  if (!r.canceled && r.filePaths[0]) sign.setIpa(r.filePaths[0]);
+  if (!r.canceled && r.filePaths[0]) sign.setIpa(r.filePaths[0], udid);
 }
 
 // Release acceptance uses the same service and install operation as the two Mac renderers.

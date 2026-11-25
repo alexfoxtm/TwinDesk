@@ -40,7 +40,7 @@ global.UI = {
   button: (label, onClick) => { const b = el('button', { text: label }); b.click = onClick; return b; },
   row: (label, hint, controls = [], o = {}) => { const r = el('div', { text: label }, controls); r.hintText = hint; r.setHint = (h) => { r.hintText = h; }; r.label = el('span'); r.click = o.onClick; return r; },
   card: (title, rows, o = {}) => { const span = el('span', { text: title }); const c = el('section', { text: title }, [...(o.actions || []), ...rows]); c.titleSpan = span; return c; },
-  switch: (onChange) => { const e = el('input'); return { el: e, on: onChange, set: (v) => { e.checked = !!v; } }; },
+  switch: (onChange) => { const e = el('input', { change: onChange }); return { el: e, on: onChange, set: (v) => { e.checked = !!v; } }; },
   select: (options, onChange) => { const e = el('select'); return { el: e, on: onChange, options: (o) => { e.opts = o; }, set: (v) => { e.value = v; } }; },
   segmented: (options, onChange) => { const e = el('div'); return { el: e, on: onChange, set: (v) => { e.value = v; } }; },
 };
@@ -148,4 +148,19 @@ update({ iosSign: { ...localView, devices: [{ ...localDevice, refreshing: true }
 assert.match(find(body, (n) => n.textContent === 'Tablet')[0].hintText, /Refreshing…/);
 update({ iosSign: { ...localView, devices: [{ ...localDevice, result: { error: { kind: 'device' } } }] } });
 assert.match(find(body, (n) => n.textContent === 'Tablet')[0].hintText, /Connect or unlock the iPad/);
+for (const mode of ['apple', 'developer']) {
+  const device = { ...localDevice, installed: false, muxUdid: 'U1' };
+  update({ iosSign: { ...localView, mode, devices: [device] } });
+  assert.equal(button('Install TwinDesk').disabled, false);
+  const row = find(body, (n) => n.textContent === 'Tablet' && visible(n))[0];
+  assert.equal(row.tabIndex, 0, 'a sole eligible Mac row remains selectable');
+  row.onkeydown({ key: 'Enter', preventDefault() {} });
+  assert.deepStrictEqual(sent.pop(), { a: 'set', udid: 'U1' });
+}
+update({ iosSign: { ...localView, mode: 'apple', devices: [{ ...localDevice, muxUdid: 'U1' }],
+  session: { id: 'Peer', name: 'My iPhone', udid: '', boundUdid: 'U2', auto: false } } });
+const offline = find(body, (n) => n.label?.textContent === 'Refresh My iPhone automatically' && visible(n))[0];
+assert.equal(offline.firstChild.checked, false);
+offline.firstChild.change(true);
+assert.deepStrictEqual(sent.pop(), { a: 'set', udid: 'U2', deviceAuto: true });
 console.log('ui-ios-sign: ok');
