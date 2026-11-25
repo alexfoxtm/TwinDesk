@@ -129,7 +129,7 @@ class Notifs extends EventEmitter {
       if (this.historyIcons.size > 60) this.historyIcons.delete(this.historyIcons.keys().next().value);
     }
     if (from) item.from = from;
-    bindReply(item, from, socket && socket === this.replySocket(from) ? socket : null, m);
+    bindReply(item, from, socket && socket === this.replySocket(from) ? socket : null, m, this.history);
     this.history = [item, ...(this.history || []).filter((x) => x.id !== item.id)].slice(0, 50);
     // A one-time code: a Copy button on the notification.
     const code = require('../shared/otp.js').otpOf([item.title, item.subtitle, item.body].join(' '));
@@ -147,7 +147,13 @@ class Notifs extends EventEmitter {
       // A chat's Reply, typed in the notification itself.
       ...(item.reply ? { hasReply: true, replyPlaceholder: 'Reply' } : {}),
     });
-    n.on('reply', (_e, text) => this.reply(item.id, text, item.from, item.replySession));
+    n.on('reply', (_e, text) => {
+      if (this.reply(item.id, text, item.from, item.replySession) !== false || typeof text !== 'string' || !text.trim()) return;
+      // Refused (its offer expired or moved): the typed words come back here, never silently lost.
+      try {
+        new Notification({ title: item.title, subtitle: 'Not sent', body: text.slice(0, 5000) }).show();
+      } catch (_) { /* no notification centre */ }
+    });
     n.tdId = item.id;
     n.on('action', (_e, i) => {
       if (code && i === 0) return require('electron').clipboard.writeText(code);

@@ -189,7 +189,7 @@ class Notifs extends EventEmitter {
       if (this.historyIcons.size > 60) this.historyIcons.delete(this.historyIcons.keys().next().value);
     }
     if (from) item.from = from;
-    bindReply(item, from, socket && socket === this.replySocket(from) ? socket : null, m);
+    bindReply(item, from, socket && socket === this.replySocket(from) ? socket : null, m, this.history);
     this.history = [item, ...(this.history || []).filter((x) => x.id !== item.id)].slice(0, 50);
     // TwinDesk's window (Reply, buttons, picture, progress), the system's, or none (quiet).
     const how = present(this, item, m, { from: peer, code: otpOf([title, item.body].join(' ')), icon: m.icon || this.historyIcons.get(item.app) });

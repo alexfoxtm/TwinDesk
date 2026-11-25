@@ -8,7 +8,8 @@
 //
 //   const pop = new NotifPop({ corner, getLanguage, act(id, i), reply(item, text), dismiss(id), open(item), copy(code) })
 //   pop.show(item, { icon, from, code })   new, or the same id again: changed in place
-//   pop.gone(id)                           gone from the phone: its window goes
+//   pop.gone(id, from?)                    gone from the phone (from: that origin only): its window
+//                                          goes; one with Reply open stays, Reply off, its text kept
 //   pop.closeAll()
 // item: {id, app, appName, title, subtitle, body, at, reply, actions, pic?, avatar?, live?}
 //   live: {v, max, ind?, done?} a progress bar (ind: no known end; done: it finished)
@@ -70,12 +71,24 @@ class NotifPop {
       this._arm(w);
       try { w.win.setFocusable(true); w.win.focus(); w.win.webContents.focus(); } catch (_) { /* typed after a click */ }
     });
-    ipcMain.on('notifpop:act', (e, i) => { const w = of(e); if (w && this.opts.act) { this.opts.act(w.id, Number(i)); this._close(w); } });
+    ipcMain.on('notifpop:act', (e, i) => {
+      const w = of(e);
+      if (!w || w.expired || !this.opts.act) return;
+      this.opts.act(w.id, Number(i), w.item); // its own origin's notification only
+      this._close(w);
+    });
     ipcMain.on('notifpop:reply', (e, text) => {
       const w = of(e);
-      if (!w || !this.opts.reply || typeof text !== 'string' || !text.trim()) return;
-      this.opts.reply(w.item, text.slice(0, 5000));
-      this._close(w);
+      if (!w || w.expired || !this.opts.reply || typeof text !== 'string' || !text.trim()) return;
+      // Refused: the window stays with the typed text and says so; it never retries by itself.
+      const done = (ok) => {
+        if (ok !== false) return this._close(w);
+        w.notice = 'refused';
+        this._state(w);
+      };
+      const ok = this.opts.reply(w.item, text.slice(0, 5000));
+      if (ok && typeof ok.then === 'function') ok.then(done, () => done(false));
+      else done(ok);
     });
     ipcMain.on('notifpop:copy', (e) => {
       const w = of(e);
@@ -85,7 +98,7 @@ class NotifPop {
     });
     ipcMain.on('notifpop:open', (e) => { const w = of(e); if (w) { if (this.opts.open) this.opts.open(w.item); this._close(w); } });
     ipcMain.on('notifpop:close', (e) => { const w = of(e); if (w) this._close(w); });
-    ipcMain.on('notifpop:dismiss', (e) => { const w = of(e); if (w) { if (this.opts.dismiss) this.opts.dismiss(w.id); this._close(w); } });
+    ipcMain.on('notifpop:dismiss', (e) => { const w = of(e); if (w) { if (this.opts.dismiss && !w.expired) this.opts.dismiss(w.id, w.item); this._close(w); } });
   }
 
   _view(w) {
@@ -93,8 +106,13 @@ class NotifPop {
     return {
       app: it.appName || it.app || '', from: w.extra.from || '', title: it.title || '', subtitle: it.subtitle || '', body: it.body || '',
       at: it.at || Date.now(), icon: w.extra.icon || '', pic: it.pic || '', avatar: it.avatar || '', live: it.live || null,
-      code: w.extra.code || '', actions: it.actions || [], reply: !!(it.reply && this.opts.reply), dismiss: !!this.opts.dismiss,
+      code: w.extra.code || '', actions: w.expired ? [] : it.actions || [], reply: !!(it.reply && this.opts.reply && !w.expired),
+      dismiss: !!this.opts.dismiss && !w.expired, notice: w.expired ? 'expired' : w.notice || '',
     };
+  }
+
+  _state(w) {
+    if (w.win && !w.win.isDestroyed()) w.win.webContents.send('notifpop:state', this._view(w));
   }
 
   show(item, extra = {}) {
@@ -108,7 +126,9 @@ class NotifPop {
     else if (had) {
       had.item = item;
       had.extra = { ...had.extra, ...extra };
-      if (had.win && !had.win.isDestroyed()) had.win.webContents.send('notifpop:state', this._view(had));
+      had.expired = false;
+      had.notice = '';
+      this._state(had);
       this._arm(had);
       return;
     }
@@ -120,9 +140,13 @@ class NotifPop {
     this._arm(w);
   }
 
-  gone(id) {
-    const w = this.wins.find((x) => x.id === id && !x.pinned) || this.wins.find((x) => x.id === id);
-    if (w) this._close(w);
+  gone(id, from) {
+    for (const w of this.wins.filter((x) => x.id === id && (from === undefined || (x.item && x.item.from === from)))) {
+      if (!w.typing) { this._close(w); continue; }
+      // A Reply being typed: its offer is gone, but the words stay until closed here.
+      w.expired = true;
+      this._state(w);
+    }
   }
 
   closeAll() {

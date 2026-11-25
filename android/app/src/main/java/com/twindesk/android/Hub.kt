@@ -121,7 +121,7 @@ class Hub(core: Core) : Feature(core) {
                 val id = m.str("id", 40)
                 msg(Proto.T.SMS_PART, "id" to id, "data" to s.part(id))
             }
-            Proto.T.SMS_SEND -> messages?.send(m, route) ?: core.link.sendFor(route, msg(Proto.T.SMS_SENT, "ref" to m.str("ref", 60), "ok" to false, "error" to "off"))
+            Proto.T.SMS_SEND -> messages?.takeIf { messagesOn }?.send(m, route) ?: core.link.sendFor(route, msg(Proto.T.SMS_SENT, "ref" to m.str("ref", 60), "ok" to false, "error" to "off"))
             // Pictures never go through Bluetooth (they held up everything else): USB, Wi-Fi, Wi-Fi Direct.
             Proto.T.MEDIA_ALBUMS -> if (mediaOn && !core.link.ble) media().let { md -> run { core.send(md.albums()) } }
             Proto.T.MEDIA_LIST -> if (mediaOn && !core.link.ble) media().let { md -> run { core.send(md.list(m)) } }
@@ -148,6 +148,11 @@ class Hub(core: Core) : Feature(core) {
             if (current()) core.link.sendFor(route, result)
         }
     }
+
+    // A carrier send may dispatch only from the Messages instance the policy in force started, while
+    // Messages is still on: the same socket with Messages since switched off (Files keeping the
+    // worker alive) is not enough.
+    internal fun messagesCurrent(service: Messages): Boolean = messagesOn && messages === service
 
     internal fun matchChat(m: JSONObject, route: Link.TrustedRoute?) {
         messages?.matchChat(m, route)

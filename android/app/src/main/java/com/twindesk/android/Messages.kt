@@ -36,7 +36,8 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var observer: ContentObserver? = null
     private var receiver: BroadcastReceiver? = null
-    @Volatile private var newest = 0L // the newest message's time (ms) already told about
+    // The newest message time (ms) already told about, and which rows at exactly that time were.
+    private val told = CarrierWatermark()
     private var checking = false
     private var req = 0
     private val names = HashMap<String, String>() // address -> contact name ("" when none)
@@ -59,7 +60,11 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
             }
         }
         observer = o
-        hub.run { newest = maxOf(latest("content://sms", 1), latest("content://mms", 1000)).takeIf { it > 0 } ?: System.currentTimeMillis() }
+        hub.run {
+            told.reset(maxOf(latest("content://sms", 1), latest("content://mms", 1000)).takeIf { it > 0 } ?: System.currentTimeMillis())
+            // Rows already in the store at that very time were never news: remember them, unsent.
+            carrierSince(told.at).forEach { told.admit(it.optString("id"), it.optLong("at")) }
+        }
         cr.registerContentObserver(Uri.parse("content://mms-sms/"), true, o)
         val r = object : BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) {
@@ -109,22 +114,27 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
     }.getOrDefault(0L)
 
     // Something changed in the store: messages newer than the last one told about go to the computer.
+    // Distinct rows sharing the newest time each go once (an SMS and an MMS, or a burst within a ms).
     private fun check() {
         if (observer == null) return
         // Reconcile even when the written row precedes the sms.new watermark.
         runCatching { refreshChatMatches() }
-        val found = ArrayList<JSONObject>()
-        cr.query(Uri.parse("content://sms"), SMS_COLS, "date > ? AND type != 3", arrayOf(newest.toString()), "date ASC")?.use { c ->
-            while (c.moveToNext() && found.size < 20) found.add(sms(c))
-        }
-        cr.query(Uri.parse("content://mms"), MMS_COLS, "date > ? AND msg_box != 3", arrayOf((newest / 1000).toString()), "date ASC")?.use { c ->
-            while (c.moveToNext() && found.size < 40) mms(c)?.let { found.add(it) }
-        }
-        for (m in found.sortedBy { it.optLong("at") }) {
-            if (m.optLong("at") <= newest) continue
-            newest = m.optLong("at")
+        for (m in carrierSince(told.at).sortedBy { it.optLong("at") }) {
+            if (!told.admit(m.optString("id"), m.optLong("at"))) continue
             core.link.sendFor(route, msg(Proto.T.SMS_NEW, "thread" to m.remove("thread"), "msg" to m))
         }
+    }
+
+    // Rows at or after a time (ms), oldest first: SMS by the ms, MMS by the second.
+    private fun carrierSince(at: Long): List<JSONObject> {
+        val found = ArrayList<JSONObject>()
+        cr.query(Uri.parse("content://sms"), SMS_COLS, "date >= ? AND type != 3", arrayOf(at.toString()), "date ASC")?.use { c ->
+            while (c.moveToNext() && found.size < 20) found.add(sms(c))
+        }
+        cr.query(Uri.parse("content://mms"), MMS_COLS, "date >= ? AND msg_box != 3", arrayOf((at / 1000).toString()), "date ASC")?.use { c ->
+            while (c.moveToNext() && found.size < 40) mms(c)?.let { found.add(it) }
+        }
+        return found
     }
 
     fun matchChat(m: JSONObject, route: Link.TrustedRoute?) {
@@ -403,9 +413,10 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
         val to = address(m.str("to", 60))
         val body = m.str("body", 5000)
         val fail = { why: String -> core.link.sendFor(route, msg(Proto.T.SMS_SENT, "ref" to ref, "ok" to false, "error" to why)); Unit }
-        if (!core.link.accepts(route)) return
+        if (!dispatchable(route)) return
         if (!hub.granted(Manifest.permission.SEND_SMS)) return fail("Allow sending messages on the phone")
-        val group = m.optJSONArray("addrs")?.let { a -> (0 until a.length()).map { address(a.optString(it).take(60)) }.filter { it.isNotEmpty() }.distinct().take(20) }.orEmpty()
+        // Everyone or nobody: an oversized group, or a member without an address, is never cut down.
+        val group = groupOf(m.optJSONArray("addrs")) ?: return fail(GROUP_REFUSED)
         val image = m.str("image", 6_000_000)
         if (image.isNotEmpty() || group.size > 1) return hub.run { runCatching { sendMms(m, ref, group.ifEmpty { listOf(to) }.filter { it.isNotEmpty() }, body, image, route) }.onFailure { fail(it.message ?: "Not sent") } }
         if (to.isEmpty() || body.isBlank()) return fail("Nothing to send")
@@ -418,7 +429,7 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_ONE_SHOT,
                 )
             })
-            if (!core.link.accepts(route)) return
+            if (!dispatchable(route)) return
             sendRoutes[ref] = route!!
             sm.sendMultipartTextMessage(to, null, parts, sent, null)
         }.onFailure { fail(it.message ?: "Not sent") }
@@ -426,11 +437,16 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
 
     private fun mmsDir() = java.io.File(ctx.cacheDir, "mms").apply { mkdirs() }
 
+    // This instance, still the one Messages' policy in force started, on the route that asked.
+    private fun dispatchable(route: Link.TrustedRoute?) = hub.messagesCurrent(this) && core.link.accepts(route)
+
+    private fun groupOf(a: JSONArray?): List<String>? = groupAddresses(a?.let { arr -> (0 until arr.length()).map { arr.optString(it) } }.orEmpty(), ::address)
+
     // One MMS to everyone in `to`: the text and the picture (a data: URL), the picture shrunk to fit
     // the carrier's limit. Android's result comes to the receiver (MMS_SENT).
     private fun sendMms(m: JSONObject, ref: String, to: List<String>, body: String, image: String, route: Link.TrustedRoute?) {
         val fail = { why: String -> core.link.sendFor(route, msg(Proto.T.SMS_SENT, "ref" to ref, "ok" to false, "error" to why)); Unit }
-        if (!core.link.accepts(route)) return
+        if (!dispatchable(route)) return
         if (to.isEmpty() || (body.isBlank() && image.isEmpty())) return fail("Nothing to send")
         val sm = manager(m)
         val text = body.trim()
@@ -451,7 +467,9 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
             ctx, 8000 + (req++ % 1000), Intent(MMS_SENT).setPackage(ctx.packageName).putExtra("ref", ref).putExtra("file", name),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_ONE_SHOT,
         )
-        if (!core.link.accepts(route)) { file.delete(); return }
+        // Checked at the carrier call itself: a queued group MMS whose Messages was switched off since
+        // (even on the same socket) never reaches the carrier.
+        if (!dispatchable(route)) { file.delete(); return }
         sendRoutes[ref] = route!!
         sm.sendMultimediaMessage(ctx, uri, null, null, sent)
     }
@@ -483,10 +501,43 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
     }
 
     companion object {
+        internal const val MAX_GROUP = 20
+        internal const val GROUP_REFUSED = "Answer group conversations on the phone."
+
+        // A group's addresses, all of them, or null: more than MAX_GROUP, or one that resolves to nothing.
+        internal fun groupAddresses(raw: List<String>, address: (String) -> String): List<String>? {
+            if (raw.size > MAX_GROUP) return null
+            val out = raw.map { address(it.take(60)) }
+            if (out.any { it.isEmpty() }) return null
+            return out.distinct()
+        }
+
         private val DIGEST = Regex("[a-f0-9]{64}")
         private const val SENT = "com.twindesk.android.SMS_SENT"
         private const val MMS_SENT = "com.twindesk.android.MMS_SENT"
         private val SMS_COLS = arrayOf("_id", "address", "body", "date", "type", "thread_id")
         private val MMS_COLS = arrayOf("_id", "date", "msg_box", "thread_id")
+    }
+}
+
+// What sms.new already told: the newest time, and the rows at exactly that time. A later row goes;
+// a distinct row at that same time goes; a row already told never goes again.
+internal class CarrierWatermark {
+    @Volatile var at = 0L
+        private set
+    private val ids = HashSet<String>()
+
+    @Synchronized fun reset(time: Long) {
+        at = time
+        ids.clear()
+    }
+
+    @Synchronized fun admit(id: String, time: Long): Boolean {
+        if (id.isEmpty() || time < at) return false
+        if (time > at) {
+            at = time
+            ids.clear()
+        }
+        return ids.add(id)
     }
 }

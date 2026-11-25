@@ -66,6 +66,11 @@
     row.replaceChildren(...btns);
     row.hidden = !btns.length || replying;
     $('replyRow').hidden = !replying;
+    // Refused or expired: the typed words stay in the box; an expired offer cannot be sent again.
+    $('notice').textContent = st.notice === 'expired' ? t('Reply here once the phone shows this chat’s notification again.')
+      : st.notice === 'refused' ? t('Not sent') : '';
+    $('notice').hidden = !$('notice').textContent;
+    $('send').disabled = st.notice === 'expired';
     size();
   }
 

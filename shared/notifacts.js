@@ -36,12 +36,22 @@ function actionsOf(m) {
   return Array.isArray(m && m.actions) ? m.actions.filter((a) => typeof a === 'string' && a.trim()).slice(0, 3).map((a) => a.slice(0, 40)) : [];
 }
 
+// A re-post continues the earlier offer only for the same notification, origin, socket, app and
+// verified one-to-one peer. A reused ID or title alone never carries an open draft to it.
+function sameProvenOffer(prev, item, from, socket) {
+  return !!(prev && prev.reply && prev.replySession && prev.from === from && prev.replySocket === socket &&
+    prev.id === item.id && prev.app === item.app && item.messagePeer && prev.messagePeer === item.messagePeer &&
+    prev.messagePhone === from && item.messagePhone === from);
+}
+
 // The renderer carries an opaque offer ID. The socket stays in the main process.
-function bindReply(item, from, socket, message) {
+// history: the list before this item, so a proven re-post keeps its open drafts sendable.
+function bindReply(item, from, socket, message, history) {
   item.reply = !!(item.reply && message.id && from && socket);
   if (!item.reply) return;
   item.from = from;
-  item.replySession = randomUUID();
+  const prev = (history || []).find((h) => h.id === item.id && h.from === from);
+  item.replySession = sameProvenOffer(prev, item, from, socket) ? prev.replySession : randomUUID();
   Object.defineProperties(item, {
     replySocket: { value: socket },
     replyVersion: { value: str(message.replyVersion, 40) },
@@ -126,7 +136,7 @@ function withMeshPhoneActions(Cls) {
         actions: direct ? actionsOf(m) : [],
         ...messageIdentityOf(m, direct && socket && from),
       };
-      bindReply(item, direct && from, socket, m);
+      bindReply(item, direct && from, socket, m, this.history);
       if (item.app && typeof m.icon === 'string' && m.icon.startsWith('data:image/') && m.icon.length < 200000) {
         this.historyIcons.delete(item.app);
         this.historyIcons.set(item.app, m.icon);
@@ -149,20 +159,41 @@ function withMeshPhoneActions(Cls) {
         if (this.live instanceof Set) this.live.delete(n);
         else this.live = this.live.filter((x) => x !== n);
       }
+      // Only that origin's windows: another origin's same-ID window keeps its offer.
       const pop = this.pop;
-      if (pop && typeof pop.gone === 'function' && Array.isArray(pop.wins)) {
-        const wins = pop.wins.filter((w) => w && w.id === id);
-        if (wins.length === 1 && wins[0].item && wins[0].item.from === origin) pop.gone(id);
-      }
+      if (pop && typeof pop.gone === 'function' && Array.isArray(pop.wins) &&
+          pop.wins.some((w) => w && w.id === id && w.item && w.item.from === origin)) pop.gone(id, origin);
       if ((this.history || []).length !== before) this.changed();
       return (this.history || []).length !== before;
     },
-    // notif.act / notif.dismiss / notif.reply: to the device the notification came from.
-    send(m) {
-      const item = (this.history || []).find((h) => h.id === m.id);
+    // One notification by origin and ID. Without an origin, only an ID no other origin shares.
+    offerOf(id, from) {
+      id = str(id, 200);
+      const all = (this.history || []).filter((h) => h.id === id);
+      if (typeof from === 'string' && from) return all.find((h) => h.from === from) || null;
+      return all.length === 1 ? all[0] : null;
+    },
+    act(id, i, from) {
+      const item = this.offerOf(id, from);
+      if (!item || !Number.isInteger(i) || !(item.actions || [])[i]) return false;
+      return this.sendTo(item, { t: 'notif.act', id: item.id, i });
+    },
+    dismiss(id, from) {
+      const item = this.offerOf(id, from);
+      if (!item) return false;
+      this.sendTo(item, { t: 'notif.dismiss', id: item.id });
+      if (item.from) this.expireOrigin(item.id, item.from);
+      else this.gone(item.id);
+      return true;
+    },
+    // notif.act / notif.dismiss: to the device the notification came from, only while connected.
+    sendTo(item, m) {
       if (!item || !item.from || !this.bus.connectedIds().includes(item.from)) return false;
       this.bus.send(item.from, m);
       return true;
+    },
+    send(m, from) {
+      return this.sendTo(this.offerOf(m && m.id, from), m);
     },
     replySocket(from) { return this.bus.replySocket?.(from); },
     sendReply(item, msg) { return this.bus.send(item.from, msg); },
@@ -205,9 +236,10 @@ function present(n, item, m, { from, code, icon } = {}) {
       n.pop = new pop.NotifPop({
         corner: process.platform === 'win32' ? 'bottom' : 'top',
         getLanguage: () => languageOf(n),
-        act: (id, i) => n.act(id, i),
+        // Keyed by origin and ID: another origin's same-ID notification never takes the click.
+        act: (id, i, it) => n.act(id, i, it && it.from),
         reply: (it, text) => n.reply(it.id, text, it.from, it.replySession),
-        dismiss: (id) => n.dismiss(id),
+        dismiss: (id, it) => n.dismiss(id, it && it.from),
         open: (it) => { const c = { app: it.app, appName: it.appName, ...(it.from ? { originId: it.from } : {}) }; if (n.onClick) n.onClick(c); else if (n.emit) n.emit('click', c); },
         copy: (c) => require('electron').clipboard.writeText(c),
       });
@@ -224,9 +256,9 @@ function present(n, item, m, { from, code, icon } = {}) {
   }
   return 'native';
 }
-// Gone from the phone: its TwinDesk window too.
-function popGone(n, id) {
-  if (n.pop) n.pop.gone(id);
+// Gone from the phone: its TwinDesk window too (only that origin's, when given).
+function popGone(n, id, from) {
+  if (n.pop) n.pop.gone(id, from);
 }
 function languageOf(n) {
   try {
@@ -238,4 +270,4 @@ function languageOf(n) {
   }
 }
 
-module.exports = { actionsOf, noticeScope, messagePeerOf, messageIdentityOf, bindReply, replyHistory, withPhoneActions, withMeshPhoneActions, hidden, present, popGone };
+module.exports = { actionsOf, noticeScope, messagePeerOf, messageIdentityOf, bindReply, sameProvenOffer, replyHistory, withPhoneActions, withMeshPhoneActions, hidden, present, popGone };

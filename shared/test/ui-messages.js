@@ -34,7 +34,7 @@ function inbox(state, api = {}, globals = {}) {
     avatar: () => el('span'),
     clock: (at) => String(at),
     hubOn: (type, fn) => received.set(type, fn),
-    hubAsk: (msg) => asked.push(msg),
+    hubAsk: (msg) => { asked.push(msg); return globals.askResult ? globals.askResult(msg) : true; },
     hubReady: (s) => s.hub.messages,
     onShown() {},
     onDeviceChange() {},
@@ -604,4 +604,138 @@ test('a captioned attachment MMS does not collapse into a plain text projection'
   rows()[0].onclick();
   received.get('sms.thread')({ id: 'carrier', items: [{ id: 'm1', at: 5000, body: 'Caption', attachment: true, parts: [] }] });
   assert.equal(bubbleTexts(chat).length, 2);
+});
+
+test('a draft follows a newer offer of its proven conversation only, and is never discarded', async () => {
+  const phone = 'fixture-phone';
+  const peer = '+12025550100';
+  const app = 'com.google.android.apps.messaging';
+  const first = { id: 'n1', app, title: 'Fixture', body: 'Fixture body', at: 100, from: phone, messagePhone: phone,
+    messagePeer: peer, messageAt: 100, reply: true, replySession: 's1' };
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: phone, session: 1, messages: true, perm: { messages: { missing: ['send'] } } },
+    notifs: { history: [first] },
+  };
+  const sent = [];
+  const { asked, paint, chat, rows } = inbox(state, { notifReply: (msg) => { sent.push(msg); return true; } });
+  paint(state);
+  rows()[0].onclick();
+  const composer = chat.children[1].children[3];
+  const box = composer.children[2].children[1];
+  const type = (text) => { box.value = ''; fire(box, 'input'); box.value = text; fire(box, 'input'); };
+  type('Synthetic draft');
+  // The phone re-posts the same conversation: a new notification and a new reply session.
+  const second = { ...first, id: 'n2', at: 200, messageAt: 200, replySession: 's2' };
+  state.notifs.history = [second, { ...first, reply: false }];
+  paint(state);
+  await composer.children[3].onclick();
+  assert.equal(sent.length, 1, 'the draft stays sendable');
+  assert.ok(sent[0].id === 'n2' && sent[0].from === phone && sent[0].replySession === 's2');
+  assert.equal(box.value, '');
+
+  type('Second draft');
+  const stale = { ...second, reply: false };
+  const cases = [
+    ['another phone', [{ ...second, id: 'n3', from: 'other-phone', messagePhone: 'other-phone', replySession: 's3' }, stale]],
+    ['another peer', [{ ...second, id: 'n4', messagePeer: '+12025550101', replySession: 's4' }, stale]],
+    ['an unverified same title', [{ ...second, id: 'n5', messagePeer: null, messagePhone: null, replySession: 's5' }, stale]],
+  ];
+  for (const [label, history] of cases) {
+    state.notifs.history = history;
+    paint(state);
+    await composer.children[3].onclick();
+    assert.equal(sent.length, 1, `never retargeted to ${label}`);
+    assert.equal(box.value, 'Second draft', `the draft is kept (${label})`);
+  }
+  state.notifs.history = [{ ...second, id: 'n6', replySession: 's6' }, stale];
+  paint(state);
+  await composer.children[3].onclick();
+  assert.equal(sent.length, 2, 'the same proven conversation is still sendable');
+  assert.ok(sent[1].id === 'n6' && sent[1].replySession === 's6');
+
+  type('Third draft');
+  // A replacement phone session closes the conversation (as before); nothing is carried to it.
+  state.notifs.history = [{ ...second, id: 'n7', replySession: 's7' }, { ...second, id: 'n6', replySession: 's6', reply: false }];
+  state.hub.session = 2;
+  paint(state);
+  await composer.children[3].onclick();
+  assert.equal(sent.length, 2, 'never carried across a replacement phone session');
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0, 'never retried by SMS');
+});
+
+test('ordinary Texts sends and reads carry their phone; a receipt without a contact repaints and reloads', () => {
+  const timers = [];
+  const state = { hub: { deviceId: 'fixture-phone', session: 1, messages: true, perm: { messages: { mms: true } } } };
+  const { received, asked, paint, texts } = inbox(state, {}, { setTimeout: (fn) => { timers.push(fn); return timers.length; } });
+  paint(state);
+  const reads = asked.filter((m) => m.t === 'sms.threads');
+  assert.ok(reads.length >= 1 && reads.every((m) => m.phone && m.phone.deviceId === 'fixture-phone' && m.phone.session === 1));
+  received.get('sms.threads')({ items: [{ id: 't1', addrs: ['+12025550100'], at: 100 }] });
+  texts.children[0].children[1].children[0].onclick();
+  assert.ok(asked.filter((m) => m.t === 'sms.thread').every((m) => m.phone?.session === 1), 'history reads carry the phone');
+  texts.children[0].children[0].children[1].onclick();
+  const conv = texts.children[1];
+  const to = conv.children[0].children[0];
+  const compose = conv.children[3];
+  to.value = '+12025550102';
+  compose.children[2].children[1].value = 'Synthetic text';
+  compose.children[3].onclick();
+  const send = asked.findLast((m) => m.t === 'sms.send');
+  assert.ok(send && send.phone.deviceId === 'fixture-phone' && send.phone.session === 1, 'an ordinary send names its phone');
+  const before = asked.filter((m) => m.t === 'sms.threads').length;
+  state.hub.session = 2;
+  assert.doesNotThrow(() => received.get('sms.sent')({ ref: send.ref, ok: true }));
+  timers.splice(0).forEach((fn) => fn());
+  const after = asked.filter((m) => m.t === 'sms.threads');
+  assert.equal(after.length, before + 1, 'the new conversation is reloaded');
+  assert.equal(after.at(-1).phone.session, 1, 'asked of the phone session that sent it');
+});
+
+test('a refused carrier request marks its send failed rather than leaving it sending', async () => {
+  const state = { hub: { deviceId: 'fixture-phone', session: 1, messages: true, perm: { messages: { mms: true } } } };
+  const { received, asked, paint, texts } = inbox(state, {}, { askResult: (m) => m.t !== 'sms.send' });
+  paint(state);
+  received.get('sms.threads')({ items: [{ id: 't1', addrs: ['+12025550100'], at: 100 }] });
+  texts.children[0].children[1].children[0].onclick();
+  received.get('sms.thread')({ id: 't1', items: [] });
+  const compose = texts.children[1].children[3];
+  compose.children[2].children[1].value = 'Synthetic text';
+  compose.children[3].onclick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 1);
+  const shown = JSON.stringify(texts.children[1].children[1], (k, v) => (k === 'listeners' ? undefined : v));
+  assert.match(shown, /Not sent/, 'the refusal is shown, not retried');
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 1);
+});
+
+test('an oversized group is refused with its note and never cut down to 20', () => {
+  const state = { hub: { deviceId: 'fixture-phone', session: 1, messages: true, perm: { messages: { mms: true } } } };
+  const { received, asked, paint, texts } = inbox(state);
+  paint(state);
+  const many = Array.from({ length: 21 }, (_, i) => `+120255501${String(i).padStart(2, '0')}`);
+  received.get('sms.threads')({ items: [{ id: 'g', group: true, addrs: many, at: 100 }] });
+  texts.children[0].children[1].children[0].onclick();
+  const conv = texts.children[1];
+  const compose = conv.children[3];
+  compose.children[2].children[1].value = 'Synthetic group text';
+  compose.children[3].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0, 'an existing 21-member group is refused');
+  assert.equal(conv.children[2].hidden, false, 'with its note');
+
+  texts.children[0].children[0].children[1].onclick();
+  const to = conv.children[0].children[0];
+  to.value = many.join(', ');
+  fire(to, 'input');
+  assert.equal(conv.children[2].hidden, false, 'New Message shows the note for 21 recipients');
+  compose.children[2].children[1].value = 'Synthetic group text';
+  compose.children[3].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0, 'a 21-recipient New Message is refused');
+  assert.equal(compose.children[2].children[1].value, 'Synthetic group text', 'its text is kept');
+  to.value = many.slice(0, 20).join(', ');
+  fire(to, 'input');
+  compose.children[3].onclick();
+  const sends = asked.filter((m) => m.t === 'sms.send');
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].addrs.length, 20, 'exactly 20 is sent whole');
 });

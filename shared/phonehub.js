@@ -346,10 +346,14 @@ class PhoneHub extends EventEmitter {
 
   // What a page asks the phone for: only the fields each takes, only while that one is on.
   ask(m) {
-    if (!m || typeof m !== 'object' || !ASKS[m.t] || !this.settings[ASKS[m.t]] || !this.phone) return;
+    if (!m || typeof m !== 'object' || !ASKS[m.t] || !this.settings[ASKS[m.t]] || !this.phone) return false;
     const n = (v, max, d) => Math.max(1, Math.min(max, Number.isInteger(v) ? v : d));
     const ids = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && /^[a-z]?\d{1,18}$/.test(x)).slice(0, 300) : []);
     const out = { t: m.t };
+    // Messages' requests name the phone and session they were made for: a delayed one is refused
+    // rather than sent to a phone that has since replaced it. A send must say which.
+    const carrier = m.t === T.SMS_SEND || m.t === T.SMS_THREADS || m.t === T.SMS_THREAD || m.t === T.SMS_PART;
+    if (carrier && (m.t === T.SMS_SEND || m.phone !== undefined) && !this.samePhone(m.phone)) return false;
     switch (m.t) {
       case T.CALL_DO: return this.callAct(str(m.a, 20), m);
       case T.CALL_LOG: out.n = n(m.n, 300, 100); break;
@@ -358,11 +362,14 @@ class PhoneHub extends EventEmitter {
       case T.SMS_THREAD: Object.assign(out, { id: str(m.id, 20), before: Number(m.before) || 0, n: n(m.n, 200, 50) }); break;
       case T.SMS_PART: out.id = str(m.id, 40); break;
       case T.SMS_SEND: {
-        if (m.phone && (m.phone.deviceId !== this.phone.deviceId || m.phone.session !== this.phoneSession ||
-          !['ok', 'partial'].includes(this.state?.messages?.perm) || this.state.messages.missing.includes('send'))) return;
+        const allowed = this.state?.messages; // an older phone app says nothing: as before
+        if (allowed && (!['ok', 'partial'].includes(allowed.perm) || (allowed.missing || []).includes('send'))) return false;
         Object.assign(out, { to: str(m.to, 60), body: str(m.body, 5000), ref: str(m.ref, 60), ...(Number.isInteger(m.sim) && m.sim >= 0 ? { sim: m.sim } : {}) });
-        // An MMS (phones that say messages.mms): a picture, and/or everyone in a group.
-        const addrs = Array.isArray(m.addrs) ? m.addrs.map((a) => str(a, 60).trim()).filter(Boolean).slice(0, 20) : [];
+        // An MMS (phones that say messages.mms): a picture, and/or everyone in a group. Everyone or
+        // nobody: an oversized group, or a member without an address, is refused, never cut down.
+        const raw = Array.isArray(m.addrs) ? m.addrs.map((a) => str(a, 60).trim()) : [];
+        if (raw.length > 20 || raw.some((a) => !a)) return false;
+        const addrs = [...new Set(raw)];
         if (addrs.length > 1) out.addrs = addrs;
         const image = picture(m.image, 6000000);
         if (image) out.image = image;
@@ -408,6 +415,12 @@ class PhoneHub extends EventEmitter {
     // Windows and Linux keep their own short window and ignore the session.
     if (out.t === T.MEDIA_SAVE || out.t === T.FS_SAVE) this.emit('asked', this.phone);
     this.server.sendToClient(out);
+    return true;
+  }
+
+  // The phone and session a page's request was made for is still the one connected.
+  samePhone(p) {
+    return !!(p && typeof p === 'object' && this.phone && p.deviceId === (this.phone.deviceId || '') && p.session === this.phoneSession);
   }
 
   // Files from here into a folder on the phone: it's told where this batch goes, then the batch

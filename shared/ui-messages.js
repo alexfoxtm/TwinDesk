@@ -238,7 +238,10 @@ UI.tab({
         ? JSON.stringify([hub.deviceId, hub.session, openId, openId === '' ? to.value.trim() : thread()?.addrs]) : '';
     });
     // A picture belongs to the recipients it was attached for: editing To drops it, even mid-conversion.
-    to.addEventListener('input', () => pic.show(mmsOk()));
+    to.addEventListener('input', () => {
+      pic.show(mmsOk());
+      if (openId === '') groupNote.hidden = to.value.split(/[,;]/).map((x) => x.trim()).filter(Boolean).length <= MAX_GROUP;
+    });
     const compose = el('div', { class: 'hub-compose-row' }, [simPick.el, pic.btn, el('div', { class: 'hub-compose-col' }, [pic.chip, box]), send, pic.input]);
     conv.append(head, scroll, groupNote, compose);
     const empty = el('div', { class: 'hub-empty hub-conv-empty', text: tr('Choose a conversation') });
@@ -337,6 +340,11 @@ UI.tab({
     let phoneDevice;
     const carrierReady = (s) => UI.hubReady(s, 'messages') && !s.hub.perm.messages.missing?.includes('read');
     const carrierSend = (s) => UI.hubReady(s, 'messages') && !s.hub.perm.messages.missing?.includes('send');
+    // The phone and session a carrier request is for. Sends, history and list reads carry it, so a
+    // delayed request never reaches a replacement phone (shared/phonehub.js checks it).
+    const phoneOf = () => UI.state?.hub ? { deviceId: UI.state.hub.deviceId || '', session: UI.state.hub.session } : null;
+    const carrierAsk = (msg, phone = phoneOf()) => phone ? UI.hubAsk({ ...msg, phone }) : false;
+    const MAX_GROUP = 20; // the phone's MMS limit: a larger group is refused, never cut down
     let chatKey = '';
     const gmAct = (op, args = {}, gm = UI.state?.googleMessages) =>
       api.googleMessages && gm ? api.googleMessages({ op, owner: gm.owner, ...args }).catch(() => false) : Promise.resolve(false);
@@ -524,7 +532,22 @@ UI.tab({
       chatPic.clear();
       paintChats(UI.state, true);
     }
-    function notificationReply(t, image, pinned) {
+    // A notification offer's verified one-to-one identity: its phone, app and peer, and this window's
+    // phone session. Only that can carry a draft to a newer offer; a display title never does.
+    function offerProof(t, offer) {
+      const hub = UI.state?.hub;
+      if (!offer?.id || !hub?.deviceId) return null;
+      for (const c of t.dest ? t.sources : [t]) {
+        const h = !c.carrier && !c.google && !c.msgs && c.items.find((h) => h.id === offer.id && h.from === offer.from &&
+          h.replySession === offer.replySession);
+        if (h) {
+          return h.messagePeer && h.messagePhone === h.from && h.from === hub.deviceId
+            ? { app: h.app, from: h.from, messagePeer: h.messagePeer, deviceId: hub.deviceId, session: hub.session } : null;
+        }
+      }
+      return null;
+    }
+    function notificationReply(t, image, pinned, proof) {
       if (!api.notifReply) return null;
       const candidates = t.dest ? t.sources : [t];
       if (pinned) {
@@ -533,6 +556,16 @@ UI.tab({
           const h = !c.carrier && !c.google && !c.msgs && c.items.find((h) => h.reply && h.id === pinned.id &&
             h.from === pinned.from && h.replySession === pinned.replySession);
           if (h) return pinned;
+        }
+        // A newer offer of the same proven conversation (phone, session, app and verified peer) keeps
+        // the draft sendable. Never another phone, peer or session.
+        const hub = UI.state?.hub;
+        if (proof && hub?.deviceId === proof.deviceId && hub.session === proof.session) {
+          for (const c of candidates) {
+            const h = !c.carrier && !c.google && !c.msgs && c.items.find((h) => h.reply && h.replySession &&
+              h.from === proof.from && h.app === proof.app && h.messagePeer === proof.messagePeer && h.messagePhone === h.from);
+            if (h) return { id: h.id, from: h.from, replySession: h.replySession };
+          }
         }
         return null;
       }
@@ -554,7 +587,7 @@ UI.tab({
     };
     async function sendFallback(t, text, image) {
       const pinned = !image && chatDraft?.key === t.key ? chatDraft.offer : null;
-      const offer = notificationReply(t, image, pinned);
+      const offer = notificationReply(t, image, pinned, pinned && chatDraft.proof);
       if (pinned && !offer) {
         // The draft's offer expired: keep the draft rather than retarget a newer notification.
         replyRefused();
@@ -706,7 +739,7 @@ UI.tab({
         for (const c of t.textThreads) {
           if (carrierHistory.has(c.id)) continue;
           carrierHistory.set(c.id, { items: [], more: false, loading: true });
-          UI.hubAsk({ t: 'sms.thread', id: c.id, before: 0, n: 50 });
+          carrierAsk({ t: 'sms.thread', id: c.id, before: 0, n: 50 });
         }
       }
       if (google && !google.loaded && gmHistory !== google.key) {
@@ -737,7 +770,7 @@ UI.tab({
           const h = carrierHistory.get(c.id);
           if (!h || h.loading || !h.items.length) continue;
           h.loading = true;
-          UI.hubAsk({ t: 'sms.thread', id: c.id, before: h.items[0].at, n: 50 });
+          carrierAsk({ t: 'sms.thread', id: c.id, before: h.items[0].at, n: 50 });
         }
         if (google?.more && !(await gmAct('earlier', { chat: google.id })) && chatOpen === t.key) {
           gmError = tr('Could not load earlier messages.');
@@ -811,7 +844,8 @@ UI.tab({
       const t = selectedChat();
       if (!t || chatDraft?.key === t.key) return;
       const offer = notificationReply(t, false);
-      chatDraft = { key: t.key, offer: offer?.id ? offer : null }; // only a notification's own offer is pinned
+      // Only a notification's own offer is pinned, with its verified identity when it has one.
+      chatDraft = { key: t.key, offer: offer?.id ? offer : null, proof: offer?.id ? offerProof(t, offer) : null };
     });
     chatBox.addEventListener('input', () => {
       if (!chatBox.value.trim() || Date.now() - gmTypingAt < 4000) return;
@@ -859,7 +893,7 @@ UI.tab({
       return (m.parts || []).map((p) => {
         const img = el('img', { class: 'hub-pic', alt: '' });
         if (parts.has(p.id)) img.src = parts.get(p.id);
-        else { parts.set(p.id, ''); UI.hubAsk({ t: 'sms.part', id: p.id }); }
+        else { parts.set(p.id, ''); carrierAsk({ t: 'sms.part', id: p.id }); }
         img.dataset.part = p.id;
         return img;
       });
@@ -879,7 +913,7 @@ UI.tab({
       head.replaceChildren(...(isNew ? [to] : t ? [avatar(t.name, t.photo), el('div', { class: 'hub-conv-title' }, [el('div', { class: 'hub-conv-name', text: t.name || t.addrs.join(', ') }), el('div', { class: 'hint', text: t.name ? t.addrs.join(', ') : '' })]), delText] : []));
       const group = !!(t?.group || t?.addrs?.length > 1);
       // A member the phone could not resolve: never send to the resolved subset.
-      const groupBlocked = !!t?.unresolved || (group && (!mmsOk() || t.addrs.length < 2));
+      const groupBlocked = !!t?.unresolved || (group && (!mmsOk() || t.addrs.length < 2 || t.addrs.length > MAX_GROUP));
       groupNote.hidden = !groupBlocked;
       pic.show(mmsOk());
       const sims = simOptions(UI.state);
@@ -933,7 +967,7 @@ UI.tab({
 
     function loadThread(id, earlier) {
       if (!id) return;
-      UI.hubAsk({ t: 'sms.thread', id, before: earlier && items.length ? items[0].at : 0, n: 50 });
+      carrierAsk({ t: 'sms.thread', id, before: earlier && items.length ? items[0].at : 0, n: 50 });
     }
 
     function sendNow() {
@@ -945,6 +979,8 @@ UI.tab({
       const addrs = openId === '' ? to.value.split(/[,;]/).map((x) => x.trim()).filter(Boolean) : (t && t.addrs) || [];
       const dest = addrs[0];
       if (!dest) return to.focus();
+      // Never a silent subset: an oversized or unresolved group is refused with its note, text kept.
+      if (addrs.length > MAX_GROUP) { groupNote.hidden = false; return; }
       if (t?.unresolved || (t?.group && addrs.length < 2) || ((addrs.length > 1 || image) && !mmsOk())) return;
       if (!carrierSend(UI.state)) return;
       dispatchText(addrs, text, image, simPick.el, openId);
@@ -957,11 +993,22 @@ UI.tab({
 
     function dispatchText(addrs, text, image, simPicker, id, contact) {
       const dest = addrs[0];
+      const phone = phoneOf();
+      if (!dest || !phone || addrs.length > MAX_GROUP) return;
       const ref = `r${Date.now()}-${refCount++}`;
-      pending.push({ ref, body: text, at: Date.now(), status: 'sending', thread: id, contact, to: dest, image });
+      const p = { ref, body: text, at: Date.now(), status: 'sending', thread: id, contact, to: dest, image, phone };
+      pending.push(p);
       const sim = simPicker.hidden || simPicker.value === '' ? undefined : Number(simPicker.value);
-      UI.hubAsk({ t: 'sms.send', to: dest, body: text, ref, sim,
-        ...(contact && UI.state.hub.deviceId ? { phone: { deviceId: UI.state.hub.deviceId, session: UI.state.hub.session } } : {}), ...(addrs.length > 1 ? { addrs: addrs.slice(0, 20) } : {}), ...(image ? { image } : {}) });
+      // Bound to the phone and session it was written for: a replacement phone refuses it, and the
+      // refusal shows here (never retried by itself).
+      Promise.resolve(carrierAsk({ t: 'sms.send', to: dest, body: text, ref, sim,
+        ...(addrs.length > 1 ? { addrs } : {}), ...(image ? { image } : {}) }, phone)).then((ok) => {
+        if (ok !== false || p.status !== 'sending') return;
+        p.status = 'failed';
+        p.error = '';
+        if (openId === p.thread) renderConv();
+        if (p.contact && p.contact === chatOpen) paintChats(UI.state, true);
+      }, () => {});
     }
 
     const autosize = () => { box.style.height = 'auto'; box.style.height = `${Math.min(140, box.scrollHeight)}px`; };
@@ -1020,14 +1067,15 @@ UI.tab({
       if (!p) return;
       if (m.ok) p.status = 'sent';
       else { p.status = 'failed'; p.error = m.error || ''; }
+      // An ordinary Texts send has no contact: nothing to reconcile, but it still repaints and reloads.
       const contact = m.ok && p.contact ? selectedChat() : null;
-      if (contact?.key === p.contact) {
+      if (contact && contact.key === p.contact) {
         for (const c of contact.textThreads || []) if (carrierHistory.get(c.id)) reconcileContact(contact, c.id, carrierHistory.get(c.id).items);
       }
-      // A new conversation: the phone's store has it now.
-      if (!p.thread && m.ok) setTimeout(() => UI.hubAsk({ t: 'sms.threads', n: 80 }), 800);
+      // A new conversation: the phone's store has it now (asked of the phone and session that sent it).
+      if (!p.thread && m.ok) setTimeout(() => carrierAsk({ t: 'sms.threads', n: 80 }, p.phone), 800);
       if (openId === p.thread) renderConv();
-      if (p.contact === chatOpen) paintChats(UI.state, true);
+      if (p.contact && p.contact === chatOpen) paintChats(UI.state, true);
     });
     let threadsTimer = 0;
     // The phone's copy of one sent from here: the same text, and a picture if it had one.
@@ -1067,7 +1115,8 @@ UI.tab({
         if (p) { pending = pending.filter((x) => x !== p); openId = m.thread; loadThread(openId, false); }
       }
       clearTimeout(threadsTimer);
-      threadsTimer = setTimeout(() => UI.hubAsk({ t: 'sms.threads', n: 80 }), 400);
+      const phone = phoneOf();
+      threadsTimer = setTimeout(() => carrierAsk({ t: 'sms.threads', n: 80 }, phone), 400);
       if (!page.hidden) api.hub({ do: 'seen' });
     });
 
@@ -1077,7 +1126,7 @@ UI.tab({
       loaded = true;
       if (Date.now() - loadedAt < 2000) return; // shown and rendered at once: asked once
       loadedAt = Date.now();
-      UI.hubAsk({ t: 'sms.threads', n: 80 });
+      carrierAsk({ t: 'sms.threads', n: 80 });
       if (openId) loadThread(openId, false);
     };
     UI.onShown(page, (shown) => {
