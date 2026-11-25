@@ -297,7 +297,7 @@ class Chats {
   }
 
   // For the state: this phone's, newest first (null: the phone hasn't sent any, ever).
-  view() {
+  view(includeMatches = false) {
     this.sync();
     const convs = this.phones[this.who()];
     if (!convs && !this.heard) return null;
@@ -309,7 +309,7 @@ class Chats {
       const at = messaging ? items[items.length - 1].at : c.at;
       const shown = items.slice(-VIEW_ITEMS);
       return [{ key: c.key, app: c.app, appName: c.appName, name: c.name, group: c.group, reply, pic: !!(c.pic && this.sessionUp), avatar: c.avatar || '', at,
-        items: messaging ? shown.map(({ id, at, from, text, me }) => ({ id, at, from, text, me })) : shown }];
+        items: messaging ? shown.map(({ id, at, from, text, me, match }) => ({ id, at, from, text, me, ...(includeMatches && match ? { match } : {}) })) : shown }];
     }).sort((a, b) => b.at - a.at).slice(0, VIEW_CONVS);
   }
 

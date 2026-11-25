@@ -50,7 +50,7 @@ let modulesAtStart = [];
 const Engines = require('../shared/engines.js'); // General › Advanced › Engines in use
 const { lanType } = require('../shared/lantype.js'); // Wi-Fi or Ethernet for Overview (#140)
 const path = require('path');
-const { app, BrowserWindow, Tray, Menu, nativeImage, nativeTheme, systemPreferences, Notification, dialog, globalShortcut } = require('electron');
+const { app, ipcMain, BrowserWindow, Tray, Menu, nativeImage, nativeTheme, systemPreferences, Notification, dialog, globalShortcut } = require('electron');
 const Look = require('../shared/look.js');
 
 // Electron names its macOS Keychain item "<app name> Safe Storage" and its logs ~/Library/Logs/<app name>.
@@ -227,6 +227,7 @@ function pushState() {
   pushQueued = true;
   setImmediate(() => {
     pushQueued = false;
+    if (svc?.googleMessages?.sync()) state.googleMessages = null;
     // No window on screen: destroyed, hidden, minimized or covered. The snapshots
     // below are only for that window. The tray, the screen message, preview shots,
     // the lock key, file shortcuts and pair sync still run. Lock view already ran.
@@ -321,7 +322,8 @@ function pushState() {
     if (svc) state.notifs = { ...settings.notifs, ...svc.notifs.view };
     state.silence = svc && svc.silence ? { ...svc.silence.view, mac: svc.silence.mac.view } : null; // Notifications › Silence together
     state.history = svc && svc.history ? svc.history.view() : null; // Keep history (shared/histkeeper.js)
-    state.chats = svc && svc.chats ? svc.chats.view() : null; // Messages' WhatsApp, Instagram… conversations
+    state.googleMessages = svc?.googleMessages?.view() || null;
+    state.chats = svc && svc.chats ? svc.chats.view(state.googleMessages?.state === 'connected') : null; // Messages' WhatsApp, Instagram… conversations
     state.chatsMessaging = !!(svc && svc.chats && svc.chats.messaging());
     if (svc) {
       const { secret, ...smb } = settings.smb; // never send the share password to the window
@@ -1069,6 +1071,11 @@ app.whenReady().then(() => {
       get current() { return peer.current; },
     }, dir: app.getPath('userData'), socket: () => peer.outbound(peer.current), want: () => settings.ui.chats === true, onChange: pushState });
   peer.on('transport', () => svc.chats.sync());
+  svc.googleMessages = require('./google-messages').setupGoogleMessages({
+    app, ipcMain, window: () => win,
+    current: () => peer.current?.os === P.OS.ANDROID ? peer.current.deviceId : '',
+    enabled: () => settings.hub.messages === true, change: pushState,
+  });
   // Connection › Pair a phone with a QR code (shared/ui-qrpair.js), and wireless debugging's (shared/adbqr.js).
   svc.qrPair = () => {
     if (!qrPair || Date.now() > qrPair.until) qrPair = { nonce: require('crypto').randomBytes(8).toString('hex'), until: Date.now() + 10 * 60000 };

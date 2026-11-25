@@ -45,7 +45,8 @@ function run({ win }) {
     fileClip: { syncConnected(on) { calls.push(['clip', !!on]); }, get view() { return {}; } },
     notifs: counted('notifs'),
     history: counted('history'),
-    chats: counted('chats'),
+    chats: { ...counted('chats'), messaging: () => false },
+    googleMessages: { sync() {}, view: () => null },
     drop: counted('drop'),
     fileSend: counted('fileSend'),
   };

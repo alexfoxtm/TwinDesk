@@ -152,3 +152,12 @@ dependencies (MIT, ISC, BSD, BlueOak-1.0.0 and Apache-2.0 licenses, all compatib
 noVNC 1.7.0 — https://github.com/novnc/noVNC — MPL-2.0.
 Bundled under android/app/src/main/assets/novnc, including its LICENSE.txt, AUTHORS and vendor licenses.
 TwinDesk modifications to core/rfb.js enforce ARD-only authentication and clear credentials after constructing the authentication response.
+
+## Google Messages transport (macOS)
+
+The optional Google Messages transport links mautrix-gmessages libgm v0.2611.0,
+copyright the mautrix-gmessages contributors, under the GNU Affero General
+Public License version 3. The pinned source is available at
+https://github.com/mautrix/gmessages/tree/3c3a87849d0a1bebc415493927be0314ec7e245b.
+The wrapper, license, build instructions and linked dependency source are
+distributed under Resources/app/mac/gmessages in the macOS bundle.

@@ -23,6 +23,7 @@ const ACTIONS = [
 
 const api = {
   getState: () => ipcRenderer.invoke('getState'),
+  googleMessages: (arg) => ipcRenderer.invoke('googleMessages', arg),
   phoneAssets: () => ipcRenderer.invoke('phoneAssets'),
   deckApps: () => ipcRenderer.invoke('deckApps'), // the Deck page's app picker
   deckState: (obs) => ipcRenderer.invoke('deckState', obs === true || obs === 'mix' ? obs : false), // its sound, Bluetooth and display pickers (OBS's: obs)
