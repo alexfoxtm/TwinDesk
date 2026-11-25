@@ -14,9 +14,16 @@ const T = P.T;
 const CONNECT_WAIT_MS = 8000; // an invited phone that doesn't say hello by then isn't coming
 const str = (v, n = 200) => (typeof v === 'string' ? v.slice(0, n) : '');
 const APPS_IDLE_MS = 4000;
+const APPS_DEADLINE_MS = 14000;
 const isPhone = (ctx) => !!ctx && P.isPhoneOs(ctx.os);
-const socketOf = (ctx) => ctx?.conn || ctx?.ws;
+// A routed message can explicitly name no authorized ingress. Its primary socket is not evidence.
+const socketOf = (ctx) => ctx && Object.hasOwn(ctx, 'conn') ? ctx.conn : ctx?.ws;
 const appVersion = (version) => typeof version === 'string' && /^[a-f0-9]{64}$/.test(version);
+const clearAppTimers = (session) => {
+  if (!session) return;
+  clearTimeout(session.timer);
+  clearTimeout(session.deadline);
+};
 
 class Phone extends EventEmitter {
   constructor({ server, raw, discovery, pairing }) {
@@ -34,13 +41,14 @@ class Phone extends EventEmitter {
     this.wired = null; // wired.js: phones on a USB cable
 
     server.on('client', (ctx) => {
+      if (this.appsSession && this.appsSession.owner !== socketOf(server.current)) this._endApps();
       if (!isPhone(ctx)) return this._reset();
       this._doneConnecting('');
       if (ctx.os === P.OS.ANDROID) this._startApps(ctx);
       this.emit('change');
     });
-    server.on('closed', () => {
-      this._endApps();
+    server.on('closed', (ctx) => {
+      if (this.appsSession && socketOf(ctx) === this.appsSession.owner) this._endApps();
       if (isPhone(server.current)) return;
       this._reset();
     });
@@ -50,7 +58,7 @@ class Phone extends EventEmitter {
         this._startApps(current);
       }
     });
-    const on = (t, fn) => server.on(`t:${t}`, (m, ctx) => isPhone(ctx) && fn(m, ctx));
+    const on = (t, fn) => server.on(`t:${t}`, (m, ctx, ws) => isPhone(ctx) && fn(m, ctx, ws));
     on(T.PHONE_INFO, (m) => {
       const colors = Array.isArray(m.colors) ? m.colors.filter((c) => /^#[0-9a-f]{6}$/i.test(c)).slice(0, 3) : [];
       const wallpaper = typeof m.wallpaper === 'string' && /^data:image\/(jpeg|png|webp);base64,/.test(m.wallpaper) && m.wallpaper.length < 400000 ? m.wallpaper : (this.info && this.info.wallpaper) || '';
@@ -75,25 +83,33 @@ class Phone extends EventEmitter {
       this.emit('adb', this.adb);
       this.emit('change');
     });
-    on(T.SCREEN_POLICY, (m, ctx) => {
-      const s = this._appsFor(ctx);
+    on(T.SCREEN_POLICY, (m, ctx, ws) => {
+      const s = this._appsFor(ctx, ws || socketOf(ctx));
       if (!s || s.requested) return;
       s.waitingForFrame = m.accept === true;
       clearTimeout(s.timer);
       if (m.accept !== true) this._idleApps(s);
     });
-    on(T.PHONE_APPS_READY, (_m, ctx) => {
-      const s = this._appsFor(ctx);
+    on(T.PHONE_APPS_READY, (_m, ctx, ws) => {
+      const s = this._appsFor(ctx, ws || socketOf(ctx));
       if (!s?.waitingForFrame) return;
       s.waitingForFrame = false;
       this._requestApps(s);
     });
-    on(T.PHONE_APPS, (m, ctx) => {
-      const s = this._appsFor(ctx);
-      const source = socketOf(ctx);
-      if ((source && source !== socketOf(this.server.current)) ||
-          (!s && (this.appsSession || (source?.ctx || ctx).appsPair))) return;
-      if (!Array.isArray(m.apps)) return;
+    on(T.PHONE_APPS, (m, ctx, ws) => {
+      const source = ws || socketOf(ctx);
+      const s = this._appsFor(ctx, source);
+      if (!source || source !== socketOf(this.server.current) || ctx.released || ctx.authed === false ||
+          (!s && (this.appsSession || (source.ctx || ctx).appsPair))) return;
+      const hasApps = Array.isArray(m.apps);
+      const unchanged = s && this.appsCache?.pair === s.pair && this.appsCache.version === m.version;
+      if (!hasApps && !unchanged) return;
+      if (s) {
+        clearAppTimers(s);
+        s.requested = true;
+        s.waitingForFrame = false;
+      }
+      if (!hasApps) return;
       this.apps = m.apps.slice(0, 2000).filter((a) => a && typeof a.id === 'string' && /^[\w.]{1,200}$/.test(a.id)).map((a) => ({
         id: a.id, name: str(a.name, 100) || a.id,
         icon: typeof a.icon === 'string' && a.icon.startsWith('data:image/png;base64,') && a.icon.length < 60000 ? a.icon : '',
@@ -105,25 +121,28 @@ class Phone extends EventEmitter {
   }
 
   _endApps() {
-    clearTimeout(this.appsSession?.timer);
+    clearAppTimers(this.appsSession);
     this.appsSession = null;
   }
 
   _startApps(ctx) {
-    this._endApps();
     const owner = socketOf(ctx);
+    if (owner && owner !== socketOf(this.server.current)) return;
+    this._endApps();
     const pair = (owner?.ctx || ctx).appsPair;
     if (this.appsCache?.pair !== pair) this.appsCache = null;
     if (!pair || !owner) return this.server.sendToClient({ t: T.PHONE_APPS_LIST });
     const apps = this.appsCache?.apps || [];
     if (this.apps !== apps) { this.apps = apps; this.assets++; }
     const s = this.appsSession = { owner, pair, requested: false, waitingForFrame: false };
+    s.deadline = setTimeout(() => this._requestApps(s), APPS_DEADLINE_MS);
+    s.deadline.unref?.();
     this._idleApps(s);
   }
 
-  _appsFor(ctx) {
+  _appsFor(ctx, source = socketOf(ctx)) {
     const s = this.appsSession;
-    if (!s || socketOf(ctx) !== s.owner || socketOf(this.server.current) !== s.owner ||
+    if (!s || source !== s.owner || socketOf(this.server.current) !== s.owner ||
         s.owner.readyState !== (s.owner.OPEN ?? 1) || s.owner.ctx?.released || ctx.released || ctx.authed === false) return null;
     return s;
   }
@@ -135,7 +154,8 @@ class Phone extends EventEmitter {
 
   _requestApps(s) {
     if (this._appsFor(this.server.current) !== s || s.requested) return;
-    clearTimeout(s.timer);
+    clearAppTimers(s);
+    s.waitingForFrame = false;
     const version = this.appsCache?.pair === s.pair ? this.appsCache.version : undefined;
     s.requested = this.server.sendToClient({ t: T.PHONE_APPS_LIST, version }) === true;
   }
