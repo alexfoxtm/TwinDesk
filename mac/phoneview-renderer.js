@@ -27,6 +27,8 @@
   const canvas = document.getElementById('screen');
   const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
   const status = document.getElementById('status');
+  const retry = document.getElementById('retry-ipad');
+  retry?.querySelector('button').addEventListener('click', () => api.send({ t: 'retryIpad' }));
   const localStatuses = new Set(['The phone can’t share its screen', 'The phone’s screen helper didn’t start', 'the screen helper stopped', 'the connection closed', 'closed', 'stopped']);
   let closedStatus = null;
   const ACTION = { DOWN: 0, UP: 1, MOVE: 2, HOVER_MOVE: 7, HOVER_EXIT: 10 };
@@ -258,6 +260,7 @@
   });
 
   api.on('status', (s) => {
+    if (retry && 'retryIpad' in s) retry.hidden = !s.retryIpad;
     if (s.via) {
       const el = document.getElementById('via');
       I.literal(el, s.via === 'usb' ? 'USB' : 'Wi-Fi');

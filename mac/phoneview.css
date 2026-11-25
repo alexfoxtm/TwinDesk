@@ -19,7 +19,10 @@ html, body { margin: 0; height: 100%; background: #000; color: var(--text); font
 .tools svg { width: 15px; height: 15px; fill: none; stroke: var(--text); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 #stage { position: absolute; top: 32px; left: 0; right: 0; bottom: 0; display: grid; place-items: center; }
 #screen { max-width: 100%; max-height: 100%; outline: none; cursor: default; }
-#status { position: absolute; color: var(--muted); text-align: center; padding: 0 24px; }
+#screen-status { position: absolute; color: var(--muted); text-align: center; padding: 0 24px; pointer-events: none; }
+#retry-ipad button { margin-top: 12px; padding: 6px 12px; border: 1px solid var(--muted); border-radius: 6px; background: var(--bar); color: var(--text); font: inherit; pointer-events: auto; }
+#retry-ipad button:hover { background: var(--hover); }
+#retry-ipad p { margin: 8px 0 0; line-height: 1.4; }
 body.app #b-recents, body.app #b-notifs, body.app #b-rotate { display: none; }
 #b-torch, #b-flip, #b-zoomin, #b-zoomout { display: none; }
 body.camera #b-torch, body.camera #b-flip, body.camera #b-zoomin, body.camera #b-zoomout { display: grid; }

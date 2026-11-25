@@ -26,7 +26,13 @@
   </header>
   <main id="stage">
     <canvas id="screen" tabindex="0"></canvas>
-    <div id="status" data-i18n="Connecting to the phone…">Connecting to the phone…</div>
+    <div id="screen-status">
+      <div id="status" role="status" data-i18n="Connecting to the phone…">Connecting to the phone…</div>
+      <div id="retry-ipad" hidden>
+        <button type="button" data-i18n="Ask iPad again">Ask iPad again</button>
+        <p data-i18n="On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected">On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected</p>
+      </div>
+    </div>
   </main>
   <script src="../shared/lang/en.js"></script>
   <script src="../shared/lang/pick.js"></script>

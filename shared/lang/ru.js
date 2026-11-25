@@ -2098,6 +2098,8 @@
   "Phone apps in windows need it. Set it up once on the Connection page.": "Она нужна для приложений телефона в окнах. Настройте её один раз на странице «Подключение».",
   "Phone sound goes through": "Звук телефона идёт через",
   "Start wasn’t tapped on the phone": "На телефоне не нажали «Начать»",
+  "Ask iPad again": "Запросить экран iPad снова",
+  "On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected": "На iPad нажмите «Поделиться экраном», затем выберите TwinDesk и нажмите «Начать эфир»",
   "Tap Start on the phone to share its screen": "Нажмите «Начать» на телефоне, чтобы показать его экран",
   "Auto": "Авто",
   "Full (ADB)": "Полный (ADB)",

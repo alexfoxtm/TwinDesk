@@ -2099,6 +2099,8 @@
   "Phone apps in windows need it. Set it up once on the Connection page.": "Phone apps in windows need it. Set it up once on the Connection page.",
   "Phone sound goes through": "Phone sound goes through",
   "Start wasn’t tapped on the phone": "Start wasn’t tapped on the phone",
+  "Ask iPad again": "Ask iPad again",
+  "On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected": "On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected",
   "Tap Start on the phone to share its screen": "Tap Start on the phone to share its screen",
   "Auto": "Auto",
   "Full (ADB)": "Full (ADB)",

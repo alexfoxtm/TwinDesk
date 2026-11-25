@@ -2098,6 +2098,8 @@
   "Phone apps in windows need it. Set it up once on the Connection page.": "Pencerelerdeki telefon uygulamaları için gerekir. Bağlantı sayfasında bir kez kurun.",
   "Phone sound goes through": "Telefon sesi şununla gelir:",
   "Start wasn’t tapped on the phone": "Telefonda Başlat'a dokunulmadı",
+  "Ask iPad again": "iPad’den yeniden iste",
+  "On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected": "iPad’de Ekranı Paylaş’a dokunun, TwinDesk’i seçin ve Yayını Başlat’a dokunun",
   "Tap Start on the phone to share its screen": "Ekranını paylaşmak için telefonda Başlat'a dokunun",
   "Auto": "Otomatik",
   "Full (ADB)": "Tam (ADB)",

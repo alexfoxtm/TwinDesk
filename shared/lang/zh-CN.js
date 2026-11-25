@@ -2099,6 +2099,8 @@
   "Phone apps in windows need it. Set it up once on the Connection page.": "在窗口中使用手机应用需要它。请在“连接”页面设置一次。",
   "Phone sound goes through": "手机声音传输方式",
   "Start wasn’t tapped on the phone": "未在手机上点按“开始”",
+  "Ask iPad again": "再次请求共享 iPad 屏幕",
+  "On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected": "在 iPad 上轻点“共享屏幕”，选择 TwinDesk，然后轻点“开始直播”",
   "Tap Start on the phone to share its screen": "请在手机上点按“开始”以共享屏幕",
   "Auto": "自动",
   "Full (ADB)": "完整 (ADB)",

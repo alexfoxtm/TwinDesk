@@ -2076,6 +2076,8 @@
   "Phone apps in windows need it. Set it up once on the Connection page.": "Os apps do celular em janelas precisam disso. Configure uma vez na página Conexão.",
   "Phone sound goes through": "O som do celular passa por",
   "Start wasn’t tapped on the phone": "Iniciar não foi tocado no celular",
+  "Ask iPad again": "Pedir a tela do iPad novamente",
+  "On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected": "No iPad, toque em Compartilhar tela, selecione TwinDesk e toque em Iniciar transmissão",
   "Tap Start on the phone to share its screen": "Toque em Iniciar no celular para compartilhar a tela dele",
   "Auto": "Automático",
   "Full (ADB)": "Completo (ADB)",
