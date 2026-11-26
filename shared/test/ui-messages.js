@@ -171,12 +171,12 @@ test('keeps RCS notification history without structured messaging, and hides it 
   assert.deepEqual(Array.from(rows(), snippet), ['WA']);
 });
 
-test('All joins one-to-one history by verified destination and keeps group and ambiguous messages intact', () => {
+const joinFixture = (googleState) => {
   const app = 'com.google.android.apps.messaging';
   const phone = 'fixture-phone';
   const dest = '+12025550100';
   const at = 10000;
-  const state = {
+  return {
     ui: { chats: true },
     hub: { deviceId: phone, session: 1, messages: true, perm: { messages: { mms: true } } },
     notifs: { history: [
@@ -190,7 +190,7 @@ test('All joins one-to-one history by verified destination and keeps group and a
     chats: [{ key: 'group', app, name: 'Fixture group', group: true, messagePeer: dest, at: 100,
       items: [{ id: 'group-message', text: 'Separate group', at: 100 }] }],
     googleMessages: {
-      owner: phone, state: 'connected', enabled: true,
+      owner: phone, state: googleState, enabled: true,
       rows: [
         { id: 'paired', name: 'Fixture paired', addrs: [dest], at: at + 2000, snippet: 'Paired RCS' },
         { id: 'different-country', name: 'Fixture paired', addrs: ['+442025550100'], at: 500, snippet: 'Distinct number' },
@@ -202,48 +202,78 @@ test('All joins one-to-one history by verified destination and keeps group and a
       ] },
     },
   };
-  const { received, asked, paint, texts, chat, rows, findPill } = inbox(state, { googleMessages: async () => true });
+};
+const joinCarrier = (received) => received.get('sms.threads')({ nanp: true, items: [
+  { id: 'carrier', addrs: ['2025550100'], name: 'Fixture carrier', at: 10300, snippet: 'Repeated' },
+  { id: 'mms-group', addrs: ['+12025550100', '+12025550101'], name: 'Fixture group', at: 200, snippet: 'Separate MMS group' },
+] });
+const joinHistory = (received) => received.get('sms.thread')({ id: 'carrier', items: [
+  { id: 's3', at: 10300, body: 'Repeated' },
+  { id: 's2', at: 10300, body: 'Repeated' },
+  { id: 's1', at: 10000, body: 'Shared text' },
+  { id: 's0', at: 9000, body: 'Carrier only' },
+] });
+const rowName = (row) => row.children[1].children[0].children[0].text;
+const rowTime = (row) => row.children[1].children[0].children[1].text;
+const bubbleClasses = (chat) => Array.from(chat.children[1].children[1].children[0].children)
+  .filter((node) => node.class?.startsWith('hub-bubble')).map((node) => node.class);
+const bubbleWords = (chat) => Array.from(chat.children[1].children[1].children[0].children)
+  .filter((node) => node.class?.startsWith('hub-bubble'))
+  .map((node) => Array.from(node.children, (child) => child.text));
+
+test('All lists one Google row per verified person in Google mode, with Google history alone and no carrier history read', () => {
+  const state = joinFixture('connected');
+  const { received, asked, paint, texts, chat, rows, findPill, snippet } = inbox(state, { googleMessages: async () => true });
   paint(state);
-  received.get('sms.threads')({ nanp: true, items: [
-    { id: 'carrier', addrs: ['2025550100'], name: 'Fixture carrier', at: at + 300, snippet: 'Repeated' },
-    { id: 'mms-group', addrs: [dest, '+12025550101'], name: 'Fixture group', at: 200, snippet: 'Separate MMS group' },
-  ] });
+  joinCarrier(received);
   assert.equal(findPill('All').attrs['aria-selected'], 'true');
-  assert.equal(rows().length, 5);
+  assert.equal(rows().length, 2, 'no notification, structured or carrier row without a Google source');
+  assert.deepEqual(Array.from(rows(), rowName), ['Fixture paired', 'Fixture paired']);
+  assert.equal(rowTime(rows()[0]), '12000', 'the time is the Google source');
+  assert.equal(snippet(rows()[0]), 'Paired RCS');
   rows()[0].onclick();
-  assert.equal(asked.at(-1).id, 'carrier');
-  received.get('sms.thread')({ id: 'carrier', items: [
-    { id: 's3', at: at + 300, body: 'Repeated' },
-    { id: 's2', at: at + 300, body: 'Repeated' },
-    { id: 's1', at, body: 'Shared text' },
-    { id: 's0', at: at - 1000, body: 'Carrier only' },
-  ] });
-  const visible = () => Array.from(chat.children[1].children[1].children[0].children)
-    .filter((node) => node.class?.startsWith('hub-bubble'))
-    .map((node) => Array.from(node.children, (child) => child.text));
-  assert.deepEqual(visible(), [
-    ['Carrier only'], ['Shared text'], ['Repeated'],
-    ['Repeated'], ['Repeated'], ['Notification-only text'], ['Paired RCS'],
-  ]);
-  const bubbleNodes = () => Array.from(chat.children[1].children[1].children[0].children)
-    .filter((node) => node.class?.startsWith('hub-bubble'));
-  assert.deepEqual(bubbleNodes().map((node) => node.class), [
-    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text',
-    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in unknown', 'hub-bubble in rcs',
-  ]);
+  assert.equal(asked.filter((m) => m.t === 'sms.thread').length, 0, 'the phone thread is never read');
+  joinHistory(received);
+  assert.deepEqual(bubbleWords(chat), [['Shared text'], ['Repeated'], ['Paired RCS']]);
+  assert.deepEqual(bubbleClasses(chat), ['hub-bubble in text', 'hub-bubble in text', 'hub-bubble in rcs']);
+  assert.equal(chat.children[1].children[1].children[0].children.some((n) => n.text === 'Earlier messages'), false);
   const legendOf = (root) => root.children[0].children[0].children.find((node) => node.class === 'hub-transport-legend');
   assert.equal(Array.from(legendOf(chat).children, (key) => key.children[1].text).join(), 'SMS,RCS');
   assert.deepEqual(Array.from(legendOf(chat).children, (key) => key.children[0].class), ['hub-swatch text', 'hub-swatch rcs']);
   assert.equal(legendOf(texts), undefined);
+});
+
+test('All joins one-to-one carrier and notification history by verified destination in phone mode, keeping group and ambiguous messages intact', () => {
+  for (const googleState of ['disconnected', 'offline']) {
+    const state = joinFixture(googleState);
+    const { received, asked, paint, chat, rows, findPill } = inbox(state, { googleMessages: async () => true });
+    paint(state);
+    joinCarrier(received);
+    assert.equal(findPill('All').attrs['aria-selected'], 'true');
+    assert.equal(rows().length, 4, `${googleState}: the merged person, the other phone's notice and both groups`);
+    rows()[0].onclick();
+    assert.equal(asked.at(-1).t, 'sms.thread');
+    assert.equal(asked.at(-1).id, 'carrier');
+    joinHistory(received);
+    assert.deepEqual(bubbleWords(chat), [
+      ['Carrier only'], ['Shared text'], ['Repeated'], ['Repeated'],
+      ['Notification-only text'],
+    ], 'the same carrier and notification row works without Google Messages');
+    assert.deepEqual(bubbleClasses(chat), [
+      'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in unknown',
+    ]);
+  }
+  // Google Messages goes away while the row is open: the phone's own history takes over the same row.
+  const state = joinFixture('connected');
+  const { received, asked, paint, chat, rows } = inbox(state, { googleMessages: async () => true });
+  paint(state);
+  joinCarrier(received);
+  rows()[0].onclick();
   state.googleMessages = null;
   paint(state);
-  assert.deepEqual(visible(), [
-    ['Carrier only'], ['Shared text'], ['Repeated'], ['Repeated'],
-    ['Notification-only text'],
-  ], 'the same carrier and notification row works without a Mac helper');
-  assert.deepEqual(bubbleNodes().map((node) => node.class), [
-    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in unknown',
-  ]);
+  assert.equal(asked.filter((m) => m.t === 'sms.thread').length, 1);
+  joinHistory(received);
+  assert.deepEqual(bubbleWords(chat), [['Carrier only'], ['Shared text'], ['Repeated'], ['Repeated'], ['Notification-only text']]);
 });
 
 test('bubbles keep transport classes and hub status without transport labels, with one SMS and RCS legend', () => {
@@ -320,7 +350,7 @@ test('one reply uses its exact Google conversation or an independently verified 
     hub: { deviceId: phone, session: 1, messages: true, perm: { messages: { missing: [] } } },
     googleMessages: {
       owner: phone, state: 'connected', enabled: true,
-      rows: [{ id: 'paired', addrs: [dest], reply: true, at: 1000 }],
+      rows: [{ id: 'paired', addrs: [dest], reply: true, kind: 'sms', at: 1000 }],
       history: { chat: 'paired', loaded: true, items: [] },
     },
   };
@@ -336,7 +366,9 @@ test('one reply uses its exact Google conversation or an independently verified 
   });
   paint(state);
   received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [dest], at: 500 }] });
+  assert.equal(rows().length, 1);
   rows()[0].onclick();
+  assert.equal(asked.filter((x) => x.t === 'sms.thread').length, 0, 'Google mode never reads the phone thread');
   const composer = chat.children[1].children[3];
   const reply = async () => {
     composer.children[2].children[1].value = 'Synthetic reply';
@@ -352,8 +384,8 @@ test('one reply uses its exact Google conversation or an independently verified 
   assert.equal(google.length, 2);
   assert.equal(texts().length, 0, 'an unconfirmed dispatch must never be retried by SMS');
   result = 'not-dispatched';
-  // The Google conversation supplied the verified destination. It remains
-  // eligible for one SMS if the helper drops even without a carrier thread.
+  // Google reported this conversation as SMS, and it supplied the verified destination. It
+  // remains eligible for one SMS if the helper drops even without a carrier thread.
   received.get('sms.threads')({ items: [] });
   await reply();
   assert.equal(google.length, 3);
@@ -429,7 +461,7 @@ test('a not-dispatched result for a replaced Google conversation does not send b
     hub: { deviceId: phone, session: 1, messages: true, perm: { messages: {} } },
     googleMessages: {
       owner: phone, state: 'connected', enabled: true,
-      rows: [{ id: 'first', addrs: [dest], reply: true, at: 100 }],
+      rows: [{ id: 'first', addrs: [dest], reply: true, kind: 'sms', at: 100 }],
       history: { chat: 'first', loaded: true, items: [] },
     },
   };
@@ -631,7 +663,7 @@ test('not-dispatched does not send SMS when the same Google conversation is writ
     hub: { deviceId: phone, session: 1, messages: true, perm: { messages: {} } },
     googleMessages: {
       owner: phone, state: 'connected', enabled: true,
-      rows: [{ id: 'paired', addrs: [dest], reply: true, at: 100 }],
+      rows: [{ id: 'paired', addrs: [dest], reply: true, kind: 'sms', at: 100 }],
       history: { chat: 'paired', loaded: true, items: [] },
     },
   };
@@ -640,7 +672,9 @@ test('not-dispatched does not send SMS when the same Google conversation is writ
   });
   paint(state);
   received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [dest], at: 50 }] });
+  assert.equal(rows().length, 1);
   rows()[0].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.thread').length, 0);
   const composer = chat.children[1].children[3];
   composer.children[2].children[1].value = 'Synthetic draft';
   await composer.children[3].onclick();
@@ -995,7 +1029,7 @@ test('All collapses Chat and Texts for one verified person across national and E
     ui: { chats: true }, hub: hub(),
     googleMessages: {
       owner: phone, state: 'connected', enabled: true,
-      rows: [{ id: 'paired', name: 'Fixture person', messagePeer: 'not-a-number', addrs: ['+12025550111'], reply: true, at: 3000 }],
+      rows: [{ id: 'paired', name: 'Fixture person', messagePeer: 'not-a-number', addrs: ['+12025550111'], reply: true, kind: 'sms', at: 3000 }],
       history: { chat: 'paired', loaded: true, items: [{ id: 'h1', at: 1500, text: 'RCS one', me: false, transport: 'rcs' }] },
     },
   };
@@ -1006,10 +1040,11 @@ test('All collapses Chat and Texts for one verified person across national and E
   ] });
   assert.equal(two.rows().length, 1, 'the paired row and the national carrier thread are one person');
   two.rows()[0].onclick();
+  assert.equal(two.asked.filter((x) => x.t === 'sms.thread').length, 0, 'Google mode never reads the phone thread');
   two.received.get('sms.thread')({ id: 'carrier-national', items: [
     { id: 't2', at: 2000, body: 'SMS two' }, { id: 't1', at: 1000, body: 'SMS one' },
   ] });
-  assert.deepEqual(order(two.chat), ['SMS one', 'RCS one', 'SMS two']);
+  assert.deepEqual(order(two.chat), ['RCS one'], 'Google history alone');
   const pairedComposer = two.chat.children[1].children[3];
   await reply(two, pairedComposer);
   const sends = () => google.filter((x) => x.op === 'send');
@@ -1020,6 +1055,17 @@ test('All collapses Chat and Texts for one verified person across national and E
   await reply(two, pairedComposer);
   assert.equal(sends().length, 2);
   assert.equal(texts(two).length, 0, 'an uncertain dispatch is never repeated by SMS');
+
+  // Phone mode: the same national carrier thread and its E.164 form are one row with the phone's history.
+  paired.googleMessages = { ...paired.googleMessages, state: 'disconnected', rows: [] };
+  two.paint(paired);
+  assert.equal(two.rows().length, 1);
+  assert.equal(two.asked.at(-1).t, 'sms.thread');
+  assert.equal(two.asked.at(-1).id, 'carrier-national');
+  two.received.get('sms.thread')({ id: 'carrier-national', items: [
+    { id: 't2', at: 2000, body: 'SMS two' }, { id: 't1', at: 1000, body: 'SMS one' },
+  ] });
+  assert.deepEqual(order(two.chat), ['SMS one', 'SMS two']);
 });
 
 test('an unknown transport never takes the RCS fill, and the legend shows once and only on SMS or RCS lists', () => {
@@ -1097,4 +1143,210 @@ test('transport colours are fixed tokens that hold for every accent, and the leg
   assert.doesNotMatch(legend, /order:\s*-1/);
   assert.match(body('.hub-side-head'), /flex-wrap:\s*wrap/);
   assert.match(body('.hub-transport-legend[hidden]'), /display:\s*none/);
+});
+
+// ---- Google Messages as the source of truth while it is connected ----
+const gmPhone = 'fixture-phone';
+const gmDest = '+12025550100';
+const connected = (rows, history = { chat: rows[0]?.id, loaded: true, items: [] }) =>
+  ({ owner: gmPhone, state: 'connected', enabled: true, rows, history });
+const gmPage = (googleMessages, extra = {}, result = () => true) => {
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: gmPhone, session: 1, messages: true, perm: { messages: { mms: true, missing: [] } } },
+    googleMessages, ...extra,
+  };
+  const google = [];
+  const page = inbox(state, { async googleMessages(msg) { google.push(msg); return msg.op === 'send' ? result(msg, state) : true; } });
+  page.paint(state);
+  const composer = page.chat.children[1].children[3];
+  const reply = async (text = 'Synthetic reply') => {
+    composer.children[2].children[1].value = text;
+    await composer.children[3].onclick();
+  };
+  return {
+    ...page, state, google, composer, reply,
+    sms: () => page.asked.filter((m) => m.t === 'sms.send'),
+    gmSends: () => google.filter((m) => m.op === 'send'),
+  };
+};
+
+test('a phone thread and a Google row flagged as a group for the same person show one row', () => {
+  const page = gmPage(connected([{ id: 'flagged', name: 'Fixture person', group: true, addrs: [gmDest], reply: true, kind: 'rcs', at: 2000 }]));
+  page.received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [gmDest], name: 'Fixture carrier', at: 3000, snippet: 'Carrier text' }] });
+  assert.equal(page.rows().length, 1);
+  assert.equal(rowName(page.rows()[0]), 'Fixture person');
+});
+
+test('an SMS-kind Google row and its phone thread are one row with Google messages only and no carrier history read', () => {
+  const page = gmPage(connected([{ id: 'sms-row', name: 'Fixture Google', addrs: [gmDest], reply: true, kind: 'sms', at: 5000, snippet: 'Google snippet' }],
+    { chat: 'sms-row', loaded: true, items: [{ id: 'g1', at: 4000, text: 'Google text', me: false, transport: 'text' }] }));
+  page.received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [gmDest], name: 'Fixture carrier', at: 6000, snippet: 'Carrier snippet' }] });
+  assert.equal(page.rows().length, 1);
+  assert.deepEqual([rowName(page.rows()[0]), rowTime(page.rows()[0]), page.snippet(page.rows()[0])], ['Fixture Google', '5000', 'Google text']);
+  page.rows()[0].onclick();
+  page.received.get('sms.thread')({ id: 'carrier', items: [{ id: 's1', at: 4500, body: 'Carrier text' }] });
+  assert.deepEqual(bubbleWords(page.chat), [['Google text']]);
+  assert.equal(page.asked.filter((m) => m.t === 'sms.thread').length, 0);
+});
+
+test('notification and structured Chat rows are hidden in Google mode; WhatsApp stays', () => {
+  const app = 'com.google.android.apps.messaging';
+  const extra = {
+    notifs: { history: [{ id: 'notice', app, title: 'Fixture notice', body: 'Notice text', at: 3000 }] },
+    chats: [
+      { key: 'structured', app, name: 'Fixture structured', messagePeer: '+12025550155', at: 4000, items: [{ id: 's', text: 'Structured', at: 4000 }] },
+      { key: 'wa', app: 'com.whatsapp', name: 'Fixture WhatsApp', at: 1000, items: [{ id: 'w', text: 'WA', at: 1000 }] },
+    ],
+  };
+  const gm = connected([{ id: 'g', name: 'Fixture Google', addrs: ['+12025550177'], reply: true, kind: 'rcs', at: 2000 }]);
+  const page = gmPage(gm, extra);
+  assert.deepEqual(Array.from(page.rows(), rowName), ['Fixture Google', 'Fixture WhatsApp']);
+  page.findPill('Messages (Chat)').onclick();
+  assert.deepEqual(Array.from(page.rows(), rowName), ['Fixture Google']);
+  page.findPill('WhatsApp').onclick();
+  assert.deepEqual(Array.from(page.rows(), rowName), ['Fixture WhatsApp']);
+  page.state.googleMessages = { ...gm, state: 'disconnected', rows: [] };
+  page.findPill('All').onclick();
+  assert.deepEqual(Array.from(page.rows(), rowName), ['Fixture structured', 'Fixture notice', 'Fixture WhatsApp'], 'phone mode lists them again');
+});
+
+test('not-dispatched on an RCS conversation never sends SMS without a notification offer; an SMS conversation falls back', async () => {
+  for (const kind of ['rcs', 'sms']) {
+    // The send is not dispatched and the same conversation is no longer writable.
+    const page = gmPage(connected([{ id: 'paired', addrs: [gmDest], reply: true, kind, at: 1000 }]), {},
+      (msg, state) => { state.googleMessages.rows[0].reply = false; return 'not-dispatched'; });
+    page.received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [gmDest], at: 500 }] });
+    page.rows()[0].onclick();
+    await page.reply();
+    assert.equal(page.gmSends().length, 1);
+    assert.equal(page.gmSends()[0].allowCarrier, kind === 'sms');
+    assert.equal(page.replies.length, 0);
+    if (kind === 'rcs') {
+      assert.equal(page.sms().length, 0, 'an RCS conversation is never sent by the carrier');
+      assert.deepEqual(hints(page.chat), ['Google Messages is unavailable. Check the reply options and try again.']);
+    } else {
+      assert.equal(page.sms().length, 1, 'an SMS conversation falls back to the carrier');
+      assert.equal(page.sms()[0].to, gmDest);
+    }
+  }
+});
+
+test('through an outage the row keeps its key, and a carrier send follows the last known kind until Google disconnects', async () => {
+  for (const kind of ['rcs', 'sms']) {
+    const page = gmPage(connected([{ id: 'paired', addrs: [gmDest], reply: true, kind, at: 1000 }]));
+    page.received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [gmDest], at: 500 }] });
+    page.rows()[0].onclick();
+    page.state.googleMessages = { owner: gmPhone, state: 'offline', enabled: true, rows: [] };
+    page.paint(page.state);
+    assert.equal(page.rows().length, 1);
+    assert.match(page.rows()[0].class, /active/, 'the same contact row stays selected');
+    assert.equal(page.chat.children[1].hidden, false);
+    await page.reply();
+    assert.equal(page.sms().length, kind === 'sms' ? 1 : 0, `last known ${kind}`);
+    assert.equal(page.composer.hidden, kind === 'rcs');
+    if (kind === 'sms') continue;
+    page.state.googleMessages = { owner: gmPhone, state: 'disconnected', enabled: true, rows: [] };
+    page.paint(page.state);
+    await page.reply();
+    assert.equal(page.sms().length, 1, 'allowed once Google Messages is disconnected');
+    page.state.googleMessages = { owner: gmPhone, state: 'offline', enabled: true, rows: [] };
+    page.paint(page.state);
+    await page.reply();
+    assert.equal(page.sms().length, 2, 'disconnect forgets the last known kind');
+    page.state.googleMessages = { owner: gmPhone, state: 'connecting', enabled: true, rows: [] };
+    page.paint(page.state);
+    await page.reply();
+    assert.equal(page.sms().length, 2, 'never while Google Messages is connecting');
+  }
+});
+
+test('a read-only Google row with a number never sends', async () => {
+  const app = 'com.google.android.apps.messaging';
+  const page = gmPage(connected([{ id: 'read-only', addrs: [gmDest], reply: false, kind: 'sms', at: 1000 }]), {
+    notifs: { history: [{ id: 'n1', app, title: 'Fixture', body: 'Notice', at: 900, from: gmPhone, messagePhone: gmPhone,
+      messagePeer: gmDest, reply: true, replySession: 's1' }] },
+  });
+  page.received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [gmDest], at: 500 }] });
+  assert.equal(page.rows().length, 1);
+  page.rows()[0].onclick();
+  assert.equal(page.composer.hidden, true);
+  assert.equal(page.chat.children[1].children[2].textContent, 'This conversation is read-only.');
+  await page.reply();
+  assert.equal(page.gmSends().length, 0);
+  assert.equal(page.sms().length, 0);
+  assert.equal(page.replies.length, 0);
+});
+
+test('a Google group shows its members and senders and never sends by the carrier', async () => {
+  const members = ['+12025550101', '+12025550102'];
+  const page = gmPage(connected([{ id: 'group', name: 'Fixture group', group: true, addrs: members, reply: true, kind: 'sms', at: 3000,
+    people: [{ name: 'Fixture Ann', number: members[0] }, { name: 'Fixture Bob', number: members[1] }] }],
+  { chat: 'group', loaded: true, items: [
+    { id: 'm1', at: 1000, text: 'Hello', me: false, from: 'Fixture Ann' },
+    { id: 'm2', at: 2000, text: 'Hi', me: false, from: 'Fixture Bob' },
+  ] }), {}, (msg, state) => { state.googleMessages.rows[0].reply = false; return 'not-dispatched'; });
+  page.received.get('sms.threads')({ items: [{ id: 'mms', group: true, addrs: members, at: 4000 }] });
+  assert.equal(page.rows().length, 1, 'the phone MMS group is not listed');
+  page.rows()[0].onclick();
+  const title = page.chat.children[1].children[0].children[1];
+  assert.equal(title.children[1].text, 'Fixture Ann, Fixture Bob');
+  assert.deepEqual(bubbleWords(page.chat), [['Fixture Ann', 'Hello'], ['Fixture Bob', 'Hi']]);
+  await page.reply();
+  assert.equal(page.gmSends().length, 1);
+  assert.equal(page.gmSends()[0].allowCarrier, false);
+  assert.equal(page.sms().length, 0);
+});
+
+test('New message to a known Google one-to-one opens that row in All with the text, never a new send', async () => {
+  let finish;
+  class FileReader {
+    readAsDataURL() { finish = () => { this.result = 'data:image/jpeg;base64,AA=='; this.onload(); }; }
+  }
+  class Image {
+    constructor() { this.naturalWidth = this.naturalHeight = 1; }
+    set src(_) { this.onload(); }
+  }
+  const document = { createElement: () => ({
+    getContext: () => ({ fillRect() {}, drawImage() {} }), toDataURL: () => 'data:image/jpeg;base64,AA==',
+  }) };
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: gmPhone, session: 1, messages: true, perm: { messages: { mms: true } } },
+    googleMessages: connected([{ id: 'paired', name: 'Fixture person', addrs: [gmDest], reply: true, kind: 'rcs', at: 1000 }]),
+  };
+  const { received, asked, paint, texts, chat, rows, findPill } = inbox(state, { googleMessages: async () => true }, { FileReader, Image, document });
+  paint(state);
+  received.get('sms.threads')({ nanp: true, items: [{ id: 'carrier', addrs: [gmDest], at: 500 }] });
+  findPill('Texts').onclick();
+  texts.children[0].children[0].children[1].onclick();
+  const conv = texts.children[1];
+  const to = conv.children[0].children[0];
+  const compose = conv.children[3];
+  const chip = compose.children[2].children[0];
+  const box = compose.children[2].children[1];
+  to.value = '(202) 555-0100';
+  compose.children[4].files = [{ type: 'image/jpeg' }];
+  compose.children[4].onchange();
+  finish();
+  await Promise.resolve();
+  assert.equal(chip.hidden, false);
+  box.value = 'Synthetic text';
+  compose.children[3].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0, 'not dispatched');
+  assert.equal(findPill('All').attrs['aria-selected'], 'true');
+  assert.equal(chat.hidden, false);
+  assert.equal(chat.children[1].hidden, false);
+  assert.match(rows()[0].class, /active/);
+  assert.equal(chat.children[1].children[3].children[2].children[1].value, 'Synthetic text', 'the text moves to its composer');
+  assert.equal(box.value, '');
+  assert.equal(chip.hidden, true, 'the picture is cleared');
+
+  // Another number is still a new carrier send.
+  findPill('Texts').onclick();
+  texts.children[0].children[0].children[1].onclick();
+  to.value = '+12025550199';
+  box.value = 'Other text';
+  compose.children[3].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 1);
 });

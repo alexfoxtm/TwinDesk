@@ -22,12 +22,14 @@ const destination = (value, nanp) => {
 const sameDestination = (a, b) => !!a && a === b;
 const messageText = (text) => String(text || '').replace(/\r\n/g, '\n').trim();
 
+// A verified one-to-one destination: Android's messagePeer first, else the row's single
+// address (the phone's E.164 or, with this phone's NANP SIM context, a national number).
+// A peer that does not parse never blocks an independently verified address.
+const peerOf = (c, nanp) => c.group ? '' : destination(c.messagePeer, nanp) ||
+  (c.addrs?.length === 1 ? destination(c.e164) || destination(c.addrs[0], nanp) : '');
+
 function contactThreads(carrier, chats, nanp) {
-  // A verified one-to-one destination: Android's messagePeer first, else the row's single
-  // address (the phone's E.164 or, with this phone's NANP SIM context, a national number).
-  // A peer that does not parse never blocks an independently verified address.
-  const address = (c) => c.group ? '' : destination(c.messagePeer, nanp) ||
-    (c.addrs?.length === 1 ? destination(c.e164) || destination(c.addrs[0], nanp) : '');
+  const address = (c) => peerOf(c, nanp);
   const google = chats.filter((c) => c.google && address(c));
   const identifies = (thread, paired) => thread.pkg === 'com.google.android.apps.messaging' &&
     thread.msgs?.some((m) => m.match && paired.fingerprints?.some((f) => f.at === m.at && f.matches.includes(m.match)));
@@ -361,6 +363,10 @@ UI.tab({
     let nanp = false;
     let phoneSession;
     let phoneDevice;
+    // Destination -> the kind Google Messages last reported for it ('rcs', 'sms' or ''), from
+    // Google-mode rows. It decides whether a carrier send is allowed while Google is away.
+    const lastKind = new Map();
+    let kindOwner;
     const carrierReady = (s) => UI.hubReady(s, 'messages') && !s.hub.perm.messages.missing?.includes('read');
     const carrierSend = (s) => UI.hubReady(s, 'messages') && !s.hub.perm.messages.missing?.includes('send');
     // The phone and session a carrier request is for. Sends, history and list reads carry it, so a
@@ -435,6 +441,14 @@ UI.tab({
         };
       }).filter((c) => !isGone(c.key, c.at));
     };
+    // Google mode: Google Messages is connected for this phone and shown. The list and every SMS, MMS
+    // and RCS conversation then come from Google alone. Otherwise the phone's own path (phone mode).
+    const googleMode = (s) => {
+      const gm = s?.googleMessages;
+      return gm?.state === 'connected' && !hiddenApps.has('rcs') && !!s.hub?.messages &&
+        !(s.hub?.deviceId && s.hub.deviceId !== gm.owner);
+    };
+    const kindOf = (c) => c.kind ?? 'rcs'; // a missing kind is RCS
     function closeChat() {
       chatOpen = '';
       parkedPill = '';
@@ -491,7 +505,9 @@ UI.tab({
         t.at = Math.max(t.at, peer && h.messageAt || h.at);
         by.set(key, t);
       }
+      const googleList = googleMode(s);
       return google.concat(own, [...by.values()]).filter((t) => (t.app !== 'rcs' || !!s.hub?.messages) &&
+        (!googleList || t.app !== 'rcs' || t.google) &&
         !hiddenApps.has(t.app) && !isGone(t.key, t.at)).sort((a, b) => b.at - a.at);
     }
     const googleUnavailable = (gm) => ['offline', 'helper-error', 'connection-error', 'keychain-error'].includes(gm?.state);
@@ -499,6 +515,14 @@ UI.tab({
       const carrier = carrierReady(s) ? threads.filter((t) => !isGone('sms:' + t.id, t.at))
         .map((t) => ({ ...t, name: t.name || t.addrs?.join(', '), key: 'sms:' + t.id, avatar: t.photo, carrier: true })) : [];
       const rows = contactThreads(carrier, chats, nanp);
+      if (googleMode(s)) {
+        // No SMS, MMS or RCS row without a Google source. A phone thread stays only under its Google
+        // row (its avatar, and the same key through an outage); the row shows the Google source.
+        const listed = rows.filter((c) => c.dest ? !!c.googleSource : !c.carrier);
+        for (const c of listed) if (c.dest) lastKind.set(c.dest, kindOf(c.googleSource));
+        return listed.map((c) => c.dest ? { ...c, newest: c.googleSource, at: c.googleSource.at, name: c.googleSource.name } : c)
+          .sort((a, b) => b.at - a.at);
+      }
       const gm = s.googleMessages;
       if (openContact && openContact.deviceId === gm?.owner && openContact.deviceId === s.hub?.deviceId &&
           openContact.session === s.hub?.session && !hiddenApps.has('rcs') && carrierSend(s) &&
@@ -529,11 +553,18 @@ UI.tab({
       const rows = pill === 'all' ? inboxThreads(s) : chatThreads(s);
       return rows.find((t) => t.key === chatOpen && (pill === 'all' || t.app === pill));
     }
+    const carrierMessage = (m) => ({ ...m, text: m.body, me: m.out || !!m.ref,
+      pending: !!m.ref, mms: m.id?.startsWith('m'), source: 'carrier', transport: 'text' });
+    const googleOnly = (t) => googleMode(UI.state) && !!t?.googleSource;
     function projectContact(t) {
+      if (googleOnly(t)) {
+        // Google history alone, and this window's carrier sends that are still sending or failed.
+        const local = pending.filter((p) => p.contact === t.key && (p.status === 'sending' || p.status === 'failed'));
+        return interleaveMessages([...local.map(carrierMessage), ...t.googleSource.msgs.map((m) => ({ ...m, source: 'google' }))]);
+      }
       const texts = t.textThreads.flatMap((c) => carrierHistory.get(c.id)?.items || []);
       const local = pending.filter((p) => p.contact === t.key);
-      const messages = [...texts, ...local].map((m) => ({ ...m, text: m.body, me: m.out || !!m.ref,
-        pending: !!m.ref, mms: m.id?.startsWith('m'), source: 'carrier', transport: 'text' }));
+      const messages = [...texts, ...local].map(carrierMessage);
       for (const c of t.sources) {
         if (c.carrier) continue;
         if (c.msgs) {
@@ -547,7 +578,16 @@ UI.tab({
       }
       return interleaveMessages(messages);
     }
-    const canText = (t, image) => !!t?.dest && carrierSend(UI.state) && (!image || mmsOk());
+    // A carrier send: only for a conversation Google reported as SMS. Without a Google source, not
+    // while Google Messages is in use and the destination was last RCS or Google is still connecting.
+    const canText = (t, image) => {
+      if (!t?.dest || !carrierSend(UI.state) || (image && !mmsOk())) return false;
+      const google = googleOf(t);
+      if (google) return kindOf(google) === 'sms';
+      const gm = UI.state?.googleMessages;
+      return !(gm?.enabled && gm.state !== 'disconnected' &&
+        (lastKind.get(t.dest) === 'rcs' || ['connecting', 'signing-in', 'confirm'].includes(gm.state)));
+    };
     function sendContactText(t, text, image) {
       const sms = t.textThreads.length === 1 ? t.textThreads[0] : null;
       dispatchText([t.dest], text, image, chatSim.el, sms?.id, t.key);
@@ -604,7 +644,7 @@ UI.tab({
       }
       return null;
     }
-    const chatPictureAllowed = (t) => !!googleOf(t)?.reply || !!notificationReply(t, true) || canText(t, true);
+    const chatPictureAllowed = (t) => googleOf(t) ? !!googleOf(t).reply : !!notificationReply(t, true) || canText(t, true);
     const replyRefused = () => {
       gmError = tr('Reply here once the phone shows this chat’s notification again.');
       paintChats(UI.state, true);
@@ -642,11 +682,12 @@ UI.tab({
       const image = chatPic.get();
       if (!t || (!text && !image) || gmSend?.key === t.key) return;
       const google = googleOf(t);
-      if (!google?.reply) {
+      if (!google) {
         gmError = '';
         await sendFallback(t, text, image);
         return;
       }
+      if (!google.reply) return; // read-only: never a notification or carrier send
       if (!google.loaded || gmSend || gmBusy) return;
       const gm = UI.state.googleMessages;
       const epoch = chatEpoch;
@@ -700,6 +741,8 @@ UI.tab({
         gmRead = '';
         gmPhotos.clear();
       }
+      if (gm && gm.owner !== kindOwner) { kindOwner = gm.owner; lastKind.clear(); }
+      if (gm?.state === 'disconnected') lastKind.clear();
       paintAccount(gm);
       const ready = carrierReady(s);
       const on = !!s.ui?.chats || gm?.state === 'connected' ||
@@ -714,6 +757,7 @@ UI.tab({
         pill = 'texts';
       }
       const all = chatThreads(s);
+      const inbox = inboxThreads(s, all);
       if (chatsRow.setHint) chatsRow.setHint(chatsHint(!!s.chatsMessaging));
       if (on && parkedPill) { pill = parkedPill; parkedPill = ''; }
       if (on && !chosePill) pill = 'all';
@@ -729,7 +773,7 @@ UI.tab({
       layout.hidden = pill !== 'texts' || !UI.hubReady(s, 'messages');
       placeTransportLegend();
       if (pill === 'texts') return;
-      const shown = (pill === 'all' ? inboxThreads(s, all) : all.filter((t) => t.app === pill)).filter((t) =>
+      const shown = (pill === 'all' ? inbox : all.filter((t) => t.app === pill)).filter((t) =>
         matches(t.name, t.dest, t.addrs?.join(' '), snippetOf(t)) ||
         t.sources?.some((c) => matches(c.name, snippetOf(c))) || t.key === chatOpen);
       const t = shown.find((x) => x.key === chatOpen);
@@ -763,7 +807,7 @@ UI.tab({
         chatPic.clear();
         return;
       }
-      if (t.dest) {
+      if (t.dest && !googleOnly(t)) {
         for (const c of t.textThreads) {
           if (carrierHistory.has(c.id)) continue;
           carrierHistory.set(c.id, { items: [], more: false, loading: true });
@@ -790,9 +834,9 @@ UI.tab({
       }, 'small');
       del.classList.add('hub-del');
       del.title = tr('Delete this chat from the list here (it stays on the phone, and comes back with a new message)');
-      chatHead.replaceChildren(avatar(t.name, t.avatar, t.pkg), el('div', { class: 'hub-conv-title' }, [el('div', { class: 'hub-conv-name', text: t.name }), el('div', { class: 'hint', text: t.dest || (t.group ? tr('{app} · Group', { app: APP_NAME[t.app] || '' }) : (APP_NAME[t.app] || '')) })]), del);
+      chatHead.replaceChildren(avatar(t.name, t.avatar, t.pkg), el('div', { class: 'hub-conv-title' }, [el('div', { class: 'hub-conv-name', text: t.name }), el('div', { class: 'hint', text: t.dest || t.people?.map((p) => p.name).filter(Boolean).join(', ') || (t.group ? tr('{app} · Group', { app: APP_NAME[t.app] || '' }) : (APP_NAME[t.app] || '')) })]), del);
       const msgs = [];
-      const older = (t.textThreads || []).filter((c) => carrierHistory.get(c.id)?.more);
+      const older = googleOnly(t) ? [] : (t.textThreads || []).filter((c) => carrierHistory.get(c.id)?.more);
       if (google?.more || older.length) msgs.push(UI.button(tr('Earlier messages'), async () => {
         for (const c of older) {
           const h = carrierHistory.get(c.id);
@@ -852,7 +896,7 @@ UI.tab({
       const wasAtBottom = chatScroll.scrollHeight - chatScroll.scrollTop - chatScroll.clientHeight < 40;
       chatBubbles.replaceChildren(...msgs);
       if ((!google && !t.dest) || wasAtBottom) chatScroll.scrollTop = chatScroll.scrollHeight;
-      const canReply = google?.reply ? google.loaded
+      const canReply = google ? !!google.reply && google.loaded
         : canText(t, false) || !!notificationReply(t, false) || !!notificationReply(t, true);
       chatCompose.hidden = !canReply;
       chatNote.hidden = canReply;
@@ -860,7 +904,7 @@ UI.tab({
       chatPic.show(chatPictureAllowed(t));
       const sims = simOptions(s);
       chatSim.options(sims);
-      chatSim.el.hidden = !t.dest || !!google?.reply || !!notificationReply(t, !!chatPic.get()) || sims.length < 3;
+      chatSim.el.hidden = !t.dest || !!google || !!notificationReply(t, !!chatPic.get()) || sims.length < 3;
       if (google) {
         chatNote.textContent = google.loaded ? tr('This conversation is read-only.') : gmError ? '' : tr('Loading conversation…');
       } else chatNote.textContent = t.msgs || t.dest ? tr('Reply here once the phone shows this chat’s notification again.') : tr('Answer this one on the phone: its notification has no Reply.');
@@ -1005,6 +1049,27 @@ UI.tab({
       const addrs = openId === '' ? to.value.split(/[,;]/).map((x) => x.trim()).filter(Boolean) : (t && t.addrs) || [];
       const dest = addrs[0];
       if (!dest) return to.focus();
+      if (openId === '' && addrs.length === 1 && googleMode(UI.state)) {
+        // A known one-to-one Google conversation: open it in All with this text, never a new send.
+        const verified = destination(dest, nanp);
+        const known = verified ? inboxThreads(UI.state).filter((r) => {
+          const g = googleOf(r);
+          return g && !g.group && (r.dest || peerOf(r, nanp)) === verified;
+        }) : [];
+        if (known.length === 1) {
+          chosePill = true;
+          pill = 'all';
+          closeChat();
+          chatKey = '';
+          openChat(known[0]);
+          chatBox.value = text;
+          box.value = '';
+          pic.clear();
+          autosize();
+          paintChats(UI.state, true);
+          return;
+        }
+      }
       // Never a silent subset: an oversized or unresolved group is refused with its note, text kept.
       if (addrs.length > MAX_GROUP) { groupNote.hidden = false; return; }
       if (t?.unresolved || (t?.group && addrs.length < 2) || ((addrs.length > 1 || image) && !mmsOk())) return;
@@ -1173,6 +1238,7 @@ UI.tab({
       gmSend = null;
       gmError = '';
       gmWipeError = false;
+      lastKind.clear();
       resetCarrier();
       renderList();
       renderConv();
@@ -1208,6 +1274,7 @@ UI.tab({
         phoneSession = s.hub?.session;
         if (device) phoneDevice = device;
         if (otherPhone) {
+          lastKind.clear();
           closeChat();
           box.value = '';
           resetCarrier();
