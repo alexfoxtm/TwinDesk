@@ -1291,6 +1291,31 @@ test('hidden Google chats resume photos when shown and a stale download cannot b
   assert.equal(page.photos()[0].src, image);
 });
 
+test('reopening the same loaded Google chat replaces its stalled photo download', async () => {
+  const image = 'data:image/png;base64,AAAA';
+  const staleImage = 'data:image/png;base64,BBBB';
+  let finishFirst, firstView;
+  const stalled = new Promise((resolve) => { finishFirst = resolve; });
+  const page = photoFixture([{ id: 'photo', at: 1000, photos: [0] }], ({ photoView }) => {
+    if (page.requests.length === 1) firstView = photoView;
+    return photoView === firstView ? stalled : image;
+  });
+  page.rows()[0].onclick();
+  assert.equal(page.requests.length, 1);
+  assert.equal(page.photos()[0].src, undefined);
+
+  page.findPill('Texts').onclick();
+  page.findPill('All').onclick();
+  page.rows()[0].onclick();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.requests.length, 2);
+  assert.equal(page.photos()[0].src, image, 'the reopened chat must load before the first request finishes');
+
+  finishFirst(staleImage);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.photos()[0].src, image, 'the stale reply cannot replace the reopened photo');
+});
+
 test('a Google or carrier photo sizing in follows the bottom only for a reader still there', async () => {
   const image = 'data:image/png;base64,AAAA';
   const page = photoFixture([{ id: 'msg', at: 1000, photos: [0] }], () => image);

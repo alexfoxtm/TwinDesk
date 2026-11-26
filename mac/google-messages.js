@@ -234,6 +234,7 @@ class GoogleMessages {
     } else if (this.history?.chat !== chat) return false;
     const message = typeof arg.message === 'string' ? arg.message.slice(0, 200) : '';
     const part = Number.isInteger(arg.part) ? arg.part : 0;
+    const photoView = op === 'photo' && Number.isSafeInteger(arg.photoView) && arg.photoView > 0 ? arg.photoView : undefined;
     const text = typeof arg.text === 'string' ? arg.text.trim().slice(0, 5000) : '';
     const image = typeof arg.image === 'string' && arg.image.length <= 6000000 && arg.image.startsWith('data:image/jpeg;') && imageURL.test(arg.image) ? arg.image : '';
     if (op === 'send' && (!row.reply || (!text && !image) || (arg.image && !image))) return false;
@@ -247,7 +248,7 @@ class GoogleMessages {
       const timer = setTimeout(() => finish(false), 38000);
       this.pending.set(ref, { finish });
       const deadline = Date.now() + 35000;
-      child.stdin.write(JSON.stringify({ op, chat, message, part, text, image, ref, deadline }) + '\n', (err) => {
+      child.stdin.write(JSON.stringify({ op, chat, message, part, photoView, text, image, ref, deadline }) + '\n', (err) => {
         if (err) finish(false);
       });
     });

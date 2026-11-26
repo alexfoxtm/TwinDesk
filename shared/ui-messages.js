@@ -390,6 +390,7 @@ UI.tab({
     const gmPhotos = new Map();
     const gmPhotoFailures = new Set();
     let gmPhotoView = null;
+    let gmPhotoViewId = 0;
     let gmPhotoParts = [];
     let gmPhotoScrollTimer;
     const gmConnect = UI.button(tr('Connect Google Messages'), async () => {
@@ -591,7 +592,7 @@ UI.tab({
       if (!stillShowingGooglePhotos(view) || view.pending.has(key) || gmPhotos.has(key)) return;
       view.pending.add(key);
       gmPhotoFailures.delete(key);
-      const data = await gmAct('photo', { chat: view.chat, message, part });
+      const data = await gmAct('photo', { chat: view.chat, message, part, photoView: view.id });
       view.pending.delete(key);
       if (!stillShowingGooglePhotos(view)) return;
       if (typeof data === 'string' && data) {
@@ -861,7 +862,7 @@ UI.tab({
       }
       if (gmPhotoView && (gmPhotoView.key !== t?.key || gmPhotoView.chat !== google?.id)) clearGooglePhotos();
       if (google) {
-        gmPhotoView ??= { key: t.key, chat: google.id, owner: gm.owner, pending: new Set() };
+        gmPhotoView ??= { id: ++gmPhotoViewId, key: t.key, chat: google.id, owner: gm.owner, pending: new Set() };
         gmPhotoView.epoch = chatEpoch;
       }
       const messages = t?.dest ? projectContact(t) : t?.msgs || [];

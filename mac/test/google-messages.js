@@ -40,6 +40,12 @@ test('Google Messages scopes the inbox and invalidates it on helper outage or Di
   event({ type: 'result', ref: sent.at(-1).ref, ok: true });
   assert.equal(await opened, true);
   assert.equal(gm.view().history.items.length, 1);
+  const photo = gm.action({ op: 'photo', owner, chat: 'thread', message: 'message', part: 0, photoView: 17 });
+  assert.equal(sent.at(-1).photoView, 17, 'the helper can distinguish visits to cached history');
+  const image = 'data:image/png;base64,AAAA';
+  event({ type: 'photo', chat: 'thread', ref: sent.at(-1).ref, data: image });
+  assert.equal(await photo, image);
+  assert.equal(gm.view().history.items.length, 1);
 
   const send = { op: 'send', owner, chat: 'thread', text: 'fixture', allowCarrier: true };
   const dispatched = gm.action(send);

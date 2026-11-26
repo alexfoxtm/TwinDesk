@@ -25,6 +25,54 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
+func TestReopeningSameHistoryCancelsPreviousPhotoView(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in, write := io.Pipe()
+	defer in.Close()
+	defer write.Close()
+	commands := make(chan command)
+	go readCommands(ctx, bufio.NewScanner(in), commands)
+	deadline := time.Now().Add(time.Minute).UnixMilli()
+	send := func(op string, view int) command {
+		t.Helper()
+		if _, err := fmt.Fprintf(write, "{\"op\":%q,\"chat\":\"same\",\"photoView\":%d,\"deadline\":%d}\n", op, view, deadline); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case cmd := <-commands:
+			return cmd
+		case <-time.After(time.Second):
+			t.Fatal("command reader did not forward " + op)
+			return command{}
+		}
+	}
+	send("history", 0)
+	first := send("photo", 1)
+	download, finish := first.callContext(ctx)
+	defer finish()
+	send("photo", 1)
+	if download.Err() != nil {
+		t.Fatal("another photo in the same view canceled the download")
+	}
+	reopened := send("photo", 2)
+	queued, finishQueued := first.callContext(ctx)
+	defer finishQueued()
+	if !errors.Is(queued.Err(), context.Canceled) {
+		t.Fatal("reopening loaded history left the old download eligible to run")
+	}
+	select {
+	case <-download.Done():
+	case <-time.After(time.Second):
+		t.Fatal("reopening loaded history did not interrupt the running download")
+	}
+	next, finishNext := reopened.callContext(ctx)
+	defer finishNext()
+	if next.Err() != nil {
+		t.Fatal("the reopened view inherited cancellation from the previous visit")
+	}
+}
+
 func TestPairingDetailsUseComputerNameAndDesktopAppType(t *testing.T) {
 	for _, tc := range []struct{ computer, label string }{
 		{"Mac Studio\n", "TwinDesk (Mac Studio)"},

@@ -118,6 +118,7 @@ type command struct {
 	Ref      int               `json:"ref"`
 	Deadline int64             `json:"deadline"`
 
+	PhotoView    int64 `json:"photoView"`
 	photoContext context.Context
 }
 
@@ -824,22 +825,24 @@ func run(ctx context.Context, auth *libgm.AuthData, commands <-chan command, out
 	}
 }
 
-// Cancel downloads when new history is requested, before the command reaches the serial inbox.
-// The HTTP media reader takes this context, so switching chats can interrupt a slow download.
+// Cancel old downloads before the serial inbox dispatches a new history or photo view.
+// A reopened chat may use cached history, so its next photo still signals the change.
 func readCommands(ctx context.Context, in *bufio.Scanner, commands chan<- command) {
 	photos, cancelPhotos := context.WithCancel(ctx)
 	defer func() { cancelPhotos() }()
+	var photoView int64
 	for in.Scan() {
 		var cmd command
 		if json.Unmarshal(in.Bytes(), &cmd) != nil {
 			continue
 		}
-		switch cmd.Op {
-		case "history":
+		if cmd.Op == "history" || (cmd.Op == "photo" && cmd.PhotoView > 0 && cmd.PhotoView != photoView) {
 			cancelPhotos()
 			nextPhotos, cancelNextPhotos := context.WithCancel(ctx)
 			photos, cancelPhotos = nextPhotos, cancelNextPhotos
-		case "photo":
+			photoView = cmd.PhotoView
+		}
+		if cmd.Op == "photo" {
 			cmd.photoContext = photos
 		}
 		select {
