@@ -103,7 +103,8 @@ function interleaveMessages(messages) {
   return messages.filter((_, i) => !dropped.has(i)).sort((a, b) => a.at - b.at);
 }
 
-const transportLabel = (kind) => kind === 'text' ? tr('Text') : kind === 'rcs' ? tr('RCS') : tr('Unknown transport');
+// Colour is the transport class. Text, RCS and Unknown are not drawn on the bubble.
+const transportClass = (kind) => kind === 'text' || kind === 'rcs' ? ' ' + kind : '';
 
 // A picture picked here as a JPEG data: URL, at most 1600 px and about 4 MB (the phone makes it
 // fit the carrier's MMS limit). On white: a transparent PNG's clear parts don't turn black.
@@ -259,7 +260,8 @@ UI.tab({
       renderConv();
     }, 'small');
     delText.title = tr('Delete this conversation from the list here (it stays on the phone, and comes back with a new message)');
-    const layout = el('div', { class: 'card hub-msgs' }, [el('div', { class: 'hub-side' }, [el('div', { class: 'hub-side-head' }, [textSearch, newBtn]), list]), conv, empty]);
+    const textSideHead = el('div', { class: 'hub-side-head' }, [textSearch, newBtn]);
+    const layout = el('div', { class: 'card hub-msgs' }, [el('div', { class: 'hub-side' }, [textSideHead, list]), conv, empty]);
     // ---- chat apps in one inbox (the switch here, settings.ui.chats): pills on top ----
     // Texts are the phone's SMS and MMS (above); the chat apps are their conversations as the phone
     // sends them (s.chats: shared/chats.js), kept here, or with an older phone their notifications
@@ -333,7 +335,15 @@ UI.tab({
       paintChats(UI.state, true);
       openNew();
     }, 'small');
-    const chatLayout = el('div', { class: 'card hub-msgs' }, [el('div', { class: 'hub-side' }, [el('div', { class: 'hub-side-head' }, [chatSearch, chatNew]), chatList]), chatConv, chatEmpty]);
+    const chatSideHead = el('div', { class: 'hub-side-head' }, [chatSearch, chatNew]);
+    const chatLayout = el('div', { class: 'card hub-msgs' }, [el('div', { class: 'hub-side' }, [chatSideHead, chatList]), chatConv, chatEmpty]);
+    // One legend for whichever list is open. Swatches use the outgoing SMS and RCS fills.
+    const transportLegend = el('div', { class: 'hub-transport-legend' }, [
+      el('span', { class: 'hub-transport-key' }, [el('span', { class: 'hub-swatch text', attrs: { 'aria-hidden': 'true' } }), el('span', { text: tr('SMS') })]),
+      el('span', { class: 'hub-transport-key' }, [el('span', { class: 'hub-swatch rcs', attrs: { 'aria-hidden': 'true' } }), el('span', { text: tr('RCS') })]),
+    ]);
+    const placeTransportLegend = () => (pill === 'texts' ? textSideHead : chatSideHead).append(transportLegend);
+    textSideHead.append(transportLegend);
     let chatOpen = '';
     let chatDraft = null; // {key, offer}: the notification offer a draft started on
     let openContact = null;
@@ -708,6 +718,7 @@ UI.tab({
       chatNew.hidden = pill !== 'all' || !carrierSend(s);
       chatLayout.hidden = pill === 'texts';
       layout.hidden = pill !== 'texts' || !UI.hubReady(s, 'messages');
+      placeTransportLegend();
       if (pill === 'texts') return;
       const shown = (pill === 'all' ? inboxThreads(s, all) : all.filter((t) => t.app === pill)).filter((t) =>
         matches(t.name, t.dest, t.addrs?.join(' '), snippetOf(t)) ||
@@ -727,17 +738,14 @@ UI.tab({
         Object.keys((s.notifs || {}).historyIcons || {}).length]);
       if (k === chatKey) return;
       chatKey = k;
-      const rows = shown.map((row) => {
-        const prefix = row.carrier || row.newest?.carrier ? tr('Texts') : APP_NAME[row.newest?.app || row.app] || '';
-        return threadRow(row.name, row.at, [prefix, snippetOf(row)].filter(Boolean).join(' · '), row.key === chatOpen, () => {
+      const rows = shown.map((row) => threadRow(row.name, row.at, snippetOf(row), row.key === chatOpen, () => {
           if (!row.carrier) { openChat(row); return; }
           closeChat();
           chosePill = true;
           pill = 'texts';
           paintChats(UI.state);
           openThread(row.id);
-        }, row.avatar, row.pkg);
-      });
+        }, row.avatar, row.pkg));
       chatList.replaceChildren(...rows);
       if (!rows.length) chatList.append(el('div', { class: 'hub-empty', text: query ? tr('Nothing found') : !synced(s) && !s.notifs?.receive && !ready ? tr('Turn on Notifications to see chats here') : tr('No chats yet. They show here as messages arrive.') }));
       chatConv.hidden = !t;
@@ -796,7 +804,7 @@ UI.tab({
       for (const m of messages) {
         const day = new Date(m.at).toDateString();
         if (day !== lastDay) { lastDay = day; msgs.push(el('div', { class: 'hub-day', text: UI.clock(m.at) })); }
-        msgs.push(el('div', { class: `hub-bubble ${m.me ? 'out' : 'in'}${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
+        msgs.push(el('div', { class: `hub-bubble ${m.me ? 'out' : 'in'}${transportClass(m.transport)}${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
           t.group && !m.me && m.from ? el('div', { class: 'hub-from', text: m.from }) : null,
           ...(m.source === 'carrier' ? textPictures(m) : []),
           ...(google ? (m.photos || []).map((part) => {
@@ -819,7 +827,6 @@ UI.tab({
           }) : []),
           m.pic ? el('div', { class: 'hub-text', text: tr('Picture') }) : null,
           m.text ? el('div', { class: 'hub-text', text: m.text }) : null,
-          t.dest || t.app === 'rcs' ? el('div', { class: 'hub-status', text: transportLabel(m.transport) }) : null,
           textStatus(m),
           m.receipt ? el('div', { class: 'hub-status', text: m.receipt === 'read' ? tr('Read') : tr('Delivered') }) : null,
           m.pic && m.pic !== 'sent' ? el('div', { class: 'hub-status', text: m.pic === 'sending' ? tr('Sending…') : m.pic === 'opened' ? tr('Open on the phone: tap Send there') : m.error ? tr('Not sent: {error}', { error: tr(m.error) }) : tr('Not sent') }) : null,
@@ -827,7 +834,6 @@ UI.tab({
       }
       for (const h of t.msgs || t.dest ? [] : t.items.slice().reverse()) {
         msgs.push(el('div', { class: 'hub-bubble in' }, [el('div', { text: h.body || h.subtitle || '' }),
-          t.app === 'rcs' ? el('div', { class: 'hub-status', text: transportLabel() }) : null,
           el('div', { class: 'hub-status', text: UI.clock(h.at) })]));
         for (const r of h.replies || []) msgs.push(el('div', { class: 'hub-bubble out' }, [el('div', { text: r.text }), el('div', { class: 'hub-status', text: UI.clock(r.at) })]));
       }
@@ -939,11 +945,10 @@ UI.tab({
       for (const m of shown) {
         const day = new Date(m.at).toDateString();
         if (day !== lastDay) { lastDay = day; nodes.push(el('div', { class: 'hub-day', text: UI.clock(m.at) })); }
-        nodes.push(el('div', { class: `hub-bubble ${m.out ? 'out' : 'in'}${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
+        nodes.push(el('div', { class: `hub-bubble ${m.out ? 'out' : 'in'} text${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
           group && !m.out && (m.fromName || m.from) ? el('div', { class: 'hub-from', text: m.fromName || m.from }) : null,
           ...textPictures(m),
           m.body ? el('div', { class: 'hub-text', text: m.body }) : null,
-          el('div', { class: 'hub-status', text: transportLabel('text') }),
           textStatus(m),
         ]));
       }
@@ -1152,6 +1157,7 @@ UI.tab({
     UI.onDeviceChange(() => { // another device: its conversations, not the previous one's
       pill = 'texts';
       chosePill = false;
+      placeTransportLegend();
       closeChat();
       chatKey = '';
       gmSend = null;

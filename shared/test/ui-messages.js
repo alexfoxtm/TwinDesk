@@ -12,14 +12,27 @@ function inbox(state, api = {}, globals = {}) {
   const received = new Map();
   const asked = [];
   const replies = [];
+  const parents = new WeakMap();
   const el = (tag, props = {}, children = []) => ({
     tag, ...props, children: children.filter(Boolean), attrs: { ...props.attrs },
     style: {}, dataset: {}, classList: { add() {}, toggle() {} },
     addEventListener(type, fn) { this.listeners = this.listeners || {}; (this.listeners[type] = this.listeners[type] || []).push(fn); },
     focus() {}, querySelectorAll() { return []; },
     setAttribute(key, value) { this.attrs[key] = value; },
-    append(...nodes) { this.children.push(...nodes); },
-    replaceChildren(...nodes) { this.children = nodes; },
+    append(...nodes) {
+      // DOM append moves a node. The legend is one element, not a copy on each list.
+      for (const node of nodes) {
+        const parent = node && typeof node === 'object' ? parents.get(node) : undefined;
+        if (parent && parent !== this) parent.children = parent.children.filter((child) => child !== node);
+        if (node && typeof node === 'object') parents.set(node, this);
+        this.children.push(node);
+      }
+    },
+    replaceChildren(...nodes) {
+      for (const child of this.children) if (child && typeof child === 'object') parents.delete(child);
+      this.children = nodes;
+      for (const node of nodes) if (node && typeof node === 'object') parents.set(node, this);
+    },
   });
   let tab;
   const UI = {
@@ -71,10 +84,10 @@ test('Messages opens on All for recent notification chats and keeps the carrier 
   paint(state);
   received.get('sms.threads')({ items: [{ id: '42', at: 1000, name: 'Carrier fixture', snippet: 'Old SMS', addrs: ['2025550100'] }] });
   assert.equal(findPill('All').attrs['aria-selected'], 'true');
-  assert.deepEqual(Array.from(rows(), snippet), ['Chat · New chat', 'Texts · Old SMS']);
+  assert.deepEqual(Array.from(rows(), snippet), ['New chat', 'Old SMS']);
   assert.equal(rows()[0].children[1].children[0].children[1].text, '2000');
   findPill('Messages (Chat)').onclick();
-  assert.deepEqual(Array.from(rows(), snippet), ['Chat · New chat']);
+  assert.deepEqual(Array.from(rows(), snippet), ['New chat']);
   rows()[0].onclick();
   const composer = chat.children[1].children[3];
   const replyBox = composer.children[2].children[1];
@@ -149,13 +162,13 @@ test('keeps RCS notification history without structured messaging, and hides it 
   const rows = () => chat.children[0].children[1].children;
   const snippet = (row) => row.children[1].children[1].text;
   paint(state);
-  assert.deepEqual(Array.from(rows(), snippet), ['Chat · RCS from history', 'WhatsApp · WA']);
+  assert.deepEqual(Array.from(rows(), snippet), ['RCS from history', 'WA']);
   assert.equal(findPill('Messages (Chat)').hidden, false);
   state.chatsMessaging = true;
   paint(state);
   assert.equal(findPill('Messages (Chat)').hidden, true, 'structured messaging replaces the history fallback');
   findPill('All').onclick();
-  assert.deepEqual(Array.from(rows(), snippet), ['WhatsApp · WA']);
+  assert.deepEqual(Array.from(rows(), snippet), ['WA']);
 });
 
 test('All joins one-to-one history by verified destination and keeps group and ambiguous messages intact', () => {
@@ -189,7 +202,7 @@ test('All joins one-to-one history by verified destination and keeps group and a
       ] },
     },
   };
-  const { received, asked, paint, chat, rows, findPill } = inbox(state, { googleMessages: async () => true });
+  const { received, asked, paint, texts, chat, rows, findPill } = inbox(state, { googleMessages: async () => true });
   paint(state);
   received.get('sms.threads')({ nanp: true, items: [
     { id: 'carrier', addrs: ['2025550100'], name: 'Fixture carrier', at: at + 300, snippet: 'Repeated' },
@@ -209,15 +222,94 @@ test('All joins one-to-one history by verified destination and keeps group and a
     .filter((node) => node.class?.startsWith('hub-bubble'))
     .map((node) => Array.from(node.children, (child) => child.text));
   assert.deepEqual(visible(), [
-    ['Carrier only', 'Text'], ['Shared text', 'Text'], ['Repeated', 'Text'],
-    ['Repeated', 'Text'], ['Repeated', 'Text'], ['Notification-only text', 'Unknown transport'], ['Paired RCS', 'RCS'],
+    ['Carrier only'], ['Shared text'], ['Repeated'],
+    ['Repeated'], ['Repeated'], ['Notification-only text'], ['Paired RCS'],
   ]);
+  const bubbleNodes = () => Array.from(chat.children[1].children[1].children[0].children)
+    .filter((node) => node.class?.startsWith('hub-bubble'));
+  assert.deepEqual(bubbleNodes().map((node) => node.class), [
+    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text',
+    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in', 'hub-bubble in rcs',
+  ]);
+  const legendOf = (root) => root.children[0].children[0].children.find((node) => node.class === 'hub-transport-legend');
+  assert.equal(Array.from(legendOf(chat).children, (key) => key.children[1].text).join(), 'SMS,RCS');
+  assert.deepEqual(Array.from(legendOf(chat).children, (key) => key.children[0].class), ['hub-swatch text', 'hub-swatch rcs']);
+  assert.equal(legendOf(texts), undefined);
   state.googleMessages = null;
   paint(state);
   assert.deepEqual(visible(), [
-    ['Carrier only', 'Text'], ['Shared text', 'Text'], ['Repeated', 'Text'], ['Repeated', 'Text'],
-    ['Notification-only text', 'Unknown transport'],
+    ['Carrier only'], ['Shared text'], ['Repeated'], ['Repeated'],
+    ['Notification-only text'],
   ], 'the same carrier and notification row works without a Mac helper');
+  assert.deepEqual(bubbleNodes().map((node) => node.class), [
+    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in',
+  ]);
+});
+
+test('bubbles keep transport classes and hub status without transport labels, with one SMS and RCS legend', () => {
+  const phone = 'fixture-phone';
+  const dest = '+12025550100';
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: phone, session: 1, messages: true, perm: { messages: { mms: true } } },
+    googleMessages: {
+      owner: phone, state: 'connected', enabled: true,
+      rows: [{ id: 'paired', name: 'Fixture paired', addrs: [dest], at: 2000 }],
+      history: { chat: 'paired', loaded: true, items: [
+        { id: 'in-rcs', at: 1000, text: 'In RCS', me: false, transport: 'rcs' },
+        { id: 'out-rcs', at: 1100, text: 'Out RCS', me: true, transport: 'rcs' },
+        { id: 'in-sms', at: 1200, text: 'In SMS', me: false, transport: 'text' },
+        { id: 'out-sms', at: 1300, text: 'Out SMS', me: true, transport: 'text' },
+        { id: 'in-unknown', at: 1400, text: 'In unknown', me: false },
+        { id: 'out-unknown', at: 1500, text: 'Out unknown', me: true, transport: 'other' },
+        { id: 'failed-rcs', at: 1600, text: 'Failed RCS', me: true, transport: 'rcs', status: 'failed', error: 'No service' },
+      ] },
+    },
+  };
+  const { received, paint, texts, chat, rows, findPill } = inbox(state, { googleMessages: async () => true });
+  paint(state);
+  rows()[0].onclick();
+  const bubbles = () => Array.from(chat.children[1].children[1].children[0].children)
+    .filter((node) => String(node.class || '').startsWith('hub-bubble'));
+  assert.deepEqual(bubbles().map((node) => node.class), [
+    'hub-bubble in rcs',
+    'hub-bubble out rcs',
+    'hub-bubble in text',
+    'hub-bubble out text',
+    'hub-bubble in',
+    'hub-bubble out',
+    'hub-bubble out rcs failed',
+  ]);
+  const transportWords = new Set(['Text', 'RCS', 'Unknown transport']);
+  assert.equal(bubbles().some((node) => node.children.some((child) => transportWords.has(child.text))), false);
+  assert.deepEqual(Array.from(bubbles().at(-1).children, (child) => child.text), ['Failed RCS', 'Not sent: No service']);
+  const legendOf = (root) => root.children[0].children[0].children.find((node) => node.class === 'hub-transport-legend');
+  const legend = legendOf(chat);
+  assert.equal(legendOf(texts), undefined);
+  assert.deepEqual(Array.from(legend.children, (key) => [key.children[0].class, key.children[1].text]), [
+    ['hub-swatch text', 'SMS'],
+    ['hub-swatch rcs', 'RCS'],
+  ]);
+  assert.equal(legend.children.length, 2);
+  received.get('sms.threads')({ items: [{ id: 'sms1', addrs: ['+12025550199'], name: 'Fixture texts', at: 50, snippet: 'List snippet' }] });
+  findPill('Texts').onclick();
+  assert.equal(legendOf(chat), undefined);
+  assert.equal(legendOf(texts), legend);
+  texts.children[0].children[1].children[0].onclick();
+  received.get('sms.thread')({ id: 'sms1', items: [
+    { id: 'bad', at: 300, body: 'Failed text', out: true, status: 'failed', error: 'No service' },
+    { id: 'out', at: 200, body: 'Out text', out: true },
+    { id: 'in', at: 100, body: 'In text', out: false },
+  ] });
+  const textBubbles = () => Array.from(texts.children[1].children[1].children.find((node) => node.class === 'hub-bubbles').children)
+    .filter((node) => String(node.class || '').startsWith('hub-bubble'));
+  assert.deepEqual(textBubbles().map((node) => node.class), [
+    'hub-bubble in text',
+    'hub-bubble out text',
+    'hub-bubble out text failed',
+  ]);
+  assert.equal(textBubbles().some((node) => node.children.some((child) => transportWords.has(child.text))), false);
+  assert.ok(textBubbles().at(-1).children.some((child) => child.text === 'Not sent: No service'));
 });
 
 test('one reply uses its exact Google conversation or an independently verified carrier route', async () => {
@@ -521,7 +613,7 @@ test('a structured conversation fully matched to carrier history keeps its live 
   assert.equal(rows().length, 1);
   rows()[0].onclick();
   received.get('sms.thread')({ id: 'carrier', items: [{ id: 's1', at: 100, body: 'Shared text' }] });
-  assert.deepEqual(bubbleTexts(chat), [['Shared text', 'Text']], 'no duplicated history');
+  assert.deepEqual(bubbleTexts(chat), [['Shared text']], 'no duplicated history');
   const composer = chat.children[1].children[3];
   composer.children[2].children[1].value = 'Synthetic reply';
   fire(composer.children[2].children[1], 'input');

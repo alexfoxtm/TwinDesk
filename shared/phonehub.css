@@ -87,6 +87,31 @@
 .hub-bubble.in { align-self: flex-start; background: var(--track-off); border-bottom-left-radius: 5px; }
 .hub-bubble.out { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 5px; }
 .hub-bubble.failed { background: var(--bad); }
+/* Known SMS/MMS (.text) and RCS (.rcs). Unknown stays on .in / .out, and .failed stays on --bad.
+   Outgoing ink is #1d1d1f: #fff is 3.65:1 on --accent #0a84ff, under 4.5:1. Incoming is 22% of
+   the same token on --card, with --text. Status and sender names inherit that ink at full opacity
+   because the 0.8 status fade drops #1d1d1f on #0a84ff to 3.59:1. */
+.hub-bubble.in:not(.failed).rcs {
+  background: color-mix(in srgb, var(--accent) 22%, var(--card));
+  color: var(--text);
+}
+.hub-bubble.out:not(.failed).rcs,
+.hub-swatch.rcs { background: var(--accent); }
+.hub-bubble.in:not(.failed).text {
+  background: color-mix(in srgb, var(--good) 22%, var(--card));
+  color: var(--text);
+}
+.hub-bubble.out:not(.failed).text,
+.hub-swatch.text { background: var(--good); }
+.hub-bubble.out:not(.failed).rcs,
+.hub-bubble.out:not(.failed).text { color: #1d1d1f; }
+.hub-bubble.rcs:not(.failed) .hub-status,
+.hub-bubble.text:not(.failed) .hub-status,
+.hub-bubble.rcs:not(.failed) .hub-from,
+.hub-bubble.text:not(.failed) .hub-from { color: inherit; opacity: 1; }
+.hub-transport-legend { order: -1; display: flex; align-items: center; gap: 8px; flex: none; font-size: 11px; line-height: 1; color: var(--text); }
+.hub-transport-key { display: inline-flex; align-items: center; gap: 4px; }
+.hub-swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 .hub-from { font-size: 11px; font-weight: 600; color: var(--muted); }
 .hub-status { font-size: 11px; opacity: 0.8; }
 .hub-pic { max-width: 260px; max-height: 260px; border-radius: 10px; background: rgba(0, 0, 0, 0.08); min-width: 60px; min-height: 60px; }
