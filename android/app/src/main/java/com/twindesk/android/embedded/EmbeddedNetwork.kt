@@ -11,6 +11,7 @@ import com.twindesk.android.Store
 import org.json.JSONObject
 import java.io.File
 import java.net.URI
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -33,9 +34,12 @@ internal class EmbeddedNetwork(context: Context, private val store: Store, priva
     private var loginRequested = false
     @Volatile private var loginAttempt = 0L
     private var ticker: ScheduledFuture<*>? = null
+    private var restoreAttempted = false
 
     @Synchronized
     fun restore() {
+        if (restoreAttempted) return
+        restoreAttempted = true
         if (store.flag(ENABLED, false) && !desired) start(false)
     }
 
@@ -89,7 +93,8 @@ internal class EmbeddedNetwork(context: Context, private val store: Store, priva
     }
 
     @Synchronized
-    fun stop(signOut: Boolean) {
+    fun stop(signOut: Boolean, goodbye: CompletableFuture<Unit>? = null) {
+        restoreAttempted = true
         desired = false
         val current = ++generation
         val remembered = !signOut || store.setEmbeddedEnabled(false)
@@ -99,6 +104,9 @@ internal class EmbeddedNetwork(context: Context, private val store: Store, priva
             ticker = null
             loginRequested = false
             loginAttempt++
+            // UI / route admission stopped above. Give the detached WebSocket a bounded chance
+            // to drain its BYE before stopping the native node that carries it.
+            runCatching { goodbye?.get(1, TimeUnit.SECONDS) }
             val reply = if (signOut) call("logout", "dir" to dir.path, "role" to "android") else call("stop")
             interfaces.stop()
             started = false

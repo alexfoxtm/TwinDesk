@@ -743,14 +743,20 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         }
         let name = host?.name ?? tr("The computer")
         switch code {
-        case Proto.E.badToken: message = tr("{name} forgot this {device}. Pair again.", ["name": name, "device": Device.word])
+        case Proto.E.badToken:
+            if viaTailnet {
+                message = tr("Scan the Tailscale pairing QR code from Connection on the Mac.")
+                if let h = host { store.clearTailnetBinding(h, list) }
+            } else {
+                message = tr("{name} forgot this {device}. Pair again.", ["name": name, "device": Device.word])
+                if let h = host { store.forgetHost(h.id, list) }
+            }
         case Proto.E.busy: message = m.str("message").isEmpty ? tr("Busy with another device") : m.str("message")
         case Proto.E.replaced: message = m.str("message").isEmpty ? tr("Another device connected") : m.str("message")
         case Proto.E.released: message = tr("Disconnected from {name}", ["name": name])
         case Proto.E.asleep: message = tr("{name} is asleep", ["name": name])
         default: message = tr("Closed ({code})", ["code": code])
         }
-        if code == Proto.E.badToken, let h = host { store.forgetHost(h.id, list) }
         if viaTailnet, [Proto.E.badToken, Proto.E.busy, Proto.E.replaced, Proto.E.released, Proto.E.asleep].contains(code) {
             onClose(nil)
         }

@@ -476,11 +476,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
     @Synchronized
     internal fun stopEmbedded(signOut: Boolean) {
         synchronized(store) {
-            if (embeddedTargetId != null || link.embedded || returnEmbeddedNode() != null) {
+            val goodbye = if (embeddedTargetId != null || link.embedded || returnEmbeddedNode() != null) {
                 stopReturn()
                 link.disconnectEmbedded()
-            }
-            embeddedNetwork.stop(signOut)
+            } else null
+            embeddedNetwork.stop(signOut, goodbye)
         }
     }
 

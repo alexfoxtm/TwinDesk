@@ -24,6 +24,7 @@ import org.json.JSONObject
 import java.net.Inet4Address
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -33,6 +34,7 @@ import javax.net.ssl.X509TrustManager
 private const val FALLBACK_MS = 5000L // on the network this long, answering: its Bluetooth fallback goes (dropAlt)
 private const val ANSWERING_MS = 3000L // … answering = something came through it this recently
 private const val CONNECT_TIMEOUT_MS = 5000L
+private const val EMBEDDED_GOODBYE_DRAIN_MS = 400L
 private const val RESUME_BACKOFF_MS = 8000L
 private const val MAX_LAN_ADDRESSES = 4
 // Quiet links (shared/quiet.js): the same numbers as the computers'.
@@ -385,18 +387,23 @@ class Link(
         }, CONNECT_TIMEOUT_MS + Proto.TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
 
-    internal fun disconnectEmbedded(id: String? = null) {
-        val dial = embeddedDial ?: return
-        if (id != null && (dial.offer?.id ?: host?.id) != id) return
+    internal fun disconnectEmbedded(id: String? = null): CompletableFuture<Unit> {
+        val dial = embeddedDial ?: return CompletableFuture.completedFuture(Unit)
+        if (id != null && (dial.offer?.id ?: host?.id) != id) return CompletableFuture.completedFuture(Unit)
+        val drained = CompletableFuture<Unit>()
         dial.cancelled = true
         parting = true
         run {
-            if (embeddedDial !== dial) return@run
-            if (helloSent || connected) raw(msg(Proto.T.BYE))
+            if (embeddedDial !== dial) {
+                drained.complete(Unit)
+                return@run
+            }
+            val goodbye = (helloSent || connected) && ws?.send(msg(Proto.T.BYE).toString()) == true
             pair = null
-            closeSocket()
+            closeSocket(drainEmbedded = goodbye) { drained.complete(Unit) }
             setState("idle", "")
         }
+        return drained
     }
 
     // Core's Bluetooth tick looks up discovery for the current host on this executor. Offers and
@@ -443,12 +450,13 @@ class Link(
     fun disconnect() {
         parting = true
         run {
+            var goodbye = false
             if (state == "connected" || helloSent) {
                 host?.let { connectionObservations.closed(it.id, it.fp, "local", false, System.currentTimeMillis()) }
-                raw(msg(Proto.T.BYE))
+                goodbye = ws?.send(msg(Proto.T.BYE).toString()) == true
             }
             if (embedded) pair = null
-            closeSocket()
+            closeSocket(drainEmbedded = goodbye)
             setState("idle", "")
         }
     }
@@ -1388,8 +1396,9 @@ class Link(
         dial.bridge?.let(dial.network::release)
     }
 
-    private fun closeSocket() {
-        val wasEmbedded = embedded
+    private fun closeSocket(drainEmbedded: Boolean = false, onDrained: () -> Unit = {}) {
+        val dial = embeddedDial
+        val wasEmbedded = dial != null
         cancelBeat()
         helloTimer?.cancel(false)
         reclaimHello = false
@@ -1397,7 +1406,7 @@ class Link(
         helloSent = false
         val w = ws
         ws = null
-        closeEmbedded()
+        embeddedDial = null
         appsReady = false
         netemDial = null
         fxToken = ""
@@ -1407,7 +1416,23 @@ class Link(
         dropOthers()
         val wasConnected = state == "connected"
         if (wasConnected) state = "idle"
-        if (wasEmbedded) w?.cancel() else w?.close(1000, null)
+        if (dial != null) {
+            // Detach authority now. The old socket may only drain its already-queued frames.
+            if (drainEmbedded && w != null && w.close(1000, null)) {
+                exec.schedule({
+                    w.cancel()
+                    dial.bridge?.let(dial.network::release)
+                    onDrained()
+                }, EMBEDDED_GOODBYE_DRAIN_MS, TimeUnit.MILLISECONDS)
+            } else {
+                w?.cancel()
+                dial.bridge?.let(dial.network::release)
+                onDrained()
+            }
+        } else {
+            w?.close(1000, null)
+            onDrained()
+        }
         if (wasConnected) host?.let {
             if (wasEmbedded) events.onEmbeddedClosed(it, "local") else events.onClosed(it, "local")
         }

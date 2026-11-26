@@ -114,6 +114,22 @@ final class Store {
         return hosts[index]
     }
 
+    // An embedded rejection revokes only this exact transport binding, not the LAN pairing.
+    func clearTailnetBinding(_ expected: Computer, _ list: String = "hosts") {
+        lock.lock(); defer { lock.unlock() }
+        var saved = readHosts(list)
+        guard let node = expected.tailnetNode, let index = saved.firstIndex(where: {
+            $0.id == expected.id && $0.fp == expected.fp && $0.token == expected.token && $0.tailnetNode == node
+        }) else { return }
+        saved[index].tailnetNode = nil
+        writeHosts(saved, list)
+        // A failed embedded return doesn't automatically reconnect over LAN.
+        if list == "hosts", lastHostId == expected.id, flag("lastHostTailnet", false) {
+            lastHostId = nil
+            setFlag("lastHostTailnet", false)
+        }
+    }
+
     func forgetHost(_ id: String, _ list: String = "hosts") {
         lock.lock(); defer { lock.unlock() }
         writeHosts(readHosts(list).filter { $0.id != id }, list)
