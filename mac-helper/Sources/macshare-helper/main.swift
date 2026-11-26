@@ -304,7 +304,15 @@ func handle(_ line: String) {
     let frontBundleId = front?.bundleIdentifier ?? ""
     let overview = injector.remoteOverview
     helperWorkQueue.async {
-      reply(id, OtpTargetController.shared.fill(code: code, token: token, frontPid: frontPid, frontBundleId: frontBundleId, remoteOverview: overview))
+      let result = OtpTargetController.shared.fill(
+        code: code, token: token, frontPid: frontPid, frontBundleId: frontBundleId, remoteOverview: overview
+      ) {
+        DispatchQueue.main.sync {
+          let current = NSWorkspace.shared.frontmostApplication
+          return !injector.remoteOverview && current?.processIdentifier == frontPid && current?.bundleIdentifier == frontBundleId
+        }
+      }
+      reply(id, result)
     }
   case "notifWatch":
     NotifWatch.shared.set(on: (msg["on"] as? Bool) ?? false) { readable in

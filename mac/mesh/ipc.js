@@ -884,9 +884,14 @@ function setupIpc(ctx) {
     if (typeof id !== 'string' || !id || !ctx.notifs?.useOtp) return { ok: false, mode: 'refused' };
     return ctx.notifs.useOtp(id);
   });
-  ipcMain.handle('qrPair', (_event, route) => (ctx.qrPair ? ctx.qrPair(route) : { url: '' }));
-  ipcMain.handle('embeddedTailnet', (_event, op) => {
-    const net = ctx.embeddedTailnet;
+  const fromControl = ({ sender, senderFrame }) =>
+    senderFrame && senderFrame === sender.mainFrame && senderFrame.url.split(/[?#]/, 1)[0] === controlURL;
+  ipcMain.handle('qrPair', (event, route) => {
+    if (!ctx.qrPair || (route === 'embedded-tailnet' && !fromControl(event))) return { url: '' };
+    return ctx.qrPair(route);
+  });
+  ipcMain.handle('embeddedTailnet', (event, op) => {
+    const net = fromControl(event) ? ctx.embeddedTailnet : null;
     if (!net) return { available: false, state: 'stopped' };
     if (op === 'login') return net.start(true);
     if (op === 'stop') return net.stop();

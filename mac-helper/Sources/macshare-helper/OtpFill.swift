@@ -118,14 +118,18 @@ final class OtpTargetController {
     return err == .success && settable.boolValue
   }
 
-  private static func readLiveTarget(frontPid: Int32, frontBundleId: String) -> (AXUIElement, OtpFocusSnapshot)? {
+  private static func focusedElement() -> AXUIElement? {
     let system = AXUIElementCreateSystemWide()
     AXUIElementSetMessagingTimeout(system, 0.2)
     var focused: CFTypeRef?
     guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
           let focused, CFGetTypeID(focused) == AXUIElementGetTypeID()
     else { return nil }
-    let element = unsafeBitCast(focused, to: AXUIElement.self)
+    return unsafeBitCast(focused, to: AXUIElement.self)
+  }
+
+  private static func readLiveTarget(frontPid: Int32, frontBundleId: String) -> (AXUIElement, OtpFocusSnapshot)? {
+    guard let element = focusedElement() else { return nil }
     AXUIElementSetMessagingTimeout(element, 0.2)
 
     var elemPid: pid_t = 0
@@ -181,7 +185,10 @@ final class OtpTargetController {
     return ["valid": true, "token": token, "secure": snapshot.subrole == OtpFillPolicy.secureSubrole]
   }
 
-  func fill(code: String, token: String, frontPid: Int32, frontBundleId: String, remoteOverview: Bool) -> [String: Any] {
+  func fill(
+    code: String, token: String, frontPid: Int32, frontBundleId: String, remoteOverview: Bool,
+    stillFront: () -> Bool
+  ) -> [String: Any] {
     guard OtpFillPolicy.isValidCode(code) else { return ["filled": false, "reason": "invalid-code"] }
     guard !token.isEmpty else { return ["filled": false, "reason": "missing-token"] }
     let trusted = AXIsProcessTrusted()
@@ -215,6 +222,9 @@ final class OtpTargetController {
       return ["filled": false, "reason": "unsupported-target"]
     }
 
+    guard stillFront(), let focused = Self.focusedElement(), CFEqual(focused, currentElement) else {
+      return ["filled": false, "reason": "target-changed"]
+    }
     let err = AXUIElementSetAttributeValue(currentElement, kAXSelectedTextAttribute as CFString, code as CFString)
     guard err == .success else {
       return ["filled": false, "reason": "unsupported-target"]

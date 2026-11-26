@@ -899,9 +899,14 @@ function setupIpc(ctx) {
   ipcMain.handle('deckObs', () => (ctx.deck ? ctx.deck.obsConfig() : null)); // OBS Studio's port, and whether a password is kept
   ipcMain.handle('deckSetObs', (_e, v) => (ctx.deck && v && typeof v === 'object' ? ctx.deck.setObs(v) : { on: false })); // → OBS's state with them
   ipcMain.handle('phoneAssets', () => ctx.phone.assetsView());
-  ipcMain.handle('qrPair', (_event, route) => (ctx.qrPair ? ctx.qrPair(route) : { url: '' }));
-  ipcMain.handle('embeddedTailnet', (_event, op) => {
-    const net = ctx.embeddedTailnet;
+  const fromControl = ({ sender, senderFrame }) =>
+    senderFrame && senderFrame === sender.mainFrame && senderFrame.url.split(/[?#]/, 1)[0] === controlURL;
+  ipcMain.handle('qrPair', (event, route) => {
+    if (!ctx.qrPair || (route === 'embedded-tailnet' && !fromControl(event))) return { url: '' };
+    return ctx.qrPair(route);
+  });
+  ipcMain.handle('embeddedTailnet', (event, op) => {
+    const net = fromControl(event) ? ctx.embeddedTailnet : null;
     if (!net) return { available: false, state: 'stopped' };
     if (op === 'login') return net.start(true);
     if (op === 'stop') return net.stop();
