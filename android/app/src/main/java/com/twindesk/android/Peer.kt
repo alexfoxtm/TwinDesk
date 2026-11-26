@@ -928,9 +928,20 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
     @Suppress("DEPRECATION")
     private fun smsSend(m: JSONObject): JSONObject {
         if (!core.hub.granted(Manifest.permission.SEND_SMS)) return JSONObject().put("error", "Allow sending messages on $peerName")
-        val to = m.str("to", 60).filter { it.isDigit() || it in "+*#" }
         val body = m.str("body", 5000)
-        if (to.isEmpty() || body.isBlank()) return JSONObject().put("error", "Nothing to send")
+        val requested = m.str("to", 60)
+        val addrs = m.optJSONArray("addrs")
+        // A member list from the peer is only a reason to refuse. The store, when it can be queried,
+        // is the only proof of who a thread may be sent to, and a group is never cut down to one.
+        val groupClaim = m.optBoolean("group") || m.optBoolean("unresolved") || (addrs != null && addrs.length() != 1)
+        val threadId = m.str("id", 20).toLongOrNull()
+        val proof = if (threadId != null) messages.recipientProof(threadId) else Messages.RecipientProof.Unavailable
+        val to = Messages.peerDispatchAddress(proof, requested, groupClaim)
+        if (to == null) {
+            val refused = groupClaim || proof is Messages.RecipientProof.Group || proof is Messages.RecipientProof.One
+            return JSONObject().put("error", if (refused) Messages.GROUP_REFUSED else "Nothing to send")
+        }
+        if (body.isBlank()) return JSONObject().put("error", "Nothing to send")
         val sm = if (android.os.Build.VERSION.SDK_INT >= 31) ctx.getSystemService(android.telephony.SmsManager::class.java) else android.telephony.SmsManager.getDefault()
         sm.sendMultipartTextMessage(to, null, sm.divideMessage(body), null, null)
         return JSONObject().put("ok", true)

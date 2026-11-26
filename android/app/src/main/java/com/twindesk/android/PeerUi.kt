@@ -67,8 +67,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable
-private fun PButton(label: String, primary: Boolean = false, color: Color? = null, onClick: () -> Unit) = Button(
-    onClick = onClick, shape = RoundedCornerShape(50), elevation = null,
+private fun PButton(label: String, primary: Boolean = false, color: Color? = null, enabled: Boolean = true, onClick: () -> Unit) = Button(
+    onClick = onClick, enabled = enabled, shape = RoundedCornerShape(50), elevation = null,
     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 0.dp),
     modifier = Modifier.padding(0.dp).let { it },
     colors = ButtonDefaults.buttonColors(containerColor = if (primary) pal.accent else pal.chip, contentColor = if (primary) Color.White else color ?: pal.text),
@@ -417,6 +417,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.Conversation(peer: Pe
     var text by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf("") }
     var sendFailed by remember { mutableStateOf(false) }
+    var inFlight by remember { mutableStateOf(false) }
     LaunchedEffect(load) {
         peer.ask("sms.thread", JSONObject().put("id", t.optString("id")).put("n", 60)) { res -> r = res; items.clear(); items.addAll(res.optJSONArray("items").objects()) }
     }
@@ -435,23 +436,35 @@ private fun androidx.compose.foundation.layout.ColumnScope.Conversation(peer: Pe
                     if (!out && m.optString("fromName").isNotEmpty() && (t.optJSONArray("addrs")?.length() ?: 0) > 1) Text(m.optString("fromName"), color = pal.muted, fontSize = 12.sp)
                     val body = m.optString("body")
                     if (body.isNotEmpty()) Text(body, color = if (out) Color.White else pal.text, fontSize = 15.sp)
+                    if (m.optBoolean("attachment")) Text(tr("Attachment"), color = if (out) Color.White else pal.muted, fontSize = 13.sp)
                     if (m.optJSONArray("parts")?.length() ?: 0 > 0) Text(tr("Picture"), color = if (out) Color.White else pal.muted, fontSize = 13.sp)
                 }
             }
         }
     }
-    Note(sending, if (sendFailed) "bad" else "info")
+    val addrs = t.optJSONArray("addrs")
+    val addrCount = addrs?.length() ?: 0
+    // A group, an unresolved member, or anything other than one address is not a 1:1 SMS.
+    val blocked = Messages.peerGroupBlocked(t.optBoolean("group"), t.optBoolean("unresolved"), addrCount)
+    val sole = if (!blocked && addrCount == 1) addrs?.optString(0).orEmpty() else ""
+    if (blocked) Note(tr("Answer group conversations on the phone."), "warn")
+    else Note(sending, if (sendFailed) "bad" else "info")
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
         OutlinedTextField(text, { text = it }, placeholder = { Text(tr("Message via {name}", "name" to peer.peerName), color = pal.faint) }, modifier = Modifier.weight(1f),
             textStyle = androidx.compose.ui.text.TextStyle(fontSize = 15.sp, color = pal.text), shape = RoundedCornerShape(20.dp))
-        PButton(tr("Send"), true) {
+        PButton(tr("Send"), true, enabled = !blocked && !inFlight && text.isNotBlank() && sole.isNotBlank()) {
             val body = text.trim()
-            val to = t.optJSONArray("addrs")?.optString(0).orEmpty()
-            if (body.isEmpty() || to.isEmpty()) return@PButton
+            if (inFlight || blocked || body.isEmpty() || sole.isBlank()) return@PButton
+            inFlight = true
             sending = tr("Sending…"); sendFailed = false
-            peer.ask("sms.send", JSONObject().put("to", to).put("body", body)) { res ->
-                if (res.optBoolean("ok")) { text = ""; sending = ""; items.add(0, JSONObject().put("out", true).put("body", body)) }
-                else { sendFailed = true; sending = tr("Not sent: {error}", "error" to (res.optString("error").let { if (it == "perm") tr("Messages access is required on {name}", "name" to peer.peerName) else it })) }
+            peer.ask("sms.send", JSONObject().put("to", sole).put("body", body).put("id", t.optString("id"))) { res ->
+                inFlight = false
+                if (res.optBoolean("ok")) {
+                    // A draft typed after Send stays. Only the acknowledged text is cleared.
+                    if (text.trim() == body) text = ""
+                    sending = ""
+                    items.add(0, JSONObject().put("out", true).put("body", body))
+                } else { sendFailed = true; sending = tr("Not sent: {error}", "error" to (res.optString("error").let { if (it == "perm") tr("Messages access is required on {name}", "name" to peer.peerName) else it })) }
             }
         }
     }

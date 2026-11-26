@@ -344,6 +344,36 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
         val images get() = parts.size
     }
 
+    // What the phone's own conversation store proves about one thread. A client-supplied member
+    // list is not proof: Group refuses a subset, Unavailable means this store cannot be queried.
+    internal sealed class RecipientProof {
+        class One(val address: String) : RecipientProof()
+        object Group : RecipientProof()
+        object Unavailable : RecipientProof()
+    }
+
+    internal fun recipientProof(threadId: Long): RecipientProof {
+        if (threadId <= 0) return RecipientProof.Group
+        val ids = try {
+            val cursor = cr.query(Uri.parse("content://mms-sms/conversations?simple=true"), arrayOf("recipient_ids"), "_id = ?", arrayOf(threadId.toString()), null)
+                ?: return RecipientProof.Unavailable
+            cursor.use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else "" }
+        } catch (_: Exception) {
+            return RecipientProof.Unavailable
+        }
+        val parts = ids.split(' ').filter { it.isNotBlank() }
+        if (parts.size != 1) return RecipientProof.Group
+        val raw = try {
+            val cursor = cr.query(Uri.parse("content://mms-sms/canonical-addresses"), arrayOf("address"), "_id = ?", arrayOf(parts[0]), null)
+                ?: return RecipientProof.Unavailable
+            cursor.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        } catch (_: Exception) {
+            return RecipientProof.Unavailable
+        }
+        val usable = smsAddress(raw.orEmpty())
+        return if (usable.isEmpty()) RecipientProof.Group else RecipientProof.One(usable)
+    }
+
     // The one canonical address on a 1:1 thread, or null if the thread is a group or unknown.
     private fun threadPeer(threadId: Long, cache: MutableMap<Long, String?>): String? {
         if (threadId in cache) return cache[threadId]
@@ -524,6 +554,23 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
     companion object {
         internal const val MAX_GROUP = 20
         internal const val GROUP_REFUSED = "Answer group conversations on the phone."
+
+        internal fun smsAddress(v: String) = v.filter { it.isDigit() || it in "+*#" }
+
+        // A peer may send one proven 1:1 address. A group, an unresolved thread, or a requested
+        // number that is not that address is refused. Nothing here returns a subset of members.
+        internal fun peerDispatchAddress(proof: RecipientProof, requested: String, groupClaim: Boolean): String? {
+            if (groupClaim || proof is RecipientProof.Group) return null
+            val asked = smsAddress(requested)
+            return when (proof) {
+                is RecipientProof.One -> proof.address.takeIf { asked.isNotEmpty() && asked == it }
+                RecipientProof.Unavailable -> asked.takeIf { it.isNotEmpty() }
+                RecipientProof.Group -> null
+            }
+        }
+
+        internal fun peerGroupBlocked(group: Boolean, unresolved: Boolean, addrCount: Int) =
+            group || unresolved || addrCount != 1
 
         // A group's addresses, all of them, or null: more than MAX_GROUP, or one that resolves to nothing.
         internal fun groupAddresses(raw: List<String>, address: (String) -> String): List<String>? {

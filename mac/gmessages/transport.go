@@ -208,15 +208,16 @@ func pair(ctx context.Context, cookies map[string]string, out *output) *libgm.Au
 }
 
 type item struct {
-	ID        string `json:"id"`
-	At        int64  `json:"at"`
-	Text      string `json:"text"`
-	From      string `json:"from,omitempty"`
-	Me        bool   `json:"me"`
-	Receipt   string `json:"receipt,omitempty"`
-	Photos    []int  `json:"photos,omitempty"`
-	Transport string `json:"transport,omitempty"`
-	Status    string `json:"status,omitempty"`
+	ID         string `json:"id"`
+	At         int64  `json:"at"`
+	Text       string `json:"text"`
+	From       string `json:"from,omitempty"`
+	Me         bool   `json:"me"`
+	Receipt    string `json:"receipt,omitempty"`
+	Photos     []int  `json:"photos,omitempty"`
+	Attachment bool   `json:"attachment,omitempty"`
+	Transport  string `json:"transport,omitempty"`
+	Status     string `json:"status,omitempty"`
 }
 
 type person struct {
@@ -399,13 +400,47 @@ func project(m *gmproto.Message, c *gmproto.Conversation) item {
 		if content := part.GetMessageContent().GetContent(); content != "" {
 			texts = append(texts, content)
 		}
-		if media := part.GetMediaContent(); media != nil &&
-			(strings.HasPrefix(media.GetMimeType(), "image/") || strings.HasPrefix(libgm.FormatToMediaType[media.GetFormat()].Format, "image/")) {
-			i.Photos = append(i.Photos, index)
+		if media := part.GetMediaContent(); media != nil {
+			if mediaImage(media) {
+				i.Photos = append(i.Photos, index)
+			} else {
+				i.Attachment = true
+			}
+		}
+		if loc := part.GetLocationContent(); loc != nil {
+			if content := loc.GetMessageContent().GetContent(); content != "" {
+				texts = append(texts, content)
+			}
+			// A place pin with no image stays in history. Text alone is the place name, not a second attachment.
+			if media := loc.GetMediaContent(); media != nil {
+				if mediaImage(media) {
+					i.Photos = append(i.Photos, index)
+				} else {
+					i.Attachment = true
+				}
+			} else if loc.GetMessageContent().GetContent() == "" {
+				i.Attachment = true
+			}
 		}
 	}
 	i.Text = strings.Join(texts, "\n")
 	return i
+}
+
+func mediaImage(media *gmproto.MediaContent) bool {
+	if media == nil {
+		return false
+	}
+	if strings.HasPrefix(media.GetMimeType(), "image/") {
+		return true
+	}
+	return strings.HasPrefix(libgm.FormatToMediaType[media.GetFormat()].Format, "image/")
+}
+
+// A projected row stays in history when it has text, an image, or any other attachment.
+// Dropping a file, video, audio or place would erase that item's id.
+func visibleItem(i item) bool {
+	return i.ID != "" && (i.Text != "" || len(i.Photos) != 0 || i.Attachment)
 }
 
 type inbox struct {
@@ -613,7 +648,7 @@ func (b *inbox) history(ctx context.Context, chat string, earlier bool) bool {
 	items := make([]item, 0, len(resp.GetMessages()))
 	for _, m := range resp.GetMessages() {
 		i, ok := b.remember(chat, m)
-		if ok && i.ID != "" && (i.Text != "" || len(i.Photos) != 0) {
+		if ok && visibleItem(i) {
 			items = append(items, i)
 		}
 	}

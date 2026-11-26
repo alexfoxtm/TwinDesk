@@ -457,7 +457,8 @@ struct PeerThreadsView: View {
             ForEach(threads.indices, id: \.self) { i in
                 let t = threads[i]
                 NavigationLink {
-                    PeerThreadView(id: (t["id"] as? String) ?? "", name: (t["name"] as? String) ?? "", to: ((t["addrs"] as? [String]) ?? []).first ?? "")
+                    let addrs = (t["addrs"] as? [String]) ?? []
+                    PeerThreadView(id: (t["id"] as? String) ?? "", name: (t["name"] as? String) ?? "", to: addrs.first ?? "", group: (t["group"] as? Bool) == true, unresolved: (t["unresolved"] as? Bool) == true, addrCount: addrs.count)
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
@@ -505,9 +506,16 @@ struct PeerThreadView: View {
     let id: String
     let name: String
     let to: String
+    let group: Bool
+    let unresolved: Bool
+    let addrCount: Int
     @State private var items: [JSON] = []
     @State private var text = ""
     @State private var status = ""
+    @State private var sending = false
+
+    // One address, and the phone resolved it. Anything else is not a 1:1 SMS.
+    private var groupBlocked: Bool { unresolved || group || addrCount != 1 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -516,22 +524,33 @@ struct PeerThreadView: View {
                     ForEach(items.indices.reversed(), id: \.self) { i in
                         let m = items[i]
                         let out = (m["out"] as? Bool) ?? false
+                        let body = (m["body"] as? String) ?? ""
                         HStack {
                             if out { Spacer(minLength: 50) }
-                            Text((m["body"] as? String) ?? "")
-                                .padding(.horizontal, 12).padding(.vertical, 8)
-                                .background(out ? TDColor.accent : TDColor.card, in: RoundedRectangle(cornerRadius: 18))
-                                .foregroundStyle(.white)
+                            VStack(alignment: .leading, spacing: 2) {
+                                if !body.isEmpty { Text(body) }
+                                if (m["attachment"] as? Bool) == true { Text(tr("Attachment")).font(.footnote) }
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(out ? TDColor.accent : TDColor.card, in: RoundedRectangle(cornerRadius: 18))
+                            .foregroundStyle(.white)
                             if !out { Spacer(minLength: 50) }
                         }
                     }
                 }
                 .padding()
             }
+            if groupBlocked {
+                Text(tr("Answer group conversations on the phone."))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+            }
             if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
             HStack {
                 TextField(tr("Message"), text: $text, axis: .vertical).textFieldStyle(.roundedBorder)
-                Button { send() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || to.isEmpty)
+                Button { send() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    .disabled(sending || groupBlocked || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || to.isEmpty)
             }
             .padding()
         }
@@ -545,11 +564,20 @@ struct PeerThreadView: View {
     }
 
     private func send() {
-        let body = text
-        text = ""
+        let captured = text
+        let body = captured.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sending || groupBlocked || body.isEmpty || to.isEmpty { return }
+        sending = true
         status = tr("Sending…")
-        core.peer.ask("sms.send", ["to": to, "body": body]) { r in
-            status = (r["error"] as? String) ?? ""
+        core.peer.ask("sms.send", ["to": to, "body": body, "id": id]) { r in
+            sending = false
+            if let e = r["error"] as? String, !e.isEmpty {
+                status = e
+                return
+            }
+            // Keep anything typed after Send. Clear only the text that was acknowledged.
+            if text == captured { text = "" }
+            status = ""
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { load() }
         }
     }

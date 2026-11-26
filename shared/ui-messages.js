@@ -140,7 +140,7 @@ const imageOf = (list) => [...(list || [])].find((f) => f && /^image\//.test(f.t
 
 // A compose row's picture: the Attach button, the picture waiting to go (with ×), and drops and
 // pastes onto `zone`. The target is checked again after the picture is converted.
-function attacher({ el, button }, zone, box, target) {
+function attacher({ el, button }, zone, box, target, onChange = () => {}) {
   let data = '';
   let attachedTo = '';
   let revision = 0;
@@ -153,8 +153,18 @@ function attacher({ el, button }, zone, box, target) {
   btn.classList.add('hub-attach-btn');
   btn.title = tr('Attach a picture');
   btn.setAttribute('aria-label', tr('Attach a picture'));
-  const set = (d) => { data = d || ''; thumb.src = data; chip.hidden = !data; };
+  const set = (d) => { data = d || ''; thumb.src = data; chip.hidden = !data; onChange(); };
   const clear = () => { revision++; attachedTo = ''; set(''); };
+  // Move a picture onto this composer only while its target is the one on screen.
+  const place = (d) => {
+    if (!d) return false;
+    const selected = target();
+    if (!selected) return false;
+    revision++;
+    attachedTo = selected;
+    set(d);
+    return true;
+  };
   const take = (file) => {
     const selected = target();
     if (!file || !selected) return;
@@ -172,7 +182,7 @@ function attacher({ el, button }, zone, box, target) {
   zone.addEventListener('dragleave', (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('hub-drop'); });
   zone.addEventListener('drop', (e) => { zone.classList.remove('hub-drop'); const f = imageOf(e.dataTransfer.files); if (f && target()) { e.preventDefault(); take(f); } });
   box.addEventListener('paste', (e) => { const f = imageOf(e.clipboardData && e.clipboardData.files); if (f && target()) { e.preventDefault(); take(f); } });
-  return { btn, chip, input, get: () => attachedTo && attachedTo === target() ? data : '', clear,
+  return { btn, chip, input, get: () => attachedTo && attachedTo === target() ? data : '', clear, place,
     show(on) { btn.hidden = !on; if (!on || (attachedTo && attachedTo !== target())) clear(); } };
 }
 
@@ -243,12 +253,9 @@ UI.tab({
       const hub = UI.state?.hub;
       return pill === 'texts' && openId !== null && carrierSend(UI.state) && mmsOk()
         ? JSON.stringify([hub.deviceId, hub.session, openId, openId === '' ? to.value.trim() : thread()?.addrs]) : '';
-    });
+    }, () => showGroupNote());
     // A picture belongs to the recipients it was attached for: editing To drops it, even mid-conversion.
-    to.addEventListener('input', () => {
-      pic.show(mmsOk());
-      if (openId === '') groupNote.hidden = to.value.split(/[,;]/).map((x) => x.trim()).filter(Boolean).length <= MAX_GROUP;
-    });
+    to.addEventListener('input', () => { pic.show(mmsOk()); showGroupNote(); });
     const compose = el('div', { class: 'hub-compose-row' }, [simPick.el, pic.btn, el('div', { class: 'hub-compose-col' }, [pic.chip, box]), send, pic.input]);
     conv.append(head, scroll, groupNote, compose);
     const empty = el('div', { class: 'hub-empty hub-conv-empty', text: tr('Choose a conversation') });
@@ -257,7 +264,10 @@ UI.tab({
       const t = thread();
       if (!t) return;
       forget('sms:' + t.id, t.at);
+      textDrafts.delete(textDraftKey(t.id));
       openId = null;
+      box.value = '';
+      holdPicture = false;
       pic.clear();
       renderList();
       renderConv();
@@ -356,7 +366,10 @@ UI.tab({
     };
     placeTransportLegend();
     let chatOpen = '';
-    let chatDraft = null; // {key, offer}: the notification offer a draft started on
+    let chatDraft = null; // {key, offer, proof}: the notification offer a draft started on
+    const textDrafts = new Map(); // exact phone + Texts conversation (or "new") -> {text, to}
+    const chatDrafts = new Map(); // exact phone + verified chat key -> {text, offer, proof}
+    let holdPicture = false; // a new-message picture that cannot move into the Google chat
     let openContact = null;
     let chatEpoch = 0;
     let carrierHistory = new Map();
@@ -374,6 +387,68 @@ UI.tab({
     const phoneOf = () => UI.state?.hub ? { deviceId: UI.state.hub.deviceId || '', session: UI.state.hub.session } : null;
     const carrierAsk = (msg, phone = phoneOf()) => phone ? UI.hubAsk({ ...msg, phone }) : false;
     const MAX_GROUP = 20; // the phone's MMS limit: a larger group is refused, never cut down
+    const PICTURE_STAYS = 'This picture stays with the new message. Remove it to open that Google Messages chat.';
+    const draftPhone = () => UI.state?.hub?.deviceId || '';
+    const textDraftKey = (id) => {
+      const phone = draftPhone();
+      if (!phone || id == null) return '';
+      return phone + '\n' + (id === '' ? 'new' : 'sms:' + id);
+    };
+    const chatDraftKey = (key) => {
+      const phone = draftPhone();
+      return phone && key ? phone + '\n' + key : '';
+    };
+    function stashText(id) {
+      const key = textDraftKey(id);
+      if (!key) return;
+      const text = box.value;
+      const dest = id === '' ? to.value : '';
+      if (!text && !String(dest).trim()) textDrafts.delete(key);
+      else textDrafts.set(key, { text, to: dest });
+    }
+    function restoreText(id) {
+      const key = textDraftKey(id);
+      if (!key) return;
+      const saved = textDrafts.get(key);
+      box.value = saved?.text || '';
+      if (id === '') to.value = saved?.to || '';
+      autosize();
+    }
+    function stashChat() {
+      const key = chatDraftKey(chatOpen);
+      if (!key) return;
+      if (!chatBox.value.trim()) { chatDrafts.delete(key); return; }
+      const pinned = chatDraft && chatDraft.key === chatOpen ? chatDraft : null;
+      chatDrafts.set(key, { text: chatBox.value, offer: pinned?.offer || null, proof: pinned?.proof || null });
+    }
+    function restoreChat(id) {
+      const key = chatDraftKey(id);
+      if (!key) return;
+      const saved = chatDrafts.get(key);
+      if (!saved?.text) { chatBox.value = ''; chatDraft = null; return; }
+      chatBox.value = saved.text;
+      chatDraft = { key: id, offer: saved.offer || null, proof: saved.proof || null };
+    }
+    function forgetDrafts() {
+      textDrafts.clear();
+      chatDrafts.clear();
+      chatDraft = null;
+      holdPicture = false;
+    }
+    function showGroupNote() {
+      if (!pic.get()) holdPicture = false;
+      if (holdPicture && openId === '' && pic.get()) {
+        groupNote.textContent = tr(PICTURE_STAYS);
+        groupNote.hidden = false;
+        return;
+      }
+      groupNote.textContent = tr('Answer group conversations on the phone.');
+      const t = thread();
+      const group = !!(t?.group || t?.addrs?.length > 1);
+      const blocked = !!t?.unresolved || (group && (!mmsOk() || t.addrs.length < 2 || t.addrs.length > MAX_GROUP));
+      const typed = openId === '' ? to.value.split(/[,;]/).map((x) => x.trim()).filter(Boolean).length : 0;
+      groupNote.hidden = !(blocked || typed > MAX_GROUP);
+    }
     let chatKey = '';
     const gmAct = (op, args = {}, gm = UI.state?.googleMessages) =>
       api.googleMessages && gm ? api.googleMessages({ op, owner: gm.owner, ...args }).catch(() => false) : Promise.resolve(false);
@@ -456,7 +531,12 @@ UI.tab({
         !(s.hub?.deviceId && s.hub.deviceId !== gm.owner);
     };
     const kindOf = (c) => c.kind ?? 'rcs'; // a missing kind is RCS
-    function closeChat() {
+    function closeChat(opts) {
+      const keep = !opts || opts.keepDraft !== false;
+      if (chatOpen) {
+        if (keep) stashChat();
+        else chatDrafts.delete(chatDraftKey(chatOpen));
+      }
       chatOpen = '';
       parkedPill = '';
       chatDraft = null;
@@ -472,8 +552,11 @@ UI.tab({
       clearGooglePhotos();
     }
     function openChat(t) {
-      if (chatOpen !== t.key) closeChat();
-      chatOpen = t.key;
+      if (chatOpen !== t.key) {
+        closeChat();
+        chatOpen = t.key;
+        restoreChat(t.key);
+      }
       if (t.dest && t.googleSource && UI.state.hub?.deviceId && UI.state.hub.deviceId === UI.state.googleMessages?.owner) {
         openContact = { key: t.key, dest: t.dest, deviceId: UI.state.hub.deviceId, session: UI.state.hub.session, googleId: t.googleSource.id };
       }
@@ -551,7 +634,9 @@ UI.tab({
       if (!t.msgs) return (t.items[0] && t.items[0].body) || '';
       const m = t.msgs[t.msgs.length - 1];
       if (!m && t.google) return t.snippet || '';
-      return m ? m.me ? tr('You: {message}', { message: m.text }) : t.group && m.from ? tr('{sender}: {message}', { sender: m.from, message: m.text }) : m.text : '';
+      if (!m) return '';
+      const body = m.text || (m.attachment ? tr('Attachment') : '');
+      return m.me ? tr('You: {message}', { message: body }) : t.group && m.from ? tr('{sender}: {message}', { sender: m.from, message: body }) : body;
     }
     const googleOf = (t) => t.googleSource || (t.google ? t : null);
     function selectedChat() {
@@ -670,6 +755,7 @@ UI.tab({
       dispatchText([t.dest], text, image, chatSim.el, sms?.id, t.key);
       chatBox.value = '';
       chatDraft = null;
+      chatDrafts.delete(chatDraftKey(t.key));
       chatPic.clear();
       paintChats(UI.state, true);
     }
@@ -745,6 +831,7 @@ UI.tab({
         if (chatBox.value.trim() === text) {
           chatBox.value = '';
           chatDraft = null;
+          chatDrafts.delete(chatDraftKey(t.key));
         }
         if (image && chatPic.get() === image) chatPic.clear();
         return true;
@@ -774,7 +861,7 @@ UI.tab({
       gmSend = request;
       gmError = '';
       paintChats(UI.state, true);
-      const ok = await gmAct('send', { chat: google.id, text: image ? '' : text, image, allowCarrier }, gm);
+      const ok = await gmAct('send', { chat: google.id, text, image, allowCarrier }, gm);
       if (gmSend !== request) return;
       gmSend = null;
       const currentGM = UI.state.googleMessages;
@@ -794,8 +881,13 @@ UI.tab({
           sameDestination(current?.dest, t.dest) && chatBox.value.trim() === text && chatPic.get() === image &&
           await sendFallback(current, text, image)) return;
       if (ok === true) {
+        // Clear only the picture and caption that were acknowledged. An edit made while sending stays.
         if (image && chatPic.get() === image) chatPic.clear();
-        if (!image && chatBox.value.trim() === text) chatBox.value = '';
+        if (chatBox.value.trim() === text) {
+          chatBox.value = '';
+          chatDraft = null;
+          chatDrafts.delete(chatDraftKey(t.key));
+        }
       } else gmError = ok === 'not-dispatched' ? tr('Google Messages is unavailable. Check the reply options and try again.')
         : tr('Google Messages could not confirm the send. Check the conversation before retrying.');
       paintChats(UI.state, true);
@@ -913,7 +1005,7 @@ UI.tab({
           if (c.msgs && !c.google && api.notifReply) api.notifReply({ chat: c.key, remove: true });
           forget(c.key, c.at);
         }
-        closeChat();
+        closeChat({ keepDraft: false });
         paintChats(UI.state, true);
       }, 'small');
       del.classList.add('hub-del');
@@ -955,6 +1047,7 @@ UI.tab({
             gmPhotoParts.push({ ...photo, node });
             return node;
           }) : []),
+          m.attachment ? el('div', { class: 'hub-text', text: tr('Attachment') }) : null,
           m.pic ? el('div', { class: 'hub-text', text: tr('Picture') }) : null,
           m.text ? el('div', { class: 'hub-text', text: m.text }) : null,
           textStatus(m),
@@ -1068,8 +1161,8 @@ UI.tab({
       const group = !!(t?.group || t?.addrs?.length > 1);
       // A member the phone could not resolve: never send to the resolved subset.
       const groupBlocked = !!t?.unresolved || (group && (!mmsOk() || t.addrs.length < 2 || t.addrs.length > MAX_GROUP));
-      groupNote.hidden = !groupBlocked;
       pic.show(mmsOk());
+      showGroupNote();
       const sims = simOptions(UI.state);
       simPick.options(sims);
       simPick.el.hidden = sims.length < 3;
@@ -1085,6 +1178,7 @@ UI.tab({
         nodes.push(el('div', { class: `hub-bubble ${m.out ? 'out' : 'in'} text${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
           group && !m.out && (m.fromName || m.from) ? el('div', { class: 'hub-from', text: m.fromName || m.from }) : null,
           ...textPictures(m),
+          m.attachment ? el('div', { class: 'hub-text', text: tr('Attachment') }) : null,
           m.body ? el('div', { class: 'hub-text', text: m.body }) : null,
           textStatus(m),
         ]));
@@ -1096,8 +1190,14 @@ UI.tab({
 
     let loadingFirst = false;
     function openThread(id) {
-      pic.clear();
-      openId = id;
+      const same = openId === id;
+      if (!same) {
+        stashText(openId);
+        holdPicture = false;
+        pic.clear();
+        openId = id;
+        restoreText(id);
+      }
       items = [];
       hasMore = false;
       loadingFirst = true;
@@ -1108,13 +1208,16 @@ UI.tab({
     }
 
     function openNew() {
+      if (openId === '') { to.focus(); return; }
+      stashText(openId);
+      holdPicture = false;
       pic.clear();
       openId = '';
       items = [];
       hasMore = false;
+      restoreText('');
       renderList();
       renderConv();
-      to.value = '';
       to.focus();
     }
 
@@ -1140,25 +1243,42 @@ UI.tab({
           return g && !g.group && (r.dest || peerOf(r, nanp)) === verified;
         }) : [];
         if (known.length === 1) {
+          // A picture stays on the new message unless that Google chat can take it. Never drop it on the way.
+          if (image && !chatPictureAllowed(known[0])) {
+            holdPicture = true;
+            showGroupNote();
+            return;
+          }
           chosePill = true;
           pill = 'all';
           closeChat();
           chatKey = '';
           openChat(known[0]);
           chatBox.value = text;
+          if (text) {
+            chatDraft = { key: known[0].key, offer: null, proof: null };
+            const moved = chatDraftKey(known[0].key);
+            if (moved) chatDrafts.set(moved, { text, offer: null, proof: null });
+          } else {
+            chatDraft = null;
+            chatDrafts.delete(chatDraftKey(known[0].key));
+          }
+          textDrafts.delete(textDraftKey(''));
           box.value = '';
-          pic.clear();
+          holdPicture = false;
+          if (!image || chatPic.place(image)) pic.clear();
           autosize();
           paintChats(UI.state, true);
           return;
         }
       }
       // Never a silent subset: an oversized or unresolved group is refused with its note, text kept.
-      if (addrs.length > MAX_GROUP) { groupNote.hidden = false; return; }
+      if (addrs.length > MAX_GROUP) { showGroupNote(); return; }
       if (t?.unresolved || (t?.group && addrs.length < 2) || ((addrs.length > 1 || image) && !mmsOk())) return;
       if (!carrierSend(UI.state)) return;
       dispatchText(addrs, text, image, simPick.el, openId);
       box.value = '';
+      textDrafts.delete(textDraftKey(openId));
       pic.clear();
       autosize();
       renderConv();
@@ -1318,10 +1438,13 @@ UI.tab({
     renderList();
     renderConv();
     UI.onDeviceChange(() => { // another device: its conversations, not the previous one's
+      forgetDrafts();
       pill = 'texts';
       chosePill = false;
       placeTransportLegend();
-      closeChat();
+      closeChat({ keepDraft: false });
+      box.value = '';
+      to.value = '';
       chatKey = '';
       gmSend = null;
       gmError = '';
@@ -1362,9 +1485,12 @@ UI.tab({
         phoneSession = s.hub?.session;
         if (device) phoneDevice = device;
         if (otherPhone) {
+          // phoneDevice is already the new phone. Forget first so the old draft is not stored under it.
+          forgetDrafts();
           lastKind.clear();
-          closeChat();
+          closeChat({ keepDraft: false });
           box.value = '';
+          to.value = '';
           resetCarrier();
         } else if (sessionChanged) {
           dropPhoneData();

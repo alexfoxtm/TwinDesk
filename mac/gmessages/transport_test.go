@@ -151,6 +151,52 @@ func TestProjectUsesMessageTransport(t *testing.T) {
 	}
 }
 
+func TestProjectKeepsNonImageAttachmentsAndCaptions(t *testing.T) {
+	part := func(data gmproto.MessageInfo) *gmproto.MessageInfo { return &data }
+	media := func(mime string, format gmproto.MediaFormats) *gmproto.MessageInfo {
+		return part(gmproto.MessageInfo{Data: &gmproto.MessageInfo_MediaContent{MediaContent: &gmproto.MediaContent{MimeType: mime, Format: format}}})
+	}
+	pdf := project(&gmproto.Message{
+		MessageID: "pdf", Type: 4,
+		MessageInfo: []*gmproto.MessageInfo{
+			media("application/pdf", gmproto.MediaFormats_APP_PDF),
+			part(gmproto.MessageInfo{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: "Caption"}}}),
+		},
+	}, nil)
+	if pdf.Text != "Caption" || !pdf.Attachment || len(pdf.Photos) != 0 || pdf.Transport != "rcs" || pdf.ID != "pdf" {
+		t.Fatalf("pdf caption = %+v", pdf)
+	}
+	video := project(&gmproto.Message{MessageID: "video", Type: 1, MessageInfo: []*gmproto.MessageInfo{media("video/mp4", gmproto.MediaFormats_VIDEO_MP4)}}, nil)
+	if video.Text != "" || !video.Attachment || len(video.Photos) != 0 || video.Transport != "text" || !visibleItem(video) {
+		t.Fatalf("video = %+v", video)
+	}
+	image := project(&gmproto.Message{MessageID: "image", Type: 2, MessageInfo: []*gmproto.MessageInfo{media("image/jpeg", gmproto.MediaFormats_IMAGE_JPEG)}}, nil)
+	if image.Attachment || len(image.Photos) != 1 || image.Photos[0] != 0 || !visibleItem(image) {
+		t.Fatalf("image = %+v", image)
+	}
+	empty := project(&gmproto.Message{MessageID: "empty", Type: 1, MessageInfo: []*gmproto.MessageInfo{media("", 0)}}, nil)
+	if !empty.Attachment || len(empty.Photos) != 0 || !visibleItem(empty) {
+		t.Fatalf("empty media = %+v", empty)
+	}
+	place := project(&gmproto.Message{MessageID: "place", MessageInfo: []*gmproto.MessageInfo{
+		part(gmproto.MessageInfo{Data: &gmproto.MessageInfo_LocationContent{LocationContent: &gmproto.LocationContent{
+			MessageContent: &gmproto.MessageContent{Content: "Fixture place"},
+		}}}),
+	}}, nil)
+	if place.Text != "Fixture place" || place.Attachment || len(place.Photos) != 0 {
+		t.Fatalf("location text = %+v", place)
+	}
+	pin := project(&gmproto.Message{MessageID: "pin", MessageInfo: []*gmproto.MessageInfo{
+		part(gmproto.MessageInfo{Data: &gmproto.MessageInfo_LocationContent{LocationContent: &gmproto.LocationContent{}}}),
+	}}, nil)
+	if pin.Text != "" || !pin.Attachment || len(pin.Photos) != 0 || !visibleItem(pin) {
+		t.Fatalf("bare location = %+v", pin)
+	}
+	if visibleItem(item{}) {
+		t.Fatal("a row with no id is not history")
+	}
+}
+
 func TestReplyIsIndependentOfSendModeAndRespectsReadOnly(t *testing.T) {
 	for _, mode := range []gmproto.ConversationSendMode{
 		gmproto.ConversationSendMode_SEND_MODE_AUTO,

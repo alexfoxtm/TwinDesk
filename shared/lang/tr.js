@@ -1016,6 +1016,8 @@
   "ReZume with a computer needs Multi-device off: turn it off on the Multi-device page and connect the two directly. In Multi-device, ReZume works with one phone.": "Bir bilgisayarla ReZume için Çoklu cihaz kapalı olmalı: Çoklu cihaz sayfasından kapatın ve ikisini doğrudan bağlayın. Çoklu cihazda ReZume tek bir telefonla çalışır.",
   "In Multi-device, ReZume works only while one phone is the only device connected. Disconnect the others, or turn Multi-device off on the Multi-device page for ReZume with a computer.": "Çoklu cihazda ReZume yalnızca bağlı tek cihaz bir telefon olduğunda çalışır. Diğerlerinin bağlantısını kesin ya da bir bilgisayarla ReZume için Çoklu cihaz sayfasından Çoklu cihazı kapatın.",
   "Picture": "Görüntü",
+  "Attachment": "Ek",
+  "This picture stays with the new message. Remove it to open that Google Messages chat.": "Bu resim yeni iletide kalır. Bu Google Messages sohbetini açmak için resmi kaldırın.",
   "Picture from {name} copied: paste it with {keys}": "{name} cihazından resim kopyalandı. {keys} ile yapıştırın.",
   "Picture quality": "Görüntü kalitesi",
   "Pictures": "Resimler",

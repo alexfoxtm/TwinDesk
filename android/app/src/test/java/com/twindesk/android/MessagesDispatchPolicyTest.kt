@@ -374,4 +374,46 @@ class MessagesDispatchPolicyTest {
             core.timers.shutdownNow()
         }
     }
+
+    @Test fun peerSendRefusesAnythingButOneStoreProvenAddress() {
+        val core = core()
+        val service = Messages(core.hub, core)
+        fun proof(ids: String?, address: String?, explode: Boolean = false, missing: Boolean = false): Messages.RecipientProof {
+            provider("mms-sms") { uri, cols ->
+                if (explode) throw IllegalStateException("fixture")
+                if (missing) return@provider null
+                val cursor = MatrixCursor(cols)
+                val path = uri.toString()
+                if (path.contains("canonical-addresses")) {
+                    if (address != null) cursor.addRow(arrayOf(address))
+                } else if (ids != null) cursor.addRow(arrayOf(ids))
+                cursor
+            }
+            return service.recipientProof(7)
+        }
+        try {
+            assertTrue(service.recipientProof(0) is Messages.RecipientProof.Group)
+            assertTrue(proof(null, null, missing = true) is Messages.RecipientProof.Unavailable)
+            assertTrue(proof(null, null, explode = true) is Messages.RecipientProof.Unavailable)
+            assertTrue("a missing row is not a client-supplied send", proof(null, null) is Messages.RecipientProof.Group)
+            assertTrue(proof("1 2", "+12025550100") is Messages.RecipientProof.Group)
+            assertTrue(proof("1", "   ") is Messages.RecipientProof.Group)
+            val one = proof("1", "+1 (202) 555-0100") as Messages.RecipientProof.One
+            assertEquals("+12025550100", one.address)
+            assertEquals("+12025550100", Messages.peerDispatchAddress(one, "+1 202-555-0100", false))
+            assertNull("a different number is not a subset", Messages.peerDispatchAddress(one, "+12025550199", false))
+            assertNull("a group claim is refused even when the store has one address", Messages.peerDispatchAddress(one, "+12025550100", true))
+            assertEquals("2025550100", Messages.peerDispatchAddress(Messages.RecipientProof.Unavailable, "2025550100", false))
+            assertNull(Messages.peerDispatchAddress(Messages.RecipientProof.Unavailable, "", false))
+            assertNull(Messages.peerDispatchAddress(Messages.RecipientProof.Group, "+12025550100", false))
+            assertTrue(Messages.peerGroupBlocked(true, false, 1))
+            assertTrue(Messages.peerGroupBlocked(false, true, 1))
+            assertTrue(Messages.peerGroupBlocked(false, false, 2))
+            assertTrue(Messages.peerGroupBlocked(false, false, 0))
+            assertFalse(Messages.peerGroupBlocked(false, false, 1))
+        } finally {
+            core.bg.shutdownNow()
+            core.timers.shutdownNow()
+        }
+    }
 }

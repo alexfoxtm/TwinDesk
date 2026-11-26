@@ -1584,6 +1584,7 @@ test('New message to a known Google one-to-one opens that row in All with the te
   assert.equal(chat.children[1].children[3].children[2].children[1].value, 'Synthetic text', 'the text moves to its composer');
   assert.equal(box.value, '');
   assert.equal(chip.hidden, true, 'the picture is cleared');
+  assert.equal(chat.children[1].children[3].children[2].children[0].hidden, false, 'the picture moves with the text');
 
   // Another number is still a new carrier send.
   findPill('Texts').onclick();
@@ -1592,4 +1593,171 @@ test('New message to a known Google one-to-one opens that row in All with the te
   box.value = 'Other text';
   compose.children[3].onclick();
   assert.equal(asked.filter((m) => m.t === 'sms.send').length, 1);
+});
+
+function pictureEnv() {
+  let finish;
+  class FileReader {
+    readAsDataURL() { finish = () => { this.result = 'data:image/jpeg;base64,AA=='; this.onload(); }; }
+  }
+  class Image {
+    constructor() { this.naturalWidth = this.naturalHeight = 1; }
+    set src(_) { this.onload(); }
+  }
+  const document = { createElement: () => ({
+    getContext: () => ({ fillRect() {}, drawImage() {} }), toDataURL: () => 'data:image/jpeg;base64,AA==',
+  }) };
+  return {
+    FileReader, Image, document,
+    async attach(input) {
+      input.files = [{ type: 'image/jpeg' }];
+      input.onchange();
+      finish();
+      await Promise.resolve();
+    },
+  };
+}
+
+test('Texts drafts stay with their phone and conversation, and a new message keeps its own', () => {
+  const phone = 'fixture-phone';
+  const state = { hub: { deviceId: phone, session: 1, messages: true, perm: { messages: { mms: true } } } };
+  const { received, paint, texts } = inbox(state);
+  paint(state);
+  const load = () => received.get('sms.threads')({ items: [
+    { id: 'a', name: 'A', addrs: ['+12025550100'], at: 200 },
+    { id: 'b', name: 'B', addrs: ['+12025550101'], at: 100 },
+  ] });
+  load();
+  const row = (i) => texts.children[0].children[1].children[i];
+  const box = () => texts.children[1].children[3].children[2].children[1];
+  const to = () => texts.children[1].children[0].children[0];
+  const fresh = () => texts.children[0].children[0].children[1];
+  row(0).onclick();
+  box().value = 'Draft A';
+  row(1).onclick();
+  assert.equal(box().value, '', 'opening B does not keep A’s text');
+  box().value = 'Draft B';
+  row(0).onclick();
+  assert.equal(box().value, 'Draft A');
+  fresh().onclick();
+  assert.equal(box().value, '');
+  box().value = 'Draft new';
+  to().value = '+12025550109';
+  row(1).onclick();
+  assert.equal(box().value, 'Draft B');
+  fresh().onclick();
+  assert.equal(box().value, 'Draft new');
+  assert.equal(to().value, '+12025550109', 'the new-message draft keeps its own recipient');
+  row(1).onclick();
+  box().value = 'Draft B edited';
+  row(1).onclick();
+  assert.equal(box().value, 'Draft B edited', 'staying in the conversation does not replace the draft');
+  state.hub = { ...state.hub, deviceId: 'other-phone', session: 2 };
+  paint(state);
+  assert.equal(box().value, '');
+  state.hub = { ...state.hub, deviceId: phone, session: 3 };
+  paint(state);
+  load();
+  texts.children[0].children[1].children[0].onclick();
+  assert.equal(box().value, '', 'ownership turnover drops the saved draft');
+});
+
+test('an All chat draft survives switching to Texts and back', () => {
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: 'fixture-phone', session: 1, messages: true, perm: { messages: {} } },
+    chats: [{ key: 'fixture-chat', app: 'com.whatsapp', name: 'Fixture', at: 3000, reply: true, items: [{ id: 'm', text: 'Hi', at: 3000 }] }],
+  };
+  const { paint, chat, findPill, rows } = inbox(state);
+  paint(state);
+  rows()[0].onclick();
+  const box = () => chat.children[1].children[3].children[2].children[1];
+  box().value = 'Chat draft';
+  fire(box(), 'input');
+  findPill('Texts').onclick();
+  findPill('All').onclick();
+  rows()[0].onclick();
+  assert.equal(box().value, 'Chat draft');
+});
+
+test('a Google send keeps the caption with its picture and clears only an unchanged draft', async () => {
+  const pics = pictureEnv();
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: gmPhone, session: 1, messages: true, perm: { messages: { mms: true } } },
+    googleMessages: connected([{ id: 'paired', name: 'Fixture', addrs: [gmDest], reply: true, kind: 'rcs', at: 2000 }], {
+      chat: 'paired', loaded: true, items: [
+        { id: 'file-1', at: 1000, text: '', attachment: true, me: false },
+        { id: 'file-2', at: 2000, text: 'Hello', me: false },
+      ],
+    }),
+  };
+  const sent = [];
+  let resolveSend;
+  const { asked, paint, chat, rows } = inbox(state, {
+    googleMessages: (msg) => {
+      if (msg.op !== 'send') return Promise.resolve(true);
+      sent.push(msg);
+      return new Promise((resolve) => { resolveSend = resolve; });
+    },
+  }, pics);
+  paint(state);
+  rows()[0].onclick();
+  const bubbles = bubbleTexts(chat);
+  assert.equal(bubbles.length, 2, 'the attachment stays its own history row');
+  assert.ok(bubbles.some((line) => line.includes('Attachment')));
+  assert.ok(bubbles.some((line) => line.includes('Hello')));
+  const composer = chat.children[1].children[3];
+  const box = composer.children[2].children[1];
+  const chip = composer.children[2].children[0];
+  await pics.attach(composer.children[4]);
+  box.value = 'Caption';
+  const sending = composer.children[3].onclick();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'Caption');
+  assert.equal(sent[0].image, 'data:image/jpeg;base64,AA==');
+  assert.equal(sent[0].allowCarrier, false, 'RCS is not sent by SMS');
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0);
+  box.value = 'Caption edited';
+  resolveSend(true);
+  await sending;
+  assert.equal(box.value, 'Caption edited', 'an edit during the send stays');
+  assert.equal(chip.hidden, true, 'the acknowledged picture clears');
+  await pics.attach(composer.children[4]);
+  box.value = 'Second';
+  const again = composer.children[3].onclick();
+  resolveSend(true);
+  await again;
+  assert.equal(box.value, '');
+  assert.equal(chip.hidden, true);
+  assert.equal(sent.at(-1).text, 'Second');
+  assert.equal(sent.at(-1).image, 'data:image/jpeg;base64,AA==');
+  assert.equal(sent.at(-1).allowCarrier, false);
+});
+
+test('a new-message picture stays visible when that Google chat cannot take it', async () => {
+  const pics = pictureEnv();
+  const state = {
+    ui: { chats: true },
+    hub: { deviceId: gmPhone, session: 1, messages: true, perm: { messages: { mms: true } } },
+    googleMessages: connected([{ id: 'paired', name: 'Fixture', addrs: [gmDest], reply: false, kind: 'rcs', at: 1000 }]),
+  };
+  const { asked, paint, texts, findPill } = inbox(state, { googleMessages: async () => true }, pics);
+  paint(state);
+  findPill('Texts').onclick();
+  texts.children[0].children[0].children[1].onclick();
+  const conv = texts.children[1];
+  const compose = conv.children[3];
+  const box = compose.children[2].children[1];
+  const chip = compose.children[2].children[0];
+  conv.children[0].children[0].value = gmDest;
+  await pics.attach(compose.children[4]);
+  box.value = 'Keep me';
+  compose.children[3].onclick();
+  assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0);
+  assert.equal(findPill('Texts').attrs['aria-selected'], 'true');
+  assert.equal(box.value, 'Keep me');
+  assert.equal(chip.hidden, false, 'the picture stays on the new message');
+  assert.equal(conv.children[2].hidden, false);
+  assert.equal(conv.children[2].textContent, 'This picture stays with the new message. Remove it to open that Google Messages chat.');
 });
