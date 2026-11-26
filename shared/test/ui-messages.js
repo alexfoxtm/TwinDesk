@@ -655,12 +655,13 @@ test('a draft follows a newer offer of its proven conversation only, and is neve
   assert.ok(sent[1].id === 'n6' && sent[1].replySession === 's6');
 
   type('Third draft');
-  // A replacement phone session closes the conversation (as before); nothing is carried to it.
+  // The same phone on a new session: the pinned draft is refused, never carried, and its text stays.
   state.notifs.history = [{ ...second, id: 'n7', replySession: 's7' }, { ...second, id: 'n6', replySession: 's6', reply: false }];
   state.hub.session = 2;
   paint(state);
   await composer.children[3].onclick();
   assert.equal(sent.length, 2, 'never carried across a replacement phone session');
+  assert.equal(box.value, 'Third draft', 'a same-phone session change keeps the typed draft');
   assert.equal(asked.filter((m) => m.t === 'sms.send').length, 0, 'never retried by SMS');
 });
 
@@ -738,4 +739,42 @@ test('an oversized group is refused with its note and never cut down to 20', () 
   const sends = asked.filter((m) => m.t === 'sms.send');
   assert.equal(sends.length, 1);
   assert.equal(sends[0].addrs.length, 20, 'exactly 20 is sent whole');
+});
+
+test('a same-phone reconnect keeps the Texts draft, the open conversation and unsent bubbles; another phone clears them', async () => {
+  const phone = 'fixture-phone';
+  const state = { hub: { deviceId: phone, session: 1, messages: true, perm: { messages: { mms: true } } } };
+  const { received, asked, paint, texts } = inbox(state, {}, { askResult: (m) => m.t !== 'sms.send' });
+  paint(state);
+  const threads = () => received.get('sms.threads')({ items: [{ id: 't1', addrs: ['+12025550100'], at: 100 }] });
+  threads();
+  texts.children[0].children[1].children[0].onclick();
+  received.get('sms.thread')({ id: 't1', items: [] });
+  const conv = texts.children[1];
+  const compose = conv.children[3];
+  const box = compose.children[2].children[1];
+  box.value = 'Synthetic refused';
+  compose.children[3].onclick();
+  await new Promise((r) => setImmediate(r));
+  const shown = () => JSON.stringify(conv.children[1], (k, v) => (k === 'listeners' ? undefined : v));
+  assert.match(shown(), /Not sent/);
+  box.value = 'Synthetic draft';
+  // The same phone drops and comes back: two session changes, no device ID in between.
+  state.hub = { ...state.hub, deviceId: '', session: 2, messages: false };
+  paint(state);
+  state.hub = { ...state.hub, deviceId: phone, session: 3, messages: true };
+  paint(state);
+  assert.equal(box.value, 'Synthetic draft', 'the draft survives a same-phone reconnect');
+  assert.equal(conv.hidden, false, 'the conversation stays open');
+  const reread = asked.filter((m) => m.t === 'sms.thread' && m.phone.session === 3);
+  assert.ok(reread.length === 1 && reread[0].id === 't1', 'the open conversation is read again from the new session');
+  threads();
+  received.get('sms.thread')({ id: 't1', items: [] });
+  assert.match(shown(), /Synthetic refused/, 'the unsent bubble is kept');
+  assert.match(shown(), /Not sent/);
+  state.hub = { ...state.hub, deviceId: 'other-phone', session: 4 };
+  paint(state);
+  assert.equal(box.value, '', 'another phone never inherits the draft');
+  assert.equal(conv.hidden, true, 'another phone closes the conversation');
+  assert.doesNotMatch(shown(), /Synthetic refused/);
 });

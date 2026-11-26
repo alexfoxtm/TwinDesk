@@ -25,7 +25,7 @@ try {
     const filename = path.join(ROOT, mode, 'ipc.js');
     vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
       require: (name) => name === 'electron' ? { ipcMain: { on: (k, fn) => events.set(k, fn), handle() {} }, Menu: { buildFromTemplate(items) { appMenu = items; return { popup() {} }; } } } : local(name),
-      module: mod, console, process,
+      module: mod, console, process, __dirname: path.dirname(filename), __filename: filename,
     }, { filename });
     const connection = { connect: {} }, opened = [];
     const device = { id: 'peer', name: 'Work $& {me}', os: 'win', address: '192.0.2.11' };

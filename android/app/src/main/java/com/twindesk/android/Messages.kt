@@ -63,7 +63,7 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
         hub.run {
             told.reset(maxOf(latest("content://sms", 1), latest("content://mms", 1000)).takeIf { it > 0 } ?: System.currentTimeMillis())
             // Rows already in the store at that very time were never news: remember them, unsent.
-            carrierSince(told.at).forEach { told.admit(it.optString("id"), it.optLong("at")) }
+            while (carrierSince(told.at).count { told.admit(it.optString("id"), it.optLong("at")) } > 0) Unit
         }
         cr.registerContentObserver(Uri.parse("content://mms-sms/"), true, o)
         val r = object : BroadcastReceiver() {
@@ -129,10 +129,16 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
     private fun carrierSince(at: Long): List<JSONObject> {
         val found = ArrayList<JSONObject>()
         cr.query(Uri.parse("content://sms"), SMS_COLS, "date >= ? AND type != 3", arrayOf(at.toString()), "date ASC")?.use { c ->
-            while (c.moveToNext() && found.size < 20) found.add(sms(c))
+            while (c.moveToNext() && found.size < 20) {
+                if (told.told("s" + c.getLong(0), c.getLong(3))) continue
+                found.add(sms(c))
+            }
         }
         cr.query(Uri.parse("content://mms"), MMS_COLS, "date >= ? AND msg_box != 3", arrayOf((at / 1000).toString()), "date ASC")?.use { c ->
-            while (c.moveToNext() && found.size < 40) mms(c)?.let { found.add(it) }
+            while (c.moveToNext() && found.size < 40) {
+                if (told.told("m" + c.getLong(0), c.getLong(1) * 1000)) continue
+                mms(c)?.let { found.add(it) }
+            }
         }
         return found
     }
@@ -258,10 +264,13 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
                 // has no trustworthy line identity for the handset (no phone-number permission), so
                 // an inbound group's members are withheld and it is marked unresolved: the computer
                 // refuses it rather than send to a subset that may still include this handset.
-                val addrs = if (incoming) MessageChat.incomingMmsParticipants(m.from, m.recipients, country) else m.recipients
+                val members = m.recipients.size + m.unnamed
+                val addrs = if (!incoming) m.recipients
+                    else if (m.unnamed > 0 && members > 1) emptyList()
+                    else MessageChat.incomingMmsParticipants(m.from, m.recipients, country)
                 seen[id] = thread(id, addrs, m.text.ifEmpty { if (m.images > 0) "Picture" else "" }, at, c.getInt(3) == 0)
                     .apply {
-                        if (incoming && m.recipients.size > 1) {
+                        if (incoming && members > 1) {
                             put("group", true)
                             if (addrs.size < 2) put("unresolved", true)
                         }
@@ -331,7 +340,7 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
             .apply { if (d.attachment && d.parts.isEmpty()) put("attachment", true) } // video, audio, a contact card…
     }
 
-    private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val recipients: List<String>, val attachment: Boolean) {
+    private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val recipients: List<String>, val attachment: Boolean, val unnamed: Int) {
         val images get() = parts.size
     }
 
@@ -372,15 +381,19 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
         }
         val senders = linkedSetOf<String>()
         val recipients = linkedSetOf<String>()
+        var unnamed = 0
         cr.query(Uri.parse("content://mms/$id/addr"), arrayOf("address", "type"), null, null, null)?.use { c ->
             while (c.moveToNext()) {
-                val a = c.getString(0) ?: continue
-                if (a.isBlank() || a == "insert-address-token") continue
+                val a = c.getString(0)
+                if (a.isNullOrBlank() || a == "insert-address-token") {
+                    if (c.getInt(1) != 137) unnamed++ // a recipient the store could not name is still a member
+                    continue
+                }
                 if (c.getInt(1) == 137) senders.add(a) else recipients.add(a) // 137: from; 151: to
             }
         }
         val from = if (incoming) senders.singleOrNull().orEmpty() else ""
-        return Mms(text.toString(), parts, from, recipients.toList(), attachment)
+        return Mms(text.toString(), parts, from, recipients.toList(), attachment, unnamed)
     }
 
     // An MMS picture, at most 1024 px, as a data: URL.
@@ -539,6 +552,9 @@ internal class CarrierWatermark {
         at = time
         ids.clear()
     }
+
+    // Already told, or older than what was told: never news again.
+    @Synchronized fun told(id: String, time: Long) = time < at || (time == at && id in ids)
 
     @Synchronized fun admit(id: String, time: Long): Boolean {
         if (id.isEmpty() || time < at) return false

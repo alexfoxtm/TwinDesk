@@ -292,4 +292,86 @@ class MessagesDispatchPolicyTest {
             core.timers.shutdownNow()
         }
     }
+
+    // A recipient row the store could not name (null, blank or the insert-address token) is still
+    // a member: the fallback never lists that group as a one-person conversation.
+    @Test fun anInboundGroupWithAnUnnamedRecipientIsUnresolvedNeverOnePerson() {
+        val core = core()
+        val service = Messages(core.hub, core)
+        val sender = "+12025550100"
+        var unnamed: String? = null
+        var named = true
+        provider("mms-sms") { _, _ -> null }
+        provider("sms") { _, cols -> MatrixCursor(cols) }
+        provider("mms") { uri, cols ->
+            MatrixCursor(cols).apply {
+                when (uri.lastPathSegment) {
+                    null -> addRow(arrayOf(7, 8, 100, 1, 1))
+                    "addr" -> {
+                        addRow(arrayOf<Any>(sender, 137))
+                        if (named) addRow(arrayOf<Any>("+12025550101", 151))
+                        addRow(arrayOf<Any?>(unnamed, 151))
+                    }
+                }
+            }
+        }
+        try {
+            for (value in listOf(null, " ", "insert-address-token")) {
+                unnamed = value
+                val row = service.threads(10, "US").getJSONObject(0)
+                assertTrue("a group", row.optBoolean("group"))
+                assertTrue("unresolved", row.optBoolean("unresolved"))
+                assertEquals("no recipient subset is published", 0, row.getJSONArray("addrs").length())
+                assertFalse(row.has("e164"))
+            }
+            // The only recipient row is the handset's own: still the sender's one-to-one conversation.
+            named = false
+            val one = service.threads(10, "US").getJSONObject(0)
+            assertFalse(one.optBoolean("group"))
+            assertFalse(one.optBoolean("unresolved"))
+            assertEquals(sender, one.optString("e164"))
+        } finally {
+            core.bg.shutdownNow()
+            core.timers.shutdownNow()
+        }
+    }
+
+    // More rows than one look reads share the newest time: the rest and every later row still go.
+    @Test fun aBurstSharingOneTimestampNeverStallsLaterCarrierRows() {
+        val core = core()
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.READ_SMS, Manifest.permission.SEND_SMS)
+        val worker = Executors.newSingleThreadExecutor()
+        val first = mutableListOf<JSONObject>()
+        val original = socket(first)
+        // _id, address, body, date, type, thread_id. 25 rows are already in the store at one time.
+        val rows = (1L..25L).map { arrayOf<Any>(it, "+12025550100", "Synthetic seed", 1000L, 1, 7L) }.toMutableList()
+        provider("sms") { _, cols ->
+            MatrixCursor(cols).apply {
+                if (cols.size == 1) addRow(arrayOf<Any>(rows.maxOf { it[3] as Long }))
+                else rows.forEach { addRow(it) }
+            }
+        }
+        provider("mms") { _, cols -> MatrixCursor(cols) }
+        provider("mms-sms") { _, cols -> MatrixCursor(cols) }
+        core.hub.write("io", worker)
+        connect(core, original)
+        try {
+            core.onMessage(msg(Proto.T.HUB_POLICY, "messages" to true), core.link.currentTrustedRoute(), original)
+            shadowOf(Looper.getMainLooper()).idle()
+            worker.submit {}.get(5, TimeUnit.SECONDS)
+            val service = core.hub.read("messages")!!
+            val check = Messages::class.java.getDeclaredMethod("check").apply { isAccessible = true }
+            fun news() = first.filter { it.optString("t") == Proto.T.SMS_NEW }.map { it.getJSONObject("msg").optString("id") }
+            repeat(2) { worker.submit { check.invoke(service) }.get(5, TimeUnit.SECONDS) }
+            assertTrue("rows already in the store are never news", news().isEmpty())
+            for (id in 26L..46L) rows += arrayOf<Any>(id, "+12025550100", "Synthetic burst", 2000L, 1, 7L)
+            rows += arrayOf<Any>(47L, "+12025550100", "Synthetic later", 3000L, 1, 7L)
+            repeat(4) { worker.submit { check.invoke(service) }.get(5, TimeUnit.SECONDS) }
+            assertEquals("the whole burst and the later row are told, each once", (26L..47L).map { "s$it" }, news())
+        } finally {
+            worker.shutdownNow()
+            core.bg.shutdownNow()
+            core.timers.shutdownNow()
+        }
+    }
 }

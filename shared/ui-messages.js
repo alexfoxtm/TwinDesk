@@ -1152,34 +1152,43 @@ UI.tab({
       if (!page.hidden && carrierReady(UI.state)) load();
     });
 
-    function resetCarrier() {
+    function dropPhoneData() {
       chatEpoch++;
       openContact = null;
       threads = [];
       carrierHistory.clear();
       parts.clear();
       nanp = false;
-      openId = null;
       items = [];
       hasMore = false;
-      pending = [];
       pic.clear();
       loaded = false;
       loadedAt = 0;
       clearTimeout(threadsTimer);
     }
+    function resetCarrier() {
+      dropPhoneData();
+      openId = null;
+      pending = [];
+    }
 
     return (s) => {
       top.render(s);
-      const phoneChanged = phoneSession !== s.hub?.session || phoneDevice !== s.hub?.deviceId;
-      if (phoneChanged || (!carrierReady(s) && (loaded || threads.length))) {
+      const device = s.hub?.deviceId || '';
+      const otherPhone = !!device && device !== phoneDevice;
+      const sessionChanged = phoneSession !== s.hub?.session;
+      if (otherPhone || sessionChanged || (!carrierReady(s) && (loaded || threads.length))) {
         phoneSession = s.hub?.session;
-        phoneDevice = s.hub?.deviceId;
-        if (phoneChanged) {
+        if (device) phoneDevice = device;
+        if (otherPhone) {
           closeChat();
           box.value = '';
-        }
-        resetCarrier();
+          resetCarrier();
+        } else if (sessionChanged) {
+          dropPhoneData();
+          chatPic.clear();
+          pending = pending.filter((p) => p.status !== 'sent');
+        } else resetCarrier();
         renderList();
         renderConv();
       }
