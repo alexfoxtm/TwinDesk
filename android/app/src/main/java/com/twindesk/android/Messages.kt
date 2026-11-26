@@ -559,12 +559,14 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
 
         // A peer may send one proven 1:1 address. A group, an unresolved thread, or a requested
         // number that is not that address is refused. Nothing here returns a subset of members.
-        internal fun peerDispatchAddress(proof: RecipientProof, requested: String, groupClaim: Boolean): String? {
+        internal fun peerDispatchAddress(
+            proof: RecipientProof, requested: String, groupClaim: Boolean, legacyWithoutThread: Boolean = false
+        ): String? {
             if (groupClaim || proof is RecipientProof.Group) return null
             val asked = smsAddress(requested)
             return when (proof) {
                 is RecipientProof.One -> proof.address.takeIf { asked.isNotEmpty() && asked == it }
-                RecipientProof.Unavailable -> asked.takeIf { it.isNotEmpty() }
+                RecipientProof.Unavailable -> asked.takeIf { legacyWithoutThread && it.isNotEmpty() }
                 RecipientProof.Group -> null
             }
         }

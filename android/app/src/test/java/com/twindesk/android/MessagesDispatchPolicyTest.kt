@@ -403,7 +403,11 @@ class MessagesDispatchPolicyTest {
             assertEquals("+12025550100", Messages.peerDispatchAddress(one, "+1 202-555-0100", false))
             assertNull("a different number is not a subset", Messages.peerDispatchAddress(one, "+12025550199", false))
             assertNull("a group claim is refused even when the store has one address", Messages.peerDispatchAddress(one, "+12025550100", true))
-            assertEquals("2025550100", Messages.peerDispatchAddress(Messages.RecipientProof.Unavailable, "2025550100", false))
+            assertNull("an unverified thread never falls back to the requested number",
+                Messages.peerDispatchAddress(Messages.RecipientProof.Unavailable, "2025550100", false))
+            assertEquals("2025550100", Messages.peerDispatchAddress(
+                Messages.RecipientProof.Unavailable, "2025550100", false, legacyWithoutThread = true
+            ))
             assertNull(Messages.peerDispatchAddress(Messages.RecipientProof.Unavailable, "", false))
             assertNull(Messages.peerDispatchAddress(Messages.RecipientProof.Group, "+12025550100", false))
             assertTrue(Messages.peerGroupBlocked(true, false, 1))

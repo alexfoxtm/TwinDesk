@@ -936,10 +936,15 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         val groupClaim = m.optBoolean("group") || m.optBoolean("unresolved") || (addrs != null && addrs.length() != 1)
         val threadId = m.str("id", 20).toLongOrNull()
         val proof = if (threadId != null) messages.recipientProof(threadId) else Messages.RecipientProof.Unavailable
-        val to = Messages.peerDispatchAddress(proof, requested, groupClaim)
+        val legacyWithoutThread = !m.has("id")
+        val to = Messages.peerDispatchAddress(proof, requested, groupClaim, legacyWithoutThread)
         if (to == null) {
-            val refused = groupClaim || proof is Messages.RecipientProof.Group || proof is Messages.RecipientProof.One
-            return JSONObject().put("error", if (refused) Messages.GROUP_REFUSED else "Nothing to send")
+            val error = when {
+                groupClaim || proof is Messages.RecipientProof.Group -> Messages.GROUP_REFUSED
+                !legacyWithoutThread -> "Check the recipient on the phone before sending."
+                else -> "Nothing to send"
+            }
+            return JSONObject().put("error", error)
         }
         if (body.isBlank()) return JSONObject().put("error", "Nothing to send")
         val sm = if (android.os.Build.VERSION.SDK_INT >= 31) ctx.getSystemService(android.telephony.SmsManager::class.java) else android.telephony.SmsManager.getDefault()
