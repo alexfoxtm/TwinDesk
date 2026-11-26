@@ -92,6 +92,15 @@ func TestListingKeepsEveryActiveConversationAndTagsItsKind(t *testing.T) {
 	}
 }
 
+func TestTypingRejectsSMS(t *testing.T) {
+	b := inbox{ready: true, active: "sms", convs: map[string]*gmproto.Conversation{
+		"sms": {ConversationID: "sms", Type: gmproto.ConversationType_SMS},
+	}}
+	if b.handle(context.Background(), command{Op: "typing", Chat: "sms"}) {
+		t.Fatal("typing accepted for an SMS conversation")
+	}
+}
+
 func TestOnePersonShapesHaveOneAddress(t *testing.T) {
 	sims := []*gmproto.SIMCard{{SIMParticipant: &gmproto.SIMParticipant{ID: "sim2"}}}
 	base := func(extra ...*gmproto.Participant) *gmproto.Conversation {

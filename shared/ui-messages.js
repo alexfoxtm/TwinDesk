@@ -775,7 +775,7 @@ UI.tab({
       if (pill === 'texts') return;
       const shown = (pill === 'all' ? inbox : all.filter((t) => t.app === pill)).filter((t) =>
         matches(t.name, t.dest, t.addrs?.join(' '), snippetOf(t)) ||
-        t.sources?.some((c) => matches(c.name, snippetOf(c))) || t.key === chatOpen);
+        (googleOnly(t) ? [t.googleSource] : t.sources)?.some((c) => matches(c.name, snippetOf(c))) || t.key === chatOpen);
       const t = shown.find((x) => x.key === chatOpen);
       const google = t && googleOf(t);
       if (openContact && openContact.key === t?.key && gm?.state === 'connected' && openContact.googleId !== google?.id) {
@@ -785,9 +785,10 @@ UI.tab({
       }
       const messages = t?.dest ? projectContact(t) : t?.msgs || [];
       const k = JSON.stringify([pill, chatOpen, query, shown.map((row) => [row.key, row.at, row.name, snippetOf(row), row.sources?.map((c) => c.key), !!row.avatar]),
-        messages.map(({ image, ...m }) => m), t?.items, t?.reply, t?.pic,
+        messages.map(({ image, ...m }) => m), t?.items, t?.reply, t?.pic, t?.people?.map((p) => p.name),
         t?.sources?.map((c) => [c.replySession, c.items?.map((h) => h.reply && h.replySession)]), google?.id, google?.reply, google?.loaded,
         google?.more, google?.typing, ready, carrierSend(s), mmsOk(), s.hub?.perm?.messages?.sims, (s.notifs || {}).receive, synced(s),
+        gm?.enabled, gm?.state, t?.dest ? lastKind.get(t.dest) : '',
         Object.keys((s.notifs || {}).historyIcons || {}).length]);
       if (k === chatKey) return;
       chatKey = k;

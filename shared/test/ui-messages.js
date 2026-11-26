@@ -1190,6 +1190,18 @@ test('an SMS-kind Google row and its phone thread are one row with Google messag
   assert.equal(page.asked.filter((m) => m.t === 'sms.thread').length, 0);
 });
 
+test('Google mode search ignores the joined carrier thread name and snippet', () => {
+  const page = gmPage(connected([{ id: 'paired', name: 'Fixture Google', addrs: [gmDest], reply: true, kind: 'sms', at: 1000 }]));
+  page.received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [gmDest], name: 'Zebra carrier', at: 500, snippet: 'Quokka text' }] });
+  assert.equal(rowName(page.rows()[0]), 'Fixture Google');
+  const search = page.chat.children[0].children[0].children[0];
+  for (const query of ['Zebra', 'Quokka']) {
+    search.value = query;
+    search.listeners.input[0]();
+    assert.equal(page.rows().filter((row) => row.tag === 'button').length, 0, query);
+  }
+});
+
 test('notification and structured Chat rows are hidden in Google mode; WhatsApp stays', () => {
   const app = 'com.google.android.apps.messaging';
   const extra = {
@@ -1248,6 +1260,7 @@ test('through an outage the row keeps its key, and a carrier send follows the la
     if (kind === 'sms') continue;
     page.state.googleMessages = { owner: gmPhone, state: 'disconnected', enabled: true, rows: [] };
     page.paint(page.state);
+    assert.equal(page.composer.hidden, false);
     await page.reply();
     assert.equal(page.sms().length, 1, 'allowed once Google Messages is disconnected');
     page.state.googleMessages = { owner: gmPhone, state: 'offline', enabled: true, rows: [] };
@@ -1259,6 +1272,19 @@ test('through an outage the row keeps its key, and a carrier send follows the la
     await page.reply();
     assert.equal(page.sms().length, 2, 'never while Google Messages is connecting');
   }
+});
+
+test('the carrier composer follows state-only changes between connecting and offline', () => {
+  const page = gmPage({ owner: gmPhone, state: 'connecting', enabled: true, rows: [] });
+  page.received.get('sms.threads')({ items: [{ id: 'carrier', addrs: [gmDest], at: 500 }] });
+  page.rows()[0].onclick();
+  assert.equal(page.composer.hidden, true);
+  page.state.googleMessages.state = 'offline';
+  page.paint(page.state);
+  assert.equal(page.composer.hidden, false);
+  page.state.googleMessages.state = 'connecting';
+  page.paint(page.state);
+  assert.equal(page.composer.hidden, true);
 });
 
 test('a read-only Google row with a number never sends', async () => {
@@ -1296,6 +1322,19 @@ test('a Google group shows its members and senders and never sends by the carrie
   assert.equal(page.gmSends().length, 1);
   assert.equal(page.gmSends()[0].allowCarrier, false);
   assert.equal(page.sms().length, 0);
+});
+
+test('a Google group header updates when only the member names change', () => {
+  const members = ['+12025550101', '+12025550102'];
+  const row = { id: 'group', name: 'Fixture group', group: true, addrs: members, reply: true, kind: 'sms', at: 3000,
+    people: [{ name: 'Ann', number: members[0] }, { name: '', number: members[1] }] };
+  const page = gmPage(connected([row]));
+  page.rows()[0].onclick();
+  const header = () => page.chat.children[1].children[0].children[1].children[1].text;
+  assert.equal(header(), 'Ann');
+  page.state.googleMessages.rows = [{ ...row, people: [row.people[0], { ...row.people[1], name: 'Bob' }] }];
+  page.paint(page.state);
+  assert.equal(header(), 'Ann, Bob');
 });
 
 test('New message to a known Google one-to-one opens that row in All with the text, never a new send', async () => {
