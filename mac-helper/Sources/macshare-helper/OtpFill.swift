@@ -185,6 +185,12 @@ final class OtpTargetController {
     return ["valid": true, "token": token, "secure": snapshot.subrole == OtpFillPolicy.secureSubrole]
   }
 
+  func cancel(_ token: String) {
+    lock.lock()
+    targets.removeValue(forKey: token)
+    lock.unlock()
+  }
+
   func fill(
     code: String, token: String, frontPid: Int32, frontBundleId: String, remoteOverview: Bool,
     stillFront: () -> Bool
@@ -197,13 +203,14 @@ final class OtpTargetController {
 
     let now = ProcessInfo.processInfo.systemUptime
     lock.lock()
-    let stored = targets.removeValue(forKey: token)
+    let stored = targets[token]
     pruneLocked(now: now)
     lock.unlock()
 
     guard let expected = stored, expected.expiresAt > now else {
       return ["filled": false, "reason": "expired-token"]
     }
+    defer { cancel(token) }
     guard let (currentElement, currentSnapshot) = Self.readLiveTarget(frontPid: frontPid, frontBundleId: frontBundleId) else {
       return ["filled": false, "reason": "no-focus"]
     }
@@ -225,6 +232,11 @@ final class OtpTargetController {
     guard stillFront(), let focused = Self.focusedElement(), CFEqual(focused, currentElement) else {
       return ["filled": false, "reason": "target-changed"]
     }
+    lock.lock()
+    let admitted = (targets.removeValue(forKey: token)?.expiresAt ?? 0) > ProcessInfo.processInfo.systemUptime
+    lock.unlock()
+    guard admitted else { return ["filled": false, "reason": "expired-token"] }
+
     let err = AXUIElementSetAttributeValue(currentElement, kAXSelectedTextAttribute as CFString, code as CFString)
     guard err == .success else {
       return ["filled": false, "reason": "unsupported-target"]

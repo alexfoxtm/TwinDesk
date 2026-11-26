@@ -693,6 +693,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     private fun onInvite(f: Found) {
+        if (embeddedTargetId != null || link.embedded || returnEmbeddedNode() != null) return
         val h = store.hosts().find { it.id == f.id }
         if (h != null) {
             // A phone holds the session (one at a time): the computer waits; Connect here takes it back.

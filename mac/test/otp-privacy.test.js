@@ -90,6 +90,7 @@ test('main path: cross-source OTP detection, dedupe, verified Use code fill, and
   const hub = new PhoneHub({ server, getSettings: () => settings, save() {} });
   hub.on('smsNew', (ev) => notifs.onSmsNew(ev, hub));
   hub.started();
+  server.emit(`t:${P.T.HUB_STATE}`, { messages: { perm: 'ok' } }, server.current, socket);
 
   let gmChild;
   const gm = new GoogleMessages({
@@ -164,11 +165,15 @@ test('failure paths: target-change falls back to secure copy, Stop/revoke invali
     outbound: () => socket,
     sendToClient: () => true,
   });
+  const cancellations = [];
+  let startFill;
+  let finishFill;
   const helper = Object.assign(new EventEmitter(), {
     running: true,
-    send() {},
+    send(cmd, args) { if (cmd === 'otpCancel') cancellations.push(args.token); },
     async request(cmd) {
       if (cmd === 'otpTarget') return { valid: true, token: 'tok-stale' };
+      if (cmd === 'otpFill' && startFill) return new Promise((resolve) => { finishFill = resolve; startFill(); });
       if (cmd === 'otpFill') return { filled: false, reason: 'target-changed' };
       return {};
     },
@@ -182,6 +187,15 @@ test('failure paths: target-change falls back to secure copy, Stop/revoke invali
   hub.on('smsNew', (ev) => notifs.onSmsNew(ev, hub));
   hub.on('stopped', () => notifs.clearOtpSource('sms'));
   hub.started();
+  server.emit(`t:${P.T.HUB_STATE}`, { messages: { perm: 'ok' } }, server.current, socket);
+
+  settings.notifs.otpCopy = true;
+  server.emit(`t:${P.T.NOTIF}`, {
+    id: 'n-expired', app: 'com.google.android.apps.messaging',
+    title: 'Fixture Bank', body: 'Verification code: 998877', at: Date.now() - 3600_000,
+  }, server.current, socket);
+  assert.deepEqual(clipWrites, [], 'an expired notification does not take the legacy automatic copy path');
+  settings.notifs.otpCopy = false;
 
   // Stale SMS (hours old) and outgoing SMS are ignored.
   server.emit(`t:${P.T.SMS_NEW}`, {
@@ -226,8 +240,24 @@ test('failure paths: target-change falls back to secure copy, Stop/revoke invali
   assert.deepEqual(revoked, { ok: false, mode: 'expired' }, 'revoked permission refuses Use code');
   assert.equal(notifs.view.otp, null);
 
-  // New offer cleared on disconnect / Stop.
   settings.hub.messages = true;
+  server.emit(`t:${P.T.SMS_NEW}`, {
+    t: P.T.SMS_NEW, msg: { id: 'pending', body: 'Verification code: 202602', at: Date.now(), out: false },
+  }, server.current, socket);
+  const fillStarted = new Promise((resolve) => { startFill = resolve; });
+  const filling = notifs.useOtp(notifs.view.otp.id);
+  await fillStarted;
+  cancellations.length = 0;
+  server.emit(`t:${P.T.HUB_STATE}`, { messages: { perm: 'ask' } }, server.current, socket);
+  assert.equal(notifs.view.otp, null, 'a source permission change revokes the offer on the same socket');
+  assert.deepEqual(cancellations, ['tok-stale'], 'the queued native fill token was cancelled');
+  const writesBefore = clipWrites.length;
+  finishFill({ filled: false, reason: 'expired-token' });
+  assert.deepEqual(await filling, { ok: false, mode: 'expired' });
+  assert.equal(clipWrites.length, writesBefore, 'revocation never falls back to clipboard');
+
+  // New offer cleared on disconnect / Stop.
+  server.emit(`t:${P.T.HUB_STATE}`, { messages: { perm: 'ok' } }, server.current, socket);
   server.emit(`t:${P.T.SMS_NEW}`, {
     t: P.T.SMS_NEW, summary: { name: 'Auth' },
     msg: { id: 'fresh2', body: 'Verification code: 246810', at: Date.now(), out: false },

@@ -27,6 +27,7 @@ class OtpOfferTracker {
     this.clearTimer = typeof opts.clearTimeout === 'function' ? opts.clearTimeout : clearTimeout;
     this.copy = typeof opts.copy === 'function' ? opts.copy : () => false;
     this.fill = typeof opts.fill === 'function' ? opts.fill : null;
+    this.cancelTarget = typeof opts.cancelTarget === 'function' ? opts.cancelTarget : () => {};
     this.captureTarget = typeof opts.captureTarget === 'function' ? opts.captureTarget : null;
     this.presentOffer = typeof opts.presentOffer === 'function' ? opts.presentOffer : null;
     this.dismissOffer = typeof opts.dismissOffer === 'function' ? opts.dismissOffer : null;
@@ -70,6 +71,7 @@ class OtpOfferTracker {
       offer.timer = null;
     }
     this.offers.delete(offer.id);
+    if (offer.targetToken) this.cancelTarget(offer.targetToken);
     if (offer.presentedSynthetic && this.dismissOffer) {
       offer.presentedSynthetic = false;
       try { this.dismissOffer(offer); } catch {}
@@ -186,7 +188,11 @@ class OtpOfferTracker {
     const p = Promise.resolve()
       .then(() => this.captureTarget())
       .then((res) => {
-        if (this.offers.get(id) !== offer) return '';
+        if (this.offers.get(id) !== offer || offer.targetPromise !== p) {
+          if (typeof res?.token === 'string' && res.token) this.cancelTarget(res.token);
+          return '';
+        }
+        if (offer.targetToken) this.cancelTarget(offer.targetToken);
         if (res && res.valid === true && typeof res.token === 'string' && res.token) {
           offer.targetToken = res.token;
           offer.targetAt = this.now();
@@ -249,7 +255,7 @@ class OtpOfferTracker {
     if (this.fill && tokenFresh) {
       try {
         const res = await this.fill(offer.code, offer.targetToken);
-        if (res && res.filled === true) {
+        if (res?.filled === true && this.offers.get(id) === offer && this._isAuthorized(offer)) {
           this._remove(offer);
           this.onChange();
           return { ok: true, mode: 'filled' };

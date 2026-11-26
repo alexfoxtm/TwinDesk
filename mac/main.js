@@ -1829,7 +1829,9 @@ function loadHub() {
   phoneHub = hub;
   require('../shared/asked-send.js').wireAsked(hub, svc.drop); // Photos/Files › Save comes back as one Send (#239)
   hub.on('change', () => {
-    if (!settings.hub.messages && svc && svc.notifs) svc.notifs.clearOtpSource('sms');
+    if ((!settings.hub.messages || !['ok', 'partial'].includes(hub.state?.messages?.perm)) && svc?.notifs) {
+      svc.notifs.clearOtpSource('sms');
+    }
     svc.drop.checkPhotoSave();
   });
   hub.on('smsNew', (ev) => svc && svc.notifs && svc.notifs.onSmsNew(ev, hub));

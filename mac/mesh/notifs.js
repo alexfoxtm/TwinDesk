@@ -73,6 +73,7 @@ class Notifs extends EventEmitter {
       copy: (code) => this.copyOtp(code),
       fill: (code, token) => this._fillOtp(code, token),
       captureTarget: () => this._captureOtpTarget(),
+      cancelTarget: (token) => this.helper?.send?.('otpCancel', { token }),
       presentOffer: (offer) => this._presentOtpOffer(offer),
       dismissOffer: (offer) => this._dismissOtpOffer(offer),
       onChange: () => this.emit('change'),
@@ -229,7 +230,10 @@ class Notifs extends EventEmitter {
     if (!this.helper || !this.helper.running || typeof this.helper.request !== 'function') {
       return Promise.resolve({ filled: false, reason: 'helper-unavailable' });
     }
-    return this.helper.request('otpFill', { code, token }, 1000).catch(() => ({ filled: false, reason: 'helper-unavailable' }));
+    return this.helper.request('otpFill', { code, token }, 1000).catch(() => {
+      this.helper?.send?.('otpCancel', { token });
+      return { filled: false, reason: 'helper-unavailable' };
+    });
   }
 
   _presentOtpOffer(offer) {
@@ -281,8 +285,10 @@ class Notifs extends EventEmitter {
 
   onSmsNew(ev, hub) {
     if (!ev || !ev.phoneId || !ev.msg || ev.msg.out || !hub) return null;
-    if (!this.getSettings().hub?.messages) return null;
-    if (!hub.samePhone({ deviceId: ev.phoneId, session: ev.session })) return null;
+    const isAuthorized = () => !!this.getSettings().hub?.messages &&
+      ['ok', 'partial'].includes(hub.state?.messages?.perm) &&
+      hub.samePhone({ deviceId: ev.phoneId, session: ev.session });
+    if (!isAuthorized()) return null;
     return this.otp.ingest({
       source: 'sms',
       phoneId: ev.phoneId,
@@ -291,7 +297,7 @@ class Notifs extends EventEmitter {
       at: ev.msg.at,
       label: (ev.summary && ev.summary.name) || ev.msg.from || '',
       autoCopy: !!this.cfg.otpCopy,
-      isAuthorized: () => !!this.getSettings().hub?.messages && hub.samePhone({ deviceId: ev.phoneId, session: ev.session }),
+      isAuthorized,
     });
   }
 
@@ -463,7 +469,6 @@ class Notifs extends EventEmitter {
     const body = str(m.body);
     const code = otpOf([title, str(m.subtitle, 200), body].join(' '));
     let otpOffer = null;
-    let handledAutoCopy = false;
     if (code && directPhone && this.bus.connectedIds().includes(from)) {
       const res = this.otp.ingest({
         source: 'notif',
@@ -476,17 +481,14 @@ class Notifs extends EventEmitter {
         autoCopy: !!this.cfg.otpCopy,
         isAuthorized: () => !!this.cfg.receive && !hidden(this, m) && this.mesh.get(from) === peer && this.bus.connectedIds().includes(from) && (!socket || this.replySocket(from) === socket),
       });
-      if (res) {
-        otpOffer = res.offer;
-        handledAutoCopy = true;
-      }
+      otpOffer = res?.offer || null;
     }
     // Actions have no relay protocol: only the authenticated origin can run its buttons.
     const actions = id && direct ? actionsOf(m) : [];
     item.actions = actions;
     if (!id) item.reply = false;
     // TwinDesk's window (Reply, buttons, picture, progress), the system's, or none (quiet).
-    const how = present(this, item, m, { from: origin, code, icon: m.icon || (this.historyIcons && this.historyIcons.get(item.app)), otpId: otpOffer ? otpOffer.id : '', autoCopy: !handledAutoCopy });
+    const how = present(this, item, m, { from: origin, code, icon: m.icon || (this.historyIcons && this.historyIcons.get(item.app)), otpId: otpOffer ? otpOffer.id : '', autoCopy: !directPhone });
     if (how !== 'native') {
       if (how === 'popup') this.shown++;
       return void this.changed();

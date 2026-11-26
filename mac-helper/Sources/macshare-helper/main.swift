@@ -296,6 +296,9 @@ func handle(_ line: String) {
     helperWorkQueue.async {
       reply(id, OtpTargetController.shared.capture(frontPid: frontPid, frontBundleId: frontBundleId, remoteOverview: overview))
     }
+  case "otpCancel":
+    if let token = msg["token"] as? String { OtpTargetController.shared.cancel(token) }
+    reply(id)
   case "otpFill":
     let code = (msg["code"] as? String) ?? ""
     let token = (msg["token"] as? String) ?? ""
