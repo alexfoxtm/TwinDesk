@@ -15,7 +15,11 @@ const APP = 'com.twindesk.ios';
 const EXTENSIONS = [APP + '.broadcast', APP + '.share'];
 const UDID = /^(?:[a-f0-9]{8}-[a-f0-9]{16}|[a-f0-9]{40})$/i;
 const CORE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+// The fork stages its own unsigned build (mac/scripts/stage-ios-ipa.sh) in the app's settings
+// folder: <userData>/ios-developer/TwinDesk.ipa. A copy inside the app is only a legacy fallback.
 const IPA = path.join(__dirname, 'ios-developer', 'TwinDesk.ipa');
+const STORED = (userData) => path.join(userData, 'ios-developer', 'TwinDesk.ipa');
+const NO_IPA = 'No TwinDesk iPad build stored yet';
 
 function pairedDevices(devices) {
   const paired = new Map();
@@ -59,7 +63,7 @@ function connectError(klass) {
 }
 
 function create({
-  exec = promisify(execFile), ipa = IPA, tmp = os.tmpdir(),
+  exec = promisify(execFile), ipa, ipas = ipa ? [ipa] : [IPA], tmp = os.tmpdir(), renewer = null,
   profileDirs = [
     path.join(os.homedir(), 'Library/Developer/Xcode/UserData/Provisioning Profiles'),
     path.join(os.homedir(), 'Library/MobileDevice/Provisioning Profiles'),
@@ -166,11 +170,19 @@ function create({
     return chosen;
   }
 
-  async function inventory(work, signal) {
-    await command(signal, '/usr/bin/ditto', ['-x', '-k', ipa, work], 60000);
+  // The first IPA that exists: the stored fork build, then the legacy copy inside the app.
+  function source() {
+    const file = ipas.find((f) => existsSync(f));
+    return file ? { file, kind: ipas.indexOf(file) === 0 ? 'stored' : 'bundled' } : null;
+  }
+
+  async function inventory(work, signal, file) {
+    await command(signal, '/usr/bin/ditto', ['-x', '-k', file, work], 60000);
+    const top = await fs.readdir(work, { withFileTypes: true });
+    if (top.length !== 1 || top[0].name !== 'Payload' || !top[0].isDirectory()) throw new Error('The stored TwinDesk app is invalid');
     const payload = path.join(work, 'Payload');
     const contents = await fs.readdir(payload, { withFileTypes: true });
-    if (contents.length !== 1 || !contents[0].isDirectory() || !contents[0].name.endsWith('.app')) throw new Error('The bundled TwinDesk app is invalid');
+    if (contents.length !== 1 || !contents[0].isDirectory() || contents[0].name !== 'TwinDesk.app') throw new Error('The stored TwinDesk app is invalid');
     const app = path.join(payload, contents[0].name);
     const plugins = path.join(app, 'PlugIns');
     const entries = await fs.readdir(plugins, { withFileTypes: true });
@@ -186,24 +198,82 @@ function create({
       targets.set(id, bundle);
       if (id === APP) version = await extract(signal, info, 'CFBundleShortVersionString');
     }
+    if (!/^\d+(?:\.\d+){0,3}$/.test(version)) throw new Error('The stored TwinDesk app has no valid version');
     return { app, targets, version };
   }
 
-  async function install(selected, signal, { minExpiry = 0, requireNewer = false } = {}) {
+  // The IPA the next install would use, checked with the same inventory rules: {kind, version, file,
+  // valid}. Remembered per file, size and time, so the page can show it without unpacking it again.
+  let known = null;
+  async function stored(signal = new AbortController().signal) {
+    const src = source();
+    if (!src) { known = null; return null; }
+    const st = await fs.stat(src.file);
+    const key = `${src.file}\0${st.size}\0${st.mtimeMs}`;
+    if (known?.key === key) return known.info;
+    const work = await fs.mkdtemp(path.join(tmp, 'twindesk-ios-ipa-'));
+    try {
+      const { version } = await inventory(work, signal, src.file);
+      known = { key, info: { kind: src.kind, version, file: src.file, valid: true } };
+    } catch (error) {
+      signal.throwIfAborted();
+      known = { key, info: { kind: src.kind, version: '', file: src.file, valid: false, error: str(error.message) } };
+    } finally {
+      await fs.rm(work, { recursive: true, force: true });
+    }
+    return known.info;
+  }
+
+  function minimum(chosen) {
+    return Math.min(...[APP, ...EXTENSIONS].map((id) => chosen.get(id).expires));
+  }
+
+  // renewWithin (seconds): profiles running out sooner are renewed through Xcode first (profile-only,
+  // mac/ios-provision-profiles.js); force: Refresh now always asks. onRenewal({state, message,
+  // before, after}) hears the outcome; a blocked renewal still installs with valid cached profiles.
+  async function install(selected, signal, { minExpiry = 0, requireNewer = false, renewWithin = 3 * 86400, force = false, onRenewal } = {}) {
     if (!selected || !UDID.test(selected.udid) || !CORE_ID.test(selected.coreId)) throw connectError(selected?.klass);
-    if (!existsSync(ipa)) throw new Error('This Mac build doesn’t include TwinDesk for iPhone and iPad');
+    const src = source();
+    if (!src) throw new Error(NO_IPA);
     const target = await verifyTarget(selected, signal);
     if (!pinnedIdentity(await command(signal, '/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning']))) {
       throw new Error('The Mac’s TwinDesk signing certificate is unavailable');
     }
     const work = await fs.mkdtemp(path.join(tmp, 'twindesk-ios-developer-'));
     try {
-      const selectedProfiles = await profiles(work, target.udid, signal);
+      const scan = async () => {
+        const dir = await fs.mkdtemp(path.join(work, 'profiles-'));
+        try { return await profiles(dir, target.udid, signal); } finally { await fs.rm(dir, { recursive: true, force: true }); }
+      };
+      let selectedProfiles = null;
+      let missing = null;
+      try { selectedProfiles = await scan(); } catch (error) {
+        signal.throwIfAborted();
+        missing = error;
+      }
+      const before = selectedProfiles ? minimum(selectedProfiles) : 0;
+      let renewal = null;
+      if (renewer && (force || !selectedProfiles || before * 1000 - Date.now() <= renewWithin * 1000)) {
+        renewal = { ...await renewer.renew(signal, { udid: target.udid }), before };
+        signal.throwIfAborted();
+        try { selectedProfiles = await scan(); missing = null; } catch (error) {
+          signal.throwIfAborted();
+          missing = error;
+          selectedProfiles = null;
+        }
+        renewal.after = selectedProfiles ? minimum(selectedProfiles) : 0;
+        if (renewal.after > before && renewal.state !== 'account') renewal.state = 'renewed';
+        onRenewal?.(renewal);
+      }
+      if (!selectedProfiles) {
+        if (renewal && renewal.state !== 'renewed' && renewal.message) throw Object.assign(new Error(renewal.message), { kind: 'xcode' });
+        throw missing;
+      }
       const components = [APP, ...EXTENSIONS].map((bundleId) => ({ bundleId, expires: selectedProfiles.get(bundleId).expires }));
       const expires = Math.min(...components.map((p) => p.expires));
       if (expires <= minExpiry && requireNewer) return null;
       if (expires < minExpiry) throw new Error('Xcode needs to prepare a newer copy of TwinDesk for the selected device');
-      const { app, targets, version } = await inventory(work, signal);
+      const { app, targets, version } = await inventory(path.join(work, 'ipa'), signal, src.file);
       const ent = path.join(work, 'entitlements.plist');
       const requirement = `=anchor apple generic and certificate leaf = H"${IDENTITY}" and certificate leaf[subject.OU] = "${TEAM}"`;
       for (const [id, bundle] of targets) {
@@ -227,13 +297,30 @@ function create({
       if (!Array.isArray(result?.installedApplications) || !result.installedApplications.some((entry) => entry?.bundleID === APP || entry?.bundleIdentifier === APP)) {
         throw new Error('The device did not confirm that it installed TwinDesk');
       }
-      return { udid: target.udid, device: target.name || target.klass, team: TEAM, identity: IDENTITY, bundleId: APP, version, expires, components };
+      return { udid: target.udid, device: target.name || target.klass, team: TEAM, identity: IDENTITY, bundleId: APP, version, expires, components,
+        ipa: src.kind, ...(renewal ? { renewal: { state: renewal.state, before: renewal.before, after: renewal.after } } : {}) };
     } finally {
       await fs.rm(work, { recursive: true, force: true });
     }
   }
 
-  return { bundled: () => existsSync(ipa), list, apps, install };
+  // bundled(): an IPA is there to install (stored, or the legacy copy in the app).
+  return { bundled: () => !!source(), source, stored, storedInfo: () => known?.info || null, list, apps, install };
 }
 
-module.exports = { create, pairedDevices, pinnedIdentity, TEAM, IDENTITY, APP };
+function str(v, n = 250) { return typeof v === 'string' ? v.slice(0, n) : ''; }
+
+module.exports = { create, pairedDevices, pinnedIdentity, TEAM, IDENTITY, APP, IPA, STORED, NO_IPA };
+
+// node mac/ios-developer-sign.js --verify FILE.ipa: the staging script's check, same inventory rules.
+if (require.main === module) {
+  if (process.argv.length !== 4 || process.argv[2] !== '--verify') {
+    console.error('Usage: node ios-developer-sign.js --verify TwinDesk.ipa');
+    process.exitCode = 2;
+  } else {
+    create({ ipas: [path.resolve(process.argv[3])] }).stored().then((info) => {
+      if (!info?.valid) throw new Error(info?.error || 'The IPA is missing');
+      console.log(JSON.stringify({ bundleId: APP, version: info.version }));
+    }).catch((error) => { console.error(error.message); process.exitCode = 1; });
+  }
+}

@@ -129,7 +129,9 @@
       let offlineUdid = '';
       const localButton = UI.button(tr('Install TwinDesk'), () => act({ a: 'installDeveloper', udid: exact }), 'primary');
       const localStatus = UI.row(tr('TwinDesk'), '', [localButton], { literalHint: true });
-      const localCard = UI.card('', [localStatus]);
+      const storedRow = UI.row(tr('Stored TwinDesk app'), '', [], { literalHint: true });
+      const renewNote = UI.note('warn', '');
+      const localCard = UI.card('', [storedRow, localStatus]);
       const bindButton = UI.button(tr('Link to this TwinDesk session'), () => act({ a: 'set', udid: exact, bind: true, session: peerId }), 'small');
       const bindRow = UI.row(tr('Refresh from the device'), '', [bindButton], { literalHint: true });
       const deviceAuto = UI.switch((v) => act({ a: 'set', udid: exact, deviceAuto: v }));
@@ -266,7 +268,7 @@
         anisette,
       ]);
 
-      body.append(missing, modeCard, onCard, hero, warn, webNote, progCard, devCard, localCard, installCard, refreshCard, autoCard, keepCard, how);
+      body.append(missing, modeCard, onCard, hero, warn, webNote, progCard, devCard, renewNote, localCard, installCard, refreshCard, autoCard, keepCard, how);
 
       let devKey = '';
       let appKey = '';
@@ -289,10 +291,11 @@
         mode.set(v.mode || 'apple');
         missing.set(!v.available || (v.on && !local && v.appleReady === false)
           ? tr('The signing helper is not available in this build of TwinDesk.')
-          : local && !v.bundled ? tr('This Mac build doesn’t include TwinDesk for iPhone and iPad.') : '');
+          : local && !v.bundled ? tr('No TwinDesk iPad build stored yet')
+            : local && v.stored && !v.stored.valid ? tr('The stored TwinDesk iPad build is invalid') : '');
         onCard.hidden = !v.available;
         onSw.set(v.on);
-        onRow.setHint(local ? tr('Uses the TwinDesk app included with this Mac build and profiles prepared by Xcode.')
+        onRow.setHint(local ? tr('Uses the stored TwinDesk iPad build and profiles prepared by Xcode.')
           : tr('{Computer} installs TwinDesk on your iPhone or iPad and refreshes it before its signing expires. This switch also controls Apple ID refresh on the connected device.', { Computer: Here }));
         const on = !!(v.available && v.on);
         warn.hidden = hero.hidden = webNote.hidden = on || local;
@@ -300,10 +303,19 @@
         for (const c of [installCard, refreshCard, keepCard]) c.hidden = !on || local;
         for (const c of [devCard, progCard, autoCard]) c.hidden = !on;
         localCard.hidden = !on || !local;
+        // The stored build and its checked version; a legacy copy inside the app says so.
+        storedRow.setHint(!v.bundled ? tr('No TwinDesk iPad build stored yet')
+          : !v.stored ? tr('Checking…')
+            : !v.stored.valid ? tr('The stored TwinDesk iPad build is invalid')
+              : v.stored.kind === 'bundled' ? tr('TwinDesk {version}, included with this Mac build', { version: v.stored.version })
+                : tr('TwinDesk {version}', { version: v.stored.version }));
+        // The selected device's last profile renewal, when Xcode could not renew (Sign in to Xcode, …).
+        const renewal = local && on ? v.renewal : null;
+        renewNote.set(renewal && ['account', 'managed', 'unavailable', 'failed'].includes(renewal.state) && renewal.message ? tr(renewal.message) : '');
         bindRow.hidden = !on || local || !v.developer || !peerId || !exact || v.session.udid === exact;
         bindRow.setHint(bindRow.hidden ? '' : tr('Use the selected device for refresh requests from {name}.', { name: v.session.name }));
         bindButton.disabled = !!run;
-        localButton.disabled = !chosen?.coreId || !v.bundled || !!run;
+        localButton.disabled = !chosen?.coreId || !v.bundled || v.stored?.valid === false || !!run;
         localButton.textContent = chosen?.installed ? tr('Refresh now') : tr('Install TwinDesk');
         localStatus.setHint(!chosen && eligibleCount > 1 ? tr('Select a device above')
           : !chosen?.coreId ? connectText(chosen) : chosen.result?.done ? tr('Installed') : deviceStatus(chosen));
@@ -315,7 +327,7 @@
           offlineAutoRow.label.textContent = tr('Refresh {name} automatically', { name: v.session.name });
           offlineAuto.set(v.session.auto !== false);
         }
-        autoRow.setHint(local ? tr('Refreshes when Xcode has a newer copy ready for the device.')
+        autoRow.setHint(local ? tr('Renews the profiles through Xcode when they run out within the chosen time, then refreshes the device.')
           : tr('{computer} sends refresh requests to TwinDesk on the device.', { computer: Here }));
         updAutoRow.hidden = cacheRow.hidden = local;
         if (local) pass.value = '';

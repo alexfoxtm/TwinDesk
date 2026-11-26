@@ -60,6 +60,7 @@ const RELEASE_MS = 6 * 60 * 60 * 1000;
 const { compare } = require('./updates.js');
 const DEVICE_UDID = /^(?:[a-f0-9]{8}-[a-f0-9]{16}|[a-f0-9]{40})$/i;
 const str = (v, n = 200) => (typeof v === 'string' ? v.slice(0, n) : '');
+const storedView = (info) => (info ? { kind: info.kind === 'bundled' ? 'bundled' : 'stored', version: str(info.version, 40), valid: info.valid === true } : null);
 const b64 = (v, n) => (typeof v === 'string' && v.length <= n && /^[A-Za-z0-9+/]+=*$/.test(v) ? v : '');
 
 // The canonical UDID joins the two inventories; usbmuxd's original spelling is used on its wire.
@@ -343,6 +344,10 @@ class IosSign extends EventEmitter {
       ipa: ipa ? path.basename(ipa) : '',
       run: r ? { from: r.from, step: r.step, percent: r.percent, need: r.need, seen: r.seen.slice(), note: r.note || '', ipa: r.ipa ? path.basename(r.ipa) : '' } : null,
       last: this.developer ? this.results.get(`${local}:${udid}`) || (!this.last?.udid ? this.last : null) : this.last,
+      // Developer mode: the stored TwinDesk build (kind 'stored' | 'bundled', its checked version) and
+      // the selected device's last Xcode profile renewal.
+      stored: local ? storedView(this.developer.storedInfo?.()) : null,
+      renewal: local && udid && this.renewal?.udid === udid ? { state: this.renewal.state, message: this.renewal.message, at: this.renewal.at } : null,
     };
   }
 
@@ -529,6 +534,7 @@ class IosSign extends EventEmitter {
       const [mux, core] = await Promise.all([
         this.bin ? this._once({ op: 'devices' }) : null,
         this.developer ? this.developer.list(signal).catch(() => []) : [],
+        local && this.developer.stored ? this.developer.stored(signal).catch(() => null) : null,
       ]);
       if (signal.aborted) return;
       this.devices = mergeDevices(Array.isArray(mux?.devices) ? mux.devices : [], core).slice(0, 20);
@@ -815,6 +821,13 @@ class IosSign extends EventEmitter {
     try {
       const done = await this.developer.install(selected, controller.signal, {
         minExpiry: previous?.expires || 0, requireNewer: automatic,
+        // Profiles are renewed (profile-only) when they run out within cfg.days, and always on Refresh now.
+        renewWithin: (Number.isInteger(c.days) && c.days >= 1 && c.days <= 6 ? c.days : 3) * 86400, force: !automatic,
+        onRenewal: (renewal) => {
+          if (this.run !== r || controller.signal.aborted) return;
+          this.renewal = { udid, state: str(renewal?.state, 20), message: str(renewal?.message, 250), at: Date.now() };
+          this._changed();
+        },
       });
       controller.signal.throwIfAborted();
       if (!done) {

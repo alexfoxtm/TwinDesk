@@ -1,0 +1,56 @@
+# TwinDesk's provisioning-only project (mac/ios-provision-profiles.js). It holds no TwinDesk code:
+# three empty targets with TwinDesk's bundle IDs, signed manually with the pinned certificate and
+# the existing Xcode team profiles, so `xcodebuild -allowProvisioningUpdates` can only download
+# profiles (Xcode's documented behavior for manually signed targets). Regenerate the checked-in
+# project with `xcodegen generate` after editing this file.
+name: TwinDeskProvision
+options:
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: 5H4D7574Z4
+    CODE_SIGN_IDENTITY: 80F731EE19E02914C4634D57E8F7B1ADDDD63FD2
+    ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+targets:
+  App:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - target: Broadcast
+        embed: true
+      - target: Share
+        embed: true
+    settings:
+      base:
+        PRODUCT_NAME: TwinDesk
+        PRODUCT_BUNDLE_IDENTIFIER: com.twindesk.ios
+        PROVISIONING_PROFILE_SPECIFIER: "iOS Team Provisioning Profile: com.twindesk.ios"
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+  Broadcast:
+    type: app-extension
+    platform: iOS
+    sources: [Broadcast]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.twindesk.ios.broadcast
+        PROVISIONING_PROFILE_SPECIFIER: "iOS Team Provisioning Profile: com.twindesk.ios.broadcast"
+        INFOPLIST_FILE: Broadcast/Info.plist
+        GENERATE_INFOPLIST_FILE: "YES"
+        SKIP_INSTALL: "YES"
+  Share:
+    type: app-extension
+    platform: iOS
+    sources: [Share]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.twindesk.ios.share
+        PROVISIONING_PROFILE_SPECIFIER: "iOS Team Provisioning Profile: com.twindesk.ios.share"
+        INFOPLIST_FILE: Share/Info.plist
+        GENERATE_INFOPLIST_FILE: "YES"
+        SKIP_INSTALL: "YES"

@@ -138,7 +138,9 @@ test('a paired iPad joins USB discovery and refreshes through the pinned CoreDev
   cfg = { ...cfg, on: true, mode: 'developer', localDevice: IPHONE };
   service._auto();
   assert.equal(schedule[0].d.udid, IPAD);
-  assert.deepEqual(schedule[0].opts, { minExpiry: receipt.expires, requireNewer: true });
+  const { onRenewal, ...opts } = schedule[0].opts;
+  assert.deepEqual(opts, { minExpiry: receipt.expires, requireNewer: true, renewWithin: 3 * 86400, force: false });
+  assert.equal(typeof onRenewal, 'function');
   await next();
   service._auto();
   assert.equal(schedule.length, 1, 'bounded retry even when Xcode had no newer profile');
@@ -168,7 +170,7 @@ test('unpaired, locked, wrong certificate or wrong profile cannot start installa
     await fs.writeFile(wrong, JSON.stringify({ ...f.profiles[2], ...patch }));
     await assert.rejects(f.developer.install(target, signal), /Xcode needs to prepare TwinDesk/);
   }
-  await assert.rejects(create({ exec: f.exec, ipa: f.ipa + '.missing' }).install(target, signal), /doesn’t include TwinDesk/);
+  await assert.rejects(create({ exec: f.exec, ipas: [f.ipa + '.stored-missing', f.ipa + '.bundled-missing'] }).install(target, signal), /^Error: No TwinDesk iPad build stored yet$/);
   assert.ok(!f.calls.some((c) => c[0] === '/usr/bin/codesign' || c[3] === 'install'), 'no ad-hoc or Apple ID fallback');
 
   const calls = [];
@@ -282,4 +284,224 @@ test('a bound legacy device can pause its offline refresh while another device i
   assert.equal(messages.filter((m) => m.t === T.WANT).length, 1);
   assert.equal(sign.view.udid, IPAD);
   assert.equal(cfg.appleDevice, IPHONE, 'changing the offline toggle cannot select another device');
+});
+
+test('the stored fork IPA wins over the legacy bundled copy and reports its checked version', async (t) => {
+  const f = await fixture(t);
+  const stored = path.join(f.temp, 'userData', 'ios-developer', 'TwinDesk.ipa');
+  const bundled = f.ipa;
+  const developer = create({ exec: f.exec, ipas: [stored, bundled], tmp: f.temp, profileDirs: [f.profileDir] });
+  assert.deepEqual(developer.source(), { file: bundled, kind: 'bundled' }, 'legacy fallback only when nothing is stored');
+  assert.equal((await developer.stored()).kind, 'bundled');
+  await fs.mkdir(path.dirname(stored), { recursive: true });
+  await fs.writeFile(stored, 'fork');
+  assert.deepEqual(developer.source(), { file: stored, kind: 'stored' });
+  assert.deepEqual(await developer.stored(), { kind: 'stored', version: '3.2.1', file: stored, valid: true });
+  assert.deepEqual(developer.storedInfo(), { kind: 'stored', version: '3.2.1', file: stored, valid: true });
+  const from = f.calls.length;
+  const receipt = await developer.install(target, new AbortController().signal);
+  assert.equal(receipt.ipa, 'stored');
+  const unpacked = f.calls.slice(from).filter((c) => c[0] === '/usr/bin/ditto').map((c) => c.at(-2));
+  assert.equal(unpacked.at(-1), stored, 'the install unpacks the stored IPA');
+  assert.ok(!unpacked.includes(bundled));
+
+  // Inventory rules: exact Payload/TwinDesk.app, the three IDs, iPhone and iPad.
+  const realExec = f.exec;
+  for (const broken of ['name', 'family', 'extra', 'version']) {
+    f.exec = async (file, args, options) => {
+      const r = await realExec(file, args, options);
+      if (file === '/usr/bin/ditto') {
+        const app = path.join(args.at(-1), 'Payload', 'TwinDesk.app');
+        if (broken === 'name') await fs.rename(app, path.join(args.at(-1), 'Payload', 'Other.app'));
+        if (broken === 'extra') await fs.mkdir(path.join(app, 'PlugIns', 'Extra.appex'));
+        if (broken === 'family' || broken === 'version') {
+          const info = path.join(app, 'Info.plist');
+          const plist = JSON.parse(await fs.readFile(info, 'utf8'));
+          if (broken === 'family') plist.UIDeviceFamily = [1];
+          else plist.CFBundleShortVersionString = '';
+          await fs.writeFile(info, JSON.stringify(plist));
+        }
+      }
+      return r;
+    };
+    await fs.writeFile(stored, `fork ${broken}`); // a new size/time: checked again
+    const checker = create({ exec: (...a) => f.exec(...a), ipas: [stored, bundled], tmp: f.temp });
+    const info = await checker.stored();
+    assert.equal(info.valid, false, broken);
+    assert.equal(info.version, '');
+  }
+});
+
+function renewerFixture(f, outcome) {
+  const calls = [];
+  return { calls, async renew(signal, opts) {
+    calls.push(opts);
+    signal.throwIfAborted();
+    if (outcome.write) for (const [i, p] of f.profiles.entries()) {
+      await fs.writeFile(path.join(f.profileDir, `renewed-${i}.mobileprovision`),
+        JSON.stringify({ ...p, ExpirationDate: new Date((outcome.write + i) * 1000).toISOString() }));
+    }
+    return { state: outcome.state, message: outcome.message || '' };
+  } };
+}
+
+test('profile-only renewal runs within cfg.days or on Refresh now and never blocks valid cached profiles', async (t) => {
+  const f = await fixture(t);
+  const signal = new AbortController().signal;
+  const make = (outcome) => {
+    const renewer = renewerFixture(f, outcome);
+    return { renewer, developer: create({ exec: f.exec, ipa: f.ipa, tmp: f.temp, profileDirs: [f.profileDir], renewer }) };
+  };
+  // Cached profiles end in ~1 day: inside the default 3 days, so an automatic refresh renews first.
+  let { renewer, developer } = make({ state: 'managed', message: 'renew in Xcode' });
+  const heard = [];
+  let receipt = await developer.install(target, signal, { renewWithin: 3 * 86400, onRenewal: (r) => heard.push(r) });
+  assert.deepEqual(renewer.calls, [{ udid: IPAD }], 'exactly the selected paired device');
+  assert.equal(receipt.expires, f.ends, 'blocked renewal keeps the valid cached profiles');
+  assert.deepEqual(receipt.renewal, { state: 'managed', before: f.ends, after: f.ends });
+  assert.equal(heard[0].message, 'renew in Xcode');
+  // Outside cfg.days: no renewal for an automatic run; Refresh now (force) always asks Xcode.
+  ({ renewer, developer } = make({ state: 'current' }));
+  receipt = await developer.install(target, signal, { renewWithin: 3600 });
+  assert.deepEqual(renewer.calls, []);
+  assert.equal(receipt.renewal, undefined);
+  await developer.install(target, signal, { renewWithin: 3600, force: true });
+  assert.equal(renewer.calls.length, 1);
+  // Xcode issued newer profiles: they are the ones embedded, and the scheduler's newer check passes.
+  const later = f.ends + 5 * 86400;
+  ({ renewer, developer } = make({ state: 'current', write: later }));
+  receipt = await developer.install(target, signal, { minExpiry: f.ends, requireNewer: true });
+  assert.equal(receipt.expires, later);
+  assert.equal(receipt.renewal.state, 'renewed');
+  assert.equal(receipt.renewal.after, later);
+  // No Xcode account and no usable cache: the exact sign-in guidance, nothing signed or installed.
+  await Promise.all([0, 1, 2].map((i) => fs.rm(path.join(f.profileDir, `${i}.mobileprovision`))));
+  await Promise.all([0, 1, 2].map((i) => fs.rm(path.join(f.profileDir, `renewed-${i}.mobileprovision`))));
+  const before = f.calls.length;
+  ({ renewer, developer } = make({ state: 'account', message: 'Sign in to Xcode › Settings › Accounts' }));
+  await assert.rejects(developer.install(target, signal), /^Error: Sign in to Xcode › Settings › Accounts$/);
+  assert.ok(!f.calls.slice(before).some((c) => c[0] === '/usr/bin/codesign' || c[3] === 'install'));
+  // Canceled during renewal: nothing after it runs.
+  const controller = new AbortController();
+  developer = create({ exec: f.exec, ipa: f.ipa, tmp: f.temp, profileDirs: [f.profileDir],
+    renewer: { async renew() { controller.abort(); return { state: 'current' }; } } });
+  await assert.rejects(developer.install(target, controller.signal), { name: 'AbortError' });
+});
+
+test('the renewer only runs the pinned, manually signed, provisioning-only xcodebuild', async (t) => {
+  const renew = require('../ios-provision-profiles.js');
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'ios-provision-test-'));
+  t.after(() => fs.rm(temp, { force: true, recursive: true }));
+  const argv = renew.args('/w');
+  assert.ok(argv.includes('-allowProvisioningUpdates'));
+  assert.ok(!argv.some((a) => /DeviceRegistration|Automatic|authenticationKey|-exportArchive|archive/i.test(a)), argv.join(' '));
+  for (const pin of ['CODE_SIGN_STYLE=Manual', `DEVELOPMENT_TEAM=${TEAM}`, `CODE_SIGN_IDENTITY=${IDENTITY}`, 'generic/platform=iOS']) assert.ok(argv.includes(pin), pin);
+  // The shipped project: manual signing only, exactly TwinDesk's three IDs, the pinned team and certificate.
+  const pbx = await fs.readFile(path.join(renew.PROJECT, 'TwinDeskProvision.xcodeproj', 'project.pbxproj'), 'utf8');
+  assert.ok(!/Automatic/.test(pbx));
+  assert.deepEqual([...new Set([...pbx.matchAll(/PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);/g)].map((m) => m[1]))].sort(), ids.slice().sort());
+  assert.ok([...pbx.matchAll(/CODE_SIGN_STYLE = (\w+);/g)].every((m) => m[1] === 'Manual'));
+  assert.ok([...pbx.matchAll(/DEVELOPMENT_TEAM = (\w+);/g)].every((m) => m[1] === TEAM));
+  assert.ok([...pbx.matchAll(/CODE_SIGN_IDENTITY = (\w+);/g)].every((m) => m[1] === IDENTITY));
+
+  assert.equal(renew.classify('error: No Accounts: Add a new account in Accounts settings.', 65).message, 'Sign in to Xcode › Settings › Accounts');
+  assert.equal(renew.classify('error: No account for team "5H4D7574Z4".', 65).state, 'account');
+  assert.equal(renew.classify('Provisioning profile "iOS Team Provisioning Profile: com.twindesk.ios" is Xcode managed, but signing settings require a manually managed profile.', 65).state, 'managed');
+  assert.equal(renew.classify('** BUILD SUCCEEDED **', 0).state, 'current');
+  assert.equal(renew.classify('something else', 65).state, 'failed');
+
+  const prefs = path.join(temp, 'xcode.plist');
+  const calls = [];
+  let teams = { someone: [{ teamID: 'OTHERTEAM1' }] };
+  const exec = async (file, args, options) => {
+    calls.push([file, ...args]);
+    options.signal?.throwIfAborted();
+    if (file === '/usr/bin/plutil') return { stdout: JSON.stringify(teams) };
+    assert.equal(file, '/usr/bin/xcrun');
+    const work = path.dirname(args[args.indexOf('-project') + 1]);
+    assert.ok(work.startsWith(temp), 'a private copy, never the app’s own Resources');
+    await fs.access(path.join(work, 'TwinDeskProvision.xcodeproj', 'project.pbxproj'));
+    throw Object.assign(new Error('Command failed'), { code: 65,
+      stdout: 'error: Provisioning profile "iOS Team Provisioning Profile: com.twindesk.ios" is Xcode managed, but signing settings require a manually managed profile.' });
+  };
+  const renewer = renew.create({ exec, tmp: temp, prefs });
+  assert.deepEqual(await renewer.renew(), { state: 'account', message: 'Sign in to Xcode › Settings › Accounts' });
+  assert.ok(!calls.some((c) => c[0] === '/usr/bin/xcrun'), 'no Xcode call without the pinned team signed in');
+  teams = { someone: [{ teamID: TEAM, isFreeProvisioningTeam: true }] };
+  assert.equal((await renewer.renew()).state, 'managed');
+  const xcode = calls.filter((c) => c[0] === '/usr/bin/xcrun');
+  assert.equal(xcode.length, 1);
+  assert.deepEqual(xcode[0].slice(1), renew.args(path.dirname(xcode[0][xcode[0].indexOf('-project') + 1])));
+  assert.deepEqual(await fs.readdir(temp), [], 'the private copy is removed');
+});
+
+test('automatic developer refresh: next due within cfg.days, retry rest per device, renewal options and scoping', async (t) => {
+  const now = Date.parse('2026-11-26T12:00:00Z');
+  let clock = now;
+  t.mock.method(Date, 'now', () => clock);
+  const other = '00008142-CCCCCCCCCCCCCCCC';
+  const ipad = { ...target };
+  const second = { udid: other, coreId: 'CCC00000-1000-4000-8000-000000000000', klass: 'iPad', name: 'Second' };
+  const at = (days) => Math.floor(now / 1000) + days * 86400;
+  let cfg = { on: true, mode: 'developer', localDevice: IPAD, auto: true,
+    localInstalls: { [IPAD]: { expires: at(4) }, [other]: { expires: at(3.5) } } };
+  const installs = [];
+  const developer = { bundled: () => true, list: async () => [], storedInfo: () => ({ kind: 'stored', version: '3.2.1', valid: true }),
+    async install(d, s, opts) {
+      installs.push({ udid: d.udid, ...opts, onRenewal: !!opts.onRenewal });
+      opts.onRenewal?.({ state: 'managed', message: 'renew in Xcode' });
+      return null;
+    } };
+  const link = Object.assign(new EventEmitter(), { send() {} });
+  const sign = new IosSign({ link, developer, cfg: () => cfg, setCfg: (x) => { cfg = { ...cfg, ...x }; } });
+  t.after(() => sign.close());
+  sign._look = () => {};
+  sign._release = () => {};
+  await sign.scanTask; // the constructor's first scan settles before the fixture devices are set
+  sign.devices = [ipad, second];
+  sign._auto();
+  assert.deepEqual(installs, [], 'nothing is due outside the default 3 days');
+  cfg = { ...cfg, days: 4 };
+  sign._auto();
+  assert.deepEqual(installs.map((i) => i.udid), [other], 'the earliest expiry inside cfg.days goes first');
+  assert.equal(installs[0].renewWithin, 4 * 86400);
+  assert.equal(installs[0].force, false);
+  assert.equal(installs[0].requireNewer, true);
+  assert.equal(installs[0].minExpiry, at(3.5));
+  assert.equal(sign.renewal.udid, other);
+  assert.equal(sign.view.renewal, null, 'a renewal for an unselected device is not shown for the selected one');
+  await next();
+  assert.deepEqual(installs.map((i) => i.udid), [other, IPAD], 'the next due device follows; the first rests');
+  await next();
+  assert.equal(sign.view.renewal.state, 'managed');
+  sign._auto();
+  assert.equal(installs.length, 2, 'both rest for cfg.retry (default 6 h)');
+  clock = now + 6 * 3600 * 1000 - 1;
+  sign._auto();
+  assert.equal(installs.length, 2);
+  clock = now + 6 * 3600 * 1000;
+  sign._auto();
+  assert.equal(installs.length, 3, 'retried after exactly 6 h');
+  await next();
+  assert.deepEqual(installs.slice(2).map((i) => i.udid), [other, IPAD]);
+  cfg = { ...cfg, retry: 1, deviceAuto: { [other]: false } };
+  clock += 3600 * 1000;
+  sign._auto();
+  await next();
+  assert.deepEqual(installs.slice(4).map((i) => i.udid), [IPAD], 'cfg.retry 1 h; a device paused on its own is skipped');
+  // Refresh now: the selected device only, always asks Xcode first.
+  await sign.installDeveloper(IPAD);
+  assert.equal(installs.at(-1).force, true);
+  assert.equal(installs.at(-1).requireNewer, false);
+  assert.equal(await sign.installDeveloper(other), null, 'manual install keeps to the selection');
+  // A canceled run cannot report its renewal.
+  sign.renewal = null;
+  developer.install = (d, s, opts) => new Promise((resolve) => s.addEventListener('abort', () => { opts.onRenewal({ state: 'account', message: 'late' }); resolve(null); }));
+  const started = sign.installDeveloper(IPAD);
+  sign.stop();
+  await started;
+  assert.equal(sign.view.renewal, null);
+  assert.deepEqual(sign.view.stored, { kind: 'stored', version: '3.2.1', valid: true });
+  cfg = { ...cfg, mode: 'apple' };
+  assert.equal(sign.view.stored, null, 'Apple ID mode shows no developer build');
 });

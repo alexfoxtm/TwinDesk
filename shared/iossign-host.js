@@ -2,6 +2,8 @@
 // shared/iossign.js in an app (Mac, PC and Linux): where the signing helper is, this feature's own
 // settings file, and the vault for a kept copy.
 //   ios-signing.json  {on, auto, days, how, which, retry, cache, keep, device, alone}: plain, nothing secret in it.
+//   ios-developer/TwinDesk.ipa  the fork's unsigned TwinDesk build for developer mode, staged by
+//                     mac/scripts/stage-ios-ipa.sh; a copy inside the app is only a legacy fallback.
 //   ios-signing.bin   the kept copy (Keep a copy, on by default while the feature is on), sealed by the
 //                     system through Electron's safeStorage: the Keychain on a Mac (an item only
 //                     TwinDesk may read without asking), DPAPI on Windows and the Secret Service on
@@ -21,8 +23,14 @@ const ROOT = path.join(__dirname, '..', 'ios-signer');
 // As packaged (bin/<x64|arm64>/, ios-signer/build.sh), then a developer's own build.
 const BINS = [path.join(ROOT, 'bin', process.arch, EXE), path.join(ROOT, 'target', 'release', EXE), path.join(ROOT, 'target', 'debug', EXE)];
 
+// This Mac's developer certificate: the stored IPA in userData first, then the one in the app.
+function developerFor(userData) {
+  const dev = require('../mac/ios-developer-sign.js');
+  return dev.create({ ipas: [dev.STORED(userData), dev.IPA], renewer: require('../mac/ios-provision-profiles.js').create() });
+}
+
 function create({ app, safeStorage, link, near, usbSerials, onChange, developer = process.platform === 'darwin'
-  ? require('../mac/ios-developer-sign.js').create() : null }) {
+  ? developerFor(app.getPath('userData')) : null }) {
   const dir = app.getPath('userData');
   const cfgFile = path.join(dir, 'ios-signing.json');
   const vaultFile = path.join(dir, 'ios-signing.bin');
@@ -128,7 +136,11 @@ async function pickIpa(sign, dialog, win) {
 }
 
 // Release acceptance uses the same service and install operation as the two Mac renderers.
-async function installFromCommand(udid) {
+// The IPA comes from userData (default: the fork's profile, only read); the settings are a
+// disposable copy, so the app's own ios-signing.json is never read or changed.
+const FORK_USER_DATA = path.join(os.homedir(), 'Library', 'Application Support', 'io.github.alexfoxtm.twindesk');
+
+async function installFromCommand(udid, { userData = FORK_USER_DATA } = {}) {
   if (process.platform !== 'darwin' || !/^(?:[a-f0-9]{8}-[a-f0-9]{16}|[a-f0-9]{40})$/i.test(udid || '')) {
     throw new Error('Use --install-developer with the exact iPhone or iPad UDID on a Mac');
   }
@@ -140,13 +152,13 @@ async function installFromCommand(udid) {
   process.once('SIGTERM', stop);
   try {
     fs.writeFileSync(path.join(dir, 'ios-signing.json'), JSON.stringify({ mode: 'developer', localDevice: udid, auto: false }));
-    sign = create({ app: { getPath: () => dir }, link: new EventEmitter(), onChange: () => {} });
+    sign = create({ app: { getPath: () => dir }, link: new EventEmitter(), onChange: () => {}, developer: developerFor(userData) });
     sign.set({ on: true });
     await sign.look();
     if (!sign.view.devices.some((d) => d.udid === udid && d.coreId)) throw new Error('The selected device is not paired with Xcode');
     const receipt = await sign.installDeveloper(udid);
     if (!receipt) throw new Error(sign.view.last?.error?.message || 'TwinDesk was not installed');
-    return receipt;
+    return sign.renewal ? { ...receipt, renewal: { ...receipt.renewal, message: sign.renewal.message } } : receipt;
   } finally {
     stop();
     process.removeListener('SIGINT', stop);
@@ -156,15 +168,17 @@ async function installFromCommand(udid) {
 }
 
 if (require.main === module) {
-  if (process.argv.length !== 4 || process.argv[2] !== '--install-developer') {
-    console.error('Usage: node iossign-host.js --install-developer UDID');
+  const argv = process.argv.slice(2);
+  const ok = argv[0] === '--install-developer' && (argv.length === 2 || (argv.length === 4 && argv[2] === '--user-data' && path.isAbsolute(argv[3])));
+  if (!ok) {
+    console.error('Usage: node iossign-host.js --install-developer UDID [--user-data /absolute/profile/dir]');
     process.exitCode = 1;
   } else {
-    installFromCommand(process.argv[3]).then((receipt) => console.log(JSON.stringify(receipt)), (error) => {
+    installFromCommand(argv[1], argv[3] ? { userData: argv[3] } : {}).then((receipt) => console.log(JSON.stringify(receipt)), (error) => {
       console.error(error.message);
       process.exitCode = 1;
     });
   }
 }
 
-module.exports = { create, pickIpa, act, BINS };
+module.exports = { create, pickIpa, act, installFromCommand, developerFor, BINS, FORK_USER_DATA };

@@ -148,6 +148,32 @@ update({ iosSign: { ...localView, devices: [{ ...localDevice, refreshing: true }
 assert.match(find(body, (n) => n.textContent === 'Tablet')[0].hintText, /Refreshing…/);
 update({ iosSign: { ...localView, devices: [{ ...localDevice, result: { error: { kind: 'device' } } }] } });
 assert.match(find(body, (n) => n.textContent === 'Tablet')[0].hintText, /Connect or unlock the iPad/);
+// Developer mode shows the stored fork build and its checked version, or that none is stored yet.
+const storedRow = () => find(body, (n) => n.textContent === 'Stored TwinDesk app')[0];
+const banner = () => find(body, (n) => /^note warn/.test(n.className) && visible(n)).map((n) => n.textContent);
+update({ iosSign: { ...localView, stored: { kind: 'stored', version: '3.2.1', valid: true } } });
+assert.strictEqual(storedRow().hintText, 'TwinDesk 3.2.1');
+assert.ok(visible(storedRow()));
+assert.deepStrictEqual(banner(), []);
+update({ iosSign: { ...localView, stored: { kind: 'bundled', version: '3.2.0', valid: true } } });
+assert.strictEqual(storedRow().hintText, 'TwinDesk 3.2.0, included with this Mac build');
+update({ iosSign: { ...localView, bundled: false, stored: null } });
+assert.strictEqual(storedRow().hintText, 'No TwinDesk iPad build stored yet');
+assert.deepStrictEqual(banner(), ['No TwinDesk iPad build stored yet']);
+assert.ok(!/include TwinDesk/.test(body.text), 'the old missing-bundle wording is gone');
+assert.strictEqual(button('Refresh now').disabled, true);
+update({ iosSign: { ...localView, stored: { kind: 'stored', version: '', valid: false } } });
+assert.deepStrictEqual(banner(), ['The stored TwinDesk iPad build is invalid']);
+assert.strictEqual(button('Refresh now').disabled, true);
+update({ iosSign: { ...localView, stored: { kind: 'stored', version: '3.2.1', valid: true },
+  renewal: { state: 'account', message: 'Sign in to Xcode › Settings › Accounts', at: 1 } } });
+assert.deepStrictEqual(banner(), ['Sign in to Xcode › Settings › Accounts']);
+assert.strictEqual(button('Refresh now').disabled, false, 'valid cached profiles can still be installed');
+update({ iosSign: { ...localView, stored: { kind: 'stored', version: '3.2.1', valid: true }, renewal: { state: 'current', message: '', at: 1 } } });
+assert.deepStrictEqual(banner(), []);
+update({ iosSign: { ...localView, mode: 'apple', renewal: { state: 'account', message: 'Sign in to Xcode › Settings › Accounts', at: 1 } } });
+assert.ok(!banner().includes('Sign in to Xcode › Settings › Accounts'), 'Apple ID mode never shows the Xcode renewal state');
+assert.ok(!visible(storedRow()));
 for (const mode of ['apple', 'developer']) {
   const device = { ...localDevice, installed: false, muxUdid: 'U1' };
   update({ iosSign: { ...localView, mode, devices: [device] } });
