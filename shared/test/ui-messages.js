@@ -20,10 +20,10 @@ function inbox(state, api = {}, globals = {}) {
     focus() {}, querySelectorAll() { return []; },
     setAttribute(key, value) { this.attrs[key] = value; },
     append(...nodes) {
-      // DOM append moves a node. The legend is one element, not a copy on each list.
+      // DOM append moves a node, also inside its own parent. The legend is one element, not a copy.
       for (const node of nodes) {
         const parent = node && typeof node === 'object' ? parents.get(node) : undefined;
-        if (parent && parent !== this) parent.children = parent.children.filter((child) => child !== node);
+        if (parent) parent.children = parent.children.filter((child) => child !== node);
         if (node && typeof node === 'object') parents.set(node, this);
         this.children.push(node);
       }
@@ -229,7 +229,7 @@ test('All joins one-to-one history by verified destination and keeps group and a
     .filter((node) => node.class?.startsWith('hub-bubble'));
   assert.deepEqual(bubbleNodes().map((node) => node.class), [
     'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text',
-    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in', 'hub-bubble in rcs',
+    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in unknown', 'hub-bubble in rcs',
   ]);
   const legendOf = (root) => root.children[0].children[0].children.find((node) => node.class === 'hub-transport-legend');
   assert.equal(Array.from(legendOf(chat).children, (key) => key.children[1].text).join(), 'SMS,RCS');
@@ -242,7 +242,7 @@ test('All joins one-to-one history by verified destination and keeps group and a
     ['Notification-only text'],
   ], 'the same carrier and notification row works without a Mac helper');
   assert.deepEqual(bubbleNodes().map((node) => node.class), [
-    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in',
+    'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in text', 'hub-bubble in unknown',
   ]);
 });
 
@@ -276,8 +276,8 @@ test('bubbles keep transport classes and hub status without transport labels, wi
     'hub-bubble out rcs',
     'hub-bubble in text',
     'hub-bubble out text',
-    'hub-bubble in',
-    'hub-bubble out',
+    'hub-bubble in unknown',
+    'hub-bubble out unknown',
     'hub-bubble out rcs failed',
   ]);
   const transportWords = new Set(['Text', 'RCS', 'Unknown transport']);
@@ -1020,4 +1020,81 @@ test('All collapses Chat and Texts for one verified person across national and E
   await reply(two, pairedComposer);
   assert.equal(sends().length, 2);
   assert.equal(texts(two).length, 0, 'an uncertain dispatch is never repeated by SMS');
+});
+
+test('an unknown transport never takes the RCS fill, and the legend shows once and only on SMS or RCS lists', () => {
+  const phone = 'fixture-phone';
+  const dest = '+12025550100';
+  const state = {
+    ui: { chats: true }, chatsMessaging: true,
+    hub: { deviceId: phone, session: 1, messages: true, perm: { messages: { mms: true } } },
+    chats: [
+      { key: 'rcs', app: 'com.google.android.apps.messaging', appName: 'Messages', name: 'Fixture contact', group: false, messagePeer: dest, at: 2000,
+        items: [{ at: 1500, from: 'Fixture contact', text: 'Chat in', me: false }, { at: 2000, from: '', text: 'Chat out', me: true }] },
+      { key: 'wa', app: 'com.whatsapp', appName: 'WhatsApp', name: 'Fixture other app', group: false, at: 900,
+        items: [{ at: 800, from: 'Fixture other app', text: 'App in', me: false }, { at: 900, from: '', text: 'App out', me: true }] },
+    ],
+  };
+  const { received, paint, texts, chat, rows, findPill } = inbox(state);
+  paint(state);
+  received.get('sms.threads')({ nanp: true, items: [{ id: 'carrier', addrs: ['(202) 555-0100'], e164: dest, name: 'Fixture contact', at: 1000, snippet: 'Text in' }] });
+  const legendsOf = (root) => root.children[0].children[0].children.filter((node) => node.class === 'hub-transport-legend');
+  const bubbles = () => Array.from(chat.children[1].children[1].children[0].children)
+    .filter((node) => String(node.class || '').startsWith('hub-bubble')).map((node) => node.class);
+  const named = (name) => rows().find((row) => row.children[1].children[0].children[0].text === name);
+  findPill('All').onclick();
+  paint(state);
+  paint(state);
+  assert.equal(legendsOf(chat).length, 1, 'repainting keeps one legend');
+  assert.equal(legendsOf(texts).length, 0);
+  const legend = legendsOf(chat)[0];
+  assert.equal(!!legend.hidden, false);
+  named('Fixture contact').onclick();
+  received.get('sms.thread')({ id: 'carrier', items: [{ id: 's1', at: 1000, body: 'Text in' }] });
+  assert.deepEqual(bubbles(), ['hub-bubble in text', 'hub-bubble in unknown', 'hub-bubble out unknown']);
+  findPill('Messages (Chat)').onclick();
+  assert.equal(legend.hidden, false);
+  findPill('WhatsApp').onclick();
+  assert.equal(legend.hidden, true, 'no SMS and RCS legend on another app');
+  named('Fixture other app').onclick();
+  assert.deepEqual(bubbles(), ['hub-bubble in', 'hub-bubble out'], 'another app keeps the plain bubbles');
+  findPill('Texts').onclick();
+  assert.equal(legend.hidden, false);
+  assert.deepEqual([legendsOf(texts).length, legendsOf(chat).length], [1, 0]);
+  findPill('All').onclick();
+  assert.equal(legend.hidden, false);
+  assert.deepEqual([legendsOf(texts).length, legendsOf(chat).length], [0, 1]);
+});
+
+test('transport colours are fixed tokens that hold for every accent, and the legend has its own row', () => {
+  const css = fs.readFileSync(require.resolve('../phonehub.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = Array.from(css.matchAll(/([^{}]+)\{([^{}]*)\}/g), (m) => [m[1].trim().replace(/\s+/g, ' '), m[2].trim().replace(/\s+/g, ' ')]);
+  const body = (selector) => rules.filter(([sel]) => sel.split(',').map((part) => part.trim()).includes(selector)).map(([, text]) => text).join(' ');
+  const transport = rules.filter(([sel]) => /\.hub-(?:bubble|swatch)[^,]*\.(?:rcs|text|unknown)\b/.test(sel));
+  assert.ok(transport.length >= 5);
+  for (const [sel, text] of transport) assert.doesNotMatch(text, /--accent/, `${sel} must not follow the configurable accent`);
+  const tokens = body('.hub-bubbles');
+  const rcs = /--msg-rcs:\s*(#[0-9a-f]{6})\b/i.exec(tokens)?.[1];
+  assert.ok(rcs, 'RCS is a fixed colour');
+  assert.match(tokens, /--msg-sms:\s*var\(--good\)/);
+  assert.ok(body('.hub-transport-legend').includes(`--msg-rcs: ${rcs}`), 'the legend swatches use the same tokens as the bubbles');
+  assert.match(body('.hub-bubble.out:not(.failed).rcs'), /background:\s*var\(--msg-rcs\)/);
+  assert.match(body('.hub-swatch.rcs'), /background:\s*var\(--msg-rcs\)/);
+  assert.match(body('.hub-bubble.out:not(.failed).text'), /background:\s*var\(--msg-sms\)/);
+  assert.match(body('.hub-swatch.text'), /background:\s*var\(--msg-sms\)/);
+  const ink = /(?:^|[; ])color:\s*(#[0-9a-f]{6})\b/i.exec(body('.hub-bubble.out:not(.failed).rcs'))?.[1];
+  assert.ok(ink, 'outgoing RCS has a fixed ink');
+  const lum = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+    .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+  const [hi, lo] = [lum(ink), lum(rcs)].sort((a, b) => b - a);
+  assert.ok((hi + 0.05) / (lo + 0.05) >= 4.5, 'outgoing RCS text is at least 4.5:1');
+  const unknown = body('.hub-bubble.out:not(.failed).unknown');
+  assert.match(unknown, /background:\s*color-mix\(in srgb, var\(--text\) 22%, var\(--card\)\)/);
+  assert.match(unknown, /(?:^|[; ])color:\s*var\(--text\)/);
+  const legend = body('.hub-transport-legend');
+  assert.match(legend, /flex:\s*0 0 100%/);
+  assert.doesNotMatch(legend, /order:\s*-1/);
+  assert.match(body('.hub-side-head'), /flex-wrap:\s*wrap/);
+  assert.match(body('.hub-transport-legend[hidden]'), /display:\s*none/);
 });

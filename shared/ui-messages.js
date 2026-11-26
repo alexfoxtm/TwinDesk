@@ -103,8 +103,9 @@ function interleaveMessages(messages) {
   return messages.filter((_, i) => !dropped.has(i)).sort((a, b) => a.at - b.at);
 }
 
-// Colour is the transport class. Text, RCS and Unknown are not drawn on the bubble.
-const transportClass = (kind) => kind === 'text' || kind === 'rcs' ? ' ' + kind : '';
+// Colour is the transport class. Text, RCS and Unknown are not drawn on the bubble. In a thread that
+// can carry SMS or RCS every other bubble is marked unknown, so it never takes the RCS fill.
+const transportClass = (kind, carrierThread) => kind === 'text' || kind === 'rcs' ? ' ' + kind : carrierThread ? ' unknown' : '';
 
 // A picture picked here as a JPEG data: URL, at most 1600 px and about 4 MB (the phone makes it
 // fit the carrier's MMS limit). On white: a transparent PNG's clear parts don't turn black.
@@ -337,13 +338,21 @@ UI.tab({
     }, 'small');
     const chatSideHead = el('div', { class: 'hub-side-head' }, [chatSearch, chatNew]);
     const chatLayout = el('div', { class: 'card hub-msgs' }, [el('div', { class: 'hub-side' }, [chatSideHead, chatList]), chatConv, chatEmpty]);
-    // One legend for whichever list is open. Swatches use the outgoing SMS and RCS fills.
+    // One legend for whichever list is open, only where SMS or RCS can show. Swatches use the
+    // outgoing SMS and RCS fills.
     const transportLegend = el('div', { class: 'hub-transport-legend' }, [
       el('span', { class: 'hub-transport-key' }, [el('span', { class: 'hub-swatch text', attrs: { 'aria-hidden': 'true' } }), el('span', { text: tr('SMS') })]),
       el('span', { class: 'hub-transport-key' }, [el('span', { class: 'hub-swatch rcs', attrs: { 'aria-hidden': 'true' } }), el('span', { text: tr('RCS') })]),
     ]);
-    const placeTransportLegend = () => (pill === 'texts' ? textSideHead : chatSideHead).append(transportLegend);
-    textSideHead.append(transportLegend);
+    let legendHead = null;
+    const placeTransportLegend = () => {
+      const head = pill === 'texts' ? textSideHead : chatSideHead;
+      transportLegend.hidden = !['all', 'texts', 'rcs'].includes(pill);
+      if (head === legendHead) return;
+      legendHead = head;
+      head.append(transportLegend);
+    };
+    placeTransportLegend();
     let chatOpen = '';
     let chatDraft = null; // {key, offer}: the notification offer a draft started on
     let openContact = null;
@@ -804,7 +813,7 @@ UI.tab({
       for (const m of messages) {
         const day = new Date(m.at).toDateString();
         if (day !== lastDay) { lastDay = day; msgs.push(el('div', { class: 'hub-day', text: UI.clock(m.at) })); }
-        msgs.push(el('div', { class: `hub-bubble ${m.me ? 'out' : 'in'}${transportClass(m.transport)}${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
+        msgs.push(el('div', { class: `hub-bubble ${m.me ? 'out' : 'in'}${transportClass(m.transport, !!(t.dest || t.app === 'rcs'))}${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
           t.group && !m.me && m.from ? el('div', { class: 'hub-from', text: m.from }) : null,
           ...(m.source === 'carrier' ? textPictures(m) : []),
           ...(google ? (m.photos || []).map((part) => {
@@ -832,10 +841,11 @@ UI.tab({
           m.pic && m.pic !== 'sent' ? el('div', { class: 'hub-status', text: m.pic === 'sending' ? tr('Sending…') : m.pic === 'opened' ? tr('Open on the phone: tap Send there') : m.error ? tr('Not sent: {error}', { error: tr(m.error) }) : tr('Not sent') }) : null,
         ]));
       }
+      const plain = transportClass('', t.app === 'rcs');
       for (const h of t.msgs || t.dest ? [] : t.items.slice().reverse()) {
-        msgs.push(el('div', { class: 'hub-bubble in' }, [el('div', { text: h.body || h.subtitle || '' }),
+        msgs.push(el('div', { class: 'hub-bubble in' + plain }, [el('div', { text: h.body || h.subtitle || '' }),
           el('div', { class: 'hub-status', text: UI.clock(h.at) })]));
-        for (const r of h.replies || []) msgs.push(el('div', { class: 'hub-bubble out' }, [el('div', { text: r.text }), el('div', { class: 'hub-status', text: UI.clock(r.at) })]));
+        for (const r of h.replies || []) msgs.push(el('div', { class: 'hub-bubble out' + plain }, [el('div', { text: r.text }), el('div', { class: 'hub-status', text: UI.clock(r.at) })]));
       }
       if (google?.typing) msgs.push(el('div', { class: 'hint', text: tr('Typing…'), attrs: { role: 'status' } }));
       if (gmError) msgs.push(el('div', { class: 'hint', text: gmError, attrs: { role: 'status' } }));
