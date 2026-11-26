@@ -12,9 +12,16 @@ const P = require('../shared/protocol.js');
 const { IconsOut, IconsIn } = require('../shared/notificon.js');
 const { actionsOf, messageIdentityOf, bindReply, replyHistory, withPhoneActions, hidden, present } = require('../shared/notifacts.js');
 const { richOf, popupOn } = require('../shared/notifpop.js');
+const { modeOf } = require('../shared/notifrules.js');
+const { otpOf, quietCopy } = require('../shared/otp.js');
+const { OtpOfferTracker } = require('../shared/otp-offer.js');
 
 const T = P.T;
 const str = (v, n = 500) => (typeof v === 'string' ? v.slice(0, n) : '');
+
+function formatFallback(key, vars) {
+  return vars ? String(key).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)) : String(key);
+}
 
 class Notifs extends EventEmitter {
   constructor({ server, helper, getSettings, saveSettings }) {
@@ -28,18 +35,29 @@ class Notifs extends EventEmitter {
     this.sent = 0;
     this.shown = 0;
     this.live = []; // keep shown Notification objects alive until closed
+    this.otpToasts = new Map(); // offer id -> synthetic native Notification
+    this.otp = new OtpOfferTracker({
+      copy: (code) => this.copyOtp(code),
+      fill: (code, token) => this._fillOtp(code, token),
+      captureTarget: () => this._captureOtpTarget(),
+      presentOffer: (offer) => this._presentOtpOffer(offer),
+      dismissOffer: (offer) => this._dismissOtpOffer(offer),
+      onChange: () => this.emit('change'),
+    });
     this.nativePermission = new (require('./notification-permission').NotificationPermission)();
     this.nativePermission.on('change', () => this.emit('change'));
     this.nativeFailure = false;
     void this.nativePermission.refresh();
 
     server.on('client', () => {
+      this.otp.clearAll();
       this.peerAccepts = false;
       this.sendPolicy();
       this._watch();
     });
     server.on('closed', () => {
       if (server.current) return;
+      this.otp.clearAll();
       this.peerAccepts = false;
       this._watch();
     });
@@ -49,7 +67,11 @@ class Notifs extends EventEmitter {
       this.emit('change');
     });
     server.on(`t:${T.NOTIF}`, (m, ctx, ws) => this._show(m, ctx?.deviceId, ws));
-    server.on('t:notif.gone', (m) => this.gone(m.id)); // gone from the phone (shared/notifacts.js)
+    server.on('t:notif.gone', (m) => {
+      const offer = m && typeof m.id === 'string' ? this.otp.findByNotif(m.id) : null;
+      if (offer && offer.source === 'notif' && offer.sources.size === 1) this.otp.clearSource('notif', offer.phoneId);
+      this.gone(m.id);
+    }); // gone from the phone (shared/notifacts.js)
     helper.on('ready', () => this._watch());
     helper.on('event', (name, ev) => {
       if (name === 'notif') this._local(ev);
@@ -66,9 +88,138 @@ class Notifs extends EventEmitter {
   }
 
   applySettings() {
+    if (!this.cfg.receive) this.otp.clearSource('notif');
+    else this.otp.revalidate();
     this.sendPolicy();
     this._watch();
     this.emit('change');
+  }
+
+  _tr(key, vars) {
+    try {
+      const I18n = require('../shared/i18n.js');
+      const s = this.getSettings() || {};
+      let sys = 'en';
+      try { sys = require('electron').app.getLocale(); } catch {}
+      const lang = I18n.resolveLanguage((s.ui && s.ui.language) || '', sys);
+      return I18n.create(lang).t(key, vars);
+    } catch {
+      return formatFallback(key, vars);
+    }
+  }
+
+  copyOtp(code) {
+    return quietCopy(code, {
+      readChangeCount: this.helper && this.helper.running && typeof this.helper.request === 'function'
+        ? () => this.helper.request('clipboardInfo', {}, 500).then((r) => (r && typeof r.changeCount === 'number' ? r.changeCount : null), () => null)
+        : null,
+    });
+  }
+
+  armOtpTarget(id) {
+    return this.otp.armTarget(id);
+  }
+
+  useOtp(id) {
+    return this.otp.use(id);
+  }
+
+  clearOtpSource(source, phoneId) {
+    this.otp.clearSource(source, phoneId);
+  }
+
+  clearOtp() {
+    this.otp.clearAll();
+  }
+
+  _captureOtpTarget() {
+    if (!this.helper || !this.helper.running || typeof this.helper.request !== 'function') {
+      return Promise.resolve({ valid: false, reason: 'helper-unavailable' });
+    }
+    return this.helper.request('otpTarget', {}, 500).catch(() => ({ valid: false, reason: 'helper-unavailable' }));
+  }
+
+  _fillOtp(code, token) {
+    if (!this.helper || !this.helper.running || typeof this.helper.request !== 'function') {
+      return Promise.resolve({ filled: false, reason: 'helper-unavailable' });
+    }
+    return this.helper.request('otpFill', { code, token }, 1000).catch(() => ({ filled: false, reason: 'helper-unavailable' }));
+  }
+
+  _presentOtpOffer(offer) {
+    if (modeOf(this.cfg, {}) !== 'show') return false;
+    const peer = this.server.current ? this.server.current.name : '';
+    const item = {
+      id: `otp:${offer.id}`, app: '', appName: '',
+      title: offer.label || this._tr('Verification code'),
+      subtitle: '', body: '', at: offer.at, from: offer.phoneId, reply: false, actions: [],
+    };
+    const how = present(this, item, {}, { from: peer, code: offer.code, otpId: offer.id, autoCopy: false });
+    if (how === 'popup') return true;
+    if (how !== 'native' || !Notification.isSupported()) return false;
+    const n = new Notification({
+      title: item.title,
+      subtitle: peer,
+      body: '',
+      actions: [this._tr('Use code'), this._tr('Copy {code}', { code: offer.code })].map((text) => ({ type: 'button', text })),
+    });
+    n.on('action', (_e, i) => {
+      if (i === 0) return void this.useOtp(offer.id);
+      if (i === 1) return void this.otp.copyOffer(offer.id);
+    });
+    const drop = () => {
+      if (this.otpToasts.get(offer.id) === n) this.otpToasts.delete(offer.id);
+      this.live = this.live.filter((x) => x !== n);
+    };
+    n.on('close', drop);
+    this.otpToasts.set(offer.id, n);
+    this.live.push(n);
+    const t = setTimeout(drop, 60000);
+    if (t && t.unref) t.unref();
+    n.show();
+    return true;
+  }
+
+  _dismissOtpOffer(offer) {
+    const id = `otp:${offer.id}`;
+    if (this.pop) this.pop.gone(id);
+    const n = this.otpToasts.get(offer.id);
+    if (n) {
+      this.otpToasts.delete(offer.id);
+      try { n.close(); } catch {}
+      this.live = this.live.filter((x) => x !== n);
+    }
+  }
+
+  onSmsNew(ev, hub) {
+    if (!ev || !ev.phoneId || !ev.msg || ev.msg.out || !hub) return null;
+    if (!this.getSettings().hub?.messages) return null;
+    if (!hub.samePhone({ deviceId: ev.phoneId, session: ev.session })) return null;
+    return this.otp.ingest({
+      source: 'sms',
+      phoneId: ev.phoneId,
+      session: `sms:${ev.session}`,
+      text: ev.msg.body,
+      at: ev.msg.at,
+      label: (ev.summary && ev.summary.name) || ev.msg.from || '',
+      autoCopy: !!this.cfg.otpCopy,
+      isAuthorized: () => !!this.getSettings().hub?.messages && hub.samePhone({ deviceId: ev.phoneId, session: ev.session }),
+    });
+  }
+
+  onGoogleMessage(ev, gm) {
+    if (!ev || !ev.owner || !ev.item || ev.item.me === true || !gm) return null;
+    if (!this.getSettings().hub?.messages || !gm.active || gm.state !== 'connected' || gm.owner !== ev.owner || gm.session !== ev.session) return null;
+    return this.otp.ingest({
+      source: 'gmessages',
+      phoneId: ev.owner,
+      session: `gm:${ev.session}`,
+      text: ev.item.text,
+      at: ev.item.at,
+      label: (ev.row && ev.row.name) || '',
+      autoCopy: !!this.cfg.otpCopy,
+      isAuthorized: () => !!this.getSettings().hub?.messages && gm.active && gm.state === 'connected' && gm.owner === ev.owner && gm.session === ev.session,
+    });
   }
 
   setMuted(app, muted) {
@@ -131,19 +282,44 @@ class Notifs extends EventEmitter {
     if (from) item.from = from;
     bindReply(item, from, socket && socket === this.replySocket(from) ? socket : null, m, this.history);
     this.history = [item, ...(this.history || []).filter((x) => x.id !== item.id)].slice(0, 50);
-    // A one-time code: a Copy button on the notification.
-    const code = require('../shared/otp.js').otpOf([item.title, item.subtitle, item.body].join(' '));
+    // A one-time code: a local-only expiring Copy button, plus short-lived Use code on authorized phone sessions.
+    const code = otpOf([item.title, item.subtitle, item.body].join(' '));
+    const isPhoneSource = !!(this.server.current && P.isPhoneOs(this.server.current.os) && this.server.current.deviceId === from && (!socket || socket === this.replySocket(from)));
+    let otpOffer = null;
+    let handledAutoCopy = false;
+    if (code && isPhoneSource) {
+      const boundSocket = socket && socket === this.replySocket(from) ? socket : null;
+      const res = this.otp.ingest({
+        source: 'notif',
+        phoneId: from,
+        session: boundSocket || this.server.current,
+        code,
+        at: item.at,
+        label: item.appName || item.title,
+        notifId: item.id,
+        autoCopy: !!this.cfg.otpCopy,
+        isAuthorized: () => !!this.cfg.receive && !hidden(this, m) && this.server.current?.deviceId === from && (!boundSocket || this.replySocket(from) === boundSocket),
+      });
+      if (res) {
+        otpOffer = res.offer;
+        handledAutoCopy = true;
+      }
+    }
     // TwinDesk's window (Reply, buttons, picture, progress), the Mac's own, or none (quiet).
-    const how = present(this, item, m, { from: peer, code, icon: m.icon || this.historyIcons.get(item.app) });
+    const how = present(this, item, m, { from: peer, code, icon: m.icon || this.historyIcons.get(item.app), otpId: otpOffer ? otpOffer.id : '', autoCopy: !handledAutoCopy });
     if (how === 'popup') this.shown++;
     if (how !== 'native' || !Notification.isSupported()) return void this.emit('change');
+    const otpActions = [
+      ...(otpOffer ? [this._tr('Use code')] : []),
+      ...(code ? [this._tr('Copy {code}', { code })] : []),
+    ];
     const n = new Notification({
       title: item.title,
       subtitle: [appName, peer].filter(Boolean).join(' · '),
       body: [str(m.subtitle, 200), str(m.body)].filter(Boolean).join('\n'),
       icon: this.iconsIn.for(m),
-      // A one-time code's Copy, then the phone's own buttons (Mark as read…), tapped there.
-      actions: [...(code ? ['Copy ' + code] : []), ...item.actions].map((text) => ({ type: 'button', text })),
+      // A one-time code's Use/Copy, then the phone's own buttons (Mark as read…), tapped there.
+      actions: [...otpActions, ...item.actions].map((text) => ({ type: 'button', text })),
       // A chat's Reply, typed in the notification itself.
       ...(item.reply ? { hasReply: true, replyPlaceholder: 'Reply' } : {}),
     });
@@ -156,8 +332,10 @@ class Notifs extends EventEmitter {
     });
     n.tdId = item.id;
     n.on('action', (_e, i) => {
-      if (code && i === 0) return require('electron').clipboard.writeText(code);
-      this.act(item.id, i - (code ? 1 : 0));
+      if (otpOffer && i === 0) return void this.useOtp(otpOffer.id);
+      const copyIndex = otpOffer ? 1 : 0;
+      if (code && i === copyIndex) return void this.copyOtp(code);
+      this.act(item.id, i - otpActions.length);
     });
     this.live.push(n);
     const drop = () => { this.live = this.live.filter((x) => x !== n); };
@@ -190,6 +368,7 @@ class Notifs extends EventEmitter {
       shown: this.shown,
       apps: [...this.apps.values()].sort((a, b) => b.at - a.at).slice(0, 40),
       history: replyHistory(this),
+      otp: this.otp.view,
       historyIcons: Object.fromEntries([...new Set((this.history || []).map((h) => h.app))]
         .filter((a) => this.historyIcons && this.historyIcons.has(a)).map((a) => [a, this.historyIcons.get(a)])),
     };

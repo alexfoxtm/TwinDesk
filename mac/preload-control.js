@@ -24,6 +24,8 @@ const ACTIONS = [
 const api = {
   getState: () => ipcRenderer.invoke('getState'),
   notifReply: (arg) => ipcRenderer.invoke('notifReply', arg).then((ok) => ok === true, () => false),
+  copyOtp: (code) => ipcRenderer.invoke('copyOtp', code).then((ok) => ok === true, () => false),
+  useOtp: (id) => ipcRenderer.invoke('useOtp', id).catch(() => ({ ok: false, mode: 'refused' })),
   googleMessages: (arg) => ipcRenderer.invoke('googleMessages', arg),
   phoneAssets: () => ipcRenderer.invoke('phoneAssets'),
   deckApps: () => ipcRenderer.invoke('deckApps'), // the Deck page's app picker

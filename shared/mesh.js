@@ -81,11 +81,12 @@ class Pool {
   }
 
   // Handle an item that arrived from peer fromId.
+  // opts.relay === false keeps the item local (still stamped and deduped, never relayed).
   // Returns { fresh, msg, relayed }:
   //   fresh    true when the feature must apply the item (first time we see it, not our own)
   //   msg      the stamped message (a legacy item gets its stamp here)
   //   relayed  ids of the peers the item was forwarded to
-  receive(fromId, msg) {
+  receive(fromId, msg, opts = {}) {
     this._stats.received += 1;
     const from = this._peers().find((p) => p.id === fromId);
     if (from && from.pool === false) {
@@ -111,6 +112,10 @@ class Pool {
     }
     this._markSeen(m.o, m.s);
     this._stats.fresh += 1;
+
+    if (opts && opts.relay === false) {
+      return { fresh: true, msg: m, relayed: [] };
+    }
 
     // Relay. A peer is skipped when it is the sender, the origin, or one of the origin's direct
     // links (it got the item from the origin itself). A hop limit bounds the relay chain: an item

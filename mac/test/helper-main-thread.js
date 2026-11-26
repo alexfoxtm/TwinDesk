@@ -68,6 +68,14 @@ test('blocking commands leave handle() on the main run loop', () => {
   assert.match(textFocus, /helperWorkQueue\.async \{ reply\(id, textFocus\(\)\) \}/);
   assert.doesNotMatch(textFocus, /reply\(id, textFocus\(\)\)\s*$/m);
 
+  const otpTarget = caseBody(main, 'otpTarget');
+  assert.match(otpTarget, /helperWorkQueue\.async/);
+  assert.match(otpTarget, /OtpTargetController\.shared\.capture/);
+
+  const otpFill = caseBody(main, 'otpFill');
+  assert.match(otpFill, /helperWorkQueue\.async/);
+  assert.match(otpFill, /OtpTargetController\.shared\.fill/);
+
   const notifWatch = caseBody(main, 'notifWatch');
   assert.match(notifWatch, /NotifWatch\.shared\.set\(on: \(msg\["on"\] as\? Bool\) \?\? false\) \{ readable in/);
   assert.match(notifWatch, /reply\(id, \["readable": readable\]\)/);

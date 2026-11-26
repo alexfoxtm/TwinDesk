@@ -1088,6 +1088,8 @@ app.whenReady().then(() => {
     app, ipcMain, window: () => win,
     current: () => peer.current?.os === P.OS.ANDROID ? peer.current.deviceId : '',
     enabled: () => settings.hub.messages === true, change: pushState,
+    onMessage: (ev) => svc.notifs && svc.notifs.onGoogleMessage(ev, svc.googleMessages),
+    onReset: (owner) => svc.notifs && svc.notifs.clearOtpSource('gmessages', owner),
   });
   // Connection › Pair a phone with a QR code (shared/ui-qrpair.js), and wireless debugging's (shared/adbqr.js).
   svc.qrPair = (route) => {
@@ -1826,7 +1828,13 @@ function loadHub() {
   });
   phoneHub = hub;
   require('../shared/asked-send.js').wireAsked(hub, svc.drop); // Photos/Files › Save comes back as one Send (#239)
-  hub.on('change', () => svc.drop.checkPhotoSave());
+  hub.on('change', () => {
+    if (!settings.hub.messages && svc && svc.notifs) svc.notifs.clearOtpSource('sms');
+    svc.drop.checkPhotoSave();
+  });
+  hub.on('smsNew', (ev) => svc && svc.notifs && svc.notifs.onSmsNew(ev, hub));
+  hub.on('started', () => svc && svc.notifs && svc.notifs.clearOtpSource('sms'));
+  hub.on('stopped', () => svc && svc.notifs && svc.notifs.clearOtpSource('sms'));
   hub.on('change', pushState);
   hub.on('data', (m) => win && !win.isDestroyed() && win.webContents.send('hub', m));
   const popup = () => {

@@ -63,7 +63,13 @@ class NotifPop {
       this._place();
       if (!w.shown && w.win && !w.win.isDestroyed()) { w.shown = true; w.win.showInactive(); }
     });
-    ipcMain.on('notifpop:hover', (e, on) => { const w = of(e); if (w) { w.hover = !!on; this._arm(w); } });
+    ipcMain.on('notifpop:hover', (e, on) => {
+      const w = of(e);
+      if (!w) return;
+      w.hover = !!on;
+      this._arm(w);
+      if (w.hover && w.extra.otpId && this.opts.armTarget) void this.opts.armTarget(w.extra.otpId);
+    });
     ipcMain.on('notifpop:typing', (e) => {
       const w = of(e);
       if (!w) return;
@@ -94,7 +100,17 @@ class NotifPop {
       const w = of(e);
       if (!w || !w.extra.code) return;
       if (this.opts.copy) this.opts.copy(w.extra.code);
-      else require('electron').clipboard.writeText(w.extra.code);
+      else require('./otp.js').quietCopy(w.extra.code);
+    });
+    ipcMain.handle('notifpop:useCode', async (e) => {
+      const w = of(e);
+      if (!w || w.expired || !w.extra.code || !w.extra.otpId || !this.opts.useCode) return { ok: false, mode: 'refused' };
+      const res = await Promise.resolve(this.opts.useCode(w.extra.otpId, w.extra.code, w.item)).catch(() => ({ ok: false, mode: 'refused' }));
+      if (res && res.ok && res.mode === 'filled') {
+        const t = setTimeout(() => this._close(w), 450);
+        if (t && typeof t.unref === 'function') t.unref();
+      }
+      return res || { ok: false, mode: 'refused' };
     });
     ipcMain.on('notifpop:open', (e) => { const w = of(e); if (w) { if (this.opts.open) this.opts.open(w.item); this._close(w); } });
     ipcMain.on('notifpop:close', (e) => { const w = of(e); if (w) this._close(w); });
@@ -106,7 +122,8 @@ class NotifPop {
     return {
       app: it.appName || it.app || '', from: w.extra.from || '', title: it.title || '', subtitle: it.subtitle || '', body: it.body || '',
       at: it.at || Date.now(), icon: w.extra.icon || '', pic: it.pic || '', avatar: it.avatar || '', live: it.live || null,
-      code: w.extra.code || '', actions: w.expired ? [] : it.actions || [], reply: !!(it.reply && this.opts.reply && !w.expired),
+      code: w.extra.code || '', canUseCode: !!(w.extra.code && w.extra.otpId && this.opts.useCode && !w.expired),
+      actions: w.expired ? [] : it.actions || [], reply: !!(it.reply && this.opts.reply && !w.expired),
       dismiss: !!this.opts.dismiss && !w.expired, notice: w.expired ? 'expired' : w.notice || '',
     };
   }
@@ -136,6 +153,7 @@ class NotifPop {
     const w = { id: item.id, item, extra, h: 120 };
     this.wins.unshift(w);
     while (this.wins.length > MAX) this._close(this.wins[this.wins.length - 1]);
+    if (extra && extra.otpId && this.opts.armTarget) void this.opts.armTarget(extra.otpId);
     this._open(w);
     this._arm(w);
   }

@@ -179,6 +179,7 @@ class PhoneHub extends EventEmitter {
     this.applyAudio();
     if (this.share) this.share.started();
     if (this.tether) this.tether.started();
+    this.emit('started');
     this.emit('change');
   }
 
@@ -194,6 +195,7 @@ class PhoneHub extends EventEmitter {
     this.call = null;
     this.applyAudio();
     if (had) this.emit('call', null, had);
+    this.emit('stopped');
     this.emit('change');
   }
 
@@ -532,6 +534,13 @@ class PhoneHub extends EventEmitter {
     if ('data' in m) m = { ...m, data: picture(m.data, 12e6) }; // pictures only (thumbnails, previews, MMS)
     if (m.t === T.SMS_NEW && m.msg && !m.msg.out) {
       this.unread++;
+      const phone = this.phone;
+      const same = !!phone && !!ctx && (ctx === phone || (ctx.deviceId === phone.deviceId && (!phone.ws || !ctx.ws || ctx.ws === phone.ws)));
+      const perm = this.state && this.state.messages;
+      const allowed = !perm || ['ok', 'partial'].includes(perm.perm);
+      if (same && allowed) {
+        this.emit('smsNew', { phoneId: phone.deviceId || '', session: this.phoneSession, msg: m.msg, summary: m.summary || null, thread: m.thread || '' });
+      }
       this.emit('change');
     }
     this.emit('data', m);

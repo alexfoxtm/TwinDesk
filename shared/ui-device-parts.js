@@ -532,17 +532,36 @@
         update(s, { phone, devName, top = [], ready = false }) {
           const ov = (s.ui && s.ui.overview) || {}; // General › Overview: what's left out
 
-          // latest notifications: while Notifications is on
+          // latest notifications: while Notifications is on (or a fresh phone OTP offer is active)
           const nf = s.notifs || {};
+          const otpOffer = nf.otp && nf.otp.id && nf.otp.code ? nf.otp : null;
           const history = (nf.history || []).slice(0, 6);
-          notifCard.hidden = !nf.receive || ov.notifs === false;
-          const nk = JSON.stringify([history.map((h) => [h.id, h.from, h.at, h.actions]), Object.keys(nf.historyIcons || {}).length, devName, phone]);
+          notifCard.hidden = (!nf.receive && !otpOffer) || ov.notifs === false;
+          const nk = JSON.stringify([otpOffer && [otpOffer.id, otpOffer.label], history.map((h) => [h.id, h.from, h.at, h.actions]), Object.keys(nf.historyIcons || {}).length, devName, phone]);
           if (nk !== notifKey) {
             notifKey = nk;
-            notifList.replaceChildren(...(history.length ? history.map((item) => {
+            const copyCode = (c) => (api.copyOtp ? api.copyOtp(c) : api.copyText(c));
+            const rows = [];
+            if (otpOffer && api.useOtp) {
+              const useBtn = UI.button(t('Use code'), async () => {
+                if (useBtn.disabled) return;
+                useBtn.disabled = true;
+                const res = await api.useOtp(otpOffer.id);
+                if (res && res.ok && res.mode === 'filled') useBtn.textContent = t('Filled');
+                else if (res && res.ok && res.mode === 'copied') { useBtn.textContent = t('Copied'); useBtn.disabled = false; }
+              }, 'small primary');
+              const copyBtn = UI.button(t('Copy {code}', { code: otpOffer.code }), () => {
+                void copyCode(otpOffer.code);
+                copyBtn.textContent = t('Copied');
+              }, 'small');
+              const r = row(otpOffer.label || t('Verification code'), t('Verification code'), [useBtn, copyBtn]);
+              r.classList.add('dv-notif');
+              rows.push(r);
+            }
+            for (const item of history) {
               const text = [item.subtitle, item.body].filter(Boolean).join(' · ');
-              const code = otpOf([item.title, item.body].join(' '));
-              const copy = code ? UI.button(t('Copy {code}', { code }), () => api.copyText(code), 'small') : null;
+              const code = otpOf([item.title, item.subtitle, item.body].join(' '));
+              const copy = code ? UI.button(t('Copy {code}', { code }), () => { void copyCode(code); copy.textContent = t('Copied'); }, 'small') : null;
               // A phone's: its own buttons (Mark as read…), and × dismisses it there too (shared/notifacts.js).
               // Keyed by origin and ID: two devices' same-ID notifications each keep their own buttons.
               const key = { id: item.id, ...(item.from ? { from: item.from } : {}) };
@@ -557,8 +576,9 @@
                 r.querySelector('.text').prepend(el('img', { class: 'dv-nicon', src: icon, alt: '' }));
                 r.classList.add('with-ico');
               }
-              return r;
-            }) : [row(t('Nothing yet'), t('New notifications from {name} show here', { name: devName }))]));
+              rows.push(r);
+            }
+            notifList.replaceChildren(...(rows.length ? rows : [row(t('Nothing yet'), t('New notifications from {name} show here', { name: devName }))]));
           }
 
           // the clipboard's recent items: while Clipboard is on

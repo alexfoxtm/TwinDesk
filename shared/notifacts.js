@@ -223,10 +223,11 @@ const rules = () => require('./notifrules.js');
 function hidden(n, m) {
   return rules().modeOf(n.cfg, m) === 'hide';
 }
-function present(n, item, m, { from, code, icon } = {}) {
+function present(n, item, m, { from, code, icon, otpId, autoCopy = true } = {}) {
   const r = rules();
   const mode = r.modeOf(n.cfg, m);
-  if (code && n.cfg.otpCopy && mode !== 'hide') { try { require('./otp.js').quietCopy(code); } catch (_) { /* no clipboard (tests) */ } }
+  const copyCode = (c) => (typeof n.copyOtp === 'function' ? n.copyOtp(c) : require('./otp.js').quietCopy(c));
+  if (autoCopy && code && n.cfg.otpCopy && mode !== 'hide') { try { copyCode(code); } catch (_) { /* no clipboard (tests) */ } }
   if (mode !== 'show') return 'none';
   const pop = require('./notifpop.js');
   let electron = null;
@@ -241,10 +242,12 @@ function present(n, item, m, { from, code, icon } = {}) {
         reply: (it, text) => n.reply(it.id, text, it.from, it.replySession),
         dismiss: (id, it) => n.dismiss(id, it && it.from),
         open: (it) => { const c = { app: it.app, appName: it.appName, ...(it.from ? { originId: it.from } : {}) }; if (n.onClick) n.onClick(c); else if (n.emit) n.emit('click', c); },
-        copy: (c) => require('electron').clipboard.writeText(c),
+        copy: (c) => copyCode(c),
+        useCode: typeof n.useOtp === 'function' ? (id, c) => n.useOtp(id, c) : null,
+        armTarget: typeof n.armOtpTarget === 'function' ? (id) => n.armOtpTarget(id) : null,
       });
     }
-    n.pop.show(item, { from, code, icon });
+    n.pop.show(item, { from, code, icon, otpId: otpId || '' });
     return 'popup';
   }
   if (item.live) {

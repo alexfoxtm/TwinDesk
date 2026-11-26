@@ -47,12 +47,14 @@ function fixture() {
 function actionsStayWithOrigin() {
   const f = fixture();
   f.bus.emit(P.T.NOTIF, { id: 'n1', app: 'mail', title: 'Verification', subtitle: 'Your code is 482913', actions: ['Mark read'] }, 'phone');
-  assert.deepStrictEqual(f.shown[0].opts.actions.map((a) => a.text), ['Copy 482913', 'Mark read']);
-  f.shown[0].emit('action', {}, 0);
-  assert.deepStrictEqual(copied, ['482913'], 'Copy writes the Mac clipboard');
-  assert.deepStrictEqual(f.sent, [], 'Copy does not run a phone action');
+  assert.deepStrictEqual(f.shown[0].opts.actions.map((a) => a.text), ['Use code', 'Copy 482913', 'Mark read']);
   f.shown[0].emit('action', {}, 1);
+  assert.deepStrictEqual(copied, ['482913'], 'Copy writes the Mac clipboard via quietCopy');
+  assert.strictEqual(require('../../../shared/otp.js').isQuiet('482913'), true, 'manual Copy is marked quiet (local-only, sync-exempt)');
+  assert.deepStrictEqual(f.sent, [], 'Copy does not run a phone action');
+  f.shown[0].emit('action', {}, 2);
   assert.deepStrictEqual(f.sent, [{ id: 'phone', msg: { t: 'notif.act', id: 'n1', i: 0 } }], 'selection cannot change the action recipient');
+  require('../../../shared/otp.js').invalidateQuietCopy();
 }
 
 function refusesRelayAndDisconnectedActions() {
@@ -177,8 +179,7 @@ function exactReplyAndPrivateRelay() {
   assert.deepStrictEqual(f.sent.map((x) => x.id), ['phone', 'second-phone']);
   assert.equal(f.sent[0].msg.replyVersion, notice.replyVersion);
   assert.ok(old.messagePeer && old.messageAt);
-  assert.ok(relay.length > 0);
-  assert.ok(relay.every((m) => !('messagePeer' in m) && !('messageAt' in m) && !('replyVersion' in m)));
+  assert.strictEqual(relay.length, 0, 'Android-origin notifications stay local and never relay to downstream peers');
   f.sockets.set('phone', {});
   send(old);
   assert.equal(f.sent.length, 2);
@@ -189,10 +190,48 @@ function exactReplyAndPrivateRelay() {
   assert.equal(f.sent.length, 3);
 }
 
+function privacyRelayBoundaries() {
+  const f = fixture();
+  const relayOther = [];
+  const relayWin = [];
+  f.mesh.get('other').notifPool = true;
+  f.mesh.get('other').send = (m) => { relayOther.push(m); return true; };
+  f.connected.add('pc');
+  f.mesh.addPeer({ id: 'pc', name: 'PC', os: P.OS.WIN, mesh: true, send: (m) => { relayWin.push(m); return true; } });
+  f.mesh.get('pc').notifPool = true;
+
+  // 1. Android-origin stays local (dedupe still works).
+  f.bus.emit(P.T.NOTIF, { t: P.T.NOTIF, id: 'a1', app: 'com.bank', title: 'Alert', body: 'Sensitive item', o: 'phone', s: 10, d: [], h: 0 }, 'phone');
+  f.bus.emit(P.T.NOTIF, { t: P.T.NOTIF, id: 'a1', app: 'com.bank', title: 'Alert', body: 'Sensitive item', o: 'phone', s: 10, d: [], h: 0 }, 'phone');
+  assert.strictEqual(f.shown.length, 1, 'Android notification is shown once and deduped');
+  assert.strictEqual(relayOther.length, 0, 'Android notification is never relayed to other Mac');
+  assert.strictEqual(relayWin.length, 0, 'Android notification is never relayed to PC');
+
+  // 2. Relayed Android-origin or unknown-origin notifications stay local too.
+  f.bus.emit(P.T.NOTIF, { t: P.T.NOTIF, id: 'a2', app: 'com.bank', title: 'Via other', o: 'phone', s: 11, d: [], h: 0 }, 'other');
+  f.bus.emit(P.T.NOTIF, { t: P.T.NOTIF, id: 'u1', app: 'com.unknown', title: 'Unknown origin', o: 'mystery-device', s: 1, d: [], h: 0 }, 'other');
+  assert.strictEqual(relayWin.length, 0, 'Android-origin and unknown-origin notifications never relay further');
+
+  // 3. Hidden notifications (even from an allowed Mac/PC) never reach another peer.
+  f.settings.notifs.phoneApps = { 'com.secret.app': { mode: 'hide', name: 'Secret' } };
+  f.bus.emit(P.T.NOTIF, { t: P.T.NOTIF, id: 'h1', app: 'com.secret.app', title: 'Hidden', o: 'other', s: 1, d: [], h: 0 }, 'other');
+  assert.strictEqual(relayWin.length, 0, 'hidden notification never relays to downstream peers');
+  assert.ok(!f.notifs.history.some((x) => x.id === 'h1'), 'hidden notification is not kept in history');
+
+  // 4. Ordinary allowed Mac/PC pooling still works (and strips Android-private fields).
+  f.bus.emit(P.T.NOTIF, {
+    t: P.T.NOTIF, id: 'm1', app: 'com.apple.mail', title: 'Hello', body: 'Allowed Mac notice',
+    messagePeer: '+12025550100', messageAt: 100, replyVersion: 'v1', o: 'other', s: 2, d: [], h: 0,
+  }, 'other');
+  assert.strictEqual(relayWin.length, 1, 'ordinary allowed Mac notification relays to PC');
+  assert.ok(!('messagePeer' in relayWin[0]) && !('messageAt' in relayWin[0]) && !('replyVersion' in relayWin[0]));
+}
+
 
 try {
   actionsStayWithOrigin();
   exactReplyAndPrivateRelay();
+  privacyRelayBoundaries();
   refusesRelayAndDisconnectedActions();
   goneClosesOnlyThatSessionsPopup();
   goneClosesPopupAfterHistoryCleared();

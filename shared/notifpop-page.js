@@ -54,11 +54,29 @@
     const row = $('buttons');
     const btns = [];
     if (st.code) {
+      if (st.canUseCode && typeof api.useCode === 'function') {
+        const use = button(t('Use code'), async () => {
+          if (use.disabled) return;
+          use.disabled = true;
+          const res = await api.useCode().catch(() => ({ ok: false, mode: 'refused' }));
+          if (res && res.ok && res.mode === 'filled') {
+            use.textContent = t('Filled');
+            use.classList.add('done');
+          } else if (res && res.ok && res.mode === 'copied') {
+            use.textContent = t('Copied');
+            use.classList.add('done');
+            use.disabled = false;
+          } else {
+            use.disabled = true;
+          }
+        }, 'primary');
+        btns.push(use);
+      }
       const copy = button(t('Copy {code}', { code: st.code }), () => {
         api.copy();
         copy.textContent = t('Copied');
         copy.classList.add('done');
-      }, 'primary');
+      }, st.canUseCode ? '' : 'primary');
       btns.push(copy);
     }
     st.actions.forEach((a, i) => btns.push(button(a, () => api.act(i))));

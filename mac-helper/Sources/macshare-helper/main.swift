@@ -288,6 +288,24 @@ func handle(_ line: String) {
     ])
   case "textFocus":
     helperWorkQueue.async { reply(id, textFocus()) }
+  case "otpTarget":
+    let front = NSWorkspace.shared.frontmostApplication
+    let frontPid = front?.processIdentifier ?? 0
+    let frontBundleId = front?.bundleIdentifier ?? ""
+    let overview = injector.remoteOverview
+    helperWorkQueue.async {
+      reply(id, OtpTargetController.shared.capture(frontPid: frontPid, frontBundleId: frontBundleId, remoteOverview: overview))
+    }
+  case "otpFill":
+    let code = (msg["code"] as? String) ?? ""
+    let token = (msg["token"] as? String) ?? ""
+    let front = NSWorkspace.shared.frontmostApplication
+    let frontPid = front?.processIdentifier ?? 0
+    let frontBundleId = front?.bundleIdentifier ?? ""
+    let overview = injector.remoteOverview
+    helperWorkQueue.async {
+      reply(id, OtpTargetController.shared.fill(code: code, token: token, frontPid: frontPid, frontBundleId: frontBundleId, remoteOverview: overview))
+    }
   case "notifWatch":
     NotifWatch.shared.set(on: (msg["on"] as? Bool) ?? false) { readable in
       reply(id, ["readable": readable])

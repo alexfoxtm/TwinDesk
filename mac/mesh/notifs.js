@@ -13,10 +13,17 @@ const { Pool } = require('../../shared/mesh.js');
 const { NotifGuard, isOwn } = require('../../shared/notif-guard.js');
 const { IconsOut, IconsIn } = require('../../shared/notificon.js');
 const { actionsOf, noticeScope, withMeshPhoneActions, hidden, present } = require('../../shared/notifacts.js');
-const { otpOf } = require('../../shared/otp.js');
+const { modeOf } = require('../../shared/notifrules.js');
+const { otpOf, quietCopy } = require('../../shared/otp.js');
+const { OtpOfferTracker } = require('../../shared/otp-offer.js');
 
 const T = P.T;
+const RELAYABLE_OS = new Set([P.OS.MAC, P.OS.WIN, P.OS.LINUX]);
 const str = (v, n = 500) => (typeof v === 'string' ? v.slice(0, n) : '');
+
+function formatFallback(key, vars) {
+  return vars ? String(key).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)) : String(key);
+}
 
 // The Pool's view of the mesh for notifications. Items from a device are always shown here; items
 // go only to devices whose notif.policy accepted (mesh entry .notifPool === true), checked in send().
@@ -61,6 +68,15 @@ class Notifs extends EventEmitter {
     this.sent = 0;
     this.shown = 0;
     this.live = new Set(); // shown toasts, kept alive until closed
+    this.otpToasts = new Map(); // offer id -> synthetic native Notification
+    this.otp = new OtpOfferTracker({
+      copy: (code) => this.copyOtp(code),
+      fill: (code, token) => this._fillOtp(code, token),
+      captureTarget: () => this._captureOtpTarget(),
+      presentOffer: (offer) => this._presentOtpOffer(offer),
+      dismissOffer: (offer) => this._dismissOtpOffer(offer),
+      onChange: () => this.emit('change'),
+    });
     this.nativePermission = new (require('../notification-permission').NotificationPermission)();
     this.nativePermission.on('change', () => this.emit('change'));
     this.nativeFailure = false;
@@ -79,6 +95,7 @@ class Notifs extends EventEmitter {
     });
     bus.onPeer('welcome', (id) => {
       this._expireActions(id);
+      this.otp.clearPhone(id);
       const e = this.mesh.get(id);
       if (e) e.notifPool = false; // until its notif.policy says otherwise
       this._sendPolicy(id);
@@ -86,9 +103,14 @@ class Notifs extends EventEmitter {
     });
     bus.onPeer('closed', (id) => {
       this._expireActions(id);
+      this.otp.clearPhone(id);
       const e = this.mesh.get(id);
       if (e) e.notifPool = false;
       this._watch();
+    });
+    bus.onPeer('forgotten', (id) => {
+      this._expireActions(id);
+      this.otp.clearPhone(id);
     });
     this.helper.on('ready', () => this._watch());
     this.helper.on('event', (name, ev) => {
@@ -128,9 +150,164 @@ class Notifs extends EventEmitter {
   }
 
   applySettings() {
+    if (!this.cfg.receive) this.otp.clearSource('notif');
+    else this.otp.revalidate();
     this.sendPolicy();
     this._watch();
     this.emit('change');
+  }
+
+  _tr(key, vars) {
+    try {
+      const I18n = require('../../shared/i18n.js');
+      const s = this.getSettings() || {};
+      let sys = 'en';
+      try { sys = require('electron').app.getLocale(); } catch {}
+      const lang = I18n.resolveLanguage((s.ui && s.ui.language) || '', sys);
+      return I18n.create(lang).t(key, vars);
+    } catch {
+      return formatFallback(key, vars);
+    }
+  }
+
+  _peerOs(id) {
+    if (typeof id !== 'string' || !id) return '';
+    const direct = this.mesh.get(id);
+    if (direct && typeof direct.os === 'string' && direct.os) return direct.os;
+    if (typeof this.mesh.known === 'function') {
+      const known = this.mesh.known().find((k) => k && k.id === id);
+      if (known && typeof known.os === 'string' && known.os) return known.os;
+    }
+    return '';
+  }
+
+  // Only ordinary computer-origin notifications (Mac/Windows/Linux) may be pooled across peers.
+  // Android-origin (sensitive or unknown content approved for this Mac only), phone-origin, and
+  // unknown-origin notifications stay local to this Mac.
+  _canRelay(m, from) {
+    if (!m || typeof m !== 'object') return false;
+    const senderOs = this._peerOs(from);
+    if (!RELAYABLE_OS.has(senderOs)) return false;
+    const originId = m.o === undefined ? from : (typeof m.o === 'string' ? m.o : '');
+    const originOs = this._peerOs(originId);
+    return RELAYABLE_OS.has(originOs);
+  }
+
+  copyOtp(code) {
+    return quietCopy(code, {
+      readChangeCount: this.helper && this.helper.running && typeof this.helper.request === 'function'
+        ? () => this.helper.request('clipboardInfo', {}, 500).then((r) => (r && typeof r.changeCount === 'number' ? r.changeCount : null), () => null)
+        : null,
+    });
+  }
+
+  armOtpTarget(id) {
+    return this.otp.armTarget(id);
+  }
+
+  useOtp(id) {
+    return this.otp.use(id);
+  }
+
+  clearOtpSource(source, phoneId) {
+    this.otp.clearSource(source, phoneId);
+  }
+
+  clearOtp(phoneId) {
+    if (phoneId) this.otp.clearPhone(phoneId);
+    else this.otp.clearAll();
+  }
+
+  _captureOtpTarget() {
+    if (!this.helper || !this.helper.running || typeof this.helper.request !== 'function') {
+      return Promise.resolve({ valid: false, reason: 'helper-unavailable' });
+    }
+    return this.helper.request('otpTarget', {}, 500).catch(() => ({ valid: false, reason: 'helper-unavailable' }));
+  }
+
+  _fillOtp(code, token) {
+    if (!this.helper || !this.helper.running || typeof this.helper.request !== 'function') {
+      return Promise.resolve({ filled: false, reason: 'helper-unavailable' });
+    }
+    return this.helper.request('otpFill', { code, token }, 1000).catch(() => ({ filled: false, reason: 'helper-unavailable' }));
+  }
+
+  _presentOtpOffer(offer) {
+    if (modeOf(this.cfg, {}) !== 'show') return false;
+    const origin = this._nameOf(offer.phoneId, '', offer.phoneId);
+    const item = {
+      id: `otp:${offer.id}`, app: '', appName: '',
+      title: offer.label || this._tr('Verification code'),
+      subtitle: '', body: '', at: offer.at, from: offer.phoneId, reply: false, actions: [],
+    };
+    const how = present(this, item, {}, { from: origin, code: offer.code, otpId: offer.id, autoCopy: false });
+    if (how === 'popup') return true;
+    if (how !== 'native' || !this.Notification || !this.Notification.isSupported()) return false;
+    const n = new this.Notification({
+      title: item.title,
+      subtitle: origin,
+      body: '',
+      actions: [this._tr('Use code'), this._tr('Copy {code}', { code: offer.code })].map((text) => ({ type: 'button', text })),
+    });
+    n.tdOrigin = offer.phoneId;
+    n.tdId = item.id;
+    n.on('action', (_e, i) => {
+      if (i === 0) return void this.useOtp(offer.id);
+      if (i === 1) return void this.otp.copyOffer(offer.id);
+    });
+    const drop = () => {
+      if (this.otpToasts.get(offer.id) === n) this.otpToasts.delete(offer.id);
+      this.live.delete(n);
+    };
+    n.on('close', drop);
+    this.otpToasts.set(offer.id, n);
+    this.live.add(n);
+    const t = setTimeout(drop, 60000);
+    if (t && t.unref) t.unref();
+    n.show();
+    return true;
+  }
+
+  _dismissOtpOffer(offer) {
+    const id = `otp:${offer.id}`;
+    this._closeMatchingPopup(id, offer.phoneId);
+    const n = this.otpToasts.get(offer.id);
+    if (n) {
+      this.otpToasts.delete(offer.id);
+      try { n.close(); } catch {}
+      this.live.delete(n);
+    }
+  }
+
+  onSmsNew(ev, hub) {
+    if (!ev || !ev.phoneId || !ev.msg || ev.msg.out || !hub) return null;
+    if (!this.getSettings().hub?.messages) return null;
+    if (!hub.samePhone({ deviceId: ev.phoneId, session: ev.session })) return null;
+    return this.otp.ingest({
+      source: 'sms',
+      phoneId: ev.phoneId,
+      session: `sms:${ev.session}`,
+      text: ev.msg.body,
+      at: ev.msg.at,
+      label: (ev.summary && ev.summary.name) || ev.msg.from || '',
+      autoCopy: !!this.cfg.otpCopy,
+      isAuthorized: () => !!this.getSettings().hub?.messages && hub.samePhone({ deviceId: ev.phoneId, session: ev.session }),
+    });
+  }
+
+  onGoogleMessage(ev, gm) {
+    if (!ev || !ev.owner || !ev.item || ev.item.me === true || !gm) return null;
+    if (!this.getSettings().hub?.messages || !gm.active || gm.state !== 'connected' || gm.owner !== ev.owner || gm.session !== ev.session) return null;
+    return this.otp.ingest({
+      source: 'gmessages',
+      phoneId: ev.owner,
+      session: `gm:${ev.session}`,
+      text: ev.item.text,
+      at: ev.item.at,
+      label: (ev.row && ev.row.name) || '',
+      autoCopy: !!this.cfg.otpCopy,
+      isAuthorized: () => !!this.getSettings().hub?.messages && gm.active && gm.state === 'connected' && gm.owner === ev.owner && gm.session === ev.session,
+    });
   }
 
   setMuted(app, muted) {
@@ -198,6 +375,8 @@ class Notifs extends EventEmitter {
     // The popup is independent of history and of the system toast. A cleared list still closes
     // a window whose origin is this session. A missing or different origin stays up.
     this._closeMatchingPopup(id, from);
+    const offer = id ? this.otp.findByNotif(id, from) : null;
+    if (offer && offer.source === 'notif' && offer.sources.size === 1) this.otp.clearSource('notif', from);
     if (this.history.length !== before) this.changed();
   }
 
@@ -252,12 +431,14 @@ class Notifs extends EventEmitter {
     this.emit('change');
   }
 
-  // A notification from another device: relayed by the pool, shown here once when fresh.
+  // A notification from another device: hidden items never leave this Mac; only allowed
+  // computer-origin notifications relay through the pool; Android/unknown stay local.
   _show(m, from, ws) {
     if (!this.cfg.receive) return;
-    const r = this.pool.receive(from, m);
+    if (hidden(this, m)) return; // an app set to Hide (Notifications): not kept or relayed
+    const relay = this._canRelay(m, from);
+    const r = this.pool.receive(from, m, { relay });
     if (!r.fresh || !this.Notification || !this.Notification.isSupported()) return;
-    if (hidden(this, m)) return; // an app set to Hide (Notifications): not kept either
     const id = str(m.id, 200);
     let updated = false;
     for (const old of this.live) {
@@ -274,38 +455,64 @@ class Notifs extends EventEmitter {
     // The recent ones, for Overview and Messages' chat apps; buttons and Reply go back to the device.
     const peer = this.mesh.get(from);
     const direct = (!r.msg.o || r.msg.o === from) && peer && peer.os === P.OS.ANDROID;
+    const directPhone = (!r.msg.o || r.msg.o === from) && peer && P.isPhoneOs(peer.os);
     const socket = ws && ws === this.replySocket(from) ? ws : null;
     const item = this.remember(m, { from, origin: r.msg.o || from, on: origin, direct: !!direct, socket });
     Object.defineProperty(item, 'actionPeer', { value: direct ? peer : null, writable: true });
     const title = item.title;
     const body = str(m.body);
     const code = otpOf([title, str(m.subtitle, 200), body].join(' '));
+    let otpOffer = null;
+    let handledAutoCopy = false;
+    if (code && directPhone && this.bus.connectedIds().includes(from)) {
+      const res = this.otp.ingest({
+        source: 'notif',
+        phoneId: from,
+        session: socket || peer,
+        code,
+        at: item.at,
+        label: appName || title,
+        notifId: item.id,
+        autoCopy: !!this.cfg.otpCopy,
+        isAuthorized: () => !!this.cfg.receive && !hidden(this, m) && this.mesh.get(from) === peer && this.bus.connectedIds().includes(from) && (!socket || this.replySocket(from) === socket),
+      });
+      if (res) {
+        otpOffer = res.offer;
+        handledAutoCopy = true;
+      }
+    }
     // Actions have no relay protocol: only the authenticated origin can run its buttons.
     const actions = id && direct ? actionsOf(m) : [];
     item.actions = actions;
     if (!id) item.reply = false;
     // TwinDesk's window (Reply, buttons, picture, progress), the system's, or none (quiet).
-    const how = present(this, item, m, { from: origin, code, icon: m.icon || (this.historyIcons && this.historyIcons.get(item.app)) });
+    const how = present(this, item, m, { from: origin, code, icon: m.icon || (this.historyIcons && this.historyIcons.get(item.app)), otpId: otpOffer ? otpOffer.id : '', autoCopy: !handledAutoCopy });
     if (how !== 'native') {
       if (how === 'popup') this.shown++;
       return void this.changed();
     }
     this.echoes.push({ title, body: body.slice(0, 80), until: Date.now() + 30000 });
-    // A one-time code: a Copy button on the notification; then the phone's own buttons (Mark as read…).
+    const otpActions = [
+      ...(otpOffer ? [this._tr('Use code')] : []),
+      ...(code ? [this._tr('Copy {code}', { code })] : []),
+    ];
+    // A one-time code: Use/Copy buttons on the notification; then the phone's own buttons (Mark as read…).
     const n = new this.Notification({
       title,
       icon: this.iconsIn.for(m),
       subtitle: [appName, origin].filter(Boolean).join(' · '),
       body: [str(m.subtitle, 200), body].filter(Boolean).join('\n'),
-      actions: [...(code ? ['Copy ' + code] : []), ...actions].map((text) => ({ type: 'button', text })),
+      actions: [...otpActions, ...actions].map((text) => ({ type: 'button', text })),
     });
     n.tdOrigin = from;
     n.tdId = id;
     n.tdActionCurrent = true;
     n.on('action', (_e, i) => {
       if (!this.cfg.receive || !n.tdActionCurrent) return;
-      if (code && i === 0) return require('electron').clipboard.writeText(code);
-      const action = i - (code ? 1 : 0);
+      if (otpOffer && i === 0) return void this.useOtp(otpOffer.id);
+      const copyIndex = otpOffer ? 1 : 0;
+      if (code && i === copyIndex) return void this.copyOtp(code);
+      const action = i - otpActions.length;
       if (!id || !Number.isInteger(action) || !actions[action]) return;
       this._sendCurrent(item, { t: 'notif.act', id, i: action });
     });
@@ -330,6 +537,7 @@ class Notifs extends EventEmitter {
       sent: this.sent,
       shown: this.shown,
       apps: [...this.apps.values()].sort((a, b) => b.at - a.at).slice(0, 40),
+      otp: this.otp.view,
       ...this.historyView(),
     };
   }

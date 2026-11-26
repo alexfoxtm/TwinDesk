@@ -261,11 +261,15 @@ function setupIpc(ctx) {
       ctx.discovery.refresh();
     },
     copyText(text) {
-      if (typeof text === 'string' && text.length < 200) clipboard.writeText(text);
+      if (typeof text === 'string' && text.length < 200) {
+        require('../shared/otp.js').invalidateQuietCopy();
+        clipboard.writeText(text);
+      }
     },
     // Activity copies a notification or a call. Text only, capped, never a path and never a shell.
     copyLiteral(text) {
       if (typeof text !== 'string' || !text || text.length > 256 * 1024 || !clipboard) return;
+      require('../shared/otp.js').invalidateQuietCopy();
       clipboard.writeText(text);
     },
     // Ask first (that puts TwinDesk in the System Settings list), then open the pane.
@@ -870,6 +874,16 @@ function setupIpc(ctx) {
     if (Number.isInteger(r.act)) return ctx.notifs?.act?.(r.id, r.act) === true;
     return ctx.notifs?.reply?.(r.id, r.text, r.from, r.replySession) === true;
   });
+  ipcMain.handle('copyOtp', ({ sender, senderFrame }, code) => {
+    if (!senderFrame || senderFrame !== sender.mainFrame || senderFrame.url.split(/[?#]/, 1)[0] !== controlURL) return false;
+    if (typeof code !== 'string' || !/^\d{4,8}$/.test(code.trim())) return false;
+    return ctx.notifs?.copyOtp ? ctx.notifs.copyOtp(code.trim()) === true : require('../shared/otp.js').quietCopy(code.trim()) === true;
+  });
+  ipcMain.handle('useOtp', ({ sender, senderFrame }, id) => {
+    if (!senderFrame || senderFrame !== sender.mainFrame || senderFrame.url.split(/[?#]/, 1)[0] !== controlURL) return { ok: false, mode: 'refused' };
+    if (typeof id !== 'string' || !id || !ctx.notifs?.useOtp) return { ok: false, mode: 'refused' };
+    return ctx.notifs.useOtp(id);
+  });
   ipcMain.handle('deckApps', () => (ctx.deck ? ctx.deck.apps().catch(() => []) : [])); // the Deck page's app picker
   ipcMain.handle('deckPick', (_e, o) => (async () => { // the Deck page: a file, folder or script for a tile (its path stays here)
     const { dialog, BrowserWindow } = require('electron');
@@ -901,16 +915,19 @@ function setupIpc(ctx) {
   };
   const disconnectPhone = actions.disconnectPhone;
   actions.disconnectPhone = () => {
+    if (ctx.notifs?.clearOtp) ctx.notifs.clearOtp();
     if (fork.silence) fork.silence.stop(); // a Focus turned on for the phone ends with the session
     return disconnectPhone();
   };
   const disconnect = actions.disconnect;
   actions.disconnect = () => {
+    if (ctx.notifs?.clearOtp) ctx.notifs.clearOtp();
     if (fork.silence) fork.silence.stop();
     return disconnect();
   };
   const forget = actions.forget;
   actions.forget = (deviceId) => {
+    if (ctx.notifs?.clearOtp) ctx.notifs.clearOtp();
     if (fork.photoBackup) fork.photoBackup.forget(String(deviceId)); // consent for this phone; archived photos stay
     if (fork.silence) { // Silence together: its lease and its switches go with the pairing
       fork.silence.forget(String(deviceId));

@@ -28,23 +28,28 @@ function fingerprints(addrs, me, text) {
 }
 
 class GoogleMessages {
-  constructor({ current, enabled, change, launch = spawn }) {
-    Object.assign(this, { current, enabled, change, launch });
+  constructor({ current, enabled, change, launch = spawn, onMessage = null, onReset = null }) {
+    Object.assign(this, { current, enabled, change, launch, onMessage, onReset });
     this.owner = '';
     this.state = 'disconnected';
     this.rows = new Map();
     this.pending = new Map();
+    this.seenMessageIds = new Set();
+    this.session = 0;
     this.ref = 0;
     this.retiring = Promise.resolve();
   }
 
   clear() {
     this.rows.clear();
+    this.seenMessageIds.clear();
     this.history = null;
     this.emoji = '';
+    ++this.session;
     clearTimeout(this.typingTimer);
     for (const req of this.pending.values()) req.finish(false);
     this.pending.clear();
+    if (this.onReset) this.onReset(this.owner);
   }
 
   stop() {
@@ -126,11 +131,19 @@ class GoogleMessages {
     } else if (this.state === 'connected' && evt?.type === 'message' && this.rows.has(evt.chat) && evt.item?.id) {
       const m = evt.item;
       const row = this.rows.get(evt.chat);
+      const fresh = !this.seenMessageIds.has(m.id);
+      if (fresh) {
+        this.seenMessageIds.add(m.id);
+        if (this.seenMessageIds.size > 500) this.seenMessageIds.delete(this.seenMessageIds.values().next().value);
+      }
       if (atOf(m) >= atOf(row)) {
         this.rows.set(evt.chat, { ...row, at: m.at, snippet: m.text, snippetMe: m.me });
       }
       if (this.history?.chat === evt.chat) {
         this.history = { ...this.history, items: this.merge(this.history.items, [m]) };
+      }
+      if (fresh && this.active && m.me !== true && typeof m.text === 'string' && m.text && this.onMessage) {
+        this.onMessage({ owner: this.owner, session: this.session, chat: evt.chat, row, item: m });
       }
     } else if (this.state === 'connected' && this.history?.chat === evt?.chat) {
       const h = this.history;
@@ -255,8 +268,8 @@ class GoogleMessages {
   }
 }
 
-function setupGoogleMessages({ app, ipcMain, window, current, enabled, change }) {
-  const gm = new GoogleMessages({ current, enabled, change });
+function setupGoogleMessages({ app, ipcMain, window, current, enabled, change, onMessage, onReset }) {
+  const gm = new GoogleMessages({ current, enabled, change, onMessage, onReset });
   ipcMain.handle('googleMessages', (event, arg) => {
     const win = window();
     if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return false;

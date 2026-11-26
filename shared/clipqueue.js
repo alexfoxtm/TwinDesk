@@ -136,7 +136,9 @@ class MeshClipQueue {
     if (epoch !== this.epoch || !this.applies()) return;
     const previous = this.seen;
     this.seen = text;
-    if (previous === null || !text || text === previous || text === this.clip.lastSync.received || require('./otp.js').isQuiet(text)) return;
+    const otp = require('./otp.js');
+    if (previous === null || !text || text === previous || text === this.clip.lastSync.received || otp.isQuiet(text)) return;
+    otp.noteClipboardText(text);
     if (this.clip.cfg.skipConcealed && (await this.concealed().catch(() => true))) return;
     if (epoch !== this.epoch || !this.applies()) return;
     const stillAway = new Map(this._away());
@@ -180,7 +182,10 @@ class MeshClipQueue {
       clip.lastSync.received = last;
       clip.seen = last;
       this.seen = last;
-      if (now !== last) clip.clipboard.writeText(last);
+      if (now !== last) {
+        require('./otp.js').invalidateQuietCopy();
+        clip.clipboard.writeText(last);
+      }
     }
   }
 

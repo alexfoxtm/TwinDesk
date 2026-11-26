@@ -43,25 +43,118 @@
     return best;
   }
 
-  // A code put on the clipboard by itself (Notifications › Copy codes by themselves): kept out of
-  // clipboard sync and history (each clipboard module asks isQuiet before sending or keeping), and
-  // taken off the clipboard after 2 minutes if it's still there. Main process only.
+  // A one-time code put on the clipboard (manual Copy, Use code fallback, or opt-in auto-copy):
+  // kept out of clipboard sync and history (each clipboard module asks isQuiet before sending or
+  // keeping), and taken off the clipboard after ttlMs (default 2 minutes) only if that exact quiet
+  // copy is still current. Repeated copies replace the pending timer, and an external clipboard
+  // write or changeCount change prevents late expiry from clearing an unrelated clipboard value.
+  // Main process only. Never logs code digits.
+  const DEFAULT_TTL_MS = 120000;
+  const CLEAR_GRACE_MS = 2000;
   const quiet = new Map(); // text -> until
-  function isQuiet(text) {
-    const now = Date.now();
+  let copySeq = 0;
+  let activeCopy = null; // { seq, code, timer, clearTimer, changeCount }
+
+  function _clearActiveTimer() {
+    if (!activeCopy) return;
+    if (activeCopy.timer) activeCopy.clearTimer(activeCopy.timer);
+    activeCopy.timer = null;
+  }
+
+  function isQuiet(text, nowFn = Date.now) {
+    const now = nowFn();
     for (const [k, until] of quiet) if (until < now) quiet.delete(k);
     return typeof text === 'string' && quiet.has(text.trim());
   }
-  function quietCopy(code, clipboard) {
-    if (!code) return;
-    const cb = clipboard || require('electron').clipboard;
-    quiet.set(code, Date.now() + 5 * 60000);
-    cb.writeText(code);
-    const t = setTimeout(() => { Promise.resolve().then(() => cb.readText()).then((now) => { if (String(now || '') === code) cb.writeText(''); }).catch(() => {}); }, 120000);
-    if (t && t.unref) t.unref();
+
+  function invalidateQuietCopy() {
+    if (!activeCopy) return;
+    const prev = activeCopy;
+    _clearActiveTimer();
+    activeCopy = null;
+    if (prev.code) quiet.delete(prev.code);
   }
 
-  const api = { otpOf, isQuiet, quietCopy };
+  function noteClipboardText(text) {
+    if (!activeCopy) return;
+    if (String(text || '') !== activeCopy.code) invalidateQuietCopy();
+  }
+
+  function quietCopy(code, clipboardOrOpts) {
+    const value = typeof code === 'string' ? code.trim() : '';
+    if (!value) return false;
+    const isOpts = clipboardOrOpts && typeof clipboardOrOpts === 'object' && typeof clipboardOrOpts.writeText !== 'function';
+    const opts = isOpts ? clipboardOrOpts : { clipboard: clipboardOrOpts };
+    const cb = opts.clipboard || require('electron').clipboard;
+    if (!cb || typeof cb.writeText !== 'function') return false;
+    const nowFn = typeof opts.now === 'function' ? opts.now : Date.now;
+    const setTimer = typeof opts.setTimeout === 'function' ? opts.setTimeout : setTimeout;
+    const clearTimer = typeof opts.clearTimeout === 'function' ? opts.clearTimeout : clearTimeout;
+    const ttlMs = Number.isFinite(opts.ttlMs) && opts.ttlMs >= 0 ? opts.ttlMs : DEFAULT_TTL_MS;
+    const quietMs = Number.isFinite(opts.quietMs) && opts.quietMs >= ttlMs ? opts.quietMs : Math.max(ttlMs + 5000, 5 * 60000);
+    const readChangeCount = typeof opts.readChangeCount === 'function' ? opts.readChangeCount : null;
+
+    if (activeCopy) {
+      const prevCode = activeCopy.code;
+      _clearActiveTimer();
+      if (prevCode && prevCode !== value) quiet.delete(prevCode);
+    }
+
+    const seq = ++copySeq;
+    const slot = { seq, code: value, timer: null, clearTimer, changeCount: null };
+    activeCopy = slot;
+    quiet.set(value, nowFn() + quietMs);
+    cb.writeText(value);
+
+    if (readChangeCount) {
+      Promise.resolve()
+        .then(() => readChangeCount())
+        .then(async (count) => {
+          if (activeCopy !== slot || typeof count !== 'number' || !Number.isFinite(count)) return;
+          const current = typeof cb.readText === 'function' ? String((await cb.readText()) || '') : value;
+          if (activeCopy === slot && current === value) slot.changeCount = count;
+        })
+        .catch(() => {});
+    }
+
+    const t = setTimer(() => {
+      if (activeCopy !== slot) return;
+      Promise.resolve()
+        .then(() => (typeof cb.readText === 'function' ? cb.readText() : ''))
+        .then(async (current) => {
+          if (activeCopy !== slot) return;
+          if (String(current || '') !== value) {
+            activeCopy = null;
+            quiet.delete(value);
+            return;
+          }
+          if (readChangeCount && slot.changeCount !== null) {
+            const countNow = await Promise.resolve().then(() => readChangeCount()).catch(() => null);
+            if (activeCopy !== slot) return;
+            if (typeof countNow === 'number' && Number.isFinite(countNow) && countNow !== slot.changeCount) {
+              activeCopy = null;
+              quiet.delete(value);
+              return;
+            }
+          }
+          if (activeCopy !== slot) return;
+          activeCopy = null;
+          quiet.set(value, nowFn() + CLEAR_GRACE_MS);
+          await cb.writeText('');
+        })
+        .catch(() => {
+          if (activeCopy === slot) {
+            activeCopy = null;
+            quiet.delete(value);
+          }
+        });
+    }, ttlMs);
+    slot.timer = t;
+    if (t && typeof t.unref === 'function') t.unref();
+    return true;
+  }
+
+  const api = { otpOf, isQuiet, quietCopy, invalidateQuietCopy, noteClipboardText };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.Otp = api;
 })(typeof window !== 'undefined' ? window : globalThis);

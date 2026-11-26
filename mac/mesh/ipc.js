@@ -174,11 +174,13 @@ function setupIpc(ctx) {
       ctx.phone.connect(id);
     },
     disconnectPhone() {
+      ctx.notifs?.clearOtp?.();
       ctx.proximityLock?.cancel();
       ctx.phone.disconnect();
     },
     // Disconnect the session (phone or computer); Connect again / Take over the Mac we're a guest of.
     disconnect() {
+      ctx.notifs?.clearOtp?.();
       ctx.proximityLock?.cancel();
       if (ctx.server.current && P.isPhoneOs(ctx.server.current.os)) return ctx.phone.disconnect();
       ctx.server.disconnect();
@@ -270,6 +272,7 @@ function setupIpc(ctx) {
     },
     forgetPeer(deviceId) {
       if (!ctx.hub) return;
+      ctx.notifs?.clearOtp?.(String(deviceId));
       ctx.proximityLock?.forget(String(deviceId));
       ctx.hub.forgetPeer(String(deviceId));
       ctx.kvm.forgetDevice(String(deviceId)); // it leaves the shared layout too (docs/mesh.md)
@@ -291,11 +294,15 @@ function setupIpc(ctx) {
       ctx.discovery.refresh();
     },
     copyText(text) {
-      if (typeof text === 'string' && text.length < 200) clipboard.writeText(text);
+      if (typeof text === 'string' && text.length < 200) {
+        require('../../shared/otp.js').invalidateQuietCopy();
+        clipboard.writeText(text);
+      }
     },
     // Activity copies a notification or a call. Text only, capped, never a path and never a shell.
     copyLiteral(text) {
       if (typeof text !== 'string' || !text || text.length > 256 * 1024 || !clipboard) return;
+      require('../../shared/otp.js').invalidateQuietCopy();
       clipboard.writeText(text);
     },
     // Ask first (that puts TwinDesk in the System Settings list), then open the pane.
@@ -834,6 +841,7 @@ function setupIpc(ctx) {
       ctx.pairing.respond(!!allow);
     },
     forget(deviceId) {
+      if (ctx.notifs?.clearOtp && deviceId != null && deviceId !== '') ctx.notifs.clearOtp(String(deviceId));
       if (ctx.batteryAlerts && deviceId != null && deviceId !== '') ctx.batteryAlerts.forget(String(deviceId));
       // The device can be a saved host or a paired client.
       ctx.proximityLock?.forget(String(deviceId));
@@ -865,6 +873,16 @@ function setupIpc(ctx) {
     if (r.dismiss) return ctx.notifs?.dismiss?.(r.id) === true;
     if (Number.isInteger(r.act)) return ctx.notifs?.act?.(r.id, r.act) === true;
     return ctx.notifs?.reply?.(r.id, r.text, r.from, r.replySession) === true;
+  });
+  ipcMain.handle('copyOtp', ({ sender, senderFrame }, code) => {
+    if (!senderFrame || senderFrame !== sender.mainFrame || senderFrame.url.split(/[?#]/, 1)[0] !== controlURL) return false;
+    if (typeof code !== 'string' || !/^\d{4,8}$/.test(code.trim())) return false;
+    return ctx.notifs?.copyOtp ? ctx.notifs.copyOtp(code.trim()) === true : require('../../shared/otp.js').quietCopy(code.trim()) === true;
+  });
+  ipcMain.handle('useOtp', ({ sender, senderFrame }, id) => {
+    if (!senderFrame || senderFrame !== sender.mainFrame || senderFrame.url.split(/[?#]/, 1)[0] !== controlURL) return { ok: false, mode: 'refused' };
+    if (typeof id !== 'string' || !id || !ctx.notifs?.useOtp) return { ok: false, mode: 'refused' };
+    return ctx.notifs.useOtp(id);
   });
   ipcMain.handle('qrPair', (_event, route) => (ctx.qrPair ? ctx.qrPair(route) : { url: '' }));
   ipcMain.handle('embeddedTailnet', (_event, op) => {

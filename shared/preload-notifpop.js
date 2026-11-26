@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('notifpop', {
   act: (i) => ipcRenderer.send('notifpop:act', i),
   reply: (text) => ipcRenderer.send('notifpop:reply', text),
   copy: () => ipcRenderer.send('notifpop:copy'),
+  useCode: () => ipcRenderer.invoke('notifpop:useCode'),
   open: () => ipcRenderer.send('notifpop:open'),
   close: () => ipcRenderer.send('notifpop:close'),
   dismiss: () => ipcRenderer.send('notifpop:dismiss'),

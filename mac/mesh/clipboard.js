@@ -63,7 +63,11 @@ class Clip extends EventEmitter {
     const sess = (id) => (opts.session ? opts.session(id) : null);
     this.images = new MeshClipImages({
       cfg: () => this.cfg, clipboard: this.clipboard,
-      onReceiveStart: () => { ++this.receiving; ++this.receiveSequence; },
+      onReceiveStart: () => {
+        require('../../shared/otp.js').invalidateQuietCopy();
+        ++this.receiving;
+        ++this.receiveSequence;
+      },
       onReceiveEnd: (written) => {
         if (written) ++this.readSequence;
         this._endReceive();
@@ -133,7 +137,10 @@ class Clip extends EventEmitter {
     try {
       const current = await this._readText().catch(() => '');
       if (sequence !== this.receiveSequence || !allowed()) return;
-      if (current !== text) await this.clipboard.writeText(text);
+      if (current !== text) {
+        require('../../shared/otp.js').invalidateQuietCopy();
+        await this.clipboard.writeText(text);
+      }
       if (sequence < this.lastAppliedText) return;
       this.lastAppliedText = sequence;
       ++this.readSequence;
@@ -248,7 +255,10 @@ class Clip extends EventEmitter {
       if (sequence !== this.receiveSequence) return; // a newer clip or picture came in meanwhile
       const name = this._nameOf(r.msg.o, m.on, from);
       this.images.text(); // a picture still on its way either way is out of date
-      if (write) await this.clipboard.writeText(text);
+      if (write) {
+        require('../../shared/otp.js').invalidateQuietCopy();
+        await this.clipboard.writeText(text);
+      }
       // A newer clip may have been applied while this one was written.
       if (sequence < this.lastAppliedText) return;
       this.lastAppliedText = sequence;
@@ -301,7 +311,9 @@ class Clip extends EventEmitter {
     const text = await this._readText();
     if (!valid()) return;
     if (!text) return this._picture(why, valid);
-    if (require('../../shared/otp.js').isQuiet(text)) return; // a code copied by itself (Notifications): kept here only
+    const otp = require('../../shared/otp.js');
+    if (otp.isQuiet(text)) return; // a code copied by itself (Notifications): kept here only
+    otp.noteClipboardText(text);
     if (text === this.lastSync.sent || text === this.lastSync.received) return;
     if (c.skipConcealed && (await this._isConcealed(why))) {
       if (!valid()) return;
@@ -362,6 +374,7 @@ class Clip extends EventEmitter {
     const h = this.history[index];
     if (!h) return;
     if (h.image) return void this.images.copy(h, h.dir).catch((e) => console.error('[clip] picture not copied:', e.message));
+    require('../../shared/otp.js').invalidateQuietCopy();
     this.clipboard.writeText(h.text);
     this.seen = h.text;
     if (h.dir === 'out') this.lastSync.sent = null;

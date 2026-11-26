@@ -49,7 +49,11 @@ class Clipboard extends EventEmitter {
       connected: () => !!this.server.current,
       ble: () => !!(this.server.current && this.server.current.transport === 'ble'),
       peerName: () => (this.server.current && this.server.current.name) || 'the other device',
-      onReceiveStart: () => { ++this.receiving; ++this.receiveSequence; },
+      onReceiveStart: () => {
+        require('../shared/otp.js').invalidateQuietCopy();
+        ++this.receiving;
+        ++this.receiveSequence;
+      },
       onReceiveEnd: (written) => {
         if (written) ++this.readSequence;
         this._endReceive();
@@ -171,7 +175,10 @@ class Clipboard extends EventEmitter {
       // A Universal Clipboard item isn't read to compare: reading it fetches it from the other device.
       const write = this.remote || (await readText()) !== msg.text;
       if (sequence !== this.receiveSequence) return; // a newer clip or picture came in meanwhile
-      if (write) await clipboard.writeText(msg.text);
+      if (write) {
+        require('../shared/otp.js').invalidateQuietCopy();
+        await clipboard.writeText(msg.text);
+      }
       // A newer clip may have been applied while this one was written.
       if (sequence < this.lastAppliedText) return;
       this.lastAppliedText = sequence;
@@ -224,7 +231,9 @@ class Clipboard extends EventEmitter {
     const c = this.cfg;
     const text = await readText();
     if (!valid()) return;
-    if (require('../shared/otp.js').isQuiet(text)) return; // a code copied by itself (Notifications): kept here only
+    const otp = require('../shared/otp.js');
+    if (otp.isQuiet(text)) return; // a code copied by itself (Notifications): kept here only
+    if (text) otp.noteClipboardText(text);
     // Files copied in Finder: the clipboard also holds their names and icon, which aren't the copy.
     // Files go with the Files tab's shortcuts (fclip.js).
     const src = await this.helper.request('fileSource').catch(() => ({}));
@@ -288,6 +297,7 @@ class Clipboard extends EventEmitter {
     const h = this.history[index];
     if (!h) return;
     if (h.image) return this.images.copy(h, h.dir).catch((e) => console.error('[clip] picture not copied:', e.message));
+    require('../shared/otp.js').invalidateQuietCopy();
     clipboard.writeText(h.text);
     this.lastSent = h.dir === 'out' ? null : this.lastSent;
   }
@@ -325,8 +335,10 @@ class Clipboard extends EventEmitter {
     const epoch = this.queueEpoch;
     const text = await readText().catch(() => '');
     this.checkQueuePair();
+    const otp = require('../shared/otp.js');
     if (epoch !== this.queueEpoch || !this._queueEnabled() || this.server.current || this.remote ||
-        (this.concealed && this.cfg.skipConcealed) || !text || require('../shared/otp.js').isQuiet(text)) return;
+        (this.concealed && this.cfg.skipConcealed) || !text || otp.isQuiet(text)) return;
+    otp.noteClipboardText(text);
     if (this.queue.add(text, this.cfg.maxKB)) this.emit('change');
   }
 
@@ -356,7 +368,10 @@ class Clipboard extends EventEmitter {
       try {
         const same = !this.remote && (await readText().catch(() => '')) === last;
         if (sequence !== this.receiveSequence || epoch !== this.queueEpoch || !allowed() || !this.cfg.queueLatest) return;
-        if (!same) await clipboard.writeText(last);
+        if (!same) {
+          require('../shared/otp.js').invalidateQuietCopy();
+          await clipboard.writeText(last);
+        }
         if (sequence < this.lastAppliedText) return;
         this.lastAppliedText = sequence;
         ++this.readSequence;
