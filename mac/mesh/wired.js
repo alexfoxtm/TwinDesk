@@ -48,7 +48,7 @@ class Wired extends EventEmitter {
     this.phoneTurn = TURN_PORT; // the relay's port on the phone's side of adb reverse
     // Every session from 127.0.0.1 is a phone through adb reverse: its WebRTC uses the relay.
     raw.netemIceFor = netemTurn(raw.https);
-    raw.iceFor = (ctx) => (P.isPhoneOs(ctx.os) && isLoopback(ctx.address) && ctx.transport !== 'ble' && this.turnOk ? this._ice() : null);
+    raw.iceFor = (ctx) => (P.isPhoneOs(ctx.os) && !ctx.embeddedPeer && isLoopback(ctx.address) && ctx.transport !== 'ble' && this.turnOk ? this._ice() : null);
     peer.on('t:phone.wired', (m, ctx) => {
       const hit = [...this.plugged].find(([, p]) => p.nonce && p.nonce === m.nonce);
       if (!hit || !ctx.deviceId) {
@@ -135,7 +135,7 @@ class Wired extends EventEmitter {
       // A session with a phone that's on a cable here but not through it (it came back over
       // Bluetooth or Wi-Fi after its app restarted, say): asked onto the cable, once per session.
       const c = this.raw.current;
-      const offCable = c && c.os === P.OS.ANDROID && !(isLoopback(c.address) && c.transport !== 'ble') && !this.asked.has(c);
+      const offCable = c && !c.embeddedPeer && c.os === P.OS.ANDROID && !(isLoopback(c.address) && c.transport !== 'ble') && !this.asked.has(c);
       for (const s of usb) {
         const p = this.plugged.get(s);
         if (p && p.linked && offCable && this._serialFor(c.deviceId) === s && Date.now() - p.at > RETRY_MS) {

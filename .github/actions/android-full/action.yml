@@ -33,6 +33,17 @@ runs:
         java-version: 21
 
     - if: steps.key.outputs.have == 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: network/go.mod
+        cache-dependency-path: network/go.sum
+
+    - if: steps.key.outputs.have == 'true'
+      name: Install Android NDK
+      shell: bash
+      run: sdkmanager "ndk;29.0.14206865"
+
+    - if: steps.key.outputs.have == 'true'
       name: Build the full APK into android/dist
       shell: bash
       working-directory: android

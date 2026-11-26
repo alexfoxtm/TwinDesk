@@ -5,6 +5,8 @@ package com.twindesk.android
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import com.twindesk.android.embedded.EmbeddedNetwork
+import com.twindesk.android.embedded.stableNode
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,12 +22,14 @@ data class Host(
     var lastSeen: Long,
     var tail: List<String> = emptyList(), // its Tailscale addresses (Tailnet.kt)
     var relay: RelayInfo? = null, // its own relay, if it has one (Relay.kt)
+    val embeddedNode: String? = null,
 ) {
     fun json(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("os", os).put("address", address)
         .put("port", port).put("fp", fp).put("token", token).put("lastSeen", lastSeen)
         .apply { if (tail.isNotEmpty()) put("tail", JSONArray(tail)) }
         .apply { relay?.let { put("relay", it.json()) } }
+        .apply { embeddedNode?.let { put("embeddedNode", it) } }
 
     companion object {
         fun from(o: JSONObject) = Host(
@@ -33,6 +37,7 @@ data class Host(
             o.optInt("port", Proto.PORT), o.getString("fp"), o.getString("token"), o.optLong("lastSeen"),
             Tailnet.clean(o.optJSONArray("tail")),
             RelayInfo.from(o.optJSONObject("relay")),
+            o.optString("embeddedNode").takeIf(stableNode::matches),
         )
     }
 }
@@ -74,6 +79,7 @@ class Store(private val ctx: Context) {
         emptyList()
     }
 
+    @Synchronized
     fun saveHosts(list: List<Host>, key: String = "hosts") {
         if (key == "hosts") {
             for (h in hosts(key)) {
@@ -83,12 +89,16 @@ class Store(private val ctx: Context) {
         prefs.edit().putString(key, jsonArray(list.map { it.json() }).toString()).apply()
     }
 
-    fun putHost(h: Host, key: String = "hosts") {
+    @Synchronized
+    fun putHost(h: Host, key: String = "hosts", verifiedNode: String? = null) {
         val old = hosts(key)
         if (key == "hosts" && old.any { it.id == h.id && it.fp != h.fp }) prefs.edit().remove("taskAlerts.${h.id}").apply()
-        saveHosts(listOf(h) + old.filter { it.id != h.id }, key)
+        val binding = if (key == "hosts" && h.os == "mac") verifiedNode ?:
+            old.find { it.id == h.id && it.fp == h.fp && it.os == h.os }?.embeddedNode else null
+        saveHosts(listOf(h.copy(embeddedNode = binding)) + old.filter { it.id != h.id }, key)
     }
 
+    @Synchronized
     fun forgetHost(id: String, key: String = "hosts") {
         if (key == "hosts") prefs.edit().remove("taskAlerts.$id").apply()
         saveHosts(hosts(key).filter { it.id != id }, key)
@@ -96,6 +106,8 @@ class Store(private val ctx: Context) {
 
     // Settings: one boolean per switch.
     fun flag(key: String, default: Boolean): Boolean = prefs.getBoolean(key, default)
+    internal fun setEmbeddedEnabled(on: Boolean) = prefs.edit().putBoolean(EmbeddedNetwork.ENABLED, on).commit()
+
     fun setFlag(key: String, on: Boolean) = prefs.edit().putBoolean(key, on).apply()
 
     fun forgetHostClearingCredentials(id: String, key: String = "hosts") {

@@ -866,7 +866,15 @@ function setupIpc(ctx) {
     if (Number.isInteger(r.act)) return ctx.notifs?.act?.(r.id, r.act) === true;
     return ctx.notifs?.reply?.(r.id, r.text, r.from, r.replySession) === true;
   });
-  ipcMain.handle('qrPair', () => (ctx.qrPair ? ctx.qrPair() : { url: '' })); // Connection: the phone pairing QR code's link
+  ipcMain.handle('qrPair', (_event, route) => (ctx.qrPair ? ctx.qrPair(route) : { url: '' }));
+  ipcMain.handle('embeddedTailnet', (_event, op) => {
+    const net = ctx.embeddedTailnet;
+    if (!net) return { available: false, state: 'stopped' };
+    if (op === 'login') return net.start(true);
+    if (op === 'stop') return net.stop();
+    if (op === 'logout') return net.stop(true);
+    return net.view();
+  }); // Connection: the phone pairing QR code's link
   ipcMain.handle('phoneAssets', () => ctx.phone.assetsView());
   ipcMain.handle('deckApps', () => (ctx.deck ? ctx.deck.apps().catch(() => []) : [])); // the Deck page's app picker
   ipcMain.handle('deckPick', (_e, o) => (async () => { // the Deck page: a file, folder or script for a tile (its path stays here)

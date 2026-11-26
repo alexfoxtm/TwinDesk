@@ -32,3 +32,7 @@
 # the artifacts already on the offline classpath. Framework lookups (SystemProperties,
 # WifiManager.isWifiApEnabled, BluetoothDevice.removeBond, BluetoothGatt.refresh) are android.*
 # and are not renamed.
+
+# These JNI symbols use fixed Java class and method names.
+-keep class com.twindesk.android.embedded.NativeNode { native <methods>; }
+-keep class com.twindesk.android.embedded.NativeInterfaces { native <methods>; }

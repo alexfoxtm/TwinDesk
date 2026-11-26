@@ -12,6 +12,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
+import com.twindesk.android.embedded.EmbeddedOffer
 
 class QrActivity : Activity() {
     companion object {
@@ -27,12 +28,26 @@ class QrActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val u = intent?.data
+        if (u?.isHierarchical == false) {
+            finish()
+            return
+        }
+        if (u != null && ("ts" in u.queryParameterNames || u.getQueryParameter("ts") != null)) {
+            val offer = EmbeddedOffer.parse(u)
+            val core = Core.get(this)
+            if (offer == null || !core.pairEmbedded(offer)) {
+                Toast.makeText(this, if (offer == null) tr("That isn’t a TwinDesk pairing code")
+                    else tr("Can’t pair over TwinDesk Network. Check that both devices are signed in and scan a fresh code."), Toast.LENGTH_LONG).show()
+            } else runCatching { TwinService.start(this) }
+            showTwinDesk(connection = true)
+            return
+        }
         val id = u?.getQueryParameter("id").orEmpty().take(64)
         val port = u?.getQueryParameter("p")?.toIntOrNull() ?: 0
         val addrs = u?.getQueryParameter("a").orEmpty().split(',').map { it.trim() }.filter { it.matches(Regex("[0-9a-fA-F.:]{3,45}")) }.take(6)
         val nonce = u?.getQueryParameter("k").orEmpty().take(64)
         val name = u?.getQueryParameter("n").orEmpty().take(64)
-        if (u?.scheme != "twindesk" || id.isEmpty() || addrs.isEmpty() || port !in 1..65535) {
+        if (u?.scheme != "twindesk" || u.host != "pair" || id.isEmpty() || addrs.isEmpty() || port !in 1..65535) {
             Toast.makeText(this, tr("That isn’t a TwinDesk pairing code"), Toast.LENGTH_SHORT).show()
             finish()
             return
@@ -43,9 +58,16 @@ class QrActivity : Activity() {
             val ok = core.connectQr(id, addrs, port, nonce, name)
             runOnUiThread {
                 Toast.makeText(this, if (ok) tr("Pairing with {name}. Allow it there.", "name" to (name.ifEmpty { tr("your computer") })) else tr("Can’t reach {name}. Is the phone on the same Wi-Fi?", "name" to (name.ifEmpty { tr("the computer") })), Toast.LENGTH_LONG).show()
-                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-                finish()
+                showTwinDesk()
             }
         }
+    }
+
+    private fun showTwinDesk(connection: Boolean = false) {
+        val launch = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        if (connection) launch.putExtra("tab", Tab.Connection.name)
+        startActivity(launch)
+        finish()
     }
 }

@@ -26,6 +26,11 @@ jobs:
         with:
           ref: ${{ inputs.ref || 'main' }}
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: network/go.mod
+          cache-dependency-path: network/go.sum
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -45,6 +50,9 @@ jobs:
             mkdir -p ~/.android
             echo "$KEYSTORE" | base64 -d > ~/.android/debug.keystore
           fi
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;29.0.14206865"
 
       - name: Build the standard and full APKs
         working-directory: android

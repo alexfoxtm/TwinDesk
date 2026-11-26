@@ -42,6 +42,10 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
 
     private var session: URLSession!
     private var ws: URLSessionWebSocketTask?
+    private var embeddedSocket: EmbeddedWebSocket?
+    private var embeddedDial: UUID?
+    private var embeddedTarget: (node: String, appID: String)?
+    var viaTailnet: Bool { embeddedTarget != nil }
     private var netemSerial = 0
     private var netemDial: (route: NetemRoute, started: UInt64, serial: Int)?
 
@@ -139,14 +143,16 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     // ---- what the app asks for ----
 
     // force: even when already on this computer (moving onto the cable, or off it).
-    func connect(_ h: Computer, force: Bool = false, ble: Bool = false) {
+    func connect(_ h: Computer, force: Bool = false, ble: Bool = false, automatic: Bool = false) {
         q.async {
+            if automatic && self.viaTailnet { return }
             let saved = self.pairedNetemHost(h)
             let route = saved == nil ? nil : NetemRoute.configured
             // Recheck after queueing so stale work can't dial an ordinary endpoint for the test pair.
             if self.list == "hosts", h.os == "mac", NetemRoute.configured?.peer == h.id, route == nil || ble { return }
             let address = route?.address ?? h.address
             if !force, self.ws != nil, self.host?.id == h.id, self.address == address, self.viaBle == ble, self.state == "connecting" || self.state == "connected" { return }
+            if self.list == "hosts", self.store.flag("lastHostTailnet", false) { self.store.lastHostId = nil }
             self.closeSocket()
             self.viaBle = ble
             self.pair = nil
@@ -160,11 +166,85 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         }
     }
 
+    func connectTailnet(_ h: Computer, automatic: Bool) {
+        q.async {
+            guard self.list == "hosts", let saved = self.store.host(h.id), saved.os == "mac",
+                  saved.fp == h.fp, saved.token == h.token, let node = saved.tailnetNode,
+                  NetemRoute.configured?.peer != h.id else { return }
+            if automatic {
+                guard self.state == "idle", self.pair == nil, self.store.lastHostId == saved.id,
+                      self.store.flag("lastHostTailnet", false) else { return }
+            }
+            if self.embeddedTarget?.appID == h.id, self.embeddedTarget?.node == node,
+               self.mode == "session", self.state == "connecting" || self.state == "connected" { return }
+            if !automatic { self.store.lastHostId = nil }
+            self.closeSocket()
+            self.pair = nil
+            self.host = saved
+            self.openEmbedded("session", node: node, appID: saved.id, fp: saved.fp)
+            self.setState("connecting", "")
+        }
+    }
+
+    func rejectTailnetOffer(_ error: String) {
+        q.async {
+            guard self.pair == nil || self.pair?.phase == "failed" else { return }
+            self.pair = PairState(phase: "failed", address: "", port: Proto.port, name: "Tailscale", error: error)
+            self.changed()
+        }
+    }
+
+    func pairTailnet(node: String, fp: String, id: String, name: String, nonce: String) {
+        q.async {
+            guard self.list == "hosts", NetemRoute.configured?.peer != id,
+                  self.mode != "pair" || self.pair?.phase == "failed" || self.pair == nil else { return }
+            if let saved = self.store.host(id), saved.fp != fp || saved.os != "mac" {
+                self.pair = PairState(phase: "failed", address: name, port: Proto.port, name: name,
+                                      error: tr("The QR code does not match the paired Mac."))
+                self.changed()
+                return
+            }
+            self.store.lastHostId = nil
+            self.closeSocket()
+            self.state = "idle"
+            self.message = ""
+            self.host = nil
+            self.pairNonce = nonce
+            self.pair = PairState(phase: "connecting", address: name, port: Proto.port, name: name, qr: true)
+            self.openEmbedded("pair", node: node, appID: id, fp: fp)
+            self.changed()
+        }
+    }
+
+    func stopTailnet() {
+        q.async {
+            if self.store.flag("lastHostTailnet", false) { self.store.lastHostId = nil }
+            guard self.viaTailnet else { return }
+            self.pair = nil
+            self.closeSocket()
+            self.setState("idle", "")
+        }
+    }
+
+    func forget(_ id: String) {
+        q.async {
+            if self.host?.id == id || self.embeddedTarget?.appID == id {
+                if self.connected { self.raw(msg(Proto.T.bye)) }
+                self.pair = nil
+                self.closeSocket()
+                self.setState("idle", "")
+            }
+            self.store.forgetHost(id, self.list)
+            if self.store.lastHostId == id { self.store.lastHostId = nil }
+            self.changed()
+        }
+    }
+
     // The session onto another path (the network, or a Bluetooth pipe on 127.0.0.1) without ending it.
     // done(false): it stays where it was (the path didn't open in time, or nothing to resume).
     func move(to address: String, port: UInt16, ble: Bool, _ done: @escaping (Bool) -> Void) {
         q.async {
-            guard self.netemDial == nil, self.state == "connected", self.mode == "session", !self.resumeKey.isEmpty, self.host != nil else {
+            guard !self.viaTailnet, self.netemDial == nil, self.state == "connected", self.mode == "session", !self.resumeKey.isEmpty, self.host != nil else {
                 return DispatchQueue.main.async { done(false) }
             }
             self.dropPending(false)
@@ -222,9 +302,11 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         changed()
     }
 
-    func disconnect() {
+    func disconnect(clearSelection: Bool = false) {
         q.async {
+            if clearSelection { self.store.lastHostId = nil }
             if self.state == "connected" { self.raw(msg(Proto.T.bye)) }
+            self.pair = nil
             self.closeSocket()
             self.setState("idle", "")
         }
@@ -266,9 +348,10 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
 
     @discardableResult
     func send(_ m: JSON, session expected: UUID? = nil) -> Bool {
-        guard state == "connected", let text = encodeJSON(m) else { return false }
+        guard state == "connected", let session = expected ?? sessionID, let text = encodeJSON(m),
+              !viaTailnet || !Self.directLane(m.str("t")) else { return false }
         q.async {
-            if let expected, self.sessionID != expected { return }
+            guard self.sessionID == session else { return }
             if self.quietSince != nil && self.probeAt == nil { self.probeAt = Date() }
             self.write(text)
         }
@@ -301,6 +384,47 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         receive(t)
     }
 
+    private func openEmbedded(_ mode: String, node: String, appID: String, fp: String) {
+        self.mode = mode
+        nw = ""
+        seenFp = ""
+        lastCode = nil
+        pinFp = fp
+        address = ""
+        viaBle = false
+        embeddedTarget = (node, appID)
+        let dial = UUID()
+        embeddedDial = dial
+        EmbeddedNetwork.dial(node, on: q) { [weak self] bridge in
+            guard let self, self.embeddedDial == dial else { return }
+            guard let bridge else { return self.onClose(tr("The paired Mac is unavailable over Tailscale.")) }
+            let socket = EmbeddedWebSocket(bridge: bridge, fingerprint: fp, queue: self.q)
+            self.embeddedSocket = socket
+            socket.start(on: self.q, ready: { [weak self, weak socket] in
+                guard let self, let socket, self.embeddedSocket === socket else { return }
+                self.seenFp = fp
+                self.opened()
+            }, text: { [weak self, weak socket] text in
+                guard let self, let socket, self.embeddedSocket === socket else { return }
+                self.onText(text)
+            }, failed: { [weak self, weak socket] failure in
+                guard let self, let socket, self.embeddedSocket === socket else { return }
+                self.onClose(failure)
+            })
+        }
+        q.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, self.embeddedDial == dial else { return }
+            self.onClose(tr("No answer over Tailscale."))
+        }
+    }
+
+    private func clearEmbeddedSocket() {
+        embeddedDial = nil
+        embeddedTarget = nil
+        embeddedSocket?.close()
+        embeddedSocket = nil
+    }
+
     private func receive(_ t: URLSessionWebSocketTask) {
         t.receive { [weak self] r in
             guard let self = self else { return }
@@ -319,13 +443,15 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func write(_ text: String) {
-        guard let t = ws else { return }
+        guard ws != nil || embeddedSocket != nil else { return }
         let n = text.utf8.count
         qLock.lock(); queuedBytes += n; qLock.unlock()
-        t.send(.string(text)) { [weak self] _ in
-            guard let self = self else { return }
+        let complete = { [weak self] in
+            guard let self else { return }
             self.qLock.lock(); self.queuedBytes -= n; self.qLock.unlock()
         }
+        if let socket = embeddedSocket { socket.send(text, complete: complete) }
+        else { ws?.send(.string(text)) { _ in complete() } }
     }
 
     private func raw(_ m: JSON) { if let s = encodeJSON(m) { write(s) } }
@@ -364,8 +490,19 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
             return
         }
         guard webSocketTask === ws else { return }
+        opened()
+    }
+
+    private func opened() {
+        embeddedDial = nil
         lastRx = Date()
         if mode == "pair" {
+            if let socket = embeddedSocket {
+                q.asyncAfter(deadline: .now() + 75) { [weak self, weak socket] in
+                    guard let self, let socket, self.embeddedSocket === socket, self.mode == "pair" else { return }
+                    self.pairFailed(tr("Pairing timed out."))
+                }
+            }
             nw = Proto.randomHex(16)
             var start = msg(Proto.T.pairStart, ["v": Proto.version, "id": store.deviceId, "name": store.deviceName, "os": Proto.os,
                                                 "commit": Proto.commitOf(nw)])
@@ -393,12 +530,17 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         guard let h = host else { return }
         var hello = msg(Proto.T.hello, ["v": Proto.version, "id": store.deviceId, "name": store.deviceName, "os": Proto.os,
                                         "token": h.token, "fx": 1, "fx2": 1])
+        if viaTailnet {
+            hello.removeValue(forKey: "fx")
+            hello.removeValue(forKey: "fx2")
+        }
         if netemDial != nil { hello["netem"] = 1 }
         raw(hello)
         helloTimer?.cancel()
         let w = DispatchWorkItem { [weak self] in
             guard let self = self, self.state != "connected" else { return }
             self.message = tr("No answer")
+            if self.viaTailnet { return self.onClose(nil) }
             self.ws?.cancel(with: .goingAway, reason: nil)
         }
         helloTimer = w
@@ -426,7 +568,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
             return
         default: break
         }
-        if state == "connected" {
+        if state == "connected", !viaTailnet || !Self.directLane(t) {
             if t == "rtc.offer" {
                 var offer = m
                 offer["_netemDial"] = netemDial?.serial
@@ -438,8 +580,14 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         }
     }
 
+    private static func directLane(_ type: String) -> Bool {
+        type.hasPrefix("rtc.") || type.hasPrefix("audio.") || type.hasPrefix("cam.") ||
+            type.hasPrefix("smb.") || type.hasPrefix("screen.") ||
+            type.hasPrefix("phone.mirror.") || type.hasPrefix("stream.")
+    }
+
     private func onNonce(_ m: JSON) {
-        guard var p = pair else { return }
+        guard var p = pair, !viaTailnet || p.phase == "starting" else { return }
         let nonce = m.str("nonce", max: 200)
         guard mode == "pair", !nw.isEmpty, Proto.isHex(nonce, min: 32, max: 128), nonce.count % 2 == 0 else {
             return pairFailed(tr("The computer sent a bad pairing message."))
@@ -460,10 +608,14 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         let token = m.str("token")
         let id = m.str("macId", max: 128)
         guard !token.isEmpty, !id.isEmpty else { return pairFailed(tr("The computer sent a bad pairing message.")) }
+        if let target = embeddedTarget, id != target.appID || m.str("os") != "mac" {
+            return pairFailed(tr("The Mac does not match the QR code."))
+        }
         let name = m.str("macName", max: 64)
         let h = Computer(id: id, name: name.isEmpty ? p.name : name, os: m.str("os").isEmpty ? "mac" : m.str("os"),
-                     address: p.address, port: p.port, fp: seenFp, token: token, lastSeen: Date().timeIntervalSince1970)
-        store.putHost(findable(h), list)
+                     address: viaTailnet ? "" : p.address, port: viaTailnet ? Proto.port : p.port,
+                     fp: seenFp, token: token, lastSeen: Date().timeIntervalSince1970, tailnetNode: embeddedTarget?.node)
+        if !viaTailnet { store.putHost(findable(h), list) }
         pair = nil
         mode = "session"
         host = h
@@ -491,6 +643,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     private func onWelcome(_ m: JSON) {
         guard mode == "session", state != "connected", var h = host else { return }
         helloTimer?.cancel()
+        if viaTailnet, m.str("macId") != h.id || m.str("os") != "mac" { return onClose("identity") }
         if netemDial != nil, m.str("macId") != h.id {
             lastCode = "identity"
             ws?.cancel(with: .policyViolation, reason: nil)
@@ -499,13 +652,20 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         let name = m.str("macName", max: 64)
         if !name.isEmpty { h.name = name }
         h.lastSeen = Date().timeIntervalSince1970
-        if netemDial == nil, address != "127.0.0.1" { h.address = address }
+        if viaTailnet {
+            h.address = ""
+        } else if netemDial == nil && address != "127.0.0.1" {
+            h.address = address
+        }
         host = h
-        store.putHost(findable(h), list)
-        if list == "hosts" { store.lastHostId = h.id }
+        store.putHost(viaTailnet ? h : findable(h), list)
+        if list == "hosts" {
+            store.setFlag("lastHostTailnet", viaTailnet)
+            store.lastHostId = h.id
+        }
         rttMs = nil
-        resumeKey = m.str("resume", max: 64)
-        let fx = m.str("fx", max: 64)
+        resumeKey = viaTailnet ? "" : m.str("resume", max: 64)
+        let fx = viaTailnet ? "" : m.str("fx", max: 64)
         fxToken = Proto.isHex(fx, min: 32, max: 32) ? fx : ""
         let p2 = m.obj("fx2")?["port"] as? NSNumber
         fx2Port = p2.map { $0.intValue > 0 && $0.intValue < 65536 ? UInt16($0.intValue) : 0 } ?? 0
@@ -519,7 +679,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         probed = false
         lastUse = Date()
         t.setEventHandler { [weak self] in
-            guard let self = self, let w = self.ws else { return }
+            guard let self, self.ws != nil || self.embeddedSocket != nil else { return }
             let now = Date()
             let mine = self.sayIdle()
             // Quiet (both ends idle, on the network): a ping every few minutes, a long silence limit.
@@ -535,7 +695,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
                     } else if now.timeIntervalSince(p) > Proto.timeout {
                         NSLog("TwinDesk: no answer on a quiet link, closing")
                         self.message = tr("Stopped answering")
-                        w.cancel(with: .goingAway, reason: nil)
+                        self.ws?.cancel(with: .goingAway, reason: nil)
                         self.onClose(nil)
                         return
                     } else { return }
@@ -543,7 +703,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
                 if now.timeIntervalSince(self.lastRx) > Link.quietTimeout {
                     NSLog("TwinDesk: silent on a quiet link, closing")
                     self.message = tr("Stopped answering")
-                    w.cancel(with: .goingAway, reason: nil)
+                    self.ws?.cancel(with: .goingAway, reason: nil)
                     self.onClose(nil)
                 } else if now.timeIntervalSince(max(self.quietPingAt, self.quietSince!)) >= Link.quietPing {
                     self.quietPingAt = now
@@ -556,7 +716,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
             if quiet > self.timeout {
                 NSLog("TwinDesk: socket silent for %.1f s, closing", quiet)
                 self.message = tr("Stopped answering")
-                w.cancel(with: .goingAway, reason: nil)
+                self.ws?.cancel(with: .goingAway, reason: nil)
                 self.onClose(nil)
             } else {
                 self.raw(msg(Proto.T.ping, ["ts": Int(Date().timeIntervalSince1970 * 1000)]))
@@ -591,6 +751,9 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         default: message = tr("Closed ({code})", ["code": code])
         }
         if code == Proto.E.badToken, let h = host { store.forgetHost(h.id, list) }
+        if viaTailnet, [Proto.E.badToken, Proto.E.busy, Proto.E.replaced, Proto.E.released, Proto.E.asleep].contains(code) {
+            onClose(nil)
+        }
     }
 
     private func pairFailed(_ error: String) {
@@ -604,7 +767,10 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func onClose(_ failure: String?) {
-        guard ws != nil || state == "connected" || state == "connecting" || pair != nil else { return }
+        guard ws != nil || viaTailnet || state == "connected" || state == "connecting" || pair != nil else { return }
+        let wasTailnet = viaTailnet
+        clearEmbeddedSocket()
+        if failure == "identity" { lastCode = "identity" }
         pinger?.cancel(); pinger = nil
         helloTimer?.cancel()
         ws = nil
@@ -616,6 +782,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
         dropPending(false)
         if mode == "pair" {
             if let p = pair, p.phase != "failed" {
+                if failure == "identity" { return pairFailed(tr("The Mac’s certificate does not match the QR code.")) }
                 pairFailed(p.phase == "connecting" ? tr("Couldn’t connect to {address}{reason}.", ["address": p.address, "reason": failure.map { " (\($0))" } ?? ""]) : tr("The connection closed."))
             }
             return
@@ -627,13 +794,19 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
             if message.isEmpty, let f = failure { message = f }
             setState(was == "connected" || was == "connecting" ? "idle" : was, message)
         }
-        if let h = host, was == "connected" || was == "connecting" { events?.linkClosed(h, lastCode) }
+        if let h = host, was == "connected" || was == "connecting" {
+            if wasTailnet {
+                if lastCode != nil, store.lastHostId == h.id, store.flag("lastHostTailnet", false) { store.lastHostId = nil }
+                events?.linkClosed(h, lastCode == nil && was == "connected" ? "tailnet-dropped" : "tailnet-ended")
+            } else { events?.linkClosed(h, lastCode) }
+        }
     }
 
     private func closeSocket() {
         pinger?.cancel(); pinger = nil
         helloTimer?.cancel()
         let w = ws
+        clearEmbeddedSocket()
         ws = nil
         netemDial = nil
         sessionID = nil
@@ -661,7 +834,7 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     // the network, the cable, a Wi-Fi Direct group or a hotspot (this phone's or the computer's) alike,
     // as the computers' fastfile.js usable(); anything wrong before a byte: file.chunk (Files.swift).
     func fxRequest(_ id: String, method: String) -> URLRequest? {
-        guard state == "connected", !viaBle, !fxToken.isEmpty, let h = host else { return nil }
+        guard state == "connected", !viaTailnet, !viaBle, !fxToken.isEmpty, let h = host else { return nil }
         let a = address.contains(":") ? "[\(address)]" : address
         let enc = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
         guard let url = URL(string: "https://\(a):\(h.port)\(Proto.fxPath)\(enc)") else { return nil }
@@ -675,13 +848,13 @@ final class Link: NSObject, URLSessionWebSocketDelegate {
     // Where fast files v2 go (Fx2.swift), or nil when they can't (no engine there, Bluetooth). Anything
     // wrong before a byte: the fx way, then file.chunk (Files.swift).
     func fx2Target() -> Fx2.To? {
-        guard state == "connected", !viaBle, !fxToken.isEmpty, fx2Port > 0, let h = host, !h.fp.isEmpty else { return nil }
+        guard state == "connected", !viaTailnet, !viaBle, !fxToken.isEmpty, fx2Port > 0, let h = host, !h.fp.isEmpty else { return nil }
         return Fx2.To(host: address, port: fx2Port, fp: h.fp, token: fxToken)
     }
 
     // An HTTPS request to the session's computer (its port), e.g. the screen's stream.
     func sessionRequest(_ path: String, method: String) -> URLRequest? {
-        guard state == "connected", let h = host else { return nil }
+        guard state == "connected", !viaTailnet, let h = host else { return nil }
         let a = address.contains(":") ? "[\(address)]" : address
         guard let url = URL(string: "https://\(a):\(h.port)\(path)") else { return nil }
         var r = URLRequest(url: url)

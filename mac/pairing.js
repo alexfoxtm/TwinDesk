@@ -129,6 +129,10 @@ class Pairing extends EventEmitter {
         this.fails.fail(ctx.address);
         return this.server.fail(ctx, P.E.BAD_MESSAGE, 'pair.start needs id and commit');
       }
+      const embedded = !!ctx.embeddedPeer;
+      if (embedded && (!P.isPhoneOs(msg.os) || !this.embeddedTailnet?.knows(msg.wired))) {
+        return this.server.fail(ctx, P.E.PAIR_REFUSED, 'Open a fresh embedded Tailscale pairing QR on this Mac');
+      }
       const nm = P.randomHex(16);
       this.pending = {
         ctx,
@@ -143,8 +147,9 @@ class Pairing extends EventEmitter {
         allowed: false,
         // A phone on the USB cable, with the nonce wired.js sent it through adb (wired.knows):
         // no code to compare, only Allow here.
-        wired: !!(this.isWired && this.isWired(msg.wired)),
-        qr: !!(this.isQr && this.isQr(msg.wired)), // the same, by Connection's QR code: on the network
+        wired: !embedded && !!(this.isWired && this.isWired(msg.wired)),
+        embeddedNonce: embedded ? msg.wired : null,
+        qr: embedded || !!(this.isQr && this.isQr(msg.wired)), // the same, by Connection's QR code: on the network
         timer: setTimeout(() => this._abort(P.E.PAIR_TIMEOUT, 'Pairing timed out'), P.PAIR_TIMEOUT_MS),
       };
       this.server.send(ctx, { t: P.T.PAIR_NONCE, nonce: nm, os: P.OS.MAC });
@@ -184,15 +189,22 @@ class Pairing extends EventEmitter {
   _maybeFinish() {
     const p = this.pending;
     if (!p || !p.confirmed || !p.allowed) return;
+    if (p.embeddedNonce && !this.embeddedTailnet?.knows(p.embeddedNonce)) {
+      return this._abort(P.E.PAIR_REFUSED, 'The embedded Tailscale pairing QR expired');
+    }
     const token = P.randomHex(32);
     const now = Date.now();
     this.paired = this.paired.filter((x) => x.id !== p.id);
-    this.paired.push({ id: p.id, name: p.name, os: p.os, tokenHash: P.sha256Hex(token), pairedAt: now, lastSeen: now });
+    this.paired.push({
+      id: p.id, name: p.name, os: p.os, tokenHash: P.sha256Hex(token), pairedAt: now, lastSeen: now,
+      ...(p.embeddedNonce ? { tailNode: p.ctx.embeddedPeer } : {}),
+    });
     this._save();
     this.fails.clear(p.ctx.address);
     this.server.send(p.ctx, { t: P.T.PAIR_OK, token, macId: this.id.macId, macName: this.id.macName, os: P.OS.MAC });
     console.log(`[pairing] paired with ${p.name} (${p.id})`);
-    if (p.qr && this.consumeQr) this.consumeQr();
+    if (p.embeddedNonce) this.embeddedTailnet.consume(p.embeddedNonce);
+    else if (p.qr && this.consumeQr) this.consumeQr();
     this._clear();
   }
 
@@ -201,7 +213,7 @@ class Pairing extends EventEmitter {
       return this.server.fail(ctx, P.E.VERSION_MISMATCH, `Mac speaks protocol v${P.PROTOCOL_VERSION}`);
     }
     const e = this.paired.find((x) => x.id === msg.id);
-    if (!e || !P.tokenMatches(msg.token, e.tokenHash)) {
+    if (!e || !P.tokenMatches(msg.token, e.tokenHash) || (ctx.embeddedPeer && ctx.embeddedPeer !== e.tailNode)) {
       return this.server.fail(ctx, P.E.BAD_TOKEN, 'Not paired with this Mac');
     }
     // A phone only says hello when someone asked for it (or to resume): it takes the session.
@@ -215,6 +227,10 @@ class Pairing extends EventEmitter {
     // whoever holds the session is let go. Else a computer waits while another device holds it.
     const takeover = msg.takeover === true || (this.expected && this.expected.id === e.id && Date.now() < this.expected.until);
     const held = this.server.current && this.server.current.authed && this.server.current.deviceId !== e.id ? this.server.current : null;
+    if (ctx.embeddedPeer && !takeover && (held || this.busy() ||
+        (this.server.phoneGrace && this.server.phoneGrace.id !== e.id))) {
+      return this.server.fail(ctx, P.E.BUSY, 'The Mac is in use by another device');
+    }
     if (phone || takeover) {
       this.expected = null;
       if (this.busy()) this.yieldTo();
@@ -259,11 +275,11 @@ class Pairing extends EventEmitter {
     if (Object.values(P.OS).includes(msg.os)) e.os = msg.os;
     e.lastSeen = Date.now();
     this._save();
-    if (msg.netem === 1) ctx.netemRequested = true;
-    ctx.fxWanted = msg.fx === 1;
-    ctx.fx2Wanted = msg.fx2 === 1; // fast files v2 (shared/fx2.js)
-    ctx.fxPlainWanted = msg.fxPlain === 1; // unencrypted file transfers allowed (shared/fastfile.js plainOffer)
-    ctx.ilWanted = msg.il && typeof msg.il === 'object' ? msg.il : null; // the input lane (shared/inputlane.js)
+    if (!ctx.embeddedPeer && msg.netem === 1) ctx.netemRequested = true;
+    ctx.fxWanted = !ctx.embeddedPeer && msg.fx === 1;
+    ctx.fx2Wanted = !ctx.embeddedPeer && msg.fx2 === 1; // fast files v2 (shared/fx2.js)
+    ctx.fxPlainWanted = !ctx.embeddedPeer && msg.fxPlain === 1; // unencrypted file transfers allowed (shared/fastfile.js plainOffer)
+    ctx.ilWanted = !ctx.embeddedPeer && msg.il && typeof msg.il === 'object' ? msg.il : null; // the input lane (shared/inputlane.js)
     // A re-pair with the same install id gets a new token, and must opt in again.
     ctx.photoBackupPair = P.sha256Hex('photo backup:' + e.tokenHash);
     ctx.photoBackup = msg.pb === 1; // camera photo backup (shared/photobackup.js); missing: an older phone

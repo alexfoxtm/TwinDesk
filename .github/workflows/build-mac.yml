@@ -26,6 +26,11 @@ jobs:
         with:
           ref: ${{ inputs.ref || 'main' }}
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: network/go.mod
+          cache-dependency-path: network/go.sum
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20

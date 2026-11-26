@@ -43,7 +43,8 @@ api.deckApps = () => ipcRenderer.invoke('deckApps'); // the Deck page's app pick
 api.deckState = () => ipcRenderer.invoke('deckState'); // its sound, Bluetooth and display pickers
 api.deckPick = (o) => ipcRenderer.invoke('deckPick', o); // a file, folder or script for a tile
 api.deckRun = (action) => ipcRenderer.invoke('deckRun', action); // Try: {ok, why}
-api.qrPair = () => ipcRenderer.invoke('qrPair'); // Connection: pair a phone with a QR code (its link)
+api.embeddedTailnet = (op) => ipcRenderer.invoke('embeddedTailnet', op);
+api.qrPair = (route) => ipcRenderer.invoke('qrPair', route); // Connection: pair a phone with a QR code (its link)
 api.phoneListCameras = () => ipcRenderer.invoke('phoneListCameras');
 
 contextBridge.exposeInMainWorld('macshare', api);

@@ -12,6 +12,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import com.twindesk.android.embedded.EmbeddedBridge
+import com.twindesk.android.embedded.EmbeddedNetwork
+import com.twindesk.android.embedded.EmbeddedOffer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -62,6 +65,7 @@ class Link(
         fun onWelcome(host: Host)
         fun onMessage(m: JSONObject, route: TrustedRoute?, source: WebSocket)
         fun onClosed(host: Host, code: String?)
+        fun onEmbeddedClosed(host: Host, code: String?) = onClosed(host, code)
     }
 
     // idle | connecting | connected | failed
@@ -114,6 +118,20 @@ class Link(
         val elapsed = SystemClock.elapsedRealtime() - dial.started
         Log.i("TwinDeskNetem", "stage=$stage elapsed_ms=$elapsed$numbers")
     }
+
+    private class EmbeddedDial(
+        val network: EmbeddedNetwork,
+        val node: String,
+        val offer: EmbeddedOffer?,
+        val admit: () -> Boolean,
+    ) {
+        @Volatile var cancelled = false
+        var bridge: EmbeddedBridge? = null
+        fun allowed() = !cancelled && admit()
+    }
+
+    @Volatile private var embeddedDial: EmbeddedDial? = null
+    val embedded get() = embeddedDial != null
 
     private var mode = "" // session | pair
     private var nw = ""
@@ -287,7 +305,7 @@ class Link(
         val testRoute = NetemRoute.configured?.takeIf { saved != null }
         if (admit != null && !admit()) return@run
         parting = false
-        if (ws != null && host?.id == h.id && wired == viaUsb && ble == viaBle && reclaimHello == wantReclaim && (state == "connecting" || state == "connected")) return@run
+        if (ws != null && !embedded && host?.id == h.id && wired == viaUsb && ble == viaBle && reclaimHello == wantReclaim && (state == "connecting" || state == "connected")) return@run
         closeSocket()
         dialAdmit = if (wantReclaim) admit else null
         reclaimHello = wantReclaim
@@ -307,6 +325,78 @@ class Link(
             else -> open("session", h.address, h.port, h.fp)
         }
         setState("connecting", "")
+    }
+
+    internal fun connectEmbedded(
+        network: EmbeddedNetwork,
+        node: String,
+        h: Host?,
+        offer: EmbeddedOffer? = null,
+        reclaim: Boolean = false,
+        admit: () -> Boolean,
+    ) = run {
+        if (hostsKey != "hosts" || !admit()) return@run
+        if (offer == null && (h == null || isNetemPeer(h))) return@run
+        if (reclaim && (connected || state == "connecting" || pair != null)) return@run
+        closeSocket()
+        parting = false
+        val dial = EmbeddedDial(network, node, offer, admit)
+        embeddedDial = dial
+        host = h
+        wired = false
+        ble = false
+        reclaimHello = reclaim
+        dialAdmit = dial::allowed
+        pair = offer?.let {
+            PairState("connecting", it.name, EmbeddedOffer.PORT, it.name, qr = true)
+        }
+        mode = if (offer != null) "pair" else "session"
+        lastCode = null
+        pairNonce = offer?.nonce.orEmpty()
+        if (h != null) connectionObservations.select(h.id, h.fp)
+        setState("connecting", "")
+        val bridge = network.dial(node)
+        dial.bridge = bridge
+        if (parting || !dial.allowed()) {
+            pair = null
+            closeSocket()
+            setState("idle", "")
+            return@run
+        }
+        if (bridge == null) {
+            val error = tr("The Mac is unavailable on TwinDesk Network.")
+            if (offer != null) pairFailed(error)
+            else {
+                message = error
+                onClose("embedded-unavailable")
+            }
+            return@run
+        }
+        try {
+            open(mode, "127.0.0.1", bridge.port, offer?.pin ?: h!!.fp, bridge)
+        } catch (_: Exception) {
+            onClose("embedded-unavailable")
+            return@run
+        }
+        val candidate = ws
+        // The bridge is single-use. Bound stalled TLS or WebSocket upgrade.
+        helloTimer = exec.schedule({
+            if (ws === candidate && (pair?.phase == "connecting" || (pair == null && !helloSent && !connected))) candidate?.cancel()
+        }, CONNECT_TIMEOUT_MS + Proto.TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    }
+
+    internal fun disconnectEmbedded(id: String? = null) {
+        val dial = embeddedDial ?: return
+        if (id != null && (dial.offer?.id ?: host?.id) != id) return
+        dial.cancelled = true
+        parting = true
+        run {
+            if (embeddedDial !== dial) return@run
+            if (helloSent || connected) raw(msg(Proto.T.BYE))
+            pair = null
+            closeSocket()
+            setState("idle", "")
+        }
     }
 
     // Core's Bluetooth tick looks up discovery for the current host on this executor. Offers and
@@ -357,6 +447,7 @@ class Link(
                 host?.let { connectionObservations.closed(it.id, it.fp, "local", false, System.currentTimeMillis()) }
                 raw(msg(Proto.T.BYE))
             }
+            if (embedded) pair = null
             closeSocket()
             setState("idle", "")
         }
@@ -404,12 +495,19 @@ class Link(
         events.onChange()
     }
 
-    fun cancelPairing() = run {
+    fun cancelPairing() {
+        val dial = embeddedDial
+        if (dial?.offer != null && pair != null) dial.cancelled = true
+        cancelPairingOnLink(dial)
+    }
+
+    private fun cancelPairingOnLink(dial: EmbeddedDial?) = run {
+        if (dial != null && embeddedDial !== dial && embeddedDial != null) return@run
         val p = pair ?: return@run
         if (mode == "pair" && p.phase != "failed") raw(msg(Proto.T.PAIR_CANCEL))
         pair = null
         if (mode == "pair") closeSocket()
-        events.onChange()
+        if (dial != null && state == "connecting") setState("idle", "") else events.onChange()
     }
 
     // The socket welcome authenticated, with the pair it authenticated. A later socket is a new one.
@@ -451,6 +549,7 @@ class Link(
     }
 
     private fun sendOn(w: WebSocket, m: JSONObject): Boolean {
+        if (isEmbeddedSource(w) && (parting || !embeddedMessageAllowed(m.optString("t")))) return false
         val sent = w.send(m.toString())
         if (sent) markProbe()
         if (netemDial?.socket !== w) return sent
@@ -466,7 +565,7 @@ class Link(
     }
 
     internal fun photoRoute(source: WebSocket): Boolean =
-        !parting && connected && !ble && ws === source && host?.os == "mac"
+        !parting && connected && !ble && !embedded && ws === source && host?.os == "mac"
 
     internal fun sendPhoto(m: JSONObject, source: WebSocket): Boolean =
         photoRoute(source) && source.send(m.toString()).also { if (it) markProbe() }
@@ -477,7 +576,7 @@ class Link(
     private val hot = StringBuilder(96)
     fun sendMove(kind: Int, a: Double, b: Double, smooth: Boolean): Boolean {
         val w = ws ?: return false
-        if (state != "connected" || !a.isFinite() || !b.isFinite()) return false
+        if (state != "connected" || (embedded && parting) || !a.isFinite() || !b.isFinite()) return false
         val line = synchronized(hot) {
             val s = hot
             s.setLength(0)
@@ -515,12 +614,12 @@ class Link(
 
     // ---- socket ----
 
-    private fun open(m: String, address: String, port: Int, pinFp: String?) {
+    private fun open(m: String, address: String, port: Int, pinFp: String?, bridge: EmbeddedBridge? = null) {
         mode = m
         nw = ""
-        seenFp = ""
+        seenFp = pinFp.orEmpty()
         lastCode = null
-        ws = socket("wss://$address:$port", pinFp)
+        ws = socket("wss://$address:$port", pinFp, bridge)
     }
 
     // Where each socket goes ("address", port), for the session's other HTTPS calls (Mirror.kt).
@@ -540,6 +639,18 @@ class Link(
         !parting && connected && marker != null && ws === marker
 
     internal fun sessionMarker(): Any? = ws
+    internal fun isEmbeddedSource(socket: WebSocket) = embedded && ws === socket
+
+    internal companion object {
+        private val sideChannelTypes = setOf(
+            "audio.offer", "audio.answer", "audio.ice", "audio.policy", "screen.policy", "screen.ctl",
+            Proto.T.SHARE_HOST, Proto.T.SHARE_OFFER, Proto.T.TETHER, Proto.T.TETHER_STATE, Proto.T.TETHER_SET,
+            Proto.T.NET_CAPS, Proto.T.NET_NEED, Proto.T.NET_JOIN, Proto.T.NET_JOINED, Proto.T.NET_HOTSPOT, Proto.T.NET_RELEASE,
+        )
+
+        fun embeddedMessageAllowed(type: String) =
+            type !in sideChannelTypes && !type.startsWith("rtc.") && !type.startsWith("rtc2.") && !type.startsWith("backup.")
+    }
     // Called synchronously before Core removes durable return intent. An already queued welcome
     // must not re-arm that intent after Stop, Forget or another explicit connection choice.
     internal fun invalidateReturn() { parting = true }
@@ -547,11 +658,12 @@ class Link(
 
     // An HTTPS client for the session's computer, its certificate pinned as the session's is.
     fun https(): OkHttpClient? {
+        if (embedded) return null
         val fp = host?.fp ?: return null
         return client(fp).newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).writeTimeout(0, TimeUnit.MILLISECONDS).build()
     }
 
-    internal fun lockSessionCurrent(marker: Any?): Boolean = connected && !parting && !ble && marker != null && ws === marker && host?.os == "mac"
+    internal fun lockSessionCurrent(marker: Any?): Boolean = connected && !parting && !ble && !embedded && marker != null && ws === marker && host?.os == "mac"
 
     // Separate RFB channel on the authenticated socket's exact endpoint and certificate.
     // A ticket never selects a destination, and BLE is deliberately unsupported.
@@ -579,7 +691,7 @@ class Link(
 
     fun fx(): Fx? {
         val token = fxToken
-        if (state != "connected" || ble || token.isEmpty()) return null
+        if (state != "connected" || ble || embedded || token.isEmpty()) return null
         val (address, port) = endpoint() ?: return null
         val fp = host?.fp ?: return null
         val c = synchronized(this) {
@@ -594,13 +706,13 @@ class Link(
     }
 
     // Self-signed certificates: the fingerprint is the identity (pinned once paired).
-    private fun socket(url: String, pinFp: String?): WebSocket {
-        val w = client(pinFp).newWebSocket(Request.Builder().url(url).build(), Listener())
-        Regex("^wss://([^:/]+):(\\d+)").find(url)?.let { endOf[w] = it.groupValues[1] to it.groupValues[2].toInt() }
+    private fun socket(url: String, pinFp: String?, bridge: EmbeddedBridge? = null): WebSocket {
+        val w = client(pinFp, bridge).newWebSocket(Request.Builder().url(url).build(), Listener())
+        if (bridge == null) Regex("^wss://([^:/]+):(\\d+)").find(url)?.let { endOf[w] = it.groupValues[1] to it.groupValues[2].toInt() }
         return w
     }
 
-    private fun client(pinFp: String?): OkHttpClient {
+    private fun client(pinFp: String?, bridge: EmbeddedBridge? = null): OkHttpClient {
         val trust = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
             override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String?) {
@@ -612,7 +724,15 @@ class Link(
         }
         val ssl = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), null) }
         return OkHttpClient.Builder()
-            .socketFactory(NoDelaySockets)
+            .socketFactory(bridge?.sockets ?: NoDelaySockets)
+            .apply {
+                if (bridge != null) {
+                    proxy(java.net.Proxy.NO_PROXY)
+                    retryOnConnectionFailure(false)
+                    followRedirects(false)
+                    followSslRedirects(false)
+                }
+            }
             .sslSocketFactory(ssl.socketFactory, trust)
             .hostnameVerifier { _, _ -> true }
             .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -716,11 +836,17 @@ class Link(
             lastRxOf.remove(webSocket)
             lastPeerPingOf.remove(webSocket)
             if (state == "connected" && fallBack()) return@run
-            onClose(if (generateSequence(t) { it.cause }.any { it is CertificateException }) "identity" else t.message ?: "failed")
+            val identity = generateSequence(t) { it.cause }.any { it is CertificateException }
+            onClose(if (identity) "identity" else if (embedded) "embedded-unavailable" else t.message ?: "failed")
         }
     }
 
     private fun onOpen() {
+        val dial = embeddedDial
+        if (dial != null && (parting || !dial.allowed())) {
+            ws?.cancel()
+            return
+        }
         lastRx = System.currentTimeMillis()
         if (mode == "pair") {
             nw = Proto.randomHex(16)
@@ -746,11 +872,15 @@ class Link(
         }
         // rc and resume together: an older host treats hello+resume
         // as a socket move and refuses it. A plain phone hello would take whatever session it holds.
-        raw(msg(Proto.T.HELLO, "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "os" to Proto.OS, "token" to h.token, "fx" to 1, "fxPlain" to 1).apply {
+        raw(msg(Proto.T.HELLO, "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "os" to Proto.OS, "token" to h.token).apply {
+            if (!embedded) {
+                put("fx", 1)
+                put("fxPlain", 1)
+                if (offerPhotoBackup() && h.os == "mac") put("pb", 1)
+                if (!wired) put("fx2", 1)
+            }
             put("pa", 1)
             if (netemDial?.let { it.socket === ws } == true) put("netem", 1)
-            if (offerPhotoBackup() && h.os == "mac") put("pb", 1)
-            if (!wired) put("fx2", 1)
             if (reclaimHello) { put("rc", 1); put("resume", "0") }
         })
         helloSent = true
@@ -761,6 +891,7 @@ class Link(
     private fun onText(text: String, ingress: WebSocket) {
         val m = runCatching { JSONObject(text) }.getOrNull() ?: return
         val t = m.optString("t")
+        if (isEmbeddedSource(ingress) && (!embeddedMessageAllowed(t) || (parting && t != Proto.T.WELCOME))) return
         lastRx = System.currentTimeMillis()
         // Other frames still arrive on the fallback socket. Backup frames do not: the socket they
         // came in on used to be discarded before Core.post, so a retired path could stop the new one.
@@ -815,6 +946,7 @@ class Link(
 
     private fun onNonce(m: JSONObject) {
         val p = pair ?: return
+        if (embeddedDial?.allowed() == false) return pairFailed(tr("The TwinDesk Network pairing was cancelled."))
         val nonce = m.optString("nonce")
         if (mode != "pair" || nw.isEmpty() || !Regex("^[0-9a-f]{32,128}$").matches(nonce) || nonce.length % 2 != 0) {
             return pairFailed(tr("The computer sent an invalid pairing response."))
@@ -837,9 +969,33 @@ class Link(
         // Through the cable the address is this phone's own end of adb reverse: the computer's
         // network address comes from discovery when it's seen (Core.connect), else the cable again.
         // Through Bluetooth likewise: no network address yet (Core keeps the pipe for it).
-        val h = if (p.wired || p.ble) Host(id, m.optString("macName").take(64).ifEmpty { p.name }, m.optString("os", "mac"), "127.0.0.1", Proto.PORT, seenFp, token, System.currentTimeMillis())
-            else Host(id, m.optString("macName").take(64).ifEmpty { p.name }, m.optString("os", "mac"), p.address, p.port, seenFp, token, System.currentTimeMillis())
-        store.putHost(h, hostsKey)
+        val dial = embeddedDial
+        val offer = dial?.offer
+        val h = if (dial != null && offer != null) {
+            if (id != offer.id || m.optString("os") != "mac" || !token.matches(Regex("[0-9a-f]{64}"))) {
+                return pairFailed(tr("The Mac didn’t match the pairing code."))
+            }
+            synchronized(store) {
+                val previous = store.hosts().firstOrNull { it.id == id }
+                if (parting || !dial.allowed() || (previous != null && (previous.fp != offer.pin || previous.os != "mac"))) {
+                    null
+                } else {
+                    val name = m.optString("macName").take(64).ifEmpty { p.name }
+                    val savedAddress = previous?.address.orEmpty()
+                    val address = if (savedAddress == "localhost" || savedAddress == "::1" ||
+                        savedAddress.startsWith("127.") || savedAddress.startsWith("::ffff:127.")) "" else savedAddress
+                    val port = if (address.isEmpty()) Proto.PORT else previous?.port ?: Proto.PORT
+                    (previous?.copy(name = name, address = address, port = port, token = token, embeddedNode = offer.node)
+                        ?: Host(id, name, "mac", "", Proto.PORT, offer.pin, token, System.currentTimeMillis(), embeddedNode = offer.node))
+                        .also { store.putHost(it, hostsKey, verifiedNode = offer.node) }
+                }
+            } ?: return pairFailed(tr("The Mac didn’t match the pairing code."))
+        } else {
+            val address = if (p.wired || p.ble) "127.0.0.1" else p.address
+            val port = if (p.wired || p.ble) Proto.PORT else p.port
+            Host(id, m.optString("macName").take(64).ifEmpty { p.name }, m.optString("os", "mac"), address, port, seenFp, token, System.currentTimeMillis())
+                .also { store.putHost(it, hostsKey) }
+        }
         pair = null
         mode = "session"
         host = h
@@ -863,7 +1019,7 @@ class Link(
         }
         // Check the current return intent before welcome becomes a session. A refused late
         // welcome still closes gracefully after BYE, so the Mac can drop its temporary grace.
-        if (reclaimHello) {
+        if (reclaimHello || embedded) {
             val allow = dialAdmit
             if (allow != null && !allow()) {
                 lastCode = denyCode
@@ -880,7 +1036,7 @@ class Link(
         }
         // Reclaim must be the paired Mac we dialed. A welcome for anyone else is refused, and the
         // pairing is kept (BAD_TOKEN is what forgets it).
-        if ((reclaimHello || netemDial != null) && m.optString("macId") != h.id) {
+        if ((reclaimHello || netemDial != null || embedded) && m.optString("macId") != h.id) {
             lastCode = "reclaim"
             message = tr("{name} didn’t confirm this pairing. Use Connect to try again.", "name" to h.name)
             reclaimHello = false
@@ -891,12 +1047,23 @@ class Link(
         appsReady = h.os == "mac" && m.opt("pa") == 1
         reclaimHello = false
         m.optString("macName").takeIf { it.isNotEmpty() }?.let { h.name = it.take(64) }
-        if (m.has("tail")) h.tail = Tailnet.clean(m.optJSONArray("tail")) // its Tailscale addresses (Tailnet.kt)
-        if (m.has("relay")) h.relay = RelayInfo.from(m.optJSONObject("relay")) // its own relay, or none now (Relay.kt)
+        if (!embedded && m.has("tail")) h.tail = Tailnet.clean(m.optJSONArray("tail")) // its Tailscale addresses (Tailnet.kt)
+        if (!embedded && m.has("relay")) h.relay = RelayInfo.from(m.optJSONObject("relay")) // its own relay, or none now (Relay.kt)
         h.lastSeen = System.currentTimeMillis()
         // Through the relay: this attempt's address is the local pipe, never the computer's to keep.
         val kept = if (h.address == "127.0.0.1" && h.port in Relay.ports) store.hosts().find { it.id == h.id } else null
-        store.putHost(if (kept != null) h.copy(address = kept.address, port = kept.port) else h, hostsKey)
+        if (embedded) {
+            val saved = synchronized(store) {
+                if (parting || embeddedDial?.allowed() != true ||
+                    store.hosts().none { it.id == h.id && it.fp == h.fp && it.token == h.token && it.embeddedNode == embeddedDial?.node }) false
+                else { store.putHost(h, hostsKey); true }
+            }
+            if (!saved) {
+                lastCode = "local"
+                ws?.cancel()
+                return
+            }
+        } else store.putHost(if (kept != null) h.copy(address = kept.address, port = kept.port) else h, hostsKey)
         rttMs = null
         resumeKey = m.optString("resume")
         fxToken = m.optString("fx").takeIf { Regex("^[0-9a-f]{32}$").matches(it) } ?: ""
@@ -928,7 +1095,7 @@ class Link(
         scheduleBeat(Proto.PING_MS)
         setState("connected", "")
         netemElapsed(ws)?.let { Log.i("TwinDeskNetem", "welcome_ms=$it") }
-        peerBackup = m.opt("pb") == 1
+        peerBackup = !embedded && m.opt("pb") == 1
         events.onWelcome(h)
     }
 
@@ -1133,21 +1300,23 @@ class Link(
         lastCode = code
         if (mode == "pair") return pairFailed(pairErrors[code] ?: tr("Pairing failed ({code}).", "code" to code))
         message = when (code) {
-            Proto.E.BAD_TOKEN -> tr("{name} forgot this phone. Pair again.", "name" to (host?.name ?: tr("The computer")))
+            Proto.E.BAD_TOKEN -> if (embedded) tr("The Mac didn’t accept this TwinDesk Network pairing. Scan a fresh pairing code.")
+                else tr("{name} forgot this phone. Pair again.", "name" to (host?.name ?: tr("The computer")))
             Proto.E.BUSY -> m.optString("message").ifEmpty { tr("Busy with another device") }
             Proto.E.REPLACED -> m.optString("message").ifEmpty { tr("Another device connected") }
             Proto.E.RELEASED -> tr("Disconnected from {name}", "name" to (host?.name ?: tr("the computer")))
             Proto.E.ASLEEP -> tr("{name} is asleep", "name" to (host?.name ?: tr("The computer")))
             else -> tr("Closed ({code})", "code" to code)
         }
-        if (code == Proto.E.BAD_TOKEN) host?.let { store.forgetHostClearingCredentials(it.id, hostsKey) }
+        if (!embedded && code == Proto.E.BAD_TOKEN) host?.let { store.forgetHostClearingCredentials(it.id, hostsKey) }
     }
 
     private fun pairFailed(error: String) {
         val p = pair ?: return
         pair = p.copy(phase = "failed", error = error, code = "")
+        val wasEmbedded = embedded
         closeSocket()
-        events.onChange()
+        if (wasEmbedded) setState("idle", "") else events.onChange()
     }
 
     private fun dropOthers() {
@@ -1167,6 +1336,8 @@ class Link(
     private fun onClose(failure: String?) {
         Log.i("TwinDesk", "link closed: mode=$mode state=$state ble=$ble failure=$failure code=$lastCode")
         val wasReclaim = reclaimHello
+        val wasEmbedded = embedded
+        if (wasEmbedded && parting) lastCode = "local"
         cancelBeat()
         quietSince = 0L
         helloTimer?.cancel(false)
@@ -1174,6 +1345,7 @@ class Link(
         dialAdmit = null
         helloSent = false
         ws = null
+        closeEmbedded()
         appsReady = false
         netemDial = null
         fxToken = ""
@@ -1184,26 +1356,40 @@ class Link(
         if (mode == "pair") {
             val p = pair
             if (p != null && p.phase != "failed") {
+                if (wasEmbedded) {
+                    pairFailed(if (failure == "identity") tr("The Mac didn’t match the pairing code.") else tr("The TwinDesk Network connection closed."))
+                    setState("idle", "")
+                    return
+                }
                 pairFailed(if (p.phase == "connecting") tr("Couldn’t connect to {address}{reason}.", "address" to p.address, "reason" to (failure?.let { " ($it)" } ?: "")) else tr("The connection closed."))
             }
             return
         }
         val was = state
         host?.let { connectionObservations.closed(it.id, it.fp, lastCode, failure == "identity", System.currentTimeMillis()) }
-        if (failure == "identity" && !wasReclaim) {
+        if (failure == "identity" && (!wasReclaim || wasEmbedded)) {
             setState("failed", tr("{name} looks different now. Forget it and pair again.", "name" to (host?.name ?: tr("The computer"))))
         } else if (failure == "identity") {
             // Discovery is unauthenticated. An unrelated computer at a candidate address must
             // not erase the saved pairing or its return intent; another candidate may be genuine.
             setState("idle", tr("Reconnecting…"))
         } else {
-            if (message.isEmpty() && failure != null && lastCode != "paused") message = failure
+            if (message.isEmpty() && failure != null && lastCode != "paused") message = if (wasEmbedded) tr("The Mac is unavailable on TwinDesk Network.") else failure
             setState(if (was == "connected" || was == "connecting") "idle" else was, message)
         }
-        host?.let { events.onClosed(it, lastCode) }
+        host?.let {
+            if (wasEmbedded) events.onEmbeddedClosed(it, lastCode) else events.onClosed(it, lastCode)
+        }
+    }
+
+    private fun closeEmbedded() {
+        val dial = embeddedDial ?: return
+        embeddedDial = null
+        dial.bridge?.let(dial.network::release)
     }
 
     private fun closeSocket() {
+        val wasEmbedded = embedded
         cancelBeat()
         helloTimer?.cancel(false)
         reclaimHello = false
@@ -1211,6 +1397,7 @@ class Link(
         helloSent = false
         val w = ws
         ws = null
+        closeEmbedded()
         appsReady = false
         netemDial = null
         fxToken = ""
@@ -1220,8 +1407,10 @@ class Link(
         dropOthers()
         val wasConnected = state == "connected"
         if (wasConnected) state = "idle"
-        w?.close(1000, null)
-        if (wasConnected) host?.let { events.onClosed(it, "local") }
+        if (wasEmbedded) w?.cancel() else w?.close(1000, null)
+        if (wasConnected) host?.let {
+            if (wasEmbedded) events.onEmbeddedClosed(it, "local") else events.onClosed(it, "local")
+        }
     }
 
     private fun raw(m: JSONObject) {

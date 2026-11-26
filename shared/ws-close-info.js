@@ -37,7 +37,8 @@ function log(ws, code, reason, now) {
   const framed = Number.isInteger(code) && code !== 1005 && code !== 1006;
   const cause = entry.cause || (entry.socketError ? 'socket-error' : entry.wsError ? 'ws-error'
     : framed ? 'close-frame' : entry.peerEnded ? 'peer-fin' : 'transport');
-  const via = ws.transport === 'ble' ? 'bluetooth' : Tailnet.isTailnet(ws.address) ? 'tailscale'
+  const via = ws.transport === 'embedded-tailnet' ? 'embedded-tailscale'
+    : ws.transport === 'ble' ? 'bluetooth' : Tailnet.isTailnet(ws.address) ? 'tailscale'
     : /^(?:127\.|::1$)/.test(ws.address) ? 'loopback' : 'lan';
   const elapsed = (since) => Number.isFinite(since) ? Math.max(0, now - since) + 'ms' : '-';
   // The peer chooses the close text. Record its presence without logging arbitrary payloads.

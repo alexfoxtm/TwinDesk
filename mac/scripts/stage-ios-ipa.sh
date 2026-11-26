@@ -4,8 +4,8 @@
 # mac/ios-developer-sign.js) in the app's settings folder, never inside the app:
 #   <out>/TwinDesk.ipa        built by ios/build.sh from the committed tree (git archive HEAD)
 #   <out>/TwinDesk.ipa.stamp  ios=<git rev-parse HEAD:ios>, web=<tree of the app pages ios/ embeds>,
-#                             sha256 and version of that TwinDesk.ipa
-# It rebuilds only when HEAD:ios (or the embedded pages) differ from the stamp, or the staged IPA
+#                             network=<embedded network tree>, sha256 and version of that TwinDesk.ipa
+# It rebuilds only when the iOS, embedded web, or embedded network trees differ, or the staged IPA
 # or stamp is missing, mismatched or invalid. A new IPA is checked with the same inventory rules
 # as installs (Payload/TwinDesk.app com.twindesk.ios, iPhone and iPad, exactly .share and
 # .broadcast) before it atomically replaces the old one; on any failure the cached IPA stays.
@@ -37,6 +37,10 @@ case "$OUT" in /*) ;; *) die "--out must be an absolute path" ;; esac
 WEB=android/app/src/main/assets/web
 IOS_TREE="$(git -C "$REPO" rev-parse --verify --quiet HEAD:ios)" || die "no ios/ tree at HEAD in $REPO"
 WEB_TREE="$(git -C "$REPO" rev-parse --verify --quiet "HEAD:$WEB")" || die "no $WEB tree at HEAD in $REPO"
+NETWORK_TREE="$(git -C "$REPO" rev-parse --verify --quiet HEAD:network || true)"
+NETWORK_TREE="${NETWORK_TREE:--}"
+SOURCE_TREES=(ios "$WEB")
+if [ "$NETWORK_TREE" != "-" ]; then SOURCE_TREES+=(network); fi
 IPA="$OUT/TwinDesk.ipa"
 STAMP="$OUT/TwinDesk.ipa.stamp"
 
@@ -53,7 +57,8 @@ valid() {
   [ -n "$v" ] && [ "$(field version "$STAMP")" = "$v" ]
 }
 current() {
-  [ -f "$STAMP" ] && [ "$(field ios "$STAMP")" = "$IOS_TREE" ] && [ "$(field web "$STAMP")" = "$WEB_TREE" ] && valid
+  [ -f "$STAMP" ] && [ "$(field ios "$STAMP")" = "$IOS_TREE" ] && [ "$(field web "$STAMP")" = "$WEB_TREE" ] &&
+    [ "$(field network "$STAMP")" = "$NETWORK_TREE" ] && valid
 }
 
 mkdir -p "$OUT"
@@ -77,7 +82,7 @@ kept() { if valid; then echo "stage-ios-ipa: keeping the cached IPA ($(field ver
 fail() { echo "stage-ios-ipa: $*" >&2; kept; exit 1; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/twindesk-stage-ios.XXXXXX")"
-git -C "$REPO" archive --format=tar HEAD ios "$WEB" | tar -x -C "$WORK" || fail "could not export HEAD:ios"
+git -C "$REPO" archive --format=tar HEAD "${SOURCE_TREES[@]}" | tar -x -C "$WORK" || fail "could not export the committed iOS sources"
 if [ -n "${TWINDESK_STAGE_IOS_BUILD:-}" ]; then
   (cd "$WORK/ios" && $TWINDESK_STAGE_IOS_BUILD) || fail "the iOS build failed"
 else
@@ -93,7 +98,7 @@ SUM="$(sha "$NEW")"
 # that no longer matches the IPA, and the next run rebuilds.
 cp "$NEW" "$OUT/.TwinDesk.ipa.$$"
 [ "$(sha "$OUT/.TwinDesk.ipa.$$")" = "$SUM" ] || fail "the copied IPA does not match"
-printf 'ios=%s\nweb=%s\nsha256=%s\nversion=%s\n' "$IOS_TREE" "$WEB_TREE" "$SUM" "$VERSION" > "$OUT/.TwinDesk.ipa.stamp.$$"
+printf 'ios=%s\nweb=%s\nnetwork=%s\nsha256=%s\nversion=%s\n' "$IOS_TREE" "$WEB_TREE" "$NETWORK_TREE" "$SUM" "$VERSION" > "$OUT/.TwinDesk.ipa.stamp.$$"
 mv -f "$OUT/.TwinDesk.ipa.$$" "$IPA"
 mv -f "$OUT/.TwinDesk.ipa.stamp.$$" "$STAMP"
 current || die "the staged IPA does not verify"

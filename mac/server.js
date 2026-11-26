@@ -62,8 +62,10 @@ class Server extends EventEmitter {
       return ws.close(1008, 'Unavailable');
     }
     const now = Date.now();
+    const embeddedPeer = this.embeddedPeer?.(req.socket) || null;
     const ctx = {
       ws,
+      embeddedPeer,
       authed: false,
       deviceId: null,
       name: null,
@@ -72,10 +74,10 @@ class Server extends EventEmitter {
       lastRx: now,
       rttMs: null,
       // 'ble': through a Bluetooth pipe (our own connection from 127.0.0.1), else the network
-      transport: 'ip',
+      transport: embeddedPeer ? 'embedded-tailnet' : 'ip',
       alt: null, // the session's other socket, if it moved (resume): the fallback
     };
-    if (isLoopback(ctx.address) && this.blePorts.has(req.socket.remotePort)) ctx.transport = 'ble';
+    if (!embeddedPeer && isLoopback(ctx.address) && this.blePorts.has(req.socket.remotePort)) ctx.transport = 'ble';
     Object.assign(ws, { ctx, lastRx: now, transport: ctx.transport, address: ctx.address, blePort: ctx.transport === 'ble' ? req.socket.remotePort : 0 });
     // At most 16 sockets from one address that haven't authenticated (a LAN peer can't open
     // thousands and hold each for UNAUTH_TIMEOUT_MS): past that the oldest goes, never the new one,
@@ -123,7 +125,7 @@ class Server extends EventEmitter {
   // The new socket becomes the session's, the old one stays as the fallback.
   _resume(tmp, msg) {
     const c = this.current;
-    if (!c || !c.resumeKey || msg.resume !== c.resumeKey || msg.id !== c.deviceId) {
+    if (!c || tmp.embeddedPeer || c.embeddedPeer || !c.resumeKey || msg.resume !== c.resumeKey || msg.id !== c.deviceId) {
       return this.fail(tmp, P.E.BAD_MESSAGE, 'Nothing to resume');
     }
     this.sockets.delete(tmp);

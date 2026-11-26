@@ -1,0 +1,4 @@
+module CTwinDeskNetwork {
+    header "twindesk_network.h"
+    export *
+}

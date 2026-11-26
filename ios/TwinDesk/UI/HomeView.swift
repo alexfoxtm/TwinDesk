@@ -230,7 +230,7 @@ struct Hero: View {
         if core.peerMode { return tr("Phone") }
         switch core.state {
         case "connected":
-            let via = core.link.wired ? "USB" : core.link.viaBle ? tr("Bluetooth") : Discovery.hasEthernet ? tr("Ethernet") : "Wi-Fi"
+            let via = core.link.viaTailnet ? "Tailscale" : core.link.wired ? "USB" : core.link.viaBle ? tr("Bluetooth") : Discovery.hasEthernet ? tr("Ethernet") : "Wi-Fi"
             return [core.rttMs.map { "\($0) ms" }, via].compactMap { $0 }.joined(separator: " · ")
         case "connecting": return core.pair != nil ? tr("Pairing…") : tr("Connecting…")
         default: return tr("Not connected")
@@ -238,7 +238,9 @@ struct Hero: View {
     }
 
     private var statusText: String {
-        if core.connected { return tr("Connected. Clipboard, files and screens go both ways.") }
+        if core.connected {
+            return core.link.viaTailnet ? tr("Connected over Tailscale.") : tr("Connected. Clipboard, files and screens go both ways.")
+        }
         if core.state == "connecting" { return tr("Connecting to {name}…", ["name": core.host?.name ?? tr("the computer")]) }
         if !core.message.isEmpty { return core.message }
         return core.hosts.isEmpty ? tr("Pick a computer in Nearby, or connect by address.") : tr("Open TwinDesk on the computer to connect.")
@@ -357,6 +359,7 @@ struct ConnectionView: View {
                 nearbyCard
                 pairedCard
             } right: {
+                EmbeddedConnectionCard(network: core.embeddedNetwork)
                 addressCard
                 usbCard
             }
@@ -450,7 +453,8 @@ struct ConnectionView: View {
                 let online = core.host?.id == h.id && core.connected
                 let near = core.nearby.contains { $0.id == h.id }
                 DenseRow(symbol: osSymbol(h.os), title: h.name,
-                         hint: online ? tr("Connected") : near ? tr("Nearby · last seen {ago}", ["ago": ago(h.lastSeen)]) : tr("Last seen {ago} at {address}", ["ago": ago(h.lastSeen), "address": h.address]),
+                         hint: online ? tr("Connected") : near ? tr("Nearby · last seen {ago}", ["ago": ago(h.lastSeen)]) :
+                            h.address.isEmpty ? tr("Paired over Tailscale") : tr("Last seen {ago} at {address}", ["ago": ago(h.lastSeen), "address": h.address]),
                          divider: i > 0) {
                     if online { Pill(text: tr("Online")) }
                     else { Button(core.connected || core.peer.connected ? tr("Switch") : tr("Connect")) { core.connect(h) }.secondaryButton() }
@@ -514,6 +518,78 @@ struct ConnectionView: View {
         f.unitsStyle = .short
         f.locale = Locale(identifier: I18n.shared.lang)
         return f.localizedString(for: Date(timeIntervalSince1970: t), relativeTo: Date())
+    }
+}
+
+private struct EmbeddedConnectionCard: View {
+    @EnvironmentObject var core: Core
+    @ObservedObject var network: EmbeddedNetwork
+    @State private var confirmSignOut = false
+
+    private var status: String {
+        if network.busy { return tr("Disconnecting from Tailscale…") }
+        switch network.state {
+        case .stopped: return tr("Off")
+        case .starting: return tr("Starting Tailscale…")
+        case .needsLogin: return tr("Sign in required")
+        case .needsApproval: return tr("Waiting for Tailscale device approval")
+        case .running: return tr("Tailscale is connected")
+        case .error: return tr("Tailscale is unavailable")
+        }
+    }
+
+    var body: some View {
+        DenseCard(title: "Tailscale") {
+            DenseRow(symbol: "network", title: status, hint: network.statusMessage.isEmpty
+                     ? tr("Use the same Tailscale account on this device and your Mac.")
+                     : network.statusMessage, divider: false) {
+                if !network.busy {
+                    switch network.state {
+                    case .stopped, .error:
+                        Button(tr("Enable")) { network.enable() }.primaryButton()
+                    case .needsLogin:
+                        Button(tr("Sign in")) { network.signIn() }.primaryButton()
+                    case .starting, .needsApproval, .running: EmptyView()
+                    }
+                }
+            }
+            if !network.busy && (network.canSignOut || network.state != .stopped) {
+                DenseRow(title: tr("This device")) {
+                    if network.state != .stopped {
+                        Button(tr("Stop")) { network.stop() }.secondaryButton()
+                    }
+                    if network.canSignOut {
+                        Button(tr("Sign out"), role: .destructive) { confirmSignOut = true }.secondaryButton()
+                    }
+                }
+            }
+            if network.state == .running {
+                DenseRow(symbol: "qrcode.viewfinder", title: tr("Pair a Mac over Tailscale"),
+                         hint: tr("Scan the Tailscale pairing QR code from Connection on the Mac.")) { EmptyView() }
+                ForEach(core.hosts.filter { $0.tailnetNode != nil && NetemRoute.configured?.peer != $0.id }) { host in
+                    let online = host.tailnetNode.map(network.isOnline) ?? false
+                    let selected = core.link.viaTailnet && core.host?.id == host.id
+                    DenseRow(symbol: osSymbol(host.os), title: host.name,
+                             hint: selected && core.state == "connecting" ? tr("Connecting…") :
+                                 online ? tr("Available over Tailscale") : tr("Unavailable over Tailscale")) {
+                        if selected && core.connected {
+                            Button(tr("Disconnect")) { core.disconnect() }.secondaryButton()
+                        } else if selected && core.state == "connecting" {
+                            Button(tr("Cancel")) { core.disconnect() }.secondaryButton()
+                        } else {
+                            Button(tr("Connect")) { core.connectTailnet(host) }.secondaryButton().disabled(!online)
+                        }
+                    }
+                }
+                if core.link.viaTailnet && core.connected {
+                    DenseRow(title: tr("Files use the TwinDesk connection"),
+                             hint: tr("Screen sharing, computer audio, camera and shared folders require a direct connection.")) { EmptyView() }
+                }
+            }
+        }
+        .confirmationDialog(tr("Sign out of Tailscale?"), isPresented: $confirmSignOut, titleVisibility: .visible) {
+            Button(tr("Sign out"), role: .destructive) { network.stop(signOut: true) }
+        }
     }
 }
 

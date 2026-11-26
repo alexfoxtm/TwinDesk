@@ -816,9 +816,23 @@ app.whenReady().then(() => {
     hasPhone: () => pairing.list().some((x) => P.isPhoneOs(x.os)) });
   pairing.isWired = (nonce) => svc.wired.knows(nonce) || qrKnows(nonce); // the cable, or Connection's QR code (Allow only)
   pairing.isQr = qrKnows;
+  const { EmbeddedTailnet } = require('../embedded-tailnet.js');
+  const embeddedTailnet = new EmbeddedTailnet({
+    server, dir: app.getPath('userData'), identity: id,
+    enabled: settings.net.embeddedTailnet === true,
+    remember: (enabled) => { settings.net.embeddedTailnet = enabled; store.saveSettings(settings); },
+    openLogin: (url) => require('electron').shell.openExternal(url),
+    onChange: () => { state.embeddedTailnet = embeddedTailnet.view(); pushState(); },
+  });
+  pairing.embeddedTailnet = embeddedTailnet;
+  svc.embeddedTailnet = embeddedTailnet;
+  state.embeddedTailnet = embeddedTailnet.view();
+  app.once('will-quit', () => embeddedTailnet.close());
+  if (embeddedTailnet.enabled) void embeddedTailnet.start();
   pairing.consumeQr = () => { qrPair = null; }; // a QR pairing that went through: the link is single-use
   // Connection › Pair a phone with a QR code (shared/ui-qrpair.js), and wireless debugging's (shared/adbqr.js).
-  svc.qrPair = () => {
+  svc.qrPair = (route) => {
+    if (route === 'embedded-tailnet') return embeddedTailnet.pairingQr();
     if (!qrPair || Date.now() > qrPair.until) qrPair = { nonce: require('crypto').randomBytes(8).toString('hex'), until: Date.now() + 10 * 60000 };
     const addrs = (state.addresses || []).filter((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a)).slice(0, 4);
     if (!addrs.length) return { url: '', why: 'No network' };

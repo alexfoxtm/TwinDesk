@@ -28,6 +28,8 @@ fi
 
 ../mac-helper/build.sh "$ARCH"
 ./gmessages/build.sh "$ARCH"
+"$ROOT"/network/build.sh mac "$ARCH" "$ROOT/mac-helper/.build/embedded-network"
+cp "$ROOT/mac-helper/.build/embedded-network/twindesk-network" "$ROOT/mac-helper/.build/release/"
 # iPhone app signing's helper (ios-signer/, shared/iossign.js). Optional: without cargo, or its target,
 # the app leaves that page's work out.
 TWINDESK_SIGNER_ANY_IPA=1 ../ios-signer/build.sh "$ARCH" || echo "note: no iOS signing helper in this build" >&2
@@ -84,7 +86,8 @@ if [ -n "${TWINDESK_IOS_DEVELOPER_IPA:-}" ]; then
   mkdir -p "$STAGE/mac/ios-developer"
   cp "$TWINDESK_IOS_DEVELOPER_IPA" "$STAGE/mac/ios-developer/TwinDesk.ipa"
 fi
-cp "$ROOT"/mac-helper/.build/release/twindesk-gmessages "$ROOT"/mac-helper/.build/release/twindesk-gmessages-transport "$STAGE/mac-helper/.build/release/"
+cp "$ROOT"/mac-helper/.build/release/twindesk-gmessages "$ROOT"/mac-helper/.build/release/twindesk-gmessages-transport "$ROOT"/mac-helper/.build/release/twindesk-network "$STAGE/mac-helper/.build/release/"
+cp "$ROOT"/mac-helper/.build/embedded-network/TwinDeskNetworkNotices.txt "$STAGE/mac/"
 (
   cd gmessages
   GOWORK=off GOTOOLCHAIN=local go mod vendor -o "../$STAGE/mac/gmessages/vendor"

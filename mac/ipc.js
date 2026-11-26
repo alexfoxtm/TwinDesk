@@ -885,7 +885,15 @@ function setupIpc(ctx) {
   ipcMain.handle('deckObs', () => (ctx.deck ? ctx.deck.obsConfig() : null)); // OBS Studio's port, and whether a password is kept
   ipcMain.handle('deckSetObs', (_e, v) => (ctx.deck && v && typeof v === 'object' ? ctx.deck.setObs(v) : { on: false })); // → OBS's state with them
   ipcMain.handle('phoneAssets', () => ctx.phone.assetsView());
-  ipcMain.handle('qrPair', () => (ctx.qrPair ? ctx.qrPair() : { url: '' })); // Connection: the phone pairing QR code's link
+  ipcMain.handle('qrPair', (_event, route) => (ctx.qrPair ? ctx.qrPair(route) : { url: '' }));
+  ipcMain.handle('embeddedTailnet', (_event, op) => {
+    const net = ctx.embeddedTailnet;
+    if (!net) return { available: false, state: 'stopped' };
+    if (op === 'login') return net.start(true);
+    if (op === 'stop') return net.stop();
+    if (op === 'logout') return net.stop(true);
+    return net.view();
+  }); // Connection: the phone pairing QR code's link
   const setNotifs = actions.setNotifs;
   actions.setNotifs = (partial) => {
     setNotifs(partial);

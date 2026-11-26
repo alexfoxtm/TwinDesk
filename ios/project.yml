@@ -25,6 +25,8 @@ targets:
     sources:
       - path: TwinDesk
         excludes: ["WebIOS/**"]
+      - path: Vendor/TwinDeskNetworkNotices.txt
+        buildPhase: resources
       # The Android app's pages (the computer's screen, the Remote, its sound), as they are: "web".
       - path: ../android/app/src/main/assets/web
         type: folder
@@ -34,6 +36,8 @@ targets:
         type: folder
         buildPhase: resources
     dependencies:
+      - framework: Vendor/CTwinDeskNetwork.xcframework
+        embed: false
       - target: Broadcast
         embed: true
       - target: Share

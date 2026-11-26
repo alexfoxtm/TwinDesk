@@ -69,6 +69,7 @@ class FolderShare(core: Core) : Feature(core) {
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
         if (t != Proto.T.SHARE_HOST) return false
+        if (core.link.embedded) return true
         pcServe = m.optBoolean("serve", m.optBoolean("on"))
         val port = m.optInt("port")
         val token = m.str("token", 64)
@@ -96,17 +97,17 @@ class FolderShare(core: Core) : Feature(core) {
 
     // The session started, moved or dropped (Link's onChange): offer again when its way changed.
     fun linkChanged() {
-        val key = "${core.link.connected}|${core.link.ble}|${core.link.wired}|${core.link.host?.address}"
+        val key = "${core.link.connected}|${core.link.ble}|${core.link.wired}|${core.link.embedded}|${core.link.host?.address}"
         if (key == lastLink) return
         lastLink = key
-        if (core.link.ble) setPc(null) // the computer sends it again on Wi-Fi
+        if (core.link.ble || core.link.embedded) setPc(null) // the computer sends it again on Wi-Fi
         core.bg.execute { sync() }
     }
 
     // Serving while on, allowed and not through Bluetooth; the computer hears either way.
     @Synchronized
     fun sync() {
-        val live = core.link.connected && !core.link.ble
+        val live = core.link.connected && !core.link.ble && !core.link.embedded
         val want = live && on && allowed
         error = ""
         if (want) {
@@ -132,7 +133,7 @@ class FolderShare(core: Core) : Feature(core) {
 
     // The computer in the session: its address, or (the cable) adb forward's, from 127.0.0.1.
     private fun fromComputer(a: InetAddress): Boolean {
-        if (!core.link.connected || core.link.ble) return false
+        if (!core.link.connected || core.link.ble || core.link.embedded) return false
         if (core.link.wired) return a.isLoopbackAddress
         val h = core.link.host?.address ?: return false
         return runCatching { InetAddress.getByName(h) == a }.getOrDefault(false)

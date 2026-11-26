@@ -715,7 +715,10 @@ private fun OverviewPage(core: Core, v: Int, connection: Boolean) {
     if (Modern.on) HeroCard { HeroBody(core, v, me, host, link, heroAccent) } else MacCard { HeroBody(core, v, me, host, link, heroAccent) }
 
 
-    if (connection) ConnectionDoctorCard(core, v)
+    if (connection) {
+        EmbeddedNetworkCard(core, v, connection = true)
+        ConnectionDoctorCard(core, v)
+    }
 
     // The computer's own controls (dev.state, DevCtl.kt): ring, lock, sleep, Bluetooth, Do not disturb, volume.
     if (!connection && host != null) ComputerCard(core, host.name)
@@ -784,6 +787,55 @@ private fun OverviewPage(core: Core, v: Int, connection: Boolean) {
 
     // Connect with Android (PeerUi.kt): another phone, beside the computer, at the bottom.
     if (connection) AndroidSection(core, v)
+}
+
+@Composable
+private fun EmbeddedNetworkCard(core: Core, version: Int, connection: Boolean = false) {
+    @Suppress("UNUSED_EXPRESSION") version
+    val network = core.embeddedNetwork
+    val status = network.status
+    val context = LocalContext.current
+    val label = when (status.state) {
+        "starting" -> tr("Starting…")
+        "needsLogin" -> tr("Sign in to Tailscale")
+        "needsApproval" -> tr("Waiting for Tailscale device approval")
+        "running" -> tr("Signed in")
+        "stopping" -> tr("Stopping…")
+        "error" -> tr("TwinDesk Network couldn’t start or stopped responding")
+        else -> if (status.logoutPending) tr("Signed out on this device. Tailscale couldn’t confirm removal.")
+            else tr("Stopped")
+    }
+    MacCard(tr("TwinDesk Network")) {
+        MacRow(label, first = true) {
+            when (status.state) {
+                "stopped", "error" -> Primary(tr("Start")) { network.start(false) }
+                "needsLogin" -> Primary(tr("Sign in")) { network.start(true) }
+            }
+        }
+        if (connection && status.state == "running") {
+            val pairs = core.hosts().filter { it.embeddedNode != null && !core.link.isNetemPeer(it) }
+            for (host in pairs) {
+                val online = host.embeddedNode in status.peers
+                val current = core.link.embedded && core.link.host?.id == host.id
+                val hint = when {
+                    current && core.link.connected -> tr("Connected")
+                    current && core.link.state == "connecting" -> tr("Connecting…")
+                    online -> tr("Online")
+                    else -> tr("Offline")
+                }
+                MacRow(host.name, hint) {
+                    if (!current && online) Secondary(tr("Connect")) { core.connectEmbedded(host) }
+                }
+            }
+            MacRow(tr("Pair a Mac"), tr("Scan the TwinDesk Network pairing code shown on the Mac.")) {
+                Secondary(tr("Scan")) { scanQr(context) }
+            }
+        }
+        if (status.state != "stopping") MacRow(tr("Network account")) {
+            if (status.state != "stopped") Secondary(tr("Stop")) { core.stopEmbedded(signOut = false) }
+            Secondary(tr("Sign out")) { core.stopEmbedded(signOut = true) }
+        }
+    }
 }
 
 @Composable
@@ -2073,6 +2125,7 @@ private fun GeneralPage(core: Core, v: Int) {
         SwitchRow(tr("Reconnect in the background"), if (core.reconnectBg) tr("Restores a dropped connection while TwinDesk is closed") else tr("Restores a dropped connection when TwinDesk opens"), core.reconnectBg) { core.reconnectBg = it }
     }
     LinkedCard(core, v) // CompanionLink.kt
+    EmbeddedNetworkCard(core, v)
     TailscaleCard(core, v) // #161 (Tailnet.kt)
     // Arrange (Arrange.kt): the pages' order, and which are in the bottom bar.
     MacCard(tr("Page order")) {

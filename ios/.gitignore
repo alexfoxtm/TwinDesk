@@ -1,3 +1,5 @@
 TwinDesk.xcodeproj/
 build/
 dist/
+Vendor/CTwinDeskNetwork.xcframework
+Vendor/TwinDeskNetworkNotices.txt

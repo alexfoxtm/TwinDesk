@@ -104,6 +104,10 @@ class Pairing extends EventEmitter {
         this.fails.fail(ctx.address);
         return this.server.fail(ctx, P.E.BAD_MESSAGE, 'pair.start needs id and commit');
       }
+      const embedded = !!ctx.embeddedPeer;
+      if (embedded && (!P.isPhoneOs(msg.os) || !this.embeddedTailnet?.knows(msg.wired))) {
+        return this.server.fail(ctx, P.E.PAIR_REFUSED, 'Open a fresh embedded Tailscale pairing QR on this Mac');
+      }
       const nm = P.randomHex(16);
       this.pending = {
         ctx,
@@ -118,8 +122,9 @@ class Pairing extends EventEmitter {
         allowed: false,
         // A phone on the USB cable, with the nonce wired.js sent it through adb (wired.knows):
         // no code to compare, only Allow here.
-        wired: !!(this.isWired && this.isWired(msg.wired)),
-        qr: !!(this.isQr && this.isQr(msg.wired)), // the same, by Connection's QR code: on the network
+        wired: !embedded && !!(this.isWired && this.isWired(msg.wired)),
+        embeddedNonce: embedded ? msg.wired : null,
+        qr: embedded || !!(this.isQr && this.isQr(msg.wired)), // the same, by Connection's QR code: on the network
         timer: setTimeout(() => this._abort(P.E.PAIR_TIMEOUT, 'Pairing timed out'), P.PAIR_TIMEOUT_MS),
       };
       this.server.send(ctx, { t: P.T.PAIR_NONCE, nonce: nm, os: P.OS.MAC });
@@ -159,15 +164,22 @@ class Pairing extends EventEmitter {
   _maybeFinish() {
     const p = this.pending;
     if (!p || !p.confirmed || !p.allowed) return;
+    if (p.embeddedNonce && !this.embeddedTailnet?.knows(p.embeddedNonce)) {
+      return this._abort(P.E.PAIR_REFUSED, 'The embedded Tailscale pairing QR expired');
+    }
     const token = P.randomHex(32);
     const now = Date.now();
     this.paired = this.paired.filter((x) => x.id !== p.id);
-    this.paired.push({ id: p.id, name: p.name, os: p.os, tokenHash: P.sha256Hex(token), pairedAt: now, lastSeen: now });
+    this.paired.push({
+      id: p.id, name: p.name, os: p.os, tokenHash: P.sha256Hex(token), pairedAt: now, lastSeen: now,
+      ...(p.embeddedNonce ? { tailNode: p.ctx.embeddedPeer } : {}),
+    });
     this._save();
     this.fails.clear(p.ctx.address);
     this.server.send(p.ctx, { t: P.T.PAIR_OK, token, macId: this.id.macId, macName: this.id.macName, os: P.OS.MAC, mesh: 1 });
     console.log(`[pairing] paired with ${p.name} (${p.id})`);
-    if (p.qr && this.consumeQr) this.consumeQr(); // a QR pairing that went through: the link is single-use
+    if (p.embeddedNonce) this.embeddedTailnet.consume(p.embeddedNonce);
+    else if (p.qr && this.consumeQr) this.consumeQr(); // a QR pairing that went through: the link is single-use
     this._clear();
   }
 
@@ -176,18 +188,18 @@ class Pairing extends EventEmitter {
       return this.server.fail(ctx, P.E.VERSION_MISMATCH, `Mac speaks protocol v${P.PROTOCOL_VERSION}`);
     }
     const e = this.paired.find((x) => x.id === msg.id);
-    if (!e || !P.tokenMatches(msg.token, e.tokenHash)) {
+    if (!e || !P.tokenMatches(msg.token, e.tokenHash) || (ctx.embeddedPeer && ctx.embeddedPeer !== e.tailNode)) {
       return this.server.fail(ctx, P.E.BAD_TOKEN, 'Not paired with this Mac');
     }
     if (typeof msg.name === 'string' && msg.name && msg.name !== e.name) e.name = msg.name.slice(0, 64);
     if (Object.values(P.OS).includes(msg.os)) e.os = msg.os;
     e.lastSeen = Date.now();
     this._save();
-    ctx.ilWanted = msg.il && typeof msg.il === 'object' ? msg.il : null; // the input lane (shared/inputlane.js)
-    ctx.fx2Wanted = msg.fx2 === 1; // … and the files engine (shared/meshfx2.js)
-    if (msg.netem === 1) ctx.netemRequested = true;
+    ctx.ilWanted = !ctx.embeddedPeer && msg.il && typeof msg.il === 'object' ? msg.il : null; // the input lane (shared/inputlane.js)
+    ctx.fx2Wanted = !ctx.embeddedPeer && msg.fx2 === 1; // … and the files engine (shared/meshfx2.js)
+    if (!ctx.embeddedPeer && msg.netem === 1) ctx.netemRequested = true;
     if (e.os === P.OS.ANDROID && msg.pa === 1) ctx.appsPair = P.sha256Hex(`phone apps:${e.id}:${e.tokenHash}`);
-    ctx.fxWanted = msg.fx === 1; // fast files (shared/fastfile.js): the bytes over HTTPS, a token of this session
+    ctx.fxWanted = !ctx.embeddedPeer && msg.fx === 1; // fast files (shared/fastfile.js): the bytes over HTTPS, a token of this session
     ctx.mesh = !!msg.mesh; // the device speaks the mesh (docs/mesh.md): it gets the roster
     this.previews.authorize(ctx, e);
     this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN }, {

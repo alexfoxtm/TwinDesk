@@ -1,3 +1,6 @@
+import org.gradle.process.ExecOperations
+import javax.inject.Inject
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -6,6 +9,7 @@ plugins {
 android {
     namespace = "com.twindesk.android"
     compileSdk = 37
+    ndkVersion = "29.0.14206865"
     defaultConfig {
         applicationId = "io.github.alexfoxtm.twindesk.android"
         minSdk = 29 // Android 10: wireless debugging needs 11, everything else works from 10
@@ -79,6 +83,54 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+}
+
+abstract class BuildEmbeddedNetwork : DefaultTask() {
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val source: DirectoryProperty
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val appShareLicense: RegularFileProperty
+
+    @get:Internal
+    abstract val ndk: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val libraries: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val notices: DirectoryProperty
+
+    @get:Inject
+    abstract val exec: ExecOperations
+
+    @TaskAction
+    fun buildNetwork() {
+        val script = source.file("build.sh").get().asFile
+        val output = libraries.get().asFile.parentFile
+        exec.exec {
+            environment("ANDROID_NDK_HOME", ndk.get().asFile.absolutePath)
+            workingDir(script.parentFile)
+            commandLine("bash", script.absolutePath, "android", output.absolutePath)
+        }
+        appShareLicense.get().asFile.copyTo(notices.file("AppShare-Apache-2.0.txt").get().asFile, overwrite = true)
+    }
+}
+
+val embeddedNetworkOutput = layout.buildDirectory.dir("generated/embeddedNetwork")
+val buildEmbeddedNetwork = tasks.register<BuildEmbeddedNetwork>("buildEmbeddedNetwork") {
+    source.set(rootProject.layout.projectDirectory.dir("../network"))
+    appShareLicense.set(rootProject.layout.projectDirectory.file("../licenses/Apache-2.0.txt"))
+    ndk.set(androidComponents.sdkComponents.ndkDirectory)
+    libraries.set(embeddedNetworkOutput.map { it.dir("jniLibs") })
+    notices.set(embeddedNetworkOutput.map { it.dir("assets") })
+}
+
+androidComponents.onVariants { variant ->
+    variant.sources.jniLibs?.addGeneratedSourceDirectory(buildEmbeddedNetwork, BuildEmbeddedNetwork::libraries)
+    variant.sources.assets?.addGeneratedSourceDirectory(buildEmbeddedNetwork, BuildEmbeddedNetwork::notices)
 }
 
 dependencies {

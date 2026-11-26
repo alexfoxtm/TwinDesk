@@ -67,5 +67,46 @@ for (const [name, Pairing] of Object.entries(impls)) {
   pairing._onMessage(ctx, { t: P.T.PAIR_CANCEL });
 }
 
+
+// An embedded route has its own one-use QR and transport identity. Once paired,
+// the exact saved node can resume by an ordinary authenticated hello.
+for (const mode of ['direct', 'mesh']) {
+  const Pairing = mode === 'direct' ? impls.mac : require('../../mac/mesh/pairing.js').Pairing;
+  const sent = [];
+  const server = fakeServer(sent);
+  server.authenticate = (_ctx, who) => { server.accepted = who.deviceId; };
+  const pairing = new Pairing(server, { macId: 'host-id', macName: 'Mac', fp: '00' },
+    { store: require('../../mac/store.js') });
+  let remoteNonce = 'embed-nonce';
+  pairing.isQr = (nonce) => nonce === 'lan-nonce';
+  pairing.isWired = pairing.isQr;
+  pairing.embeddedTailnet = {
+    knows: (nonce) => nonce === remoteNonce,
+    consume: () => { remoteNonce = null; },
+  };
+  const embedded = { ...ctx, embeddedPeer: 'node-phone' };
+  const nw = P.randomHex(16);
+  const start = { t: P.T.PAIR_START, v: P.PROTOCOL_VERSION, id: 'embedded-phone',
+    name: 'Phone', os: P.OS.ANDROID, commit: P.commitOf(nw) };
+  assert.throws(() => pairing._onMessage(embedded, { ...start, wired: 'lan-nonce' }), /fresh embedded Tailscale/);
+  pairing._onMessage(embedded, { ...start, wired: remoteNonce });
+  assert.strictEqual(pairing.pending.qr, true);
+  assert.strictEqual(pairing.pending.wired, false);
+  pairing._onMessage(embedded, { t: P.T.PAIR_REVEAL, nonce: nw });
+  pairing._onMessage(embedded, { t: P.T.PAIR_CONFIRM });
+  assert(!sent.some((m) => m.t === P.T.PAIR_OK), 'Tailnet eligibility alone does not pair');
+  pairing.respond(true);
+  const payload = sent.find((m) => m.t === P.T.PAIR_OK);
+  assert(payload);
+  assert.strictEqual(remoteNonce, null);
+  const hello = { t: P.T.HELLO, v: P.PROTOCOL_VERSION, id: start.id, token: payload.token,
+    os: P.OS.ANDROID, il: {}, fx: 1, fx2: 1 };
+  assert.throws(() => pairing._onMessage({ ...embedded, embeddedPeer: 'other-node' }, hello), /Not paired/);
+  pairing._onMessage(embedded, hello);
+  assert.strictEqual(server.accepted, start.id);
+  assert.strictEqual(embedded.fxWanted, false, 'the verified WSS tunnel does not advertise a second TCP path');
+  assert.strictEqual(embedded.ilWanted, null, 'the tunnel does not advertise a direct UDP lane');
+}
+
 console.log('qr-pairing: ok');
 process.exit(0);

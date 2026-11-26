@@ -19,6 +19,7 @@ final class Core: ObservableObject, LinkEvents {
 
     let store = Store.shared
     let link = Link()
+    let embeddedNetwork = EmbeddedNetwork()
     let discovery = Discovery()
     private(set) var features: [Feature] = []
     lazy var sync = PairSync(self)
@@ -59,6 +60,7 @@ final class Core: ObservableObject, LinkEvents {
 
     private var resumeUntil = Date.distantPast
     private var resumeHost: Computer?
+    private var routeRevision = 0
 
     // Quiet links (Link.swift, #143): what keeps the session pinging every second. Clipboard,
     // notifications and cursor sharing switched on don't (their messages make it active at once).
@@ -91,6 +93,7 @@ final class Core: ObservableObject, LinkEvents {
         if on { offScreenWork?.cancel(); offScreenWork = nil; unfocused = false; Notifier.shared.cancel("net.need") }
         quietCheck()
         if on {
+            autoConnectTailnet()
             link.wake()
             updates.onScreen()
             if let h = resumeLater {
@@ -108,6 +111,8 @@ final class Core: ObservableObject, LinkEvents {
 
     private init() {
         link.events = self
+        embeddedNetwork.onChange = { [weak self] in self?.autoConnectTailnet() }
+        embeddedNetwork.onRevoke = { [weak self] in self?.revokeTailnet() }
         discovery.self_ = { [unowned self] in (self.store.deviceId, self.store.deviceName) }
         discovery.known = { [unowned self] in self.store.hosts().map { $0.address } }
         discovery.wantSweep = { [unowned self] in !self.link.connected }
@@ -129,6 +134,7 @@ final class Core: ObservableObject, LinkEvents {
         Background.shared.apply()
         link.keepPinging = performance
         link.busyHere = { [weak self] in self?.busySnapshot ?? true }
+        embeddedNetwork.restore()
     }
 
     // The app woke (foreground, or in the background by location / audio / an intent): back on the
@@ -175,6 +181,7 @@ final class Core: ObservableObject, LinkEvents {
     // One session at a time: a phone's (Peer) ends when this one is welcomed (linkWelcome), and
     // nothing brings a computer back by itself while a phone holds it (resume, invites, the cable).
     func connect(_ h: Computer) {
+        routeRevision += 1
         if let paired = link.pairedNetemHost(h) {
             resumeUntil = .distantPast
             return link.connect(paired)
@@ -185,11 +192,15 @@ final class Core: ObservableObject, LinkEvents {
         // Linked over Bluetooth and not on this network (or no network at all: discovery keeps what it
         // saw a while after Wi-Fi goes off): the session through it.
         if ble.has(h.id), discovery.get(h.id) == nil || Discovery.interfaces().isEmpty { return connectBle(h) }
-        if let f = discovery.get(h.id) { h.address = f.address; h.port = f.port; store.putHost(h) }
+        if let f = discovery.get(h.id) {
+            guard let fresh = store.updateHostAddress(h, f.address, f.port) else { return }
+            h = fresh
+        }
         // Saved at the cable's address (paired over Bluetooth or the cable, never seen on a network)
         // and the cable isn't in: 127.0.0.1 would only reach our own cable listener, a TLS error each
         // time. It waits for its Bluetooth link instead (linking connects it: bleLinked).
         else if h.address == "127.0.0.1" || h.address.isEmpty {
+            if h.tailnetNode != nil { return connectTailnet(h) }
             NSLog("TwinDesk: %@ not on this network or the cable: waiting for Bluetooth", h.name)
             ble.start()
             return
@@ -198,12 +209,44 @@ final class Core: ObservableObject, LinkEvents {
         link.connect(h)
     }
 
+    func connectTailnet(_ h: Computer, automatic: Bool = false) {
+        guard NetemRoute.configured?.peer != h.id, let saved = store.host(h.id),
+              saved.fp == h.fp, saved.token == h.token, let node = saved.tailnetNode,
+              embeddedNetwork.isOnline(node) else {
+            message = tr("The paired Mac is unavailable over Tailscale.")
+            return
+        }
+        routeRevision += 1
+        resumeUntil = .distantPast
+        resumeHost = nil
+        resumeLater = nil
+        link.connectTailnet(saved, automatic: automatic)
+    }
+
+    private func prefersTailnet(_ id: String) -> Bool {
+        store.lastHostId == id && store.flag("lastHostTailnet", false) && NetemRoute.configured?.peer != id
+    }
+
+    private func autoConnectTailnet() {
+        guard inFront, link.state == "idle", link.pair == nil, !peer.connected,
+              store.flag("autoConnect", true), let id = store.lastHostId, prefersTailnet(id),
+              let h = store.host(id), let node = h.tailnetNode, embeddedNetwork.isOnline(node) else { return }
+        connectTailnet(h, automatic: true)
+    }
+
+    private func revokeTailnet() {
+        routeRevision += 1
+        if store.flag("lastHostTailnet", false) { store.lastHostId = nil }
+        link.stopTailnet()
+    }
+
     // Through a Bluetooth pipe (Ble): the computer's port reached on 127.0.0.1 here.
     func connectBle(_ h: Computer) {
         if link.pairedNetemHost(h) != nil { return }
         resumeUntil = .distantPast
+        let revision = routeRevision
         ble.openPipe(h.id) { [weak self] port in
-            guard let self = self else { return }
+            guard let self, self.routeRevision == revision else { return }
             guard let port = port else { // no link after all: the network, if it was ever seen on one
                 if h.address != "127.0.0.1", !h.address.isEmpty { self.link.connect(h) }
                 return
@@ -235,7 +278,7 @@ final class Core: ObservableObject, LinkEvents {
     func bleInvite(_ id: String) {
         guard let h = store.host(id), link.pair == nil, store.lastHostId == id || store.lastHostId == nil && store.flag("autoConnect", true) else { return }
         if link.host?.id == id && (link.state == "connected" || link.state == "connecting") { return }
-        if link.connected || peer.connected { return }
+        if link.connected || peer.connected || prefersTailnet(id) { return }
         connect(h)
     }
 
@@ -276,7 +319,7 @@ final class Core: ObservableObject, LinkEvents {
     }
 
     private func moveOffScreen() {
-        guard !inFront || unfocused, Background.shared.enabled, bleOffScreen, link.connected, !link.viaBle, link.pair == nil, let h = link.host, ble.has(h.id),
+        guard !inFront || unfocused, Background.shared.enabled, bleOffScreen, link.connected, !link.viaTailnet, !link.viaBle, link.pair == nil, let h = link.host, ble.has(h.id),
               !Background.shared.active, !networkBusy else { return }
         NSLog("TwinDesk: off screen: the session onto Bluetooth")
         connectBle(h)
@@ -309,11 +352,8 @@ final class Core: ObservableObject, LinkEvents {
         guard link.viaBle, link.connected, let h = link.host, let saved = store.host(h.id), let f = discovery.get(h.id) else { return }
         guard wantNetwork || (inFront && !unfocused) || !bleOffScreen || !Background.shared.enabled else { return }
         wantNetwork = false
-        var w = saved
-        w.address = f.address
-        w.port = f.port
-        store.putHost(w)
-        guard !w.address.isEmpty, w.address != "127.0.0.1" else { return }
+        guard !f.address.isEmpty, f.address != "127.0.0.1",
+              let w = store.updateHostAddress(saved, f.address, f.port) else { return }
         NSLog("TwinDesk: back on the network from Bluetooth")
         // Without ending the session (what's under way on it carries on); a computer that can't
         // resume (an older one): a new session there, as before.
@@ -328,22 +368,27 @@ final class Core: ObservableObject, LinkEvents {
     // Onto the USB cable (Usb): the same computer at 127.0.0.1, the session moved there.
     func connectWired(_ h: Computer, user: Bool = false) {
         if link.pairedNetemHost(h) != nil { return }
+        if !user && (link.viaTailnet || prefersTailnet(h.id)) { return }
         if peer.connected && !user { NSLog("TwinDesk: USB: a phone holds the session"); return }
         resumeUntil = .distantPast
         var w = h
         w.address = "127.0.0.1"
         w.port = Proto.port
         usb.aim(h.id)
-        link.connect(w, force: true)
+        link.connect(w, force: true, automatic: !user)
     }
 
     func disconnect() {
+        routeRevision += 1
         resumeUntil = .distantPast
+        resumeHost = nil
+        resumeLater = nil
         store.lastHostId = nil // not back on our own until Connect again
-        link.disconnect()
+        link.disconnect(clearSelection: true)
     }
 
     func pair(_ f: Found) {
+        routeRevision += 1
         invite = nil
         discovery.clearInvite(f.id)
         if let h = store.host(f.id) { return connect(h) }
@@ -351,7 +396,7 @@ final class Core: ObservableObject, LinkEvents {
     }
 
     // Pair with a computer on the USB cable (Usb.unpaired): through the cable, any network or none.
-    func pairUsb() { usb.pair() }
+    func pairUsb() { routeRevision += 1; usb.pair() }
 
     // Pair with a computer found over Bluetooth (Ble.unpaired): through a Bluetooth pipe, for two
     // devices on different networks. The code is compared as over Wi-Fi; the session then stays on
@@ -368,6 +413,7 @@ final class Core: ObservableObject, LinkEvents {
     func pairAddress(_ address: String) {
         let a = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !a.isEmpty else { return }
+        routeRevision += 1
         link.startPairing(address: a, port: Proto.port, name: a)
     }
 
@@ -387,21 +433,48 @@ final class Core: ObservableObject, LinkEvents {
         let port = UInt16(qv("p")) ?? 0
         let nonce = String(qv("k").prefix(64))
         let name = String(qv("n").prefix(64))
+        if c.queryItems?.contains(where: { $0.name == "ts" }) == true {
+            let node = qv("ts")
+            let fingerprint = qv("fp").lowercased()
+            let counts = Dictionary(grouping: c.queryItems ?? [], by: \.name)
+            guard ["ts", "fp", "id", "k", "p"].allSatisfy({ counts[$0]?.count == 1 }),
+                  port == Proto.port, counts["a"] == nil,
+                  node.range(of: #"^[A-Za-z0-9_-]{1,128}\z"#, options: .regularExpression) != nil,
+                  qv("id").range(of: #"^[A-Za-z0-9_-]{1,64}\z"#, options: .regularExpression) != nil,
+                  fingerprint.range(of: #"^[0-9a-f]{64}\z"#, options: .regularExpression) != nil,
+                  qv("k").range(of: #"^[0-9a-fA-F]{16,64}\z"#, options: .regularExpression) != nil else {
+                link.rejectTailnetOffer(tr("This Tailscale pairing QR code is invalid."))
+                return true
+            }
+            guard NetemRoute.configured?.peer != id, embeddedNetwork.isOnline(node) else {
+                link.rejectTailnetOffer(tr("Enable Tailscale and make sure the Mac is online, then scan the QR code again."))
+                return true
+            }
+            routeRevision += 1
+            resumeUntil = .distantPast
+            resumeHost = nil
+            resumeLater = nil
+            let label = name.components(separatedBy: .controlCharacters).joined().trimmingCharacters(in: .whitespaces)
+            link.pairTailnet(node: node, fp: fingerprint, id: id, name: label.isEmpty ? tr("Mac") : label, nonce: nonce)
+            return true
+        }
         let addrs = qv("a").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { $0.range(of: "^[0-9a-fA-F.:]{3,45}$", options: .regularExpression) != nil }.prefix(6)
         guard !id.isEmpty, port > 0, !addrs.isEmpty else { return false }
+        routeRevision += 1
+        let revision = routeRevision
         DispatchQueue.global().async {
             guard let address = addrs.first(where: { Self.reachable($0, port) }) else {
-                DispatchQueue.main.async { self.message = tr("Can’t reach {name}. Is the {device} on the same network?", ["name": name.isEmpty ? tr("the computer") : name, "device": Device.word]) }
+                DispatchQueue.main.async {
+                    guard self.routeRevision == revision else { return }
+                    self.message = tr("Can’t reach {name}. Is the {device} on the same network?", ["name": name.isEmpty ? tr("the computer") : name, "device": Device.word]) }
                 return
             }
             DispatchQueue.main.async {
+                guard self.routeRevision == revision else { return }
                 self.resumeUntil = .distantPast
-                if var h = self.store.host(id) {
-                    h.address = address
-                    h.port = port
-                    self.store.putHost(h)
-                    self.link.connect(h)
+                if let h = self.store.host(id) {
+                    if let fresh = self.store.updateHostAddress(h, address, port) { self.link.connect(fresh) }
                 } else {
                     self.link.startPairing(address: address, port: port, name: name.isEmpty ? "Computer" : name, nonce: nonce)
                 }
@@ -434,13 +507,13 @@ final class Core: ObservableObject, LinkEvents {
     }
 
     func confirmCode() { link.confirmCode() }
-    func cancelPairing() { link.cancelPairing() }
+    func cancelPairing() { routeRevision += 1; link.cancelPairing() }
 
     func forget(_ id: String) {
-        if link.host?.id == id { disconnect() }
-        store.forgetHost(id)
-        if store.lastHostId == id { store.lastHostId = nil }
-        refresh()
+        routeRevision += 1
+        if resumeHost?.id == id { resumeHost = nil }
+        if resumeLater?.id == id { resumeLater = nil }
+        link.forget(id)
     }
 
     func dismissInvite() {
@@ -456,12 +529,9 @@ final class Core: ObservableObject, LinkEvents {
     private func onInvite(_ f: Found) {
         if let h = store.host(f.id) {
             if link.host?.id == h.id && (link.state == "connected" || link.state == "connecting") { return }
-            if peer.connected { return } // a phone holds the session: Connect here takes it back
-            var h = h
-            h.address = f.address
-            h.port = f.port
-            store.putHost(h)
-            return connect(h)
+            if peer.connected || link.viaTailnet || prefersTailnet(h.id) { return }
+            if let fresh = store.updateHostAddress(h, f.address, f.port) { connect(fresh) }
+            return
         }
         if link.pair != nil { return }
         invite = f
@@ -474,7 +544,9 @@ final class Core: ObservableObject, LinkEvents {
 
     func linkWelcome(_ host: Computer, _ m: JSON) {
         NSLog("TwinDesk: session with %@", host.name)
+        let session = link.sessionID
         DispatchQueue.main.async {
+            guard session != nil, self.link.sessionID == session else { return }
             self.resumeUntil = .distantPast
             self.invite = nil
             if self.peer.connected { NSLog("TwinDesk: ending the phone session for %@", host.name); self.peer.disconnect() }
@@ -490,7 +562,9 @@ final class Core: ObservableObject, LinkEvents {
             DispatchQueue.main.async { self.mirror.receiveWant(m, session: session) }
             return
         }
+        let session = link.sessionID
         DispatchQueue.main.async {
+            guard session != nil, self.link.sessionID == session else { return }
             if t == "net.need" { return self.computerNeedsNetwork(m) }
             if t.hasPrefix("net.") { return } // the computers' Wi-Fi links (netlink.js): nothing more here
             for f in self.features where f.onMessage(t, m) { return }
@@ -500,6 +574,17 @@ final class Core: ObservableObject, LinkEvents {
     func linkClosed(_ host: Computer, _ code: String?) {
         DispatchQueue.main.async {
             for f in self.features { f.onClosed() }
+            if code == "tailnet-dropped" || code == "tailnet-ended" {
+                self.refresh()
+                if code == "tailnet-dropped" {
+                    let revision = self.routeRevision
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        guard revision == self.routeRevision, self.prefersTailnet(host.id) else { return }
+                        self.autoConnectTailnet()
+                    }
+                }
+                return
+            }
             // The session on the cable (not Bluetooth's pipe, also on 127.0.0.1) failed: maybe unplugged.
             if code != "local", host.address == "127.0.0.1", host.port == Proto.port { self.usb.sessionFailed() }
             self.refresh()
@@ -534,6 +619,7 @@ final class Core: ObservableObject, LinkEvents {
             if let saved = link.pairedNetemHost(h) { connect(saved) }
             return
         }
+        if prefersTailnet(h.id) { autoConnectTailnet(); return }
         if usb.computerId == h.id, let fresh = store.host(h.id) { connectWired(fresh) }
         // Dropped and linked over Bluetooth: back through it at once (offBle moves it onto the network
         // again as soon as discovery sees the computer there).
@@ -543,7 +629,7 @@ final class Core: ObservableObject, LinkEvents {
 
     private func retryLater(_ h: Computer) {
         if held { resumeLater = h; return }
-        guard link.state == "idle", link.pair == nil, !peer.connected, store.lastHostId == h.id, let fresh = store.host(h.id) else { return }
+        guard link.state == "idle", link.pair == nil, !peer.connected, store.lastHostId == h.id, !prefersTailnet(h.id), let fresh = store.host(h.id) else { return }
         if discovery.get(h.id) != nil || Discovery.interfaces().isEmpty == false { connect(fresh) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { self.retryLater(h) }
     }

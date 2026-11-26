@@ -1,9 +1,10 @@
 #!/bin/bash
 # TwinDesk for iOS: an unsigned IPA (dist/TwinDesk.ipa) that SideStore, AltStore or any signing tool
 # signs with your Apple ID when it installs it. Needs Xcode (the Build iOS workflow has it) and
-# XcodeGen (brew install xcodegen).
+# XcodeGen (brew install xcodegen), plus the Go toolchain required by network/go.mod.
 set -euo pipefail
 cd "$(dirname "$0")"
+../network/build.sh ios
 xcodegen generate --quiet
 rm -rf build dist
 xcodebuild -project TwinDesk.xcodeproj -scheme TwinDesk -configuration Release -sdk iphoneos \

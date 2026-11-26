@@ -13,6 +13,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import com.twindesk.android.embedded.EmbeddedNetwork
+import com.twindesk.android.embedded.EmbeddedOffer
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
 import java.util.concurrent.Executors
@@ -34,6 +36,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     val discovery = Discovery(ctx, { JSONObject().put("id", store.deviceId).put("name", store.deviceName) }, ::changed, ::onInvite)
     val link = Link(store, this, context = ctx)
+    internal val embeddedNetwork = EmbeddedNetwork(ctx, store) {
+        changed()
+        if (returnEmbeddedNode() != null) timers.execute { returnTick() }
+    }
+    @Volatile private var embeddedTargetId: String? = null
     // Computers that aren't on this phone's network, through Bluetooth (Ble.kt).
     val ble = Ble(ctx, { JSONObject().put("id", store.deviceId).put("name", store.deviceName).put("os", Proto.OS) },
         { id -> store.hosts().any { it.id == id } }, ::changed, ::onInvite)
@@ -190,7 +197,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
         }
     }
 
-    private fun canReturn() = returnTimerNeeded(inBackground(), link.connected, link.state == "connecting", link.pair != null, peer.connected)
+    private fun canReturn(): Boolean {
+        if (!returnTimerNeeded(inBackground(), link.connected, link.state == "connecting", link.pair != null, peer.connected)) return false
+        val node = returnEmbeddedNode() ?: return true
+        return MainActivity.shown && embeddedNetwork.online(node)
+    }
 
     private fun updateTimers() {
         peer.updateTicker()
@@ -316,6 +327,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // MainActivity on screen: a session put off by Reconnect in the background, and a look at the
     // current one.
     fun foreground() {
+        embeddedNetwork.restore()
         requestTimers()
         bank.opened() // Banking apps: Restore when TwinDesk opens
         link.wake()
@@ -327,7 +339,10 @@ class Core private constructor(val ctx: Context) : Link.Events {
         Log.i("TwinDesk", "opened: reconnecting to ${known.name}")
         bg.execute { connect(known) }
     }
-    fun background() { if (inBackground() && returnHost() != null) link.pauseConnecting(); requestTimers() }
+    fun background() {
+        if (returnHost() != null && (inBackground() || returnEmbeddedNode() != null)) link.pauseConnecting()
+        requestTimers()
+    }
     // A linked computer came near (CompanionLink): the return to it starts now rather than at the next
     // tick. Only a return (a Mac this phone was in a session with, never taking over): nothing else.
     fun near() {
@@ -413,8 +428,64 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // The UI's Connect, or the Mac's invite: take the session.
     fun connect(h: Host) {
         if (link.connected && link.host?.id == h.id && link.host?.fp == h.fp) return
+        if (h.address.isBlank() && !isNear(h.id) && h.embeddedNode != null && !link.isNetemPeer(h)) {
+            connectEmbedded(h)
+            return
+        }
         stopReturn()
         connect(h, false)
+    }
+
+    @Synchronized
+    internal fun connectEmbedded(h: Host) {
+        val saved = savedEmbeddedHost(h) ?: return
+        val node = saved.embeddedNode ?: return
+        if (!embeddedNetwork.online(node) || link.isNetemPeer(saved)) return
+        if (link.embedded && link.host?.let { it.id == saved.id && it.fp == saved.fp } == true &&
+            link.state in setOf("connected", "connecting")) return
+        stopReturn()
+        resumeUntil = 0
+        resumeHost = null
+        resumeLater = null
+        embeddedTargetId = saved.id
+        val gen = returnGeneration
+        link.connectEmbedded(embeddedNetwork, node, saved) {
+            gen == returnGeneration && savedEmbeddedHost(saved) != null && embeddedNetwork.online(node)
+        }
+    }
+
+    @Synchronized
+    internal fun pairEmbedded(offer: EmbeddedOffer): Boolean {
+        if (peer.connected || !embeddedNetwork.online(offer.node) || NetemRoute.configured?.peer == offer.id) return false
+        val previous = store.hosts().find { it.id == offer.id }
+        if (previous?.let { it.os != "mac" || it.fp != offer.pin || link.isNetemPeer(it) } == true) return false
+        stopReturn()
+        resumeUntil = 0
+        resumeHost = null
+        resumeLater = null
+        invite?.let { discovery.clearInvite(it.id) }
+        invite = null
+        embeddedTargetId = offer.id
+        val gen = returnGeneration
+        link.connectEmbedded(embeddedNetwork, offer.node, null, offer) {
+            gen == returnGeneration && !peer.connected && embeddedNetwork.online(offer.node)
+        }
+        return true
+    }
+
+    @Synchronized
+    internal fun stopEmbedded(signOut: Boolean) {
+        synchronized(store) {
+            if (embeddedTargetId != null || link.embedded || returnEmbeddedNode() != null) {
+                stopReturn()
+                link.disconnectEmbedded()
+            }
+            embeddedNetwork.stop(signOut)
+        }
+    }
+
+    private fun savedEmbeddedHost(h: Host): Host? = store.hosts().firstOrNull {
+        it.id == h.id && it.fp == h.fp && it.token == h.token && it.os == "mac" && it.embeddedNode == h.embeddedNode
     }
 
     // skipNet: the network just failed to reach it (a stale address after the Wi-Fi went): Bluetooth first.
@@ -550,6 +621,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     fun disconnect() {
         screen.stopViewerRecovery()
         silence.stop() // the phone silenced for the computer is let go now (and the computer told)
+        synchronized(store) { link.invalidateReturn() }
         stopReturn()
         resumeUntil = 0
         resumeHost = null
@@ -603,16 +675,20 @@ class Core private constructor(val ctx: Context) : Link.Events {
         changed()
     }
 
+    @Synchronized
     fun forget(id: String) {
         screen.forgetViewerRecovery(id)
         clip.forgetQueue(id)
         photos.forget(id)
         silence.forget(id)
-        if (returnHost()?.id == id) stopReturn()
         companion.forget(id)
         taskAlerts.forget(id)
-        if (link.host?.id == id) link.disconnect()
-        store.forgetHostClearingCredentials(id)
+        synchronized(store) {
+            if (returnHost()?.id == id || embeddedTargetId == id) stopReturn()
+            link.disconnectEmbedded(id)
+            if (link.host?.id == id && !link.embedded) link.disconnect()
+            store.forgetHostClearingCredentials(id)
+        }
         changed()
     }
 
@@ -682,6 +758,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // Still the socket thread. Pointer compares this with the time it runs on its overlay worker (after the main-thread hop).
         val pointerAt = if (t == Proto.T.PHONE_POINTER) SystemClock.uptimeMillis() else -1L
         main.post {
+            if (link.embedded && !Link.embeddedMessageAllowed(t)) return@post
             if (t == "chat.want") {
                 notifs.chatWant(m, route)
                 return@post
@@ -720,7 +797,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
         }
     }
 
-    override fun onClosed(host: Host, code: String?) {
+    override fun onClosed(host: Host, code: String?) = onLinkClosed(host, code, embedded = false)
+
+    override fun onEmbeddedClosed(host: Host, code: String?) = onLinkClosed(host, code, embedded = true)
+
+    private fun onLinkClosed(host: Host, code: String?, embedded: Boolean) {
         val accidental = code == null || code !in setOf("local", "paused", "reclaim", Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN, Proto.E.BUSY, Proto.E.ASLEEP)
         val retainViewer = accidental && link.state != "failed"
         main.post {
@@ -735,7 +816,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // outages, sleep and process death, until Disconnect/Forget/replacement explicitly ends it.
         if (link.ble && returnHost()?.id == host.id) stopReturn()
         if (returnHost()?.id == host.id) {
-            if (link.state == "failed" || code in setOf("local", "reclaim", "bad_message", Proto.E.VERSION_MISMATCH, Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN)) stopReturn()
+            val embeddedDenial = embedded && code in setOf(Proto.E.BUSY, Proto.E.PAIR_REFUSED)
+            if (embeddedDenial || link.state == "failed" || code in setOf("local", "reclaim", "bad_message", Proto.E.VERSION_MISMATCH, Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN)) stopReturn()
             else synchronized(this) {
                 returnFailures = (returnFailures + 1).coerceAtMost(5)
                 returnFailureDeadline = System.currentTimeMillis() + (1000L shl returnFailures)
@@ -745,7 +827,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
             return
         }
         // Legacy peers retain the existing thirty-second retry behavior.
-        if (!accidental || link.state == "failed") return
+        if (embedded || !accidental || link.state == "failed") return
         if (inBackground()) { resumeLater = host; Log.i("TwinDesk", "dropped in the background: reconnecting when TwinDesk opens"); return }
         if (resumeUntil == 0L) resumeUntil = System.currentTimeMillis() + Proto.PHONE_GRACE_MS
         resumeHost = host
@@ -757,6 +839,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     @Synchronized private fun stopReturn() {
         link.invalidateReturn()
         returnGeneration++
+        embeddedTargetId = null
         returnAfter = 0L
         returnFailures = 0
         returnFailureDeadline = 0L
@@ -778,11 +861,17 @@ class Core private constructor(val ctx: Context) : Link.Events {
         returnTailTurn = false
         returnPrefs.edit().remove("host").commit()
         if (h.os in RETURN_OS && link.canReclaim && !link.ble) {
-            returnPrefs.edit().putString("host", JSONObject().put("id", h.id).put("fp", h.fp).toString()).commit()
+            val saved = JSONObject().put("id", h.id).put("fp", h.fp)
+            if (link.embedded) saved.put("embeddedNode", h.embeddedNode)
+            returnPrefs.edit().putString("host", saved.toString()).commit()
         }
     }
 
     @Volatile private var returnCache: Pair<Pair<String, String?>, Host?>? = null
+
+    private fun returnEmbeddedNode(): String? = returnPrefs.getString("host", null)?.let { value ->
+        runCatching { JSONObject(value).optString("embeddedNode").takeIf { it.isNotEmpty() } }.getOrNull()
+    }
 
     private fun returnHost(): Host? {
         val saved = returnPrefs.getString("host", null) ?: return null
@@ -840,6 +929,22 @@ class Core private constructor(val ctx: Context) : Link.Events {
         val h = returnHost() ?: return
         val now = System.currentTimeMillis()
         if (now < returnAfter) return
+        val embeddedNode = returnEmbeddedNode()
+        if (embeddedNode != null) {
+            if (h.embeddedNode != embeddedNode || link.isNetemPeer(h)) {
+                stopReturn()
+                return
+            }
+            val gen = returnGeneration
+            returnAfter = now + 5000L
+            link.connectEmbedded(embeddedNetwork, embeddedNode, h, reclaim = true) {
+                val same = gen == returnGeneration && savedEmbeddedHost(h) != null
+                val ready = MainActivity.shown && !peer.connected && embeddedNetwork.online(embeddedNode)
+                link.denyCode = if (same && !ready) "paused" else "local"
+                same && ready
+            }
+            return
+        }
         val seen = discovery.found[h.id]?.takeIf { it.fp == h.fp }
         if (seen != null && (seen.os !in RETURN_OS || !seen.rc)) {
             returnAfter = now + 3000L

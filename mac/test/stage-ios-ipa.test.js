@@ -17,6 +17,7 @@ const SCRIPT = path.join(__dirname, '..', 'scripts', 'stage-ios-ipa.sh');
 const BUILD = `#!/bin/bash
 set -euo pipefail
 echo "$PWD" >> "$STAGE_COUNT"
+[ "\${STAGE_REQUIRE_NETWORK:-0}" != 1 ] || [ -f ../network/go.mod ]
 [ "\${STAGE_MODE:-ok}" = fail ] && { echo "build failed" >&2; exit 3; }
 W=$(mktemp -d)
 fam=",2"; [ "\${STAGE_MODE:-ok}" = invalid ] && fam=""
@@ -63,7 +64,7 @@ test('staging builds once per ios/ tree, validates, replaces atomically and keep
   assert.equal(r.status, 0, r.stderr);
   assert.equal(builds(), 1);
   const tree = git(repo, 'rev-parse', 'HEAD:ios');
-  assert.deepEqual(fields(), { ios: tree, web: git(repo, 'rev-parse', 'HEAD:android/app/src/main/assets/web'), sha256: sha(ipa), version: '3.2.1' });
+  assert.deepEqual(fields(), { ios: tree, web: git(repo, 'rev-parse', 'HEAD:android/app/src/main/assets/web'), network: '-', sha256: sha(ipa), version: '3.2.1' });
   assert.match(r.stdout, new RegExp(`staged ios=${tree} version=3.2.1 sha256=${sha(ipa)}`));
   assert.ok(!fs.readFileSync(count, 'utf8').includes(repo), 'built from an export of HEAD, not the working tree');
   assert.deepEqual(fs.readdirSync(out).sort(), ['TwinDesk.ipa', 'TwinDesk.ipa.stamp'], 'no temporary or lock files left');
@@ -72,6 +73,16 @@ test('staging builds once per ios/ tree, validates, replaces atomically and keep
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /up to date/);
   assert.equal(builds(), 1, 'same HEAD:ios: no rebuild');
+
+  fs.mkdirSync(path.join(repo, 'network'));
+  fs.writeFileSync(path.join(repo, 'network', 'go.mod'), 'module test.local');
+  git(repo, 'add', 'network');
+  git(repo, '-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '-qm', 'network');
+  r = run({ STAGE_REQUIRE_NETWORK: '1' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(builds(), 2, 'a change to the embedded engine rebuilds the IPA');
+  assert.equal(fields().ios, tree);
+  assert.equal(fields().network, git(repo, 'rev-parse', 'HEAD:network'));
 
   // A failed or invalid build keeps the valid cached IPA and its stamp, byte for byte.
   fs.writeFileSync(path.join(repo, 'ios', 'project.yml'), 'name: TwinDesk\n# 2\n');

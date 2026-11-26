@@ -180,6 +180,7 @@ class Netlink(core: Core) : Feature(core) {
     // asked for with Connect with Wi-Fi Direct; else the same Wi-Fi network. A group that's up
     // beside a session on the real network doesn't count.
     val via: String get() {
+        if (core.link.embedded) return "TwinDesk Network"
         if (core.link.wired) return "USB"
         if (core.link.ble) return "Bluetooth"
         val address = core.link.endpoint()?.first ?: core.host?.address
@@ -305,6 +306,7 @@ class Netlink(core: Core) : Feature(core) {
     }
 
     private fun startHost() {
+        if (core.link.embedded) return
         ssid = "DIRECT-TD-" + Proto.randomHex(3)
         pass = Proto.randomHex(10)
         set("hosting", "")
@@ -322,6 +324,7 @@ class Netlink(core: Core) : Feature(core) {
     private fun sendJoin() = core.link.send(msg(Proto.T.NET_JOIN, "ssid" to ssid, "pass" to pass))
 
     private fun join(s: String, p: String) {
+        if (core.link.embedded) return
         ssid = s
         set("joining", "")
         armDeadline()

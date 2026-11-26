@@ -17,6 +17,7 @@ struct Computer: Codable, Identifiable, Equatable {
     let fp: String
     let token: String
     var lastSeen: Double
+    var tailnetNode: String? = nil
 }
 
 final class Store {
@@ -90,7 +91,27 @@ final class Store {
 
     func putHost(_ h: Computer, _ list: String = "hosts") {
         lock.lock(); defer { lock.unlock() }
-        writeHosts([h] + readHosts(list).filter { $0.id != h.id }, list)
+        let hosts = readHosts(list)
+        var saved = h
+        if let old = hosts.first(where: { $0.id == h.id && $0.fp == h.fp && $0.os == h.os }) {
+            if saved.tailnetNode == nil { saved.tailnetNode = old.tailnetNode }
+            if saved.address.isEmpty, saved.tailnetNode != nil {
+                saved.address = old.address
+                saved.port = old.port
+            }
+        }
+        writeHosts([saved] + hosts.filter { $0.id != h.id }, list)
+    }
+
+    // Discovery updates only the endpoint. Pairing owns the certificate, token and tailnet binding.
+    func updateHostAddress(_ host: Computer, _ address: String, _ port: UInt16) -> Computer? {
+        lock.lock(); defer { lock.unlock() }
+        var hosts = readHosts("hosts")
+        guard let index = hosts.firstIndex(where: { $0.id == host.id && $0.fp == host.fp && $0.token == host.token }) else { return nil }
+        hosts[index].address = address
+        hosts[index].port = port
+        writeHosts(hosts)
+        return hosts[index]
     }
 
     func forgetHost(_ id: String, _ list: String = "hosts") {
