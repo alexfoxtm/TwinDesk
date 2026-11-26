@@ -766,6 +766,8 @@ test('no receipt: the selected paired iPad with TwinDesk installed arms automati
   // A receipt of an install made here keeps priority.
   cfg = { ...cfg, localInstalls: { [IPAD]: { expires: expiry + 30 * 86400 } } };
   assert.equal(await fires(), 0, 'a later receipt wins over the cached profiles');
+  assert.equal(lines.at(-1), `[ios-developer] automatic refresh armed for ${IPAD} from install receipt: `
+    + 'profiles until 2027-01-02T11:43:35.000Z, due 2026-12-30T11:43:35.000Z (3 days before), retry every 6 h');
   cfg = { ...cfg, localInstalls: { [IPAD]: { expires: expiry - 86400, version: '3.2.1' } } };
   assert.equal(await fires(), 1);
   assert.equal(installs.at(-1).minExpiry, expiry - 86400, 'the receipt still sets the floor');
@@ -823,7 +825,119 @@ test('no receipt: the selected paired iPad with TwinDesk installed arms automati
   outcome = () => ({ udid: IPAD, expires: expiry + 7 * 86400, version: '3.2.1', bundleId: APP });
   assert.equal(await fires(), 1);
   assert.equal(cfg.localInstalls[IPAD].expires, expiry + 7 * 86400);
-  assert.equal(lines.at(-1), `${prefix} (cached profiles): installed, profiles until 2026-12-10T11:43:35.000Z`);
+  assert.equal(lines.at(-2), `${prefix} (cached profiles): installed, profiles until 2026-12-10T11:43:35.000Z`);
+  assert.equal(lines.at(-1), `[ios-developer] automatic refresh armed for ${IPAD} from install receipt: `
+    + 'profiles until 2026-12-10T11:43:35.000Z, due 2026-12-06T11:43:35.000Z (4 days before), retry every 1 h', 'the receipt that took over is logged');
   assert.equal(sign._armed(IPAD), null);
   assert.equal(await fires(), 0, 'the new receipt is not due');
+});
+
+test('a saved install receipt logs its arming once: the actual expiry, due time and retry', async (t) => {
+  const expiry = 1796300096; // 2026-12-03 07:14:56 EST
+  let clock = Date.parse('2026-11-26T12:30:00Z');
+  t.mock.method(Date, 'now', () => clock);
+  const ipad = { ...target };
+  const reads = [];
+  const installs = [];
+  const developer = {
+    bundled: () => true, list: async () => [ipad], stored: async () => null, storedInfo: () => null,
+    apps: async () => ({ bundleIdentifier: APP, version: '3.2.1' }),
+    profileExpiry: async (u) => { reads.push(u); return expiry + 86400; },
+    install: async (d, s, opts) => { installs.push(opts); return null; },
+  };
+  let cfg = { on: true, mode: 'developer', localDevice: IPAD, auto: true, localInstalls: { [IPAD]: { expires: expiry, version: '3.2.1' } } };
+  const lines = [];
+  const link = Object.assign(new EventEmitter(), { send() {} });
+  const sign = new IosSign({ link, developer, log: (l) => lines.push(l), cfg: () => cfg, setCfg: (x) => { cfg = { ...cfg, ...x }; } });
+  t.after(() => sign.close());
+  sign._release = () => {};
+  const settle = async () => { await next(); await next(); while (sign.scanTask) await sign.scanTask; };
+  const armed = (rest) => `[ios-developer] automatic refresh armed for ${IPAD} from install receipt: ${rest}`;
+  await settle();
+  await sign._look();
+  assert.deepEqual(lines, [armed('profiles until 2026-12-03T12:14:56.000Z, due 2026-11-30T12:14:56.000Z (3 days before), retry every 6 h')]);
+  assert.deepEqual(reads, [], 'a receipt never reads the cached profiles');
+  assert.deepEqual(installs, []);
+  await sign._look();
+  sign._auto();
+  assert.equal(lines.length, 1, 'later scans and ticks do not log again');
+  cfg = { ...cfg, localDevice: IPHONE };
+  await sign._look();
+  assert.equal(lines.length, 1, 'a receipt arms its device whichever is selected: the same arming');
+  cfg = { ...cfg, localDevice: IPAD, days: 2, retry: 12 };
+  sign._auto();
+  assert.equal(lines.at(-1), armed('profiles until 2026-12-03T12:14:56.000Z, due 2026-12-01T12:14:56.000Z (2 days before), retry every 12 h'));
+  assert.equal(lines.length, 2);
+  for (const patch of [{ auto: false }, { deviceAuto: { [IPAD]: false } }, { mode: 'apple' }, { on: false }]) {
+    const saved = cfg;
+    cfg = { ...cfg, ...patch, days: 5 };
+    sign._auto();
+    assert.equal(lines.length, 2, 'not armed, not logged: ' + JSON.stringify(patch));
+    cfg = saved;
+  }
+  assert.deepEqual(installs, [], 'logging dispatches nothing before the due time');
+  clock = (expiry - 2 * 86400) * 1000;
+  sign._auto();
+  assert.equal(installs.length, 1, 'the receipt still dispatches at its due time');
+  assert.equal(installs[0].minExpiry, expiry);
+  await settle();
+  assert.equal(cfg.localInstalls[IPAD].expires, expiry);
+});
+
+test('no receipt: profiles renewed by a refresh that then failed to install keep the earlier schedule and the retry', async (t) => {
+  const expiry = Date.parse('2026-12-03T11:43:35Z') / 1000;
+  const renewed = expiry + 4 * 86400;
+  const hour = 3600 * 1000;
+  let clock = (expiry - 3 * 86400) * 1000;
+  t.mock.method(Date, 'now', () => clock);
+  const ipad = { ...target };
+  let expires = expiry;
+  let installed = { bundleIdentifier: APP, version: '3.2.1' };
+  const installs = [];
+  let outcome = () => { expires = renewed; throw new Error('The device didn’t install TwinDesk'); };
+  const developer = {
+    bundled: () => true, list: async () => [ipad], stored: async () => null, storedInfo: () => null,
+    apps: async () => installed, profileExpiry: async () => expires,
+    install: async (d, s, opts) => { installs.push(opts); return outcome(); },
+  };
+  let cfg = { on: true, mode: 'developer', localDevice: IPAD, auto: true };
+  const lines = [];
+  const link = Object.assign(new EventEmitter(), { send() {} });
+  const sign = new IosSign({ link, developer, log: (l) => lines.push(l), cfg: () => cfg, setCfg: (x) => { cfg = { ...cfg, ...x }; } });
+  t.after(() => sign.close());
+  sign._release = () => {};
+  const settle = async () => { await next(); await next(); while (sign.scanTask) await sign.scanTask; };
+  await settle();
+  await sign._look();
+  await settle();
+  assert.equal(installs.length, 1, 'due: the refresh renews the profiles, then fails to install');
+  assert.equal(cfg.localInstalls, undefined);
+  assert.deepEqual({ expires: sign._armed(IPAD).expires, since: sign._armed(IPAD).since }, { expires: renewed, since: expiry },
+    'the renewed profiles arm it, on the schedule of the profiles TwinDesk was seen with');
+  assert.equal(lines.at(-1), `[ios-developer] automatic refresh armed for ${IPAD} from cached profiles (no install receipt): `
+    + 'profiles until 2026-12-07T11:43:35.000Z, due 2026-11-30T11:43:35.000Z (3 days before 2026-12-03T11:43:35.000Z, '
+    + 'the profiles seen before a renewal that was not installed), retry every 6 h');
+  clock += 6 * hour - 1;
+  await sign._look();
+  assert.equal(installs.length, 1, 'rests for cfg.retry');
+  clock = (expiry + 60) * 1000; // the profiles TwinDesk was installed with have run out; the renewed ones have not
+  outcome = () => ({ udid: IPAD, expires: renewed, version: '3.2.1', bundleId: APP });
+  await sign._look();
+  await settle();
+  assert.equal(installs.length, 2, 'still due, retried');
+  assert.equal(installs[1].minExpiry, 0);
+  assert.equal(cfg.localInstalls[IPAD].expires, renewed, 'only the install records the receipt');
+  assert.deepEqual(sign.armFloor, {}, 'the receipt ends the fallback schedule');
+
+  // TwinDesk confirmed gone from the device: the earlier schedule goes with it.
+  cfg = { ...cfg, localInstalls: undefined };
+  clock = (expiry - 4 * 86400) * 1000;
+  expires = expiry;
+  await sign._look();
+  expires = renewed;
+  installed = undefined;
+  await sign._look();
+  installed = { bundleIdentifier: APP, version: '3.2.1' };
+  await sign._look();
+  assert.equal(sign._armed(IPAD).since, renewed);
 });

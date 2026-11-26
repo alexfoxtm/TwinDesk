@@ -111,6 +111,7 @@ class IosSign extends EventEmitter {
     this.developer = developer || null;
     this.log = typeof log === 'function' ? log : (line) => console.log(line); // the app's log file; no secrets
     this.localArm = {}; // udid -> {expires, coreId}: no receipt yet, TwinDesk seen installed, cached profiles' end
+    this.armFloor = {}; // udid -> {expires, coreId}: the earliest cached profiles' end it was armed with (kept in memory only)
     this.armLogged = {}; // udid -> the arming last logged, so a scan doesn't log it again
     this.results = new Map(); // mode and UDID -> last result
     this.bin = (bins || []).find((b) => { try { return fs.statSync(b).isFile(); } catch { return false; } }) || '';
@@ -527,12 +528,12 @@ class IosSign extends EventEmitter {
 
   async _scan() {
     if ((!this.bin && !this.developer) || this.stopped) return;
-    if (this.cfg().on !== true) { this.devices = []; this.apps = {}; this.localApps = {}; this.localArm = {}; return this._changed(); }
+    if (this.cfg().on !== true) { this.devices = []; this.apps = {}; this.localApps = {}; this.localArm = {}; this.armFloor = {}; return this._changed(); }
     const controller = new AbortController();
     this.scan = controller;
     const { signal } = controller;
     const local = this._local();
-    if (!local) this.localArm = {};
+    if (!local) { this.localArm = {}; this.armFloor = {}; }
     this._release();
     try {
       const before = this._udid();
@@ -593,15 +594,21 @@ class IosSign extends EventEmitter {
   // would use (developer.profileExpiry). Never written to localInstalls: only an install made here is.
   async _arm(d, installed, signal) {
     const c = this.cfg();
+    const here = !!installed && installed.bundleIdentifier === DEVELOPER_APP;
     let armed = null;
-    if (installed && installed.bundleIdentifier === DEVELOPER_APP && !c.localInstalls?.[d.udid] && d.coreId
+    if (here && !c.localInstalls?.[d.udid] && d.coreId
         && d.udid === str(c.localDevice, 64).toUpperCase() && typeof this.developer.profileExpiry === 'function') {
       const expires = await this.developer.profileExpiry(d.udid, signal).catch(() => 0);
       if (signal.aborted) return;
       if (Number.isInteger(expires) && expires * 1000 > Date.now()) armed = { expires, coreId: d.coreId };
     }
-    if (armed) this.localArm[d.udid] = armed;
-    else delete this.localArm[d.udid];
+    // The schedule follows the earliest profiles this device was armed with: profiles renewed without
+    // an install made here (a refresh that failed after its renewal) never move it later.
+    if (!here || c.localInstalls?.[d.udid] || this.armFloor[d.udid]?.coreId !== d.coreId) delete this.armFloor[d.udid];
+    if (!armed) { delete this.localArm[d.udid]; return; }
+    const since = Math.min(armed.expires, this.armFloor[d.udid]?.expires || armed.expires);
+    this.armFloor[d.udid] = { expires: since, coreId: d.coreId };
+    this.localArm[d.udid] = { ...armed, since };
   }
 
   // The armed fallback for this device, while it still holds: no receipt, the same paired device,
@@ -878,6 +885,7 @@ class IosSign extends EventEmitter {
       }
       this.setCfg({ localInstalls: { ...this.cfg().localInstalls, [udid]: done } });
       delete this.localArm[udid];
+      delete this.armFloor[udid];
       note(`installed, profiles until ${new Date(done.expires * 1000).toISOString()}`);
       this._end(null, done);
       return done;
@@ -995,16 +1003,24 @@ class IosSign extends EventEmitter {
     if (this._local()) {
       if (!this.developer.bundled()) return;
       // A receipt of an install made here comes first; without one, the armed cached profiles.
-      const expiresOf = (u) => c.localInstalls?.[u]?.expires || this._armed(u)?.expires || 0;
+      const expiresOf = (u) => c.localInstalls?.[u]?.expires || this._armed(u)?.since || 0;
+      // What is armed is logged once per device, source and schedule (again after a restart).
+      const days = c.days || 3;
+      const hours = again / 3600000;
+      const iso = (seconds) => new Date(seconds * 1000).toISOString();
       for (const d of this.devices) {
-        const a = d.coreId && c.deviceAuto?.[d.udid] !== false && !c.localInstalls?.[d.udid] && this._armed(d.udid);
-        if (!a) continue;
-        const days = c.days || 3;
-        const hours = again / 3600000;
-        const key = `${a.expires} ${days} ${hours}`;
+        if (!d.coreId || c.deviceAuto?.[d.udid] === false) continue;
+        const receipt = c.localInstalls?.[d.udid];
+        const a = receipt ? null : this._armed(d.udid);
+        const expires = receipt ? receipt.expires : a?.expires;
+        if (!Number.isInteger(expires) || expires <= 0) continue;
+        const since = receipt ? expires : a.since;
+        const key = `${receipt ? 'receipt' : 'profiles'} ${expires} ${since} ${days} ${hours}`;
         if (this.armLogged[d.udid] === key) continue;
         this.armLogged[d.udid] = key;
-        this.log(`[ios-developer] automatic refresh armed for ${d.udid} from cached profiles (no install receipt): profiles until ${new Date(a.expires * 1000).toISOString()}, due ${new Date((a.expires - days * 86400) * 1000).toISOString()} (${days} days before), retry every ${hours} h`);
+        this.log(`[ios-developer] automatic refresh armed for ${d.udid} from ${receipt ? 'install receipt' : 'cached profiles (no install receipt)'}: `
+          + `profiles until ${iso(expires)}, due ${iso(since - days * 86400)} (${days} days before`
+          + `${since < expires ? ` ${iso(since)}, the profiles seen before a renewal that was not installed` : ''}), retry every ${hours} h`);
       }
       const due = this.devices.filter((d) => d.coreId && c.deviceAuto?.[d.udid] !== false
         && soon(expiresOf(d.udid)) && rested(`developer ${d.udid}`))
