@@ -258,3 +258,35 @@ func TestMissingSessionProducesOnlyFixedError(t *testing.T) {
 		t.Fatal("invalid session produced unexpected diagnostics")
 	}
 }
+
+func TestIncompleteListingIsNotRestartedAtTheRetryPace(t *testing.T) {
+	if got := syncDelay(false, true); got != 5*time.Minute {
+		t.Fatalf("incomplete but online = %v, want 5m", got)
+	}
+	if got := syncDelay(true, true); got != time.Minute {
+		t.Fatalf("complete = %v, want 1m", got)
+	}
+	for _, complete := range []bool{false, true} {
+		if got := syncDelay(complete, false); got != 8*time.Second {
+			t.Fatalf("offline = %v, want 8s", got)
+		}
+	}
+}
+
+func TestPartlyMappedGroupIsNeverAOnePersonConversation(t *testing.T) {
+	c := &gmproto.Conversation{
+		ConversationID: "fixture", Type: gmproto.ConversationType_RCS, DefaultOutgoingID: "self",
+		Participants: []*gmproto.Participant{
+			{ID: &gmproto.SmallInfo{ParticipantID: "self"}, IsMe: true},
+			{ID: &gmproto.SmallInfo{ParticipantID: "p1", Number: "+12025550100"}},
+			{ID: &gmproto.SmallInfo{ParticipantID: "p2"}},
+		},
+	}
+	if s := summarize(c); !s.Group || len(s.Addrs) != 1 {
+		t.Fatalf("group=%v addrs=%d, want a group with its one mapped address", s.Group, len(s.Addrs))
+	}
+	c.Participants = c.Participants[:2]
+	if s := summarize(c); s.Group || len(s.Addrs) != 1 {
+		t.Fatalf("group=%v addrs=%d, want a one-person conversation", s.Group, len(s.Addrs))
+	}
+}

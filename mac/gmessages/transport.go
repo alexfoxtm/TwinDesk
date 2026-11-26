@@ -193,7 +193,13 @@ func isRCS(c *gmproto.Conversation) bool {
 func summarize(c *gmproto.Conversation) conversation {
 	addrs := make([]string, 0, len(c.GetParticipants()))
 	name := c.GetName()
-	group := c.GetIsGroupChat() || len(c.GetOtherParticipants()) > 1
+	remote := 0
+	for _, p := range c.GetParticipants() {
+		if !p.GetIsMe() && p.GetID().GetParticipantID() != c.GetDefaultOutgoingID() {
+			remote++
+		}
+	}
+	group := c.GetIsGroupChat() || len(c.GetOtherParticipants()) > 1 || remote > 1
 	for _, p := range c.GetParticipants() {
 		if p.GetIsMe() || p.GetID().GetParticipantID() == c.GetDefaultOutgoingID() {
 			continue
@@ -336,6 +342,20 @@ func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConver
 		return nil, false, err
 	}
 	return next, ended, nil
+}
+
+// The wait before the next listing: a complete one is refreshed every minute, a failed one is
+// retried soon, and one that stopped at the page bound or a repeated cursor is not restarted at
+// the retry pace (it would list the same pages again).
+func syncDelay(complete, ready bool) time.Duration {
+	switch {
+	case !ready:
+		return 8 * time.Second
+	case complete:
+		return time.Minute
+	default:
+		return 5 * time.Minute
+	}
 }
 
 // Returns whether the inbox now holds a complete listing.
@@ -569,11 +589,8 @@ func run(ctx context.Context, auth *libgm.AuthData, commands <-chan command, out
 			b.offline()
 			syncTimer.Reset(0)
 		case <-syncTimer.C:
-			if b.sync(ctx) && b.ready {
-				syncTimer.Reset(time.Minute)
-			} else {
-				syncTimer.Reset(8 * time.Second)
-			}
+			complete := b.sync(ctx)
+			syncTimer.Reset(syncDelay(complete, b.ready))
 		case cmd := <-commands:
 			deadline := time.UnixMilli(cmd.Deadline)
 			call, cancel := context.WithDeadline(ctx, deadline)
