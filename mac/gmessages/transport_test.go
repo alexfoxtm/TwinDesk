@@ -22,22 +22,228 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { re
 
 func TestProjectUsesMessageTransport(t *testing.T) {
 	for kind, want := range map[int64]string{0: "", 1: "text", 2: "text", 3: "text", 4: "rcs", 9: ""} {
-		if got := project(&gmproto.Message{Type: kind}).Transport; got != want {
+		if got := project(&gmproto.Message{Type: kind}, nil).Transport; got != want {
 			t.Errorf("transport for type %d = %q, want %q", kind, got, want)
 		}
 	}
 }
 
-func TestPairedReplyRespectsConversationSendMode(t *testing.T) {
+func TestReplyIsIndependentOfSendModeAndRespectsReadOnly(t *testing.T) {
 	for _, mode := range []gmproto.ConversationSendMode{
 		gmproto.ConversationSendMode_SEND_MODE_AUTO,
 		gmproto.ConversationSendMode_SEND_MODE_XMS,
 		gmproto.ConversationSendMode_SEND_MODE_XMS_LATCH,
 	} {
-		c := &gmproto.Conversation{Type: gmproto.ConversationType_RCS, SendMode: mode, DefaultOutgoingID: "fixture"}
-		if summarize(c).Reply != (mode == gmproto.ConversationSendMode_SEND_MODE_AUTO) {
-			t.Fatal("reply availability did not follow the send mode")
+		for _, kind := range []gmproto.ConversationType{gmproto.ConversationType_RCS, gmproto.ConversationType_SMS} {
+			c := &gmproto.Conversation{ConversationID: "fixture", Type: kind, SendMode: mode, DefaultOutgoingID: "self"}
+			if !summarize(c, nil).Reply {
+				t.Fatalf("reply unavailable for type %v in send mode %v", kind, mode)
+			}
+			c.ReadOnly = true
+			if summarize(c, nil).Reply {
+				t.Fatalf("read-only conversation offered a reply in send mode %v", mode)
+			}
 		}
+	}
+	if summarize(&gmproto.Conversation{ConversationID: "fixture"}, nil).Reply {
+		t.Fatal("reply offered without a default outgoing participant")
+	}
+	if summarize(&gmproto.Conversation{ConversationID: "fixture", DefaultOutgoingID: "self",
+		Status: gmproto.ConversationStatus_ARCHIVED}, nil).Reply {
+		t.Fatal("reply offered for a conversation that is not listed")
+	}
+}
+
+func TestListingKeepsEveryActiveConversationAndTagsItsKind(t *testing.T) {
+	sms := &gmproto.Conversation{Type: gmproto.ConversationType_SMS, ConversationID: "sms", Status: gmproto.ConversationStatus_ACTIVE}
+	mms := &gmproto.Conversation{ConversationID: "mms"}
+	rcs := &gmproto.Conversation{Type: gmproto.ConversationType_RCS, ConversationID: "rcs"}
+	archived := &gmproto.Conversation{Type: gmproto.ConversationType_SMS, ConversationID: "archived", Status: gmproto.ConversationStatus_ARCHIVED}
+	rows, complete, err := listRCS(context.Background(), func(ctx context.Context, req *gmproto.ListConversationsRequest) (*gmproto.ListConversationsResponse, error) {
+		return &gmproto.ListConversationsResponse{Conversations: []*gmproto.Conversation{sms, mms, rcs, archived, {Type: gmproto.ConversationType_SMS}}}, nil
+	})
+	if err != nil || !complete || len(rows) != 3 || rows["sms"] != sms || rows["mms"] != mms || rows["rcs"] != rcs {
+		t.Fatalf("listing kept %d rows, want sms, mms and rcs", len(rows))
+	}
+	for c, want := range map[*gmproto.Conversation]string{sms: "sms", mms: "", rcs: "rcs"} {
+		if got := summarize(c, nil).Kind; got != want {
+			t.Errorf("kind of %s = %q, want %q", c.GetConversationID(), got, want)
+		}
+	}
+	var buf bytes.Buffer
+	b := inbox{out: &output{w: &buf}, ready: true, convs: map[string]*gmproto.Conversation{}}
+	b.update(sms)
+	if b.convs["sms"] != sms {
+		t.Fatal("an SMS conversation event was not kept")
+	}
+	b.update(&gmproto.Conversation{Type: gmproto.ConversationType_SMS, ConversationID: "sms", Status: gmproto.ConversationStatus_ARCHIVED})
+	if b.convs["sms"] != nil {
+		t.Fatal("an archived conversation event was not removed")
+	}
+	b.publish()
+	if !bytes.Contains(buf.Bytes(), []byte(`"items":[]`)) {
+		t.Fatal("archived conversation was still published")
+	}
+	b.update(mms)
+	buf.Reset()
+	b.publish()
+	if !bytes.Contains(buf.Bytes(), []byte(`"kind":""`)) {
+		t.Fatal("an unknown kind was not sent explicitly")
+	}
+}
+
+func TestOnePersonShapesHaveOneAddress(t *testing.T) {
+	sims := []*gmproto.SIMCard{{SIMParticipant: &gmproto.SIMParticipant{ID: "sim2"}}}
+	base := func(extra ...*gmproto.Participant) *gmproto.Conversation {
+		return &gmproto.Conversation{
+			ConversationID: "fixture", Type: gmproto.ConversationType_RCS, DefaultOutgoingID: "self",
+			Participants: append([]*gmproto.Participant{
+				{ID: &gmproto.SmallInfo{ParticipantID: "self"}, IsMe: true, IsVisible: true},
+				{ID: &gmproto.SmallInfo{ParticipantID: "p1", Number: "+1 202-555-0100"}, FullName: "Arkadiy", IsVisible: true},
+			}, extra...),
+			OtherParticipants: []string{"p1"},
+		}
+	}
+	for name, c := range map[string]*gmproto.Conversation{
+		"invisible participant": base(&gmproto.Participant{ID: &gmproto.SmallInfo{ParticipantID: "p2", Number: "+12025550199"}}),
+		"second SIM self entry": base(&gmproto.Participant{ID: &gmproto.SmallInfo{ParticipantID: "sim2", Number: "+12025550111"}, IsVisible: true}),
+		"duplicated number":     base(&gmproto.Participant{ID: &gmproto.SmallInfo{ParticipantID: "p3", Number: "+12025550100"}, IsVisible: true}),
+	} {
+		s := summarize(c, sims)
+		if s.Group || len(s.Addrs) != 1 || s.Addrs[0] != "+1 202-555-0100" || s.Name != "Arkadiy" || s.People != nil {
+			t.Errorf("%s: group=%v addrs=%v name=%q people=%v, want a one-to-one conversation", name, s.Group, s.Addrs, s.Name, s.People)
+		}
+	}
+}
+
+func TestGroupFromOtherParticipantsOrGroupFlag(t *testing.T) {
+	c := &gmproto.Conversation{
+		ConversationID: "fixture", Type: gmproto.ConversationType_RCS, DefaultOutgoingID: "self",
+		Participants: []*gmproto.Participant{
+			{ID: &gmproto.SmallInfo{ParticipantID: "self"}, IsMe: true},
+			{ID: &gmproto.SmallInfo{ParticipantID: "p1", Number: "+12025550100"}, FullName: "Ann", IsVisible: true},
+		},
+		OtherParticipants: []string{"p1", "self", "unmapped"},
+	}
+	s := summarize(c, nil)
+	if !s.Group || len(s.Addrs) != 1 || len(s.People) != 1 || s.People[0] != (person{"Ann", "+12025550100"}) {
+		t.Fatalf("group=%v addrs=%v people=%v, want a group from an unmapped other participant", s.Group, s.Addrs, s.People)
+	}
+	c.OtherParticipants = []string{"p1", "self"}
+	if summarize(c, nil).Group {
+		t.Fatal("mapped and self other participants made a group")
+	}
+	c.IsGroupChat = true
+	if s := summarize(c, nil); !s.Group || len(s.Addrs) != 1 || len(s.People) != 1 {
+		t.Fatal("a group chat with one member was not a group")
+	}
+	for i := 0; i < 30; i++ {
+		c.Participants = append(c.Participants, &gmproto.Participant{
+			ID: &gmproto.SmallInfo{ParticipantID: "m" + strconv.Itoa(i), Number: "+1202555" + strconv.Itoa(1000+i)}, IsVisible: true})
+	}
+	if s := summarize(c, nil); len(s.People) != maxPeople || len(s.Addrs) != 31 {
+		t.Fatalf("people=%d addrs=%d, want %d people and every address", len(s.People), len(s.Addrs), maxPeople)
+	}
+}
+
+func TestForceRCSFollowsTheNewestEncryptionMarker(t *testing.T) {
+	marker := func(status gmproto.MessageStatusType, at int64) *gmproto.Message {
+		return &gmproto.Message{MessageID: "m" + strconv.FormatInt(at, 10), Timestamp: at,
+			MessageStatus: &gmproto.MessageStatus{Status: status}}
+	}
+	rcs := &gmproto.Conversation{ConversationID: "chat", Type: gmproto.ConversationType_RCS, DefaultOutgoingID: "self"}
+	sms := &gmproto.Conversation{ConversationID: "chat", Type: gmproto.ConversationType_SMS, DefaultOutgoingID: "self"}
+	b := inbox{convs: map[string]*gmproto.Conversation{"chat": rcs}}
+	force := func(c *gmproto.Conversation) bool {
+		r := b.request(c, "chat", "tmp", nil)
+		if r.GetConversationID() != "chat" || r.GetMessagePayload().GetParticipantID() != "self" || r.GetTmpID() != "tmp" {
+			t.Fatal("request lost its conversation, participant or temporary id")
+		}
+		return r.GetForceRCS()
+	}
+	if force(rcs) {
+		t.Fatal("RCS without a marker forced RCS")
+	}
+	if _, ok := b.remember("chat", marker(237, 100)); ok {
+		t.Fatal("an encryption marker was projected as a message")
+	}
+	if !force(rcs) {
+		t.Fatal("RCS after marker 237 did not force RCS")
+	}
+	if force(sms) {
+		t.Fatal("SMS forced RCS")
+	}
+	xms := &gmproto.Conversation{ConversationID: "chat", Type: gmproto.ConversationType_RCS, DefaultOutgoingID: "self",
+		SendMode: gmproto.ConversationSendMode_SEND_MODE_XMS}
+	if force(xms) {
+		t.Fatal("XMS send mode forced RCS")
+	}
+	b.mark("chat", marker(238, 200))
+	if force(rcs) {
+		t.Fatal("a later 238 did not turn ForceRCS off")
+	}
+	b.mark("chat", marker(235, 150))
+	if force(rcs) {
+		t.Fatal("an older marker overrode a newer one")
+	}
+	b.mark("chat", marker(235, 300))
+	if !force(rcs) {
+		t.Fatal("a newer 235 did not turn ForceRCS on")
+	}
+	b.mark("chat", marker(236, 250))
+	if !force(rcs) {
+		t.Fatal("an older 236 overrode a newer marker")
+	}
+	b.mark("chat", marker(236, 400))
+	if force(rcs) {
+		t.Fatal("a newer 236 did not turn ForceRCS off")
+	}
+}
+
+func TestProjectMapsSendStatusDropsMarkersAndResolvesSender(t *testing.T) {
+	msg := func(status gmproto.MessageStatusType) *gmproto.Message {
+		return &gmproto.Message{MessageID: "m", MessageStatus: &gmproto.MessageStatus{Status: status},
+			MessageInfo: []*gmproto.MessageInfo{{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: "hi"}}}}}
+	}
+	for _, status := range []gmproto.MessageStatusType{8, 9, 13, 17, 18, 19, 21, 22, 24, 25, 27} {
+		if got := project(msg(status), nil).Status; got != "failed" {
+			t.Errorf("status %d = %q, want failed", status, got)
+		}
+	}
+	for _, status := range []gmproto.MessageStatusType{4, 5, 6, 7, 10, 20} {
+		if got := project(msg(status), nil).Status; got != "sending" {
+			t.Errorf("status %d = %q, want sending", status, got)
+		}
+	}
+	for _, status := range []gmproto.MessageStatusType{1, 2, 11, 100, 101} {
+		if got := project(msg(status), nil).Status; got != "" {
+			t.Errorf("status %d = %q, want none", status, got)
+		}
+	}
+	c := &gmproto.Conversation{ConversationID: "chat", Participants: []*gmproto.Participant{
+		{ID: &gmproto.SmallInfo{ParticipantID: "self"}, IsMe: true},
+		{ID: &gmproto.SmallInfo{ParticipantID: "p1", Number: "+12025550100"}, FullName: "Ann"},
+	}}
+	var buf bytes.Buffer
+	b := inbox{out: &output{w: &buf}, convs: map[string]*gmproto.Conversation{"chat": c}}
+	for _, status := range []gmproto.MessageStatusType{200, 207, 235, 239} {
+		if _, ok := b.remember("chat", msg(status)); ok {
+			t.Errorf("status %d was not dropped", status)
+		}
+	}
+	in := msg(100)
+	in.ParticipantID = "p1"
+	if i, ok := b.remember("chat", in); !ok || i.Me || i.From != "Ann" {
+		t.Fatalf("incoming sender = %q me=%v, want the participant's name", i.From, i.Me)
+	}
+	in.SenderParticipant = &gmproto.Participant{FullName: "Named"}
+	if i := project(in, c); i.From != "Named" {
+		t.Fatal("a present sender was replaced by the participant")
+	}
+	mine := msg(0)
+	mine.ParticipantID = "self"
+	if i := project(mine, c); !i.Me || i.From != "" {
+		t.Fatal("a message from the self participant was not mine")
 	}
 }
 
@@ -277,16 +483,16 @@ func TestPartlyMappedGroupIsNeverAOnePersonConversation(t *testing.T) {
 	c := &gmproto.Conversation{
 		ConversationID: "fixture", Type: gmproto.ConversationType_RCS, DefaultOutgoingID: "self",
 		Participants: []*gmproto.Participant{
-			{ID: &gmproto.SmallInfo{ParticipantID: "self"}, IsMe: true},
-			{ID: &gmproto.SmallInfo{ParticipantID: "p1", Number: "+12025550100"}},
-			{ID: &gmproto.SmallInfo{ParticipantID: "p2"}},
+			{ID: &gmproto.SmallInfo{ParticipantID: "self"}, IsMe: true, IsVisible: true},
+			{ID: &gmproto.SmallInfo{ParticipantID: "p1", Number: "+12025550100"}, IsVisible: true},
+			{ID: &gmproto.SmallInfo{ParticipantID: "p2"}, IsVisible: true},
 		},
 	}
-	if s := summarize(c); !s.Group || len(s.Addrs) != 1 {
+	if s := summarize(c, nil); !s.Group || len(s.Addrs) != 1 {
 		t.Fatalf("group=%v addrs=%d, want a group with its one mapped address", s.Group, len(s.Addrs))
 	}
 	c.Participants = c.Participants[:2]
-	if s := summarize(c); s.Group || len(s.Addrs) != 1 {
+	if s := summarize(c, nil); s.Group || len(s.Addrs) != 1 {
 		t.Fatalf("group=%v addrs=%d, want a one-person conversation", s.Group, len(s.Addrs))
 	}
 }

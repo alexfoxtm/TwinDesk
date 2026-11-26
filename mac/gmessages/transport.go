@@ -172,6 +172,12 @@ type item struct {
 	Receipt   string `json:"receipt,omitempty"`
 	Photos    []int  `json:"photos,omitempty"`
 	Transport string `json:"transport,omitempty"`
+	Status    string `json:"status,omitempty"`
+}
+
+type person struct {
+	Name   string `json:"name"`
+	Number string `json:"number"`
 }
 
 type conversation struct {
@@ -183,38 +189,108 @@ type conversation struct {
 	At        int64    `json:"at"`
 	Snippet   string   `json:"snippet"`
 	SnippetMe *bool    `json:"snippetMe,omitempty"`
+	Kind      string   `json:"kind"`
+	People    []person `json:"people,omitempty"`
 }
 
-func isRCS(c *gmproto.Conversation) bool {
-	return c.GetType() == gmproto.ConversationType_RCS &&
+const maxPeople = 20
+
+// An inbox conversation of any type is listed while it is active (or its status is unknown).
+func listed(c *gmproto.Conversation) bool {
+	return c.GetConversationID() != "" &&
 		(c.GetStatus() == gmproto.ConversationStatus_ACTIVE || c.GetStatus() == gmproto.ConversationStatus_UNKNOWN_CONVERSATION_STATUS)
 }
 
-func summarize(c *gmproto.Conversation) conversation {
-	addrs := make([]string, 0, len(c.GetParticipants()))
-	name := c.GetName()
-	remote := 0
-	for _, p := range c.GetParticipants() {
-		if !p.GetIsMe() && p.GetID().GetParticipantID() != c.GetDefaultOutgoingID() {
-			remote++
+func kind(c *gmproto.Conversation) string {
+	switch c.GetType() {
+	case gmproto.ConversationType_RCS:
+		return "rcs"
+	case gmproto.ConversationType_SMS:
+		return "sms"
+	}
+	return ""
+}
+
+func digits(number string) string {
+	var b strings.Builder
+	for _, r := range number {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
 		}
 	}
-	group := c.GetIsGroupChat() || len(c.GetOtherParticipants()) > 1 || remote > 1
+	if b.Len() == 0 {
+		return number
+	}
+	return b.String()
+}
+
+// Self is IsMe, the conversation's default outgoing participant, or a SIM participant from Settings.
+func isSelf(c *gmproto.Conversation, sims []*gmproto.SIMCard, p *gmproto.Participant) bool {
+	return p.GetIsMe() || selfID(c, sims, p.GetID().GetParticipantID())
+}
+
+func selfID(c *gmproto.Conversation, sims []*gmproto.SIMCard, id string) bool {
+	if id == "" {
+		return false
+	}
+	if id == c.GetDefaultOutgoingID() {
+		return true
+	}
+	for _, s := range sims {
+		if s.GetSIMParticipant().GetID() == id {
+			return true
+		}
+	}
+	return false
+}
+
+func summarize(c *gmproto.Conversation, sims []*gmproto.SIMCard) conversation {
+	addrs := make([]string, 0, len(c.GetParticipants()))
+	var people []person
+	name := c.GetName()
+	numbers := make(map[string]bool)
+	entries := make(map[string]bool)
+	members := 0
+	var remote []*gmproto.Participant
 	for _, p := range c.GetParticipants() {
-		if p.GetIsMe() || p.GetID().GetParticipantID() == c.GetDefaultOutgoingID() {
+		if id := p.GetID().GetParticipantID(); id != "" {
+			entries[id] = true
+		}
+		if isSelf(c, sims, p) || !p.GetIsVisible() {
 			continue
 		}
-		if number := p.GetID().GetNumber(); number != "" {
+		number := p.GetID().GetNumber()
+		if number != "" {
+			key := digits(number)
+			if numbers[key] {
+				continue
+			}
+			numbers[key] = true
 			addrs = append(addrs, number)
 		}
-		if name == "" && !group {
+		members++
+		remote = append(remote, p)
+	}
+	for _, id := range c.GetOtherParticipants() {
+		if id != "" && !entries[id] && !selfID(c, sims, id) {
+			entries[id] = true
+			members++
+		}
+	}
+	group := c.GetIsGroupChat() || members > 1
+	for _, p := range remote {
+		if group {
+			if len(people) < maxPeople {
+				people = append(people, person{p.GetFullName(), p.GetID().GetNumber()})
+			}
+		} else if name == "" {
 			name = p.GetFullName()
 		}
 	}
-	return conversation{c.GetConversationID(), name, addrs, group,
-		isRCS(c) && c.GetSendMode() == gmproto.ConversationSendMode_SEND_MODE_AUTO &&
-			!c.GetReadOnly() && c.GetDefaultOutgoingID() != "", c.GetLastMessageTimestamp() / 1000,
-		c.GetLatestMessage().GetDisplayContent(), direction(c.GetLatestMessage().GetLatestMessageStatus().GetStatus())}
+	return conversation{ID: c.GetConversationID(), Name: name, Addrs: addrs, Group: group,
+		Reply: listed(c) && !c.GetReadOnly() && c.GetDefaultOutgoingID() != "", At: c.GetLastMessageTimestamp() / 1000,
+		Snippet: c.GetLatestMessage().GetDisplayContent(), SnippetMe: direction(c.GetLatestMessage().GetLatestMessageStatus().GetStatus()),
+		Kind: kind(c), People: people}
 }
 
 func direction(status gmproto.MessageStatusType) *bool {
@@ -225,10 +301,37 @@ func direction(status gmproto.MessageStatusType) *bool {
 	return &me
 }
 
-func project(m *gmproto.Message) item {
+func sendStatus(status gmproto.MessageStatusType) string {
+	switch status {
+	case 8, 9, 13, 17, 18, 19, 21, 22, 24, 25, 27:
+		return "failed"
+	case 4, 5, 6, 7, 10, 20:
+		return "sending"
+	}
+	return ""
+}
+
+// When the message carries no sender, the conversation participant with its ParticipantID stands in.
+func sender(m *gmproto.Message, c *gmproto.Conversation) *gmproto.Participant {
+	s := m.GetSenderParticipant()
+	if s != nil && (s.GetIsMe() || s.GetFullName() != "" || s.GetID().GetParticipantID() != "" || s.GetID().GetNumber() != "") {
+		return s
+	}
+	if id := m.GetParticipantID(); id != "" {
+		for _, p := range c.GetParticipants() {
+			if p.GetID().GetParticipantID() == id {
+				return p
+			}
+		}
+	}
+	return s
+}
+
+func project(m *gmproto.Message, c *gmproto.Conversation) item {
 	status := m.GetMessageStatus().GetStatus()
+	from := sender(m, c)
 	i := item{ID: m.GetMessageID(), At: m.GetTimestamp() / 1000,
-		Me: m.GetSenderParticipant().GetIsMe() || (status > 0 && status < 100)}
+		Me: from.GetIsMe() || (status > 0 && status < 100), Status: sendStatus(status)}
 	switch m.GetType() {
 	case 1, 2, 3: // SMS and the downloaded/pending MMS variants
 		i.Transport = "text"
@@ -236,9 +339,9 @@ func project(m *gmproto.Message) item {
 		i.Transport = "rcs"
 	}
 	if !i.Me {
-		i.From = m.GetSenderParticipant().GetFullName()
+		i.From = from.GetFullName()
 		if i.From == "" {
-			i.From = m.GetSenderParticipant().GetID().GetNumber()
+			i.From = from.GetID().GetNumber()
 		}
 	}
 	switch status {
@@ -268,14 +371,52 @@ type inbox struct {
 	cursors map[string]*gmproto.Cursor
 	photos  map[string]map[string][]*gmproto.MessageInfo
 	sims    []*gmproto.SIMCard
+	markers map[string]marker
 	ready   bool
 	active  string
+}
+
+// The newest encryption-switch marker seen for a chat, by message timestamp.
+type marker struct {
+	at int64
+	on bool
+}
+
+func (b *inbox) mark(chat string, m *gmproto.Message) {
+	var on bool
+	switch m.GetMessageStatus().GetStatus() {
+	case 235, 237:
+		on = true
+	case 236, 238:
+		on = false
+	default:
+		return
+	}
+	if chat == "" {
+		return
+	}
+	if b.markers == nil {
+		b.markers = make(map[string]marker)
+	}
+	if prev, ok := b.markers[chat]; ok && prev.at > m.GetTimestamp() {
+		return
+	}
+	b.markers[chat] = marker{m.GetTimestamp(), on}
+}
+
+func (b *inbox) update(c *gmproto.Conversation) {
+	id := c.GetConversationID()
+	if listed(c) {
+		b.convs[id] = c
+	} else {
+		delete(b.convs, id)
+	}
 }
 
 func (b *inbox) publish() {
 	rows := make([]conversation, 0, len(b.convs))
 	for _, c := range b.convs {
-		rows = append(rows, summarize(c))
+		rows = append(rows, summarize(c, b.sims))
 	}
 	b.out.send(event{"type": "conversations", "items": rows})
 }
@@ -323,7 +464,7 @@ func listRCS(ctx context.Context, list func(context.Context, *gmproto.ListConver
 			return next, false, nil
 		}
 		for _, c := range resp.GetConversations() {
-			if id := c.GetConversationID(); isRCS(c) && id != "" && next[id] == nil {
+			if id := c.GetConversationID(); listed(c) && next[id] == nil {
 				next[id] = c
 			}
 		}
@@ -386,15 +527,20 @@ func (b *inbox) apply(ctx context.Context, next map[string]*gmproto.Conversation
 	return complete
 }
 
-func (b *inbox) remember(chat string, m *gmproto.Message) item {
-	i := project(m)
+// Feeds the encryption marker, then drops status markers (>= 200) and projects the rest.
+func (b *inbox) remember(chat string, m *gmproto.Message) (item, bool) {
+	b.mark(chat, m)
+	if m.GetMessageStatus().GetStatus() >= 200 {
+		return item{}, false
+	}
+	i := project(m, b.convs[chat])
 	if chat == b.active && len(i.Photos) != 0 {
 		if b.photos[chat] == nil {
 			b.photos[chat] = make(map[string][]*gmproto.MessageInfo)
 		}
 		b.photos[chat][i.ID] = m.GetMessageInfo()
 	}
-	return i
+	return i, true
 }
 
 func (b *inbox) history(ctx context.Context, chat string, earlier bool) bool {
@@ -422,8 +568,8 @@ func (b *inbox) history(ctx context.Context, chat string, earlier bool) bool {
 	b.cursors[chat] = next
 	items := make([]item, 0, len(resp.GetMessages()))
 	for _, m := range resp.GetMessages() {
-		i := b.remember(chat, m)
-		if i.ID != "" && (i.Text != "" || len(i.Photos) != 0) {
+		i, ok := b.remember(chat, m)
+		if ok && i.ID != "" && (i.Text != "" || len(i.Photos) != 0) {
 			items = append(items, i)
 		}
 	}
@@ -449,7 +595,7 @@ func (b *inbox) sim(c *gmproto.Conversation) *gmproto.SIMPayload {
 }
 
 func (b *inbox) send(ctx context.Context, c *gmproto.Conversation, cmd command) bool {
-	if !summarize(c).Reply || len(cmd.Text) > 20000 {
+	if !summarize(c, b.sims).Reply || len(cmd.Text) > 20000 {
 		return false
 	}
 	var parts []*gmproto.MessageInfo
@@ -476,14 +622,21 @@ func (b *inbox) send(ctx context.Context, c *gmproto.Conversation, cmd command) 
 	if len(parts) == 0 {
 		return false
 	}
-	id := util.GenerateTmpID()
-	resp, err := b.client.SendMessage(ctx, &gmproto.SendMessageRequest{
-		ConversationID: cmd.Chat, TmpID: id, SIMPayload: b.sim(c), ForceRCS: true,
-		MessagePayload: &gmproto.MessagePayload{
-			ConversationID: cmd.Chat, TmpID: id, TmpID2: id, ParticipantID: c.GetDefaultOutgoingID(), MessageInfo: parts,
-		},
-	})
+	resp, err := b.client.SendMessage(ctx, b.request(c, cmd.Chat, util.GenerateTmpID(), parts))
 	return err == nil && resp.GetStatus() == gmproto.SendMessageResponse_SUCCESS
+}
+
+// ForceRCS only for an RCS conversation in auto send mode whose newest encryption marker is "on";
+// otherwise the phone decides.
+func (b *inbox) request(c *gmproto.Conversation, chat, id string, parts []*gmproto.MessageInfo) *gmproto.SendMessageRequest {
+	force := c.GetType() == gmproto.ConversationType_RCS &&
+		c.GetSendMode() == gmproto.ConversationSendMode_SEND_MODE_AUTO && b.markers[chat].on
+	return &gmproto.SendMessageRequest{
+		ConversationID: chat, TmpID: id, SIMPayload: b.sim(c), ForceRCS: force,
+		MessagePayload: &gmproto.MessagePayload{
+			ConversationID: chat, TmpID: id, TmpID2: id, ParticipantID: c.GetDefaultOutgoingID(), MessageInfo: parts,
+		},
+	}
 }
 
 func (b *inbox) photo(ctx context.Context, cmd command) bool {
@@ -534,7 +687,7 @@ func (b *inbox) handle(ctx context.Context, cmd command) bool {
 	case "read":
 		return cmd.Chat == b.active && cmd.Message != "" && b.client.MarkRead(ctx, cmd.Chat, cmd.Message) == nil
 	case "typing":
-		return cmd.Chat == b.active && b.client.SetTyping(ctx, cmd.Chat, b.sim(c)) == nil
+		return cmd.Chat == b.active && kind(c) == "rcs" && b.client.SetTyping(ctx, cmd.Chat, b.sim(c)) == nil
 	case "photo":
 		return cmd.Chat == b.active && b.photo(ctx, cmd)
 	}
@@ -609,21 +762,19 @@ func run(ctx context.Context, auth *libgm.AuthData, commands <-chan command, out
 				b.sims = e.GetSIMCards()
 			case *gmproto.Conversation:
 				if b.ready {
-					id := e.GetConversationID()
-					if isRCS(e) && id != "" {
-						b.convs[id] = e
-					} else {
-						delete(b.convs, id)
-					}
+					b.update(e)
 					b.publish()
 				}
 			case *libgm.WrappedMessage:
 				chat := e.GetConversationID()
+				b.mark(chat, e.Message)
 				if b.ready && b.convs[chat] != nil {
-					out.send(event{"type": "message", "chat": chat, "item": b.remember(chat, e.Message)})
+					if i, ok := b.remember(chat, e.Message); ok {
+						out.send(event{"type": "message", "chat": chat, "item": i})
+					}
 				}
 			case *gmproto.TypingData:
-				if b.ready && e.GetConversationID() == b.active {
+				if b.ready && e.GetConversationID() == b.active && kind(b.convs[b.active]) == "rcs" {
 					out.send(event{"type": "typing", "chat": b.active, "typing": e.GetType() == gmproto.TypingTypes_STARTED_TYPING})
 				}
 			}
