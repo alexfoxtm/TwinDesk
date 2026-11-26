@@ -152,15 +152,14 @@ func TestProjectUsesMessageTransport(t *testing.T) {
 }
 
 func TestProjectKeepsNonImageAttachmentsAndCaptions(t *testing.T) {
-	part := func(data gmproto.MessageInfo) *gmproto.MessageInfo { return &data }
 	media := func(mime string, format gmproto.MediaFormats) *gmproto.MessageInfo {
-		return part(gmproto.MessageInfo{Data: &gmproto.MessageInfo_MediaContent{MediaContent: &gmproto.MediaContent{MimeType: mime, Format: format}}})
+		return &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MediaContent{MediaContent: &gmproto.MediaContent{MimeType: mime, Format: format}}}
 	}
 	pdf := project(&gmproto.Message{
 		MessageID: "pdf", Type: 4,
 		MessageInfo: []*gmproto.MessageInfo{
 			media("application/pdf", gmproto.MediaFormats_APP_PDF),
-			part(gmproto.MessageInfo{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: "Caption"}}}),
+			&gmproto.MessageInfo{Data: &gmproto.MessageInfo_MessageContent{MessageContent: &gmproto.MessageContent{Content: "Caption"}}},
 		},
 	}, nil)
 	if pdf.Text != "Caption" || !pdf.Attachment || len(pdf.Photos) != 0 || pdf.Transport != "rcs" || pdf.ID != "pdf" {
@@ -179,15 +178,15 @@ func TestProjectKeepsNonImageAttachmentsAndCaptions(t *testing.T) {
 		t.Fatalf("empty media = %+v", empty)
 	}
 	place := project(&gmproto.Message{MessageID: "place", MessageInfo: []*gmproto.MessageInfo{
-		part(gmproto.MessageInfo{Data: &gmproto.MessageInfo_LocationContent{LocationContent: &gmproto.LocationContent{
+		&gmproto.MessageInfo{Data: &gmproto.MessageInfo_LocationContent{LocationContent: &gmproto.LocationContent{
 			MessageContent: &gmproto.MessageContent{Content: "Fixture place"},
-		}}}),
+		}}},
 	}}, nil)
 	if place.Text != "Fixture place" || place.Attachment || len(place.Photos) != 0 {
 		t.Fatalf("location text = %+v", place)
 	}
 	pin := project(&gmproto.Message{MessageID: "pin", MessageInfo: []*gmproto.MessageInfo{
-		part(gmproto.MessageInfo{Data: &gmproto.MessageInfo_LocationContent{LocationContent: &gmproto.LocationContent{}}}),
+		&gmproto.MessageInfo{Data: &gmproto.MessageInfo_LocationContent{LocationContent: &gmproto.LocationContent{}}},
 	}}, nil)
 	if pin.Text != "" || !pin.Attachment || len(pin.Photos) != 0 || !visibleItem(pin) {
 		t.Fatalf("bare location = %+v", pin)
