@@ -108,8 +108,10 @@ final class EmbeddedNetwork: ObservableObject {
 
     func stop(signOut: Bool = false) {
         guard !busy else { return }
-        if signOut { store.setFlag("embeddedNetwork.logoutPending", true) }
-        store.setFlag("embeddedNetwork.enabled", false)
+        if signOut {
+            store.setFlag("embeddedNetwork.logoutPending", true)
+            store.setFlag("embeddedNetwork.enabled", false)
+        }
         generation += 1
         let generation = self.generation
         active = false

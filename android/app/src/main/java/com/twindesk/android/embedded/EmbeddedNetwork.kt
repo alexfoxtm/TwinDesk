@@ -92,7 +92,7 @@ internal class EmbeddedNetwork(context: Context, private val store: Store, priva
     fun stop(signOut: Boolean) {
         desired = false
         val current = ++generation
-        val remembered = store.setEmbeddedEnabled(false)
+        val remembered = !signOut || store.setEmbeddedEnabled(false)
         update(Status("stopping"))
         worker.execute {
             ticker?.cancel(false)
