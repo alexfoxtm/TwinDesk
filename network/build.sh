@@ -43,8 +43,8 @@ case "$mode" in
     mac)
         [[ $# == 3 ]] || usage
         case "$2" in
-            arm64) mac_arch=arm64; mac_target=arm64-apple-macos14.0 ;;
-            x64) mac_arch=amd64; mac_target=x86_64-apple-macos14.0 ;;
+            arm64) mac_arch=arm64; mac_target=arm64-apple-macos13.0 ;;
+            x64) mac_arch=amd64; mac_target=x86_64-apple-macos13.0 ;;
             *) usage ;;
         esac
         mac_output="$3"
