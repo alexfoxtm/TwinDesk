@@ -385,7 +385,12 @@ UI.tab({
     let gmSend = null;
     let gmError = '';
     let gmOwner = '';
+    const MAX_GOOGLE_PHOTOS = 12;
     const gmPhotos = new Map();
+    const gmPhotoFailures = new Set();
+    const gmPhotoPending = new Set();
+    let gmPhotoView = null;
+    let gmPhotoParts = [];
     const gmConnect = UI.button(tr('Connect Google Messages'), async () => {
       const gm = UI.state?.googleMessages;
       gmWipeError = false;
@@ -462,7 +467,7 @@ UI.tab({
       gmRead = '';
       gmTypingAt = 0;
       gmError = '';
-      gmPhotos.clear();
+      clearGooglePhotos();
     }
     function openChat(t) {
       if (chatOpen !== t.key) closeChat();
@@ -553,6 +558,61 @@ UI.tab({
       const rows = pill === 'all' ? inboxThreads(s) : chatThreads(s);
       return rows.find((t) => t.key === chatOpen && (pill === 'all' || t.app === pill));
     }
+    function clearGooglePhotos() {
+      gmPhotos.clear();
+      gmPhotoFailures.clear();
+      gmPhotoView = null;
+      gmPhotoParts = [];
+      if (gmError === tr('Could not load the photo.')) gmError = '';
+    }
+    function wantedGooglePhotos() {
+      const viewport = chatScroll.getBoundingClientRect?.();
+      const visible = viewport ? gmPhotoParts.filter(({ node }) => {
+        const { top, bottom } = node.getBoundingClientRect();
+        return bottom > viewport.top && top < viewport.bottom;
+      }) : [];
+      const recent = gmPhotoParts.slice(-MAX_GOOGLE_PHOTOS).reverse();
+      return [...new Set([...visible, ...recent])].slice(0, MAX_GOOGLE_PHOTOS);
+    }
+    function stillShowingGooglePhotos(view) {
+      const gm = UI.state?.googleMessages;
+      if (!view || view !== gmPhotoView || view.epoch !== chatEpoch ||
+          gm?.state !== 'connected' || gm.owner !== view.owner) return false;
+      const current = selectedChat();
+      return current?.key === view.key && googleOf(current)?.id === view.chat;
+    }
+    async function loadGooglePhoto(photo, view) {
+      const { key, message, part } = photo;
+      if (gmPhotoPending.has(key) || gmPhotos.has(key) || !stillShowingGooglePhotos(view)) return;
+      gmPhotoPending.add(key);
+      gmPhotoFailures.delete(key);
+      const data = await gmAct('photo', { chat: view.chat, message, part });
+      gmPhotoPending.delete(key);
+      if (!stillShowingGooglePhotos(view)) {
+        loadGooglePhotos();
+        return;
+      }
+      if (typeof data === 'string' && data) {
+        gmPhotos.set(key, data);
+        if (gmPhotos.size > MAX_GOOGLE_PHOTOS) {
+          const keep = new Set(wantedGooglePhotos().map((photo) => photo.key));
+          const oldestOutsideView = [...gmPhotos.keys()].find((key) => !keep.has(key));
+          gmPhotos.delete(oldestOutsideView ?? gmPhotos.keys().next().value);
+        }
+        if (!gmPhotoFailures.size && gmError === tr('Could not load the photo.')) gmError = '';
+      } else {
+        gmPhotoFailures.add(key);
+        gmError = tr('Could not load the photo.');
+      }
+      paintChats(UI.state, true);
+    }
+    function loadGooglePhotos() {
+      // The helper handles commands serially. Queue only one background download at a time.
+      if (page.hidden || gmPhotoPending.size || !gmPhotoView) return;
+      const next = wantedGooglePhotos().find(({ key }) => !gmPhotos.has(key) && !gmPhotoFailures.has(key));
+      if (next) loadGooglePhoto(next, gmPhotoView);
+    }
+    chatScroll.addEventListener('scroll', loadGooglePhotos);
     const carrierMessage = (m) => ({ ...m, text: m.body, me: m.out || !!m.ref,
       pending: !!m.ref, mms: m.id?.startsWith('m'), source: 'carrier', transport: 'text' });
     const googleOnly = (t) => googleMode(UI.state) && !!t?.googleSource;
@@ -739,7 +799,7 @@ UI.tab({
         gmOwner = gm?.owner;
         gmHistory = '';
         gmRead = '';
-        gmPhotos.clear();
+        clearGooglePhotos();
       }
       if (gm && gm.owner !== kindOwner) { kindOwner = gm.owner; lastKind.clear(); }
       if (gm?.state === 'disconnected') lastKind.clear();
@@ -783,15 +843,19 @@ UI.tab({
         chatEpoch++;
         chatPic.clear();
       }
+      if (gmPhotoView && (gmPhotoView.epoch !== chatEpoch || gmPhotoView.key !== t?.key ||
+          gmPhotoView.chat !== google?.id)) clearGooglePhotos();
+      if (google && !gmPhotoView) gmPhotoView = { epoch: chatEpoch, key: t.key, chat: google.id, owner: gm.owner };
       const messages = t?.dest ? projectContact(t) : t?.msgs || [];
       const k = JSON.stringify([pill, chatOpen, query, shown.map((row) => [row.key, row.at, row.name, snippetOf(row), row.sources?.map((c) => c.key), !!row.avatar]),
         messages.map(({ image, ...m }) => m), t?.items, t?.reply, t?.pic, t?.people?.map((p) => p.name),
         t?.sources?.map((c) => [c.replySession, c.items?.map((h) => h.reply && h.replySession)]), google?.id, google?.reply, google?.loaded,
         google?.more, google?.typing, ready, carrierSend(s), mmsOk(), s.hub?.perm?.messages?.sims, (s.notifs || {}).receive, synced(s),
-        gm?.enabled, gm?.state, t?.dest ? lastKind.get(t.dest) : '',
+        gm?.enabled, gm?.state, gmPhotoView?.owner, gmPhotoView?.epoch, t?.dest ? lastKind.get(t.dest) : '',
         Object.keys((s.notifs || {}).historyIcons || {}).length]);
       if (k === chatKey) return;
       chatKey = k;
+      gmPhotoParts = [];
       const rows = shown.map((row) => threadRow(row.name, row.at, snippetOf(row), row.key === chatOpen, () => {
           if (!row.carrier) { openChat(row); return; }
           closeChat();
@@ -863,21 +927,14 @@ UI.tab({
           ...(m.source === 'carrier' ? textPictures(m) : []),
           ...(google ? (m.photos || []).map((part) => {
             const key = JSON.stringify([google.id, m.id, part]);
-            const picture = (src) => el('img', { class: 'hub-pic', src, alt: tr('Picture') });
-            if (gmPhotos.has(key)) return picture(gmPhotos.get(key));
-            return UI.button(tr('Load photo'), async () => {
-              const gm = UI.state.googleMessages;
-              const epoch = chatEpoch;
-              const data = await gmAct('photo', { chat: google.id, message: m.id, part }, gm);
-              const current = selectedChat();
-              if (!gm || epoch !== chatEpoch || current?.key !== t.key || googleOf(current)?.id !== google.id ||
-                  UI.state.googleMessages?.owner !== gm.owner || UI.state.googleMessages?.state !== 'connected') return;
-              if (typeof data === 'string') {
-                gmPhotos.set(key, data);
-                if (gmPhotos.size > 8) gmPhotos.delete(gmPhotos.keys().next().value);
-              } else gmError = tr('Could not load the photo.');
-              paintChats(UI.state, true);
-            }, 'small');
+            const view = gmPhotoView;
+            const photo = { key, message: m.id, part };
+            const node = gmPhotoFailures.has(key)
+              ? UI.button(tr('Load photo'), () => loadGooglePhoto(photo, view), 'small')
+              : el('img', { class: 'hub-pic', alt: tr('Picture') });
+            if (gmPhotos.has(key)) node.src = gmPhotos.get(key);
+            gmPhotoParts.push({ ...photo, node });
+            return node;
           }) : []),
           m.pic ? el('div', { class: 'hub-text', text: tr('Picture') }) : null,
           m.text ? el('div', { class: 'hub-text', text: m.text }) : null,
@@ -909,6 +966,7 @@ UI.tab({
       if (google) {
         chatNote.textContent = google.loaded ? tr('This conversation is read-only.') : gmError ? '' : tr('Loading conversation…');
       } else chatNote.textContent = t.msgs || t.dest ? tr('Reply here once the phone shows this chat’s notification again.') : tr('Answer this one on the phone: its notification has no Reply.');
+      loadGooglePhotos();
     }
 
     chatBox.addEventListener('input', () => {
@@ -1226,6 +1284,7 @@ UI.tab({
       api.hub({ do: 'seen' });
       const t = selectedChat();
       if (t && googleOf(t)) markGoogleRead(googleOf(t));
+      loadGooglePhotos();
       if (carrierReady(UI.state)) load();
     });
     renderList();

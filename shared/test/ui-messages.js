@@ -1150,6 +1150,116 @@ const gmPhone = 'fixture-phone';
 const gmDest = '+12025550100';
 const connected = (rows, history = { chat: rows[0]?.id, loaded: true, items: [] }) =>
   ({ owner: gmPhone, state: 'connected', enabled: true, rows, history });
+const photoFixture = (items, fetchPhoto) => {
+  const state = {
+    hub: { deviceId: gmPhone, session: 1, messages: true, perm: { messages: { missing: [] } } },
+    googleMessages: connected([{ id: 'paired', addrs: [gmDest], at: 1000 }],
+      { chat: 'paired', loaded: true, items }),
+  };
+  const requests = [];
+  const page = inbox(state, { async googleMessages(msg) {
+    if (msg.op !== 'photo') return true;
+    requests.push([msg.owner, msg.chat, msg.message, msg.part]);
+    return fetchPhoto(msg);
+  } });
+  const messages = page.chat.children[1].children[1].children[0];
+  const photos = () => Array.from(messages.children)
+    .flatMap((bubble) => Array.from(bubble.children))
+    .filter((node) => node.class === 'hub-pic' || node.text === 'Load photo');
+  page.paint(state);
+  return { ...page, state, requests, photos };
+};
+
+test('Google photos load automatically in the open chat and stay cached across repaints, up to a bounded recent window', async () => {
+  const image = 'data:image/png;base64,AAAA';
+  const first = { id: 'first', at: 500, photos: [0] };
+  const second = { id: 'second', at: 1000, photos: [1] };
+  let finish;
+  const page = photoFixture([first, second], (msg) => msg.message === 'second' ? new Promise((resolve) => {
+    finish = resolve;
+  }) : image);
+  assert.equal(page.requests.length, 0, 'the list does not fetch photos');
+  page.rows()[0].onclick();
+  assert.deepEqual(page.requests, [[gmPhone, 'paired', 'second', 1]]);
+  assert.ok(page.photos().every((node) => node.tag === 'img' && !node.src), 'loading shows placeholders');
+  page.state.googleMessages.history.typing = true;
+  page.paint(page.state);
+  assert.equal(page.requests.length, 1, 'a repaint does not duplicate an in-flight fetch');
+  finish(image);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(page.requests.at(-1), [gmPhone, 'paired', 'first', 0]);
+  assert.deepEqual(page.photos().map((node) => node.src), [image, image]);
+  page.state.googleMessages.history.typing = false;
+  page.paint(page.state);
+  assert.equal(page.requests.length, 2, 'repainting both cached photos makes no additional fetch');
+  assert.deepEqual(page.photos().map((node) => node.src), [image, image]);
+
+  const more = Array.from({ length: 15 }, (_, i) => ({ id: 'photo-' + i, at: 1500 + i, photos: [0] }));
+  page.state.googleMessages.history.items = [first, second, ...more];
+  page.paint(page.state);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.requests.length, 14, 'only the 12 newest parts in the expanded history are fetched');
+  assert.deepEqual(page.requests.slice(2).map((request) => request[2]), more.slice(-12).reverse().map((msg) => msg.id));
+  assert.equal(page.photos().filter((node) => node.src).length, 12, 'older URLs are evicted');
+
+  const scroll = page.chat.children[1].children[1];
+  const bubbles = scroll.children[0];
+  scroll.getBoundingClientRect = () => ({ top: 0, bottom: 100 });
+  const showEarlierPhoto = () => {
+    page.photos().forEach((node, i) => {
+      node.getBoundingClientRect = () => i === 0 ? { top: 0, bottom: 60 } : { top: 200, bottom: 260 };
+    });
+  };
+  const replaceChildren = bubbles.replaceChildren.bind(bubbles);
+  bubbles.replaceChildren = (...nodes) => { replaceChildren(...nodes); showEarlierPhoto(); };
+  showEarlierPhoto();
+  scroll.listeners.scroll[0]();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(page.requests.slice(14), [[gmPhone, 'paired', 'first', 0]], 'scrolling loads just the newly visible part');
+  assert.equal(page.photos()[0].src, image, 'an earlier visible photo stays cached');
+  assert.equal(page.photos().filter((node) => node.src).length, 12);
+});
+
+test('a failed automatic Google photo fetch shows a retry and discards stale results after disconnect', async () => {
+  const image = 'data:image/png;base64,AAAA';
+  let attempt = 0;
+  let finish;
+  const page = photoFixture([{ id: 'message', at: 1000, photos: [0] }], () => {
+    attempt++;
+    if (attempt === 1 || attempt === 3) return false;
+    if (attempt === 4) return new Promise((resolve) => { finish = resolve; });
+    return image;
+  });
+  page.rows()[0].onclick();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.requests.length, 1);
+  assert.equal(page.photos()[0].text, 'Load photo');
+  page.state.googleMessages.history.typing = true;
+  page.paint(page.state);
+  assert.equal(page.requests.length, 1, 'failed photos wait for a click');
+  await page.photos()[0].onclick();
+  assert.equal(page.requests.length, 2);
+  assert.equal(page.photos()[0].src, image);
+
+  const gm = page.state.googleMessages;
+  page.state.googleMessages = { ...gm, state: 'offline' };
+  page.paint(page.state);
+  page.state.googleMessages = gm;
+  page.paint(page.state);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.photos()[0].text, 'Load photo', 'reconnecting refetches the old cached part');
+  const stale = page.photos()[0].onclick();
+  page.state.googleMessages = { ...gm, state: 'offline' };
+  page.paint(page.state);
+  page.state.googleMessages = gm;
+  page.paint(page.state);
+  finish('data:image/png;base64,BBBB');
+  await stale;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.requests.length, 5);
+  assert.equal(page.photos()[0].src, image, 'only the connected visit can fill its cache');
+});
+
 const gmPage = (googleMessages, extra = {}, result = () => true) => {
   const state = {
     ui: { chats: true },
