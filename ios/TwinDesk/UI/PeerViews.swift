@@ -571,8 +571,13 @@ struct PeerThreadView: View {
         status = tr("Sending…")
         core.peer.ask("sms.send", ["to": to, "body": body, "id": id]) { r in
             sending = false
-            if let e = r["error"] as? String, !e.isEmpty {
-                status = e
+            guard (r["ok"] as? Bool) == true else {
+                let error = r["error"] as? String ?? ""
+                if error == "recipient-unverified" {
+                    status = tr("Check the recipient on the phone before sending.")
+                } else {
+                    status = error.isEmpty ? tr("No answer") : tr(error)
+                }
                 return
             }
             // Keep anything typed after Send. Clear only the text that was acknowledged.

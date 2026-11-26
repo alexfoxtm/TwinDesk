@@ -464,7 +464,15 @@ private fun androidx.compose.foundation.layout.ColumnScope.Conversation(peer: Pe
                     if (text.trim() == body) text = ""
                     sending = ""
                     items.add(0, JSONObject().put("out", true).put("body", body))
-                } else { sendFailed = true; sending = tr("Not sent: {error}", "error" to (res.optString("error").let { if (it == "perm") tr("Messages access is required on {name}", "name" to peer.peerName) else it })) }
+                } else {
+                    sendFailed = true
+                    val reason = when (val error = res.optString("error")) {
+                        "perm" -> tr("Messages access is required on {name}", "name" to peer.peerName)
+                        "recipient-unverified" -> tr("Check the recipient on the phone before sending.")
+                        else -> tr(error)
+                    }
+                    sending = tr("Not sent: {error}", "error" to reason)
+                }
             }
         }
     }

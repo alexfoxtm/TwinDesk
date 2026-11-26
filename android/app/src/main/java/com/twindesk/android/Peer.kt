@@ -942,7 +942,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         if (to == null) {
             val error = when {
                 groupClaim || proof is Messages.RecipientProof.Group -> Messages.GROUP_REFUSED
-                !legacyWithoutThread -> "Check the recipient on the phone before sending."
+                !legacyWithoutThread -> "recipient-unverified"
                 else -> "Nothing to send"
             }
             return JSONObject().put("error", error)
