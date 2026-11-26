@@ -505,3 +505,70 @@ test('automatic developer refresh: next due within cfg.days, retry rest per devi
   cfg = { ...cfg, mode: 'apple' };
   assert.equal(sign.view.stored, null, 'Apple ID mode shows no developer build');
 });
+
+test('a blocked renewal never claims profiles stay in use when none are valid, and renewer errors never block valid caches', async (t) => {
+  const { MANAGED, create: createRenewer } = require('../ios-provision-profiles.js');
+  const f = await fixture(t);
+  const signal = new AbortController().signal;
+  const managed = { async renew() { return { state: 'managed', message: MANAGED }; } };
+  const make = (renewer) => create({ exec: f.exec, ipa: f.ipa, tmp: f.temp, profileDirs: [f.profileDir], renewer });
+  const installs = () => f.calls.filter((c) => c[0] === '/usr/bin/codesign' || (c[2] === 'device' && c[3] === 'install')).length;
+
+  // Valid cached profiles with 'managed': installs, and the page hears MANAGED.
+  let heard = [];
+  let receipt = await make(managed).install(target, signal, { force: true, onRenewal: (r) => heard.push(r) });
+  assert.equal(receipt.expires, f.ends);
+  assert.equal(receipt.renewal.state, 'managed');
+  assert.equal(heard[0].message, MANAGED);
+
+  // M2: valid cached profiles and a renewer that throws: the install still goes ahead.
+  heard = [];
+  const enotempty = { async renew() { throw Object.assign(new Error('ENOTEMPTY'), { code: 'ENOTEMPTY' }); } };
+  receipt = await make(enotempty).install(target, signal, { force: true, onRenewal: (r) => heard.push(r) });
+  assert.equal(receipt.expires, f.ends);
+  assert.equal(receipt.renewal.state, 'failed');
+  assert.equal(heard[0].state, 'failed');
+  // A renewer that aborts still aborts.
+  const controller = new AbortController();
+  const aborting = { async renew() { controller.abort(); throw Object.assign(new Error('aborted'), { name: 'AbortError' }); } };
+  await assert.rejects(make(aborting).install(target, controller.signal, { force: true }), { name: 'AbortError' });
+
+  // M1: all three profiles expired an hour ago, 'managed': expired guidance, nothing signed or installed.
+  const past = Math.floor(Date.now() / 1000) - 3600;
+  await Promise.all(f.profiles.map((p, i) => fs.writeFile(path.join(f.profileDir, i + '.mobileprovision'),
+    JSON.stringify({ ...p, ExpirationDate: new Date(past * 1000).toISOString() }))));
+  heard = [];
+  let before = installs();
+  await assert.rejects(make(managed).install(target, signal, { onRenewal: (r) => heard.push(r) }), (error) => {
+    assert.equal(error.kind, 'xcode');
+    assert.match(error.message, /expired/);
+    assert.doesNotMatch(error.message, /stay in use/);
+    assert.equal(heard[0].message, error.message);
+    return true;
+  });
+  assert.equal(installs(), before);
+  // Empty profile directory with 'managed': no profiles for this device.
+  await Promise.all([0, 1, 2].map((i) => fs.rm(path.join(f.profileDir, i + '.mobileprovision'))));
+  before = installs();
+  await assert.rejects(make(managed).install(target, signal), (error) => {
+    assert.equal(error.kind, 'xcode');
+    assert.match(error.message, /no TwinDesk profiles for this device/i);
+    assert.doesNotMatch(error.message, /stay in use/);
+    return true;
+  });
+  assert.equal(installs(), before);
+
+  // renew() with a missing project: 'failed', no Xcode call, nothing left in tmp.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ios-provision-missing-'));
+  t.after(() => fs.rm(tmp, { force: true, recursive: true }));
+  const calls = [];
+  const exec = async (file, args) => {
+    calls.push(file);
+    if (file === '/usr/bin/plutil') return { stdout: JSON.stringify({ someone: [{ teamID: TEAM }] }) };
+    assert.fail(`unexpected ${file} ${args.join(' ')}`);
+  };
+  const result = await createRenewer({ exec, tmp, project: path.join(tmp, 'missing-project'), prefs: path.join(tmp, 'prefs.plist') }).renew();
+  assert.equal(result.state, 'failed');
+  assert.ok(!calls.includes('/usr/bin/xcrun'));
+  assert.deepEqual(await fs.readdir(tmp), []);
+});

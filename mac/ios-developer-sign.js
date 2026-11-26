@@ -20,6 +20,9 @@ const CORE_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const IPA = path.join(__dirname, 'ios-developer', 'TwinDesk.ipa');
 const STORED = (userData) => path.join(userData, 'ios-developer', 'TwinDesk.ipa');
 const NO_IPA = 'No TwinDesk iPad build stored yet';
+const RENEW_FAILED = 'Xcode could not renew TwinDesk’s profiles';
+const EXPIRED_NOT_RENEWED = 'TwinDesk’s profiles for this device have expired and Xcode could not renew them. Renew them in Xcode, then Refresh now';
+const NONE_NOT_RENEWED = 'Xcode has no TwinDesk profiles for this device. Prepare them in Xcode, then Refresh now';
 
 function pairedDevices(devices) {
   const paired = new Map();
@@ -119,6 +122,7 @@ function create({
 
   async function profiles(work, udid, signal) {
     const chosen = new Map();
+    let expired = false; // a profile that passed every check but has run out
     const plist = path.join(work, 'profile.plist');
     const now = Date.now();
     for (const dir of profileDirs) {
@@ -152,8 +156,9 @@ function create({
           const cert = new crypto.X509Certificate(leaf);
           if (!cert.subject.split('\n').includes(`OU=${TEAM}`) || !(Date.parse(cert.validFrom) <= now && now < Date.parse(cert.validTo))) continue;
           const expires = Math.floor(Date.parse(expiration) / 1000);
-          if (!(expires * 1000 > now) || (chosen.get(id)?.expires || 0) >= expires) continue;
           if (!entitlements['keychain-access-groups']?.some((group) => group === appId || group === `${TEAM}.*`)) continue;
+          if (!(expires * 1000 > now)) { expired = true; continue; }
+          if ((chosen.get(id)?.expires || 0) >= expires) continue;
           chosen.set(id, { raw, expires, entitlement: {
             'application-identifier': appId,
             'com.apple.developer.team-identifier': TEAM,
@@ -166,7 +171,9 @@ function create({
         }
       }
     }
-    if (chosen.size !== 1 + EXTENSIONS.length) throw new Error('Xcode needs to prepare TwinDesk for the selected device');
+    if (chosen.size !== 1 + EXTENSIONS.length) {
+      throw Object.assign(new Error(expired ? 'TwinDesk’s profiles for this device have expired' : 'Xcode needs to prepare TwinDesk for the selected device'), { expired });
+    }
     return chosen;
   }
 
@@ -254,7 +261,12 @@ function create({
       const before = selectedProfiles ? minimum(selectedProfiles) : 0;
       let renewal = null;
       if (renewer && (force || !selectedProfiles || before * 1000 - Date.now() <= renewWithin * 1000)) {
-        renewal = { ...await renewer.renew(signal, { udid: target.udid }), before };
+        let outcome;
+        try { outcome = await renewer.renew(signal, { udid: target.udid }); } catch {
+          signal.throwIfAborted();
+          outcome = { state: 'failed', message: RENEW_FAILED };
+        }
+        renewal = { ...outcome, before };
         signal.throwIfAborted();
         try { selectedProfiles = await scan(); missing = null; } catch (error) {
           signal.throwIfAborted();
@@ -263,6 +275,8 @@ function create({
         }
         renewal.after = selectedProfiles ? minimum(selectedProfiles) : 0;
         if (renewal.after > before && renewal.state !== 'account') renewal.state = 'renewed';
+        // 'the current profiles stay in use' (managed) only holds while valid profiles remain.
+        if (!selectedProfiles && ['managed', 'failed'].includes(renewal.state)) renewal.message = missing?.expired ? EXPIRED_NOT_RENEWED : NONE_NOT_RENEWED;
         onRenewal?.(renewal);
       }
       if (!selectedProfiles) {

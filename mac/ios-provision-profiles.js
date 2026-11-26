@@ -25,6 +25,7 @@ const IDENTITY = '80F731EE19E02914C4634D57E8F7B1ADDDD63FD2';
 const PROJECT = path.join(__dirname, 'ios-provision');
 const XCODE_PREFS = path.join(os.homedir(), 'Library/Preferences/com.apple.dt.Xcode.plist');
 const SIGN_IN = 'Sign in to Xcode › Settings › Accounts';
+const FAILED = { state: 'failed', message: 'Xcode could not renew TwinDesk’s profiles' };
 const MANAGED = 'Xcode manages TwinDesk’s profiles for this team. Renew them in Xcode; the current profiles stay in use until then';
 
 // The exact, only command this module runs (work: a private copy of the project).
@@ -42,7 +43,7 @@ function classify(output, code) {
   if (/is Xcode managed, but signing settings require a manually managed profile/.test(text)) return { state: 'managed', message: MANAGED };
   if (/unable to find utility "xcodebuild"|requires Xcode|active developer directory .* is a command line tools instance/i.test(text)) return { state: 'unavailable', message: 'Install Xcode to renew TwinDesk’s profiles' };
   if (code === 0) return { state: 'current', message: '' };
-  return { state: 'failed', message: 'Xcode could not renew TwinDesk’s profiles' };
+  return { ...FAILED };
 }
 
 function create({ exec = promisify(execFile), tmp = os.tmpdir(), project = PROJECT, prefs = XCODE_PREFS } = {}) {
@@ -63,10 +64,19 @@ function create({ exec = promisify(execFile), tmp = os.tmpdir(), project = PROJE
   async function renew(signal = new AbortController().signal) {
     signal.throwIfAborted();
     if (!await account(signal)) return { state: 'account', message: SIGN_IN };
-    const work = await fs.mkdtemp(path.join(tmp, 'twindesk-ios-provision-'));
+    let work;
+    try { work = await fs.mkdtemp(path.join(tmp, 'twindesk-ios-provision-')); } catch {
+      signal.throwIfAborted();
+      return { ...FAILED };
+    }
     try {
       // A private copy: the app's own Resources stay untouched (and signed).
-      await fs.cp(project, work, { recursive: true, filter: (src) => !/(?:^|\/)(?:build|xcuserdata)(?:\/|$)/.test(path.relative(project, src)) });
+      try {
+        await fs.cp(project, work, { recursive: true, filter: (src) => !/(?:^|\/)(?:build|xcuserdata)(?:\/|$)/.test(path.relative(project, src)) });
+      } catch {
+        signal.throwIfAborted();
+        return { ...FAILED };
+      }
       let output = '';
       let code = 0;
       try {
@@ -79,7 +89,7 @@ function create({ exec = promisify(execFile), tmp = os.tmpdir(), project = PROJE
       }
       return classify(output, code);
     } finally {
-      await fs.rm(work, { recursive: true, force: true });
+      await fs.rm(work, { recursive: true, force: true }).catch(() => {});
     }
   }
 
