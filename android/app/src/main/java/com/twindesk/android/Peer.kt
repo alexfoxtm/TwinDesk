@@ -288,7 +288,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         send(msg("peer.rev", "token" to token, "fp" to myFp, "port" to PeerServer.PEER_PORT))
         started()
     }
-    override fun onMessage(m: JSONObject, route: Link.TrustedRoute?, source: okhttp3.WebSocket) = dispatch(m)
+    override fun onMessage(m: JSONObject, route: Link.TrustedRoute?, source: okhttp3.WebSocket) = dispatch(m, route?.marker)
     override fun onClosed(host: Host, code: String?) {
         if (role == "guest") ended()
         // Dropped by accident: try to get it back for a while (as Core does with the computer).
@@ -317,7 +317,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
                 Proto.T.PING -> ws.send(msg(Proto.T.PONG, "ts" to m.opt("ts")).toString())
                 Proto.T.PONG -> Unit
                 Proto.T.BYE -> ws.close()
-                else -> dispatch(m)
+                else -> dispatch(m, ws)
             }
             return
         }
@@ -535,7 +535,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
 
     @Volatile var peerModel = ""; private set
 
-    private fun dispatch(m: JSONObject) {
+    private fun dispatch(m: JSONObject, marker: Any?) {
         when (m.optString("t")) {
             "peer.key" -> key = m.optString("key").take(64)
             "peer.info" -> {
@@ -561,7 +561,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
             "f.pull" -> Unit
             "f.done" -> outDone(m.optString("id"), m.optBoolean("ok"))
             "f.cancel" -> { inFailed(m.optString("id")); outFiles.remove(m.optString("id")) }
-            "q" -> work.execute { answer(m) }
+            "q" -> if (marker != null) work.execute { answer(m, marker) }
             "r" -> calls.remove(m.optString("qid"))?.let { cb -> main.post { cb(m) } }
             "screen.ready" -> PeerScreen.ready(this)
             "screen.stop" -> PeerScreen.remoteStop(this)
@@ -844,11 +844,12 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
     private val media by lazy { Media(core.hub, core) }
     private val fs by lazy { FsBrowse(core) }
 
-    private fun answer(m: JSONObject) {
+    private fun answer(m: JSONObject, marker: Any) {
+        if (notificationRecipient()?.marker !== marker) return
         val id = m.optString("qid")
-        val r = runCatching { op(m.optString("op"), m) }.getOrElse { e -> JSONObject().put("error", e.message ?: "Failed") }
-        // Thumbnails wait while files are queued on the session.
-        send(r.put("t", "r").put("qid", id))
+        val r = runCatching { op(m.optString("op"), m, marker) }.getOrElse { e -> JSONObject().put("error", e.message ?: "Failed") }
+        // A request that finishes after replacement cannot send its response to the new peer.
+        sendFor(marker, r.put("t", "r").put("qid", id))
     }
 
     private fun need(what: String): JSONObject? {
@@ -857,7 +858,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         return JSONObject().put("error", "perm").put("perm", p)
     }
 
-    private fun op(op: String, m: JSONObject): JSONObject = when (op) {
+    private fun op(op: String, m: JSONObject, marker: Any): JSONObject = when (op) {
         "perms" -> JSONObject().put("messages", core.hub.perm("messages")).put("media", core.hub.perm("media")).put("files", core.hub.perm("files"))
         "ask" -> {
             val what = m.str("what", 20)
@@ -870,7 +871,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
         "sms.threads" -> need("messages") ?: JSONObject().put("items", messages.threads(m.optInt("n", 80)))
         "sms.thread" -> need("messages") ?: messages.thread(m).let { JSONObject().put("items", it.optJSONArray("items") ?: JSONArray()).put("more", it.optBoolean("more")) }
         "sms.part" -> need("messages") ?: JSONObject().put("data", messages.part(m.str("id", 40)))
-        "sms.send" -> need("messages") ?: smsSend(m)
+        "sms.send" -> need("messages") ?: smsSend(m, marker)
         "media.list" -> need("media") ?: media.list(m).let { JSONObject().put("items", it.optJSONArray("items")).put("more", it.optBoolean("more")).put("next", it.optString("next")) }
         "media.thumb" -> JSONObject().put("data", thumb(m.str("id", 40)))
         "media.view" -> JSONObject().put("data", media.view(m.str("id", 40)))
@@ -926,7 +927,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
     }.getOrNull()
 
     @Suppress("DEPRECATION")
-    private fun smsSend(m: JSONObject): JSONObject {
+    private fun smsSend(m: JSONObject, marker: Any): JSONObject {
         if (!core.hub.granted(Manifest.permission.SEND_SMS)) return JSONObject().put("error", "Allow sending messages on $peerName")
         val body = m.str("body", 5000)
         val requested = m.str("to", 60)
@@ -947,6 +948,9 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
             return JSONObject().put("error", error)
         }
         if (body.isBlank()) return JSONObject().put("error", "Nothing to send")
+        if (notificationRecipient()?.marker !== marker) return JSONObject().put("error", "Not connected")
+        need("messages")?.let { return it }
+        if (!core.hub.granted(Manifest.permission.SEND_SMS)) return JSONObject().put("error", "perm")
         val sm = if (android.os.Build.VERSION.SDK_INT >= 31) ctx.getSystemService(android.telephony.SmsManager::class.java) else android.telephony.SmsManager.getDefault()
         sm.sendMultipartTextMessage(to, null, sm.divideMessage(body), null, null)
         return JSONObject().put("ok", true)

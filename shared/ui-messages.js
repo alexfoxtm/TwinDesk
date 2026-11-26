@@ -368,7 +368,9 @@ UI.tab({
     let chatOpen = '';
     let chatDraft = null; // {key, offer, proof}: the notification offer a draft started on
     const textDrafts = new Map(); // exact phone + Texts conversation (or "new") -> {text, to}
-    const chatDrafts = new Map(); // exact phone + verified chat key -> {text, offer, proof}
+    const chatDrafts = new Map(); // exact phone + verified chat key -> {text, offer, proof, revision}
+    let nextChatRevision = 0;
+    let chatRevision = 0;
     let holdPicture = false; // a new-message picture that cannot move into the Google chat
     let openContact = null;
     let chatEpoch = 0;
@@ -419,12 +421,13 @@ UI.tab({
       if (!key) return;
       if (!chatBox.value.trim()) { chatDrafts.delete(key); return; }
       const pinned = chatDraft && chatDraft.key === chatOpen ? chatDraft : null;
-      chatDrafts.set(key, { text: chatBox.value, offer: pinned?.offer || null, proof: pinned?.proof || null });
+      chatDrafts.set(key, { text: chatBox.value, offer: pinned?.offer || null, proof: pinned?.proof || null, revision: chatRevision });
     }
     function restoreChat(id) {
       const key = chatDraftKey(id);
       if (!key) return;
       const saved = chatDrafts.get(key);
+      chatRevision = saved?.revision || ++nextChatRevision;
       if (!saved?.text) { chatBox.value = ''; chatDraft = null; return; }
       chatBox.value = saved.text;
       chatDraft = { key: id, offer: saved.offer || null, proof: saved.proof || null };
@@ -857,7 +860,7 @@ UI.tab({
       const epoch = chatEpoch;
       const { deviceId, session } = UI.state.hub || {};
       const allowCarrier = !!t.dest && (!!notificationReply(t, image) || canText(t, image));
-      const request = { key: t.key };
+      const request = { key: t.key, draftKey: chatDraftKey(t.key), revision: chatRevision };
       gmSend = request;
       gmError = '';
       paintChats(UI.state, true);
@@ -866,8 +869,18 @@ UI.tab({
       gmSend = null;
       const currentGM = UI.state.googleMessages;
       const hub = UI.state.hub;
-      if (epoch !== chatEpoch || chatOpen !== t.key || currentGM?.owner !== gm.owner ||
-          hub?.deviceId !== deviceId || hub?.session !== session) {
+      const sameSession = currentGM?.owner === gm.owner &&
+        hub?.deviceId === deviceId && hub?.session === session;
+      if (ok === true && sameSession) {
+        if (request.draftKey && chatDrafts.get(request.draftKey)?.revision === request.revision) {
+          chatDrafts.delete(request.draftKey);
+        }
+        if (chatOpen === t.key && chatRevision === request.revision && chatBox.value.trim() === text) {
+          chatBox.value = '';
+          chatDraft = null;
+        }
+      }
+      if (epoch !== chatEpoch || chatOpen !== t.key || !sameSession) {
         paintChats(UI.state, true);
         return;
       }
@@ -883,11 +896,6 @@ UI.tab({
       if (ok === true) {
         // Clear only the picture and caption that were acknowledged. An edit made while sending stays.
         if (image && chatPic.get() === image) chatPic.clear();
-        if (chatBox.value.trim() === text) {
-          chatBox.value = '';
-          chatDraft = null;
-          chatDrafts.delete(chatDraftKey(t.key));
-        }
       } else gmError = ok === 'not-dispatched' ? tr('Google Messages is unavailable. Check the reply options and try again.')
         : tr('Google Messages could not confirm the send. Check the conversation before retrying.');
       paintChats(UI.state, true);
@@ -1087,6 +1095,7 @@ UI.tab({
     }
 
     chatBox.addEventListener('input', () => {
+      chatRevision = ++nextChatRevision;
       if (!chatBox.value.trim()) { chatDraft = null; return; }
       const t = selectedChat();
       if (!t || chatDraft?.key === t.key) return;
@@ -1255,10 +1264,11 @@ UI.tab({
           chatKey = '';
           openChat(known[0]);
           chatBox.value = text;
+          chatRevision = ++nextChatRevision;
           if (text) {
             chatDraft = { key: known[0].key, offer: null, proof: null };
             const moved = chatDraftKey(known[0].key);
-            if (moved) chatDrafts.set(moved, { text, offer: null, proof: null });
+            if (moved) chatDrafts.set(moved, { text, offer: null, proof: null, revision: chatRevision });
           } else {
             chatDraft = null;
             chatDrafts.delete(chatDraftKey(known[0].key));

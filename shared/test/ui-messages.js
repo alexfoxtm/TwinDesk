@@ -1685,7 +1685,10 @@ test('a Google send keeps the caption with its picture and clears only an unchan
   const state = {
     ui: { chats: true },
     hub: { deviceId: gmPhone, session: 1, messages: true, perm: { messages: { mms: true } } },
-    googleMessages: connected([{ id: 'paired', name: 'Fixture', addrs: [gmDest], reply: true, kind: 'rcs', at: 2000 }], {
+    googleMessages: connected([
+      { id: 'paired', name: 'Fixture', addrs: [gmDest], reply: true, kind: 'rcs', at: 2000 },
+      { id: 'another', name: 'Other fixture', addrs: ['+12025550199'], reply: true, kind: 'rcs', at: 1000 },
+    ], {
       chat: 'paired', loaded: true, items: [
         { id: 'file-1', at: 1000, text: '', attachment: true, me: false },
         { id: 'file-2', at: 2000, text: 'Hello', me: false },
@@ -1733,6 +1736,15 @@ test('a Google send keeps the caption with its picture and clears only an unchan
   assert.equal(sent.at(-1).text, 'Second');
   assert.equal(sent.at(-1).image, 'data:image/jpeg;base64,AA==');
   assert.equal(sent.at(-1).allowCarrier, false);
+
+  box.value = 'Send before switching';
+  const leaving = composer.children[3].onclick();
+  rows()[1].onclick();
+  assert.equal(box.value, '');
+  resolveSend(true);
+  await leaving;
+  rows()[0].onclick();
+  assert.equal(box.value, '', 'a confirmed send never reappears as a stored draft');
 });
 
 test('a new-message picture stays visible when that Google chat cannot take it', async () => {

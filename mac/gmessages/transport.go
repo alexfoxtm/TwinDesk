@@ -723,8 +723,12 @@ func (b *inbox) photo(ctx context.Context, cmd command) bool {
 	if cmd.Part < 0 || cmd.Part >= len(parts) {
 		return false
 	}
-	m := parts[cmd.Part].GetMediaContent()
+	part := parts[cmd.Part]
+	m := part.GetMediaContent()
 	if m == nil {
+		m = part.GetLocationContent().GetMediaContent()
+	}
+	if m == nil || !mediaImage(m) {
 		return false
 	}
 	id, key := m.GetMediaID(), m.GetDecryptionKey()
