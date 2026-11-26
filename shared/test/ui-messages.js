@@ -841,3 +841,91 @@ test('with the Chats switch off, an open chat and its draft outlast a phone drop
   assert.equal(two.box.value, 'Synthetic group draft', 'the draft survives a Google Messages outage');
   assert.ok(!two.chat.hidden && !two.conv.hidden, 'the conversation is open again');
 });
+
+test('All collapses Chat and Texts for one verified person across national and E.164 forms, in time order and route priority', async () => {
+  const phone = 'fixture-phone';
+  const app = 'com.google.android.apps.messaging';
+  const order = (chat) => Array.from(chat.children[1].children[1].children[0].children)
+    .filter((node) => node.class?.startsWith('hub-bubble')).map((node) => node.children[0].text);
+  const hub = () => ({ deviceId: phone, session: 1, messages: true, perm: { messages: { missing: [] } } });
+
+  // A national messagePeer under this phone's NANP context joins the E.164 carrier thread. An
+  // unusable peer with no address, a group and a display name alone never join it.
+  const state = {
+    ui: { chats: true }, hub: hub(), chatsMessaging: true,
+    chats: [
+      { key: 'national-peer', app, name: 'Fixture person', messagePeer: '2025550100', from: phone,
+        replySession: 'r:fixture', reply: true, at: 2500,
+        items: [{ id: 'r1', text: 'Chat one', at: 1500 }, { id: 'r2', text: 'Chat two', at: 2500 }] },
+      { key: 'unusable-peer', app, name: 'Fixture person', messagePeer: 'not-a-number', at: 3000,
+        items: [{ id: 'u1', text: 'Unverified', at: 3000 }] },
+      { key: 'group', app, name: 'Fixture person', group: true, messagePeer: '+12025550100', at: 50,
+        items: [{ id: 'g1', text: 'Group', at: 50 }] },
+    ],
+  };
+  const one = inbox(state);
+  one.paint(state);
+  one.received.get('sms.threads')({ nanp: true, items: [
+    { id: 'carrier', addrs: ['+12025550100'], e164: '+12025550100', name: 'Fixture person', at: 2000, snippet: 'Text two' },
+  ] });
+  assert.equal(one.rows().length, 3, 'one merged person, the unverified chat and the group');
+  one.rows()[1].onclick();
+  assert.equal(one.asked.at(-1).t, 'sms.thread');
+  assert.equal(one.asked.at(-1).id, 'carrier');
+  one.received.get('sms.thread')({ id: 'carrier', items: [
+    { id: 's2', at: 2000, body: 'Text two', out: true },
+    { id: 's1', at: 1000, body: 'Text one' },
+  ] });
+  assert.deepEqual(order(one.chat), ['Text one', 'Chat one', 'Text two', 'Chat two']);
+  const composer = one.chat.children[1].children[3];
+  const reply = async (page, c) => {
+    c.children[2].children[1].value = 'Synthetic reply';
+    await c.children[3].onclick();
+  };
+  const texts = (page) => page.asked.filter((x) => x.t === 'sms.send');
+  await reply(one, composer);
+  assert.equal(one.replies.length, 1, 'the live exact phone Reply goes first');
+  assert.equal(one.replies[0].chat, 'national-peer');
+  assert.equal(texts(one).length, 0);
+  state.chats[0].reply = false;
+  state.chats[0].replySession = undefined;
+  one.paint(state);
+  await reply(one, composer);
+  assert.equal(one.replies.length, 1);
+  assert.equal(texts(one).length, 1, 'then exactly one SMS to the verified destination');
+  assert.equal(texts(one)[0].to, '+12025550100');
+
+  // An unusable peer on a paired Google row falls through to its verified E.164 address, which
+  // joins the national carrier thread. Writable RCS goes first; an unconfirmed send is never retried by SMS.
+  const google = [];
+  let result = true;
+  const paired = {
+    ui: { chats: true }, hub: hub(),
+    googleMessages: {
+      owner: phone, state: 'connected', enabled: true,
+      rows: [{ id: 'paired', name: 'Fixture person', messagePeer: 'not-a-number', addrs: ['+12025550111'], reply: true, at: 3000 }],
+      history: { chat: 'paired', loaded: true, items: [{ id: 'h1', at: 1500, text: 'RCS one', me: false, transport: 'rcs' }] },
+    },
+  };
+  const two = inbox(paired, { async googleMessages(msg) { google.push(msg); return msg.op === 'send' ? result : true; } });
+  two.paint(paired);
+  two.received.get('sms.threads')({ nanp: true, items: [
+    { id: 'carrier-national', addrs: ['2025550111'], e164: '+12025550111', name: 'Fixture person', at: 2000, snippet: 'SMS two' },
+  ] });
+  assert.equal(two.rows().length, 1, 'the paired row and the national carrier thread are one person');
+  two.rows()[0].onclick();
+  two.received.get('sms.thread')({ id: 'carrier-national', items: [
+    { id: 't2', at: 2000, body: 'SMS two' }, { id: 't1', at: 1000, body: 'SMS one' },
+  ] });
+  assert.deepEqual(order(two.chat), ['SMS one', 'RCS one', 'SMS two']);
+  const pairedComposer = two.chat.children[1].children[3];
+  await reply(two, pairedComposer);
+  const sends = () => google.filter((x) => x.op === 'send');
+  assert.equal(sends().length, 1);
+  assert.equal(sends()[0].chat, 'paired');
+  assert.equal(sends()[0].allowCarrier, true);
+  result = false;
+  await reply(two, pairedComposer);
+  assert.equal(sends().length, 2);
+  assert.equal(texts(two).length, 0, 'an uncertain dispatch is never repeated by SMS');
+});

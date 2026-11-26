@@ -23,8 +23,11 @@ const sameDestination = (a, b) => !!a && a === b;
 const messageText = (text) => String(text || '').replace(/\r\n/g, '\n').trim();
 
 function contactThreads(carrier, chats, nanp) {
-  const address = (c) => c.group ? '' : c.messagePeer ? destination(c.messagePeer)
-    : c.addrs?.length === 1 ? destination(c.e164) || destination(c.addrs[0], nanp) : '';
+  // A verified one-to-one destination: Android's messagePeer first, else the row's single
+  // address (the phone's E.164 or, with this phone's NANP SIM context, a national number).
+  // A peer that does not parse never blocks an independently verified address.
+  const address = (c) => c.group ? '' : destination(c.messagePeer, nanp) ||
+    (c.addrs?.length === 1 ? destination(c.e164) || destination(c.addrs[0], nanp) : '');
   const google = chats.filter((c) => c.google && address(c));
   const identifies = (thread, paired) => thread.pkg === 'com.google.android.apps.messaging' &&
     thread.msgs?.some((m) => m.match && paired.fingerprints?.some((f) => f.at === m.at && f.matches.includes(m.match)));
