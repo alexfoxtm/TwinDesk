@@ -388,53 +388,6 @@ test('profile-only renewal runs within cfg.days or on Refresh now and never bloc
   await assert.rejects(developer.install(target, controller.signal), { name: 'AbortError' });
 });
 
-test('the renewer only runs the pinned, manually signed, provisioning-only xcodebuild', async (t) => {
-  const renew = require('../ios-provision-profiles.js');
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'ios-provision-test-'));
-  t.after(() => fs.rm(temp, { force: true, recursive: true }));
-  const argv = renew.args('/w');
-  assert.ok(argv.includes('-allowProvisioningUpdates'));
-  assert.ok(!argv.some((a) => /DeviceRegistration|Automatic|authenticationKey|-exportArchive|archive/i.test(a)), argv.join(' '));
-  for (const pin of ['CODE_SIGN_STYLE=Manual', `DEVELOPMENT_TEAM=${TEAM}`, `CODE_SIGN_IDENTITY=${IDENTITY}`, 'generic/platform=iOS']) assert.ok(argv.includes(pin), pin);
-  // The shipped project: manual signing only, exactly TwinDesk's three IDs, the pinned team and certificate.
-  const pbx = await fs.readFile(path.join(renew.PROJECT, 'TwinDeskProvision.xcodeproj', 'project.pbxproj'), 'utf8');
-  assert.ok(!/Automatic/.test(pbx));
-  assert.deepEqual([...new Set([...pbx.matchAll(/PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);/g)].map((m) => m[1]))].sort(), ids.slice().sort());
-  assert.ok([...pbx.matchAll(/CODE_SIGN_STYLE = (\w+);/g)].every((m) => m[1] === 'Manual'));
-  assert.ok([...pbx.matchAll(/DEVELOPMENT_TEAM = (\w+);/g)].every((m) => m[1] === TEAM));
-  assert.ok([...pbx.matchAll(/CODE_SIGN_IDENTITY = (\w+);/g)].every((m) => m[1] === IDENTITY));
-
-  assert.equal(renew.classify('error: No Accounts: Add a new account in Accounts settings.', 65).message, 'Sign in to Xcode › Settings › Accounts');
-  assert.equal(renew.classify('error: No account for team "5H4D7574Z4".', 65).state, 'account');
-  assert.equal(renew.classify('Provisioning profile "iOS Team Provisioning Profile: com.twindesk.ios" is Xcode managed, but signing settings require a manually managed profile.', 65).state, 'managed');
-  assert.equal(renew.classify('** BUILD SUCCEEDED **', 0).state, 'current');
-  assert.equal(renew.classify('something else', 65).state, 'failed');
-
-  const prefs = path.join(temp, 'xcode.plist');
-  const calls = [];
-  let teams = { someone: [{ teamID: 'OTHERTEAM1' }] };
-  const exec = async (file, args, options) => {
-    calls.push([file, ...args]);
-    options.signal?.throwIfAborted();
-    if (file === '/usr/bin/plutil') return { stdout: JSON.stringify(teams) };
-    assert.equal(file, '/usr/bin/xcrun');
-    const work = path.dirname(args[args.indexOf('-project') + 1]);
-    assert.ok(work.startsWith(temp), 'a private copy, never the app’s own Resources');
-    await fs.access(path.join(work, 'TwinDeskProvision.xcodeproj', 'project.pbxproj'));
-    throw Object.assign(new Error('Command failed'), { code: 65,
-      stdout: 'error: Provisioning profile "iOS Team Provisioning Profile: com.twindesk.ios" is Xcode managed, but signing settings require a manually managed profile.' });
-  };
-  const renewer = renew.create({ exec, tmp: temp, prefs });
-  assert.deepEqual(await renewer.renew(), { state: 'account', message: 'Sign in to Xcode › Settings › Accounts' });
-  assert.ok(!calls.some((c) => c[0] === '/usr/bin/xcrun'), 'no Xcode call without the pinned team signed in');
-  teams = { someone: [{ teamID: TEAM, isFreeProvisioningTeam: true }] };
-  assert.equal((await renewer.renew()).state, 'managed');
-  const xcode = calls.filter((c) => c[0] === '/usr/bin/xcrun');
-  assert.equal(xcode.length, 1);
-  assert.deepEqual(xcode[0].slice(1), renew.args(path.dirname(xcode[0][xcode[0].indexOf('-project') + 1])));
-  assert.deepEqual(await fs.readdir(temp), [], 'the private copy is removed');
-});
-
 test('automatic developer refresh: next due within cfg.days, retry rest per device, renewal options and scoping', async (t) => {
   const now = Date.parse('2026-11-26T12:00:00Z');
   let clock = now;
@@ -558,17 +511,157 @@ test('a blocked renewal never claims profiles stay in use when none are valid, a
   });
   assert.equal(installs(), before);
 
-  // renew() with a missing project: 'failed', no Xcode call, nothing left in tmp.
+  // renew() with a missing project: 'failed', no Xcode call, nothing left in tmp, profiles untouched.
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ios-provision-missing-'));
   t.after(() => fs.rm(tmp, { force: true, recursive: true }));
+  const prefs = path.join(f.temp, 'prefs.json');
+  await fs.writeFile(prefs, JSON.stringify({ IDEProvisioningTeamByIdentifier: { someone: [{ teamID: TEAM }] } }));
   const calls = [];
-  const exec = async (file, args) => {
+  const exec = async (file, args, options) => {
     calls.push(file);
-    if (file === '/usr/bin/plutil') return { stdout: JSON.stringify({ someone: [{ teamID: TEAM }] }) };
-    assert.fail(`unexpected ${file} ${args.join(' ')}`);
+    if (file === '/usr/bin/xcrun') assert.fail(`unexpected ${args.join(' ')}`);
+    return f.exec(file, args, options);
   };
-  const result = await createRenewer({ exec, tmp, project: path.join(tmp, 'missing-project'), prefs: path.join(tmp, 'prefs.plist') }).renew();
+  const result = await createRenewer({ exec, tmp, project: path.join(tmp, 'missing-project'), prefs, profileDir: f.profileDir, log: () => {} })
+    .renew(undefined, { udid: IPAD });
   assert.equal(result.state, 'failed');
   assert.ok(!calls.includes('/usr/bin/xcrun'));
   assert.deepEqual(await fs.readdir(tmp), []);
+  assert.ok(!(await fs.readdir(f.temp)).some((n) => n.startsWith('.twindesk-')), 'no backup or lock left');
+});
+
+// A stand-in Mac for the renewer: Xcode's profile folder, prefs and identities, and an xcodebuild
+// whose behavior each case chooses.
+async function renewRig(t, xcodebuild) {
+  const f = await fixture(t);
+  const renew = require('../ios-provision-profiles.js');
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ios-provision-rig-'));
+  t.after(() => fs.rm(tmp, { force: true, recursive: true }));
+  const prefs = path.join(f.temp, 'prefs.json');
+  await fs.writeFile(prefs, JSON.stringify({ IDEProvisioningTeamByIdentifier: { someone: [{ teamID: TEAM, isFreeProvisioningTeam: true }] } }));
+  // Not TwinDesk's for this device: another app, and TwinDesk for another device. Never moved.
+  const unrelated = {
+    'other-app.mobileprovision': { ...f.profiles[0], Entitlements: { ...f.profiles[0].Entitlements, 'application-identifier': `${TEAM}.com.example.other` } },
+    'other-device.mobileprovision': { ...f.profiles[0], ProvisionedDevices: [IPHONE] },
+  };
+  for (const [name, p] of Object.entries(unrelated)) await fs.writeFile(path.join(f.profileDir, name), JSON.stringify(p));
+  const r = { f, renew, tmp, prefs, unrelated, xcode: [], logs: [] };
+  r.fresh = (patch = {}) => Promise.all(f.profiles.map((p, i) => fs.writeFile(path.join(f.profileDir, `fresh-${i}.mobileprovision`),
+    JSON.stringify({ ...p, ExpirationDate: new Date((f.ends + 6 * 86400) * 1000).toISOString(), ...patch }))));
+  r.exec = async (file, args, options) => {
+    if (file === '/usr/bin/xcrun' && args[0] === 'xcodebuild') {
+      r.xcode.push(args);
+      options.signal?.throwIfAborted();
+      // Xcode sees no TwinDesk profiles for the device: they were moved aside.
+      const names = await fs.readdir(f.profileDir);
+      assert.deepEqual(names.sort(), Object.keys(unrelated).sort(), 'only the device’s three TwinDesk profiles are moved aside');
+      return xcodebuild(r, args, options);
+    }
+    return f.exec(file, args, options);
+  };
+  r.renewer = r.renew.create({ exec: r.exec, tmp, prefs, profileDir: f.profileDir, log: (l) => r.logs.push(l) });
+  r.names = async () => (await fs.readdir(f.profileDir)).sort();
+  r.leftovers = async () => (await fs.readdir(f.temp)).filter((n) => n.startsWith('.twindesk-'));
+  r.original = ['0.mobileprovision', '1.mobileprovision', '2.mobileprovision', ...Object.keys(unrelated)].sort();
+  return r;
+}
+
+test('guarded automatic renewal: pinned arguments, profiles moved aside, fresh profiles validated, backup removed', async (t) => {
+  const r = await renewRig(t, async (rig) => { await rig.fresh(); return { stdout: '** BUILD SUCCEEDED **', stderr: '' }; });
+  const developer = create({ exec: r.f.exec, ipa: r.f.ipa, tmp: r.f.temp, profileDirs: [r.f.profileDir], renewer: r.renewer });
+  const receipt = await developer.install(target, new AbortController().signal, { force: true });
+  assert.equal(receipt.renewal.state, 'renewed');
+  assert.equal(receipt.renewal.before, r.f.ends);
+  assert.equal(receipt.expires, r.f.ends + 6 * 86400, 'the fresh profiles are the ones installed');
+  const argv = r.xcode[0];
+  assert.deepEqual(argv, r.renew.args(path.dirname(argv[argv.indexOf('-project') + 1]), IPAD));
+  for (const pin of ['-allowProvisioningUpdates', 'CODE_SIGN_STYLE=Automatic', `DEVELOPMENT_TEAM=${TEAM}`, `id=${IPAD}`]) assert.ok(argv.includes(pin), pin);
+  assert.ok(!argv.some((a) => /DeviceRegistration|authenticationKey|archive|Manual/i.test(a)), argv.join(' '));
+  assert.deepEqual(await r.names(), [...Object.keys(r.unrelated), 'fresh-0.mobileprovision', 'fresh-1.mobileprovision', 'fresh-2.mobileprovision'].sort(),
+    'old TwinDesk profiles are gone after a validated renewal; unrelated ones untouched');
+  assert.deepEqual(await r.leftovers(), [], 'no backup or lock left');
+  assert.deepEqual(await fs.readdir(r.tmp), []);
+  // The shipped project: automatic signing for the pinned team, exactly TwinDesk's three IDs, nothing else.
+  const pbx = await fs.readFile(path.join(r.renew.PROJECT, 'TwinDeskProvision.xcodeproj', 'project.pbxproj'), 'utf8');
+  assert.deepEqual([...new Set([...pbx.matchAll(/PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);/g)].map((m) => m[1]))].sort(), ids.slice().sort());
+  assert.ok([...pbx.matchAll(/DEVELOPMENT_TEAM = (\w+);/g)].every((m) => m[1] === TEAM));
+  assert.ok(!/ENTITLEMENTS|PROVISIONING_PROFILE|Manual/.test(pbx));
+});
+
+test('guarded automatic renewal restores the moved profiles on failure, abort, bad profiles or a new certificate', async (t) => {
+  const NEW = 'B'.repeat(40);
+  const cases = {
+    failure: async () => { throw Object.assign(new Error('Command failed'), { code: 65, stdout: 'error: No profiles for com.twindesk.ios' }); },
+    'no device': async (rig) => { await rig.fresh({ ProvisionedDevices: [IPHONE] }); return { stdout: '' }; },
+    'other certificate': async (rig) => { await rig.fresh({ DeveloperCertificates: '<array><data>YQ==</data></array>' }); return { stdout: '' }; },
+    'new certificate': async (rig) => {
+      rig.f.valid = `${rig.f.valid}\n  2) ${NEW} "Apple Development: Test fixture (NEWCERT123)"`;
+      await rig.fresh();
+      return { stdout: '' };
+    },
+    'no account': null,
+    'no pinned certificate': null,
+  };
+  for (const [name, xcodebuild] of Object.entries(cases)) {
+    const r = await renewRig(t, xcodebuild || (async () => assert.fail('xcodebuild must not run')));
+    if (name === 'no account') await fs.writeFile(r.prefs, JSON.stringify({ IDEProvisioningTeamByIdentifier: { someone: [{ teamID: 'OTHERTEAM1' }] } }));
+    if (name === 'no pinned certificate') r.f.valid = r.f.valid.replace(IDENTITY, 'A'.repeat(40));
+    const result = await r.renewer.renew(new AbortController().signal, { udid: IPAD });
+    const expected = { failure: 'failed', 'no device': 'failed', 'other certificate': 'failed', 'new certificate': 'failed', 'no account': 'account', 'no pinned certificate': 'failed' }[name];
+    assert.equal(result.state, expected, name);
+    if (name === 'no account') assert.equal(result.message, 'Sign in to Xcode › Settings › Accounts');
+    if (name === 'no pinned certificate') assert.equal(result.message, 'The Mac’s TwinDesk signing certificate is unavailable');
+    if (name === 'new certificate') {
+      assert.match(result.message, /Xcode created a new certificate/);
+      assert.deepEqual(result.identities, [NEW]);
+      assert.ok(r.logs.some((l) => l.includes(NEW) && /not revoked/.test(l)));
+      assert.ok(!r.f.calls.some((c) => c.includes('delete-identity') || c.includes('delete-certificate')), 'nothing revoked or deleted');
+    }
+    if (!xcodebuild) assert.equal(r.xcode.length, 0, name);
+    const names = await r.names();
+    for (const old of r.original) assert.ok(names.includes(old), `${name}: ${old} restored`);
+    assert.deepEqual(await r.leftovers(), [], name);
+  }
+
+  // Abort during xcodebuild: rejects, and the profiles are back.
+  const controller = new AbortController();
+  const r = await renewRig(t, (rig, args, options) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    controller.abort();
+  }));
+  await assert.rejects(r.renewer.renew(controller.signal, { udid: IPAD }), { name: 'AbortError' });
+  assert.deepEqual(await r.names(), r.original);
+  assert.deepEqual(await r.leftovers(), []);
+});
+
+test('a backup that cannot be restored is kept and recovered by the next run; one renewal at a time', async (t) => {
+  const fsp = require('node:fs/promises');
+  const r = await renewRig(t, async () => { throw Object.assign(new Error('Command failed'), { code: 65 }); });
+  const link = t.mock.method(fsp, 'link', async () => { throw Object.assign(new Error('EIO'), { code: 'EIO' }); });
+  assert.equal((await r.renewer.renew(new AbortController().signal, { udid: IPAD })).state, 'failed');
+  const kept = (await r.leftovers()).filter((n) => n.startsWith('.twindesk-profile-backup-'));
+  assert.equal(kept.length, 1, 'the backup is preserved');
+  assert.equal((await fs.readdir(path.join(r.f.temp, kept[0]))).length, 3);
+  assert.ok(r.logs.some((l) => /kept in/.test(l)));
+  link.mock.restore();
+  // The next run puts them back first (then Xcode fails again and they are restored again).
+  assert.equal((await r.renewer.renew(new AbortController().signal, { udid: IPAD })).state, 'failed');
+  assert.deepEqual(await r.names(), r.original);
+  assert.deepEqual(await r.leftovers(), []);
+
+  // A live lock: no run. A lock left by a dead process: taken over.
+  const lock = path.join(r.f.temp, '.twindesk-profile-renew.lock');
+  await fs.mkdir(lock);
+  await fs.writeFile(path.join(lock, 'pid'), String(process.pid));
+  const xcode = r.xcode.length;
+  assert.equal((await r.renewer.renew(new AbortController().signal, { udid: IPAD })).state, 'failed');
+  assert.equal(r.xcode.length, xcode);
+  assert.deepEqual(await r.names(), r.original);
+  await fs.writeFile(path.join(lock, 'pid'), '999999');
+  await r.renewer.renew(new AbortController().signal, { udid: IPAD });
+  assert.equal(r.xcode.length, xcode + 1);
+  assert.deepEqual(await r.leftovers(), []);
+  // A malformed UDID never runs anything.
+  assert.equal((await r.renewer.renew(new AbortController().signal, { udid: 'nope' })).state, 'failed');
+  assert.equal(r.xcode.length, xcode + 1);
 });

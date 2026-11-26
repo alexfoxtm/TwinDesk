@@ -1,8 +1,8 @@
 # TwinDesk's provisioning-only project (mac/ios-provision-profiles.js). It holds no TwinDesk code:
-# three empty targets with TwinDesk's bundle IDs, signed manually with the pinned certificate and
-# the existing Xcode team profiles, so `xcodebuild -allowProvisioningUpdates` can only download
-# profiles (Xcode's documented behavior for manually signed targets). Regenerate the checked-in
-# project with `xcodegen generate` after editing this file.
+# three empty targets with TwinDesk's existing bundle IDs, no capabilities or entitlements, signed
+# automatically for the pinned team so Xcode issues fresh team profiles for them. The renewer
+# guards the certificate and the profiles around each run. Regenerate the checked-in project with
+# `xcodegen generate` after editing this file.
 name: TwinDeskProvision
 options:
   deploymentTarget:
@@ -11,9 +11,8 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1,2"
-    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: 5H4D7574Z4
-    CODE_SIGN_IDENTITY: 80F731EE19E02914C4634D57E8F7B1ADDDD63FD2
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
 targets:
   App:
@@ -29,7 +28,6 @@ targets:
       base:
         PRODUCT_NAME: TwinDesk
         PRODUCT_BUNDLE_IDENTIFIER: com.twindesk.ios
-        PROVISIONING_PROFILE_SPECIFIER: "iOS Team Provisioning Profile: com.twindesk.ios"
         GENERATE_INFOPLIST_FILE: "YES"
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
   Broadcast:
@@ -39,7 +37,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.twindesk.ios.broadcast
-        PROVISIONING_PROFILE_SPECIFIER: "iOS Team Provisioning Profile: com.twindesk.ios.broadcast"
         INFOPLIST_FILE: Broadcast/Info.plist
         GENERATE_INFOPLIST_FILE: "YES"
         SKIP_INSTALL: "YES"
@@ -50,7 +47,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.twindesk.ios.share
-        PROVISIONING_PROFILE_SPECIFIER: "iOS Team Provisioning Profile: com.twindesk.ios.share"
         INFOPLIST_FILE: Share/Info.plist
         GENERATE_INFOPLIST_FILE: "YES"
         SKIP_INSTALL: "YES"

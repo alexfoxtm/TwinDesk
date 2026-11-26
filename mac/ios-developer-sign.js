@@ -235,7 +235,7 @@ function create({
     return Math.min(...[APP, ...EXTENSIONS].map((id) => chosen.get(id).expires));
   }
 
-  // renewWithin (seconds): profiles running out sooner are renewed through Xcode first (profile-only,
+  // renewWithin (seconds): profiles running out sooner are renewed through Xcode first (guarded,
   // mac/ios-provision-profiles.js); force: Refresh now always asks. onRenewal({state, message,
   // before, after}) hears the outcome; a blocked renewal still installs with valid cached profiles.
   async function install(selected, signal, { minExpiry = 0, requireNewer = false, renewWithin = 3 * 86400, force = false, onRenewal } = {}) {

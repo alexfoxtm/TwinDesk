@@ -172,15 +172,15 @@
 				TargetAttributes = {
 					0EBEB3075EA8C716E3C13DBC = {
 						DevelopmentTeam = 5H4D7574Z4;
-						ProvisioningStyle = Manual;
+						ProvisioningStyle = Automatic;
 					};
 					2A6166724EAE7C082358347B = {
 						DevelopmentTeam = 5H4D7574Z4;
-						ProvisioningStyle = Manual;
+						ProvisioningStyle = Automatic;
 					};
 					FB515EBC170DE4C8E93591DE = {
 						DevelopmentTeam = 5H4D7574Z4;
-						ProvisioningStyle = Manual;
+						ProvisioningStyle = Automatic;
 					};
 				};
 			};
@@ -279,8 +279,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGN_IDENTITY = 80F731EE19E02914C4634D57E8F7B1ADDDD63FD2;
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 5H4D7574Z4;
@@ -318,7 +317,6 @@
 					"@executable_path/../../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.twindesk.ios.share;
-				PROVISIONING_PROFILE_SPECIFIER = "iOS Team Provisioning Profile: com.twindesk.ios.share";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -336,7 +334,6 @@
 					"@executable_path/../../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.twindesk.ios.share;
-				PROVISIONING_PROFILE_SPECIFIER = "iOS Team Provisioning Profile: com.twindesk.ios.share";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -376,8 +373,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGN_IDENTITY = 80F731EE19E02914C4634D57E8F7B1ADDDD63FD2;
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 5H4D7574Z4;
@@ -424,7 +420,6 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.twindesk.ios;
 				PRODUCT_NAME = TwinDesk;
-				PROVISIONING_PROFILE_SPECIFIER = "iOS Team Provisioning Profile: com.twindesk.ios";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -443,7 +438,6 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.twindesk.ios;
 				PRODUCT_NAME = TwinDesk;
-				PROVISIONING_PROFILE_SPECIFIER = "iOS Team Provisioning Profile: com.twindesk.ios";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -460,7 +454,6 @@
 					"@executable_path/../../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.twindesk.ios.broadcast;
-				PROVISIONING_PROFILE_SPECIFIER = "iOS Team Provisioning Profile: com.twindesk.ios.broadcast";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -478,7 +471,6 @@
 					"@executable_path/../../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.twindesk.ios.broadcast;
-				PROVISIONING_PROFILE_SPECIFIER = "iOS Team Provisioning Profile: com.twindesk.ios.broadcast";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = "1,2";
