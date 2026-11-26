@@ -665,3 +665,165 @@ test('a backup that cannot be restored is kept and recovered by the next run; on
   assert.equal((await r.renewer.renew(new AbortController().signal, { udid: 'nope' })).state, 'failed');
   assert.equal(r.xcode.length, xcode + 1);
 });
+
+test('profileExpiry: the earliest valid TwinDesk profile for the exact device, read only and remembered until the profiles change', async (t) => {
+  const f = await fixture(t);
+  const decodes = () => f.calls.filter((c) => c[0] === '/usr/bin/security' && c[1] === 'cms').length;
+  assert.equal(await f.developer.profileExpiry(IPAD), f.ends, 'the earliest of app, share and broadcast');
+  assert.equal(decodes(), 3);
+  assert.equal(await f.developer.profileExpiry(IPAD.toLowerCase()), f.ends, 'the exact device in any spelling');
+  assert.equal(decodes(), 3, 'remembered: no decode while the profiles are unchanged');
+  assert.ok(f.calls.every((c) => (c[0] === '/usr/bin/security' && c[1] === 'cms') || (c[0] === '/usr/bin/plutil' && c[1] === '-extract')),
+    'no signing, keychain identity, Xcode, CoreDevice or IPA work');
+  assert.equal(await f.developer.profileExpiry(IPHONE), 0, 'another device has no profiles');
+  assert.equal(await f.developer.profileExpiry('not-a-device'), 0);
+  await assert.rejects(f.developer.profileExpiry(IPAD, AbortSignal.abort()), { name: 'AbortError' });
+
+  const write = (i, p) => fs.writeFile(path.join(f.profileDir, i + '.mobileprovision'), JSON.stringify(p));
+  await fs.rm(path.join(f.profileDir, '2.mobileprovision'));
+  assert.equal(await f.developer.profileExpiry(IPAD), 0, 'a missing extension profile arms nothing');
+  await write(2, { ...f.profiles[2], Entitlements: { ...f.profiles[2].Entitlements, 'application-identifier': `${TEAM}.com.example.other` } });
+  assert.equal(await f.developer.profileExpiry(IPAD), 0, 'another bundle does not count');
+  await write(2, { ...f.profiles[2], ExpirationDate: new Date(Date.now() - 1000).toISOString() });
+  assert.equal(await f.developer.profileExpiry(IPAD), 0, 'an expired profile does not count');
+  await write(2, f.profiles[2]);
+  assert.equal(await f.developer.profileExpiry(IPAD), f.ends, 'valid again after the change');
+});
+
+test('no receipt: the selected paired iPad with TwinDesk installed arms automatic refresh from its cached profiles', async (t) => {
+  const expiry = Date.parse('2026-12-03T11:43:35Z') / 1000; // 06:43:35 EST, the earliest cached profile
+  const due = (expiry - 3 * 86400) * 1000; // 2026-11-30 06:43:35 EST
+  const hour = 3600 * 1000;
+  let clock = Date.parse('2026-11-26T12:06:00Z');
+  t.mock.method(Date, 'now', () => clock);
+  const ipad = { ...target };
+  let installed = { bundleIdentifier: APP, version: '3.2.1' };
+  let expires = expiry;
+  let appsFail = false;
+  const reads = [];
+  const installs = [];
+  const unlock = () => { throw Object.assign(new Error('Connect or unlock the iPad'), { kind: 'device' }); };
+  let outcome = unlock;
+  const developer = {
+    bundled: () => true, list: async () => [ipad], stored: async () => null, storedInfo: () => null,
+    apps: async () => { if (appsFail) throw new Error('unavailable'); return installed; },
+    profileExpiry: async (u) => { reads.push(u); return expires; },
+    install: async (d, s, opts) => { installs.push({ udid: d.udid, ...opts }); return outcome(s); },
+  };
+  let cfg = { on: false, mode: 'developer', localDevice: IPAD, auto: true };
+  const lines = [];
+  const link = Object.assign(new EventEmitter(), { send() {} });
+  const sign = new IosSign({ link, developer, log: (l) => lines.push(l), cfg: () => cfg, setCfg: (x) => { cfg = { ...cfg, ...x }; } });
+  t.after(() => sign.close());
+  sign._release = () => {};
+  const settle = async () => { await next(); await next(); while (sign.scanTask) await sign.scanTask; };
+  const fires = async () => { sign.tried.clear(); const n = installs.length; sign._auto(); await settle(); return installs.length - n; };
+  const prefix = `[ios-developer] automatic refresh for ${IPAD}`;
+  cfg = { ...cfg, on: true };
+  await sign._look();
+
+  assert.deepEqual(reads, [IPAD], 'the cached profiles are read for the exact selected device');
+  assert.deepEqual(installs, [], 'nothing before 3 days ahead of the earliest profile');
+  assert.deepEqual(lines, [`[ios-developer] automatic refresh armed for ${IPAD} from cached profiles (no install receipt): `
+    + 'profiles until 2026-12-03T11:43:35.000Z, due 2026-11-30T11:43:35.000Z (3 days before), retry every 6 h']);
+  assert.equal(cfg.localInstalls, undefined, 'arming never writes a receipt');
+  await sign._look();
+  sign._auto();
+  assert.equal(lines.length, 1, 'later scans and ticks do not log again');
+
+  clock = due - 1;
+  sign._auto();
+  assert.equal(installs.length, 0);
+  clock = due;
+  sign._auto();
+  assert.equal(installs.length, 1, 'due exactly cfg.days before the earliest profile');
+  assert.deepEqual({ ...installs[0], onRenewal: undefined }, { udid: IPAD, minExpiry: 0, requireNewer: true, renewWithin: 3 * 86400, force: false, onRenewal: undefined });
+  await settle();
+  assert.equal(sign.view.devices[0].result.error.message, 'Connect or unlock the iPad', 'the existing result');
+  assert.deepEqual(lines.slice(1), [`${prefix} (cached profiles): started`, `${prefix} (cached profiles): failed: Connect or unlock the iPad`]);
+  assert.equal(cfg.localInstalls, undefined, 'a failed fallback refresh records nothing');
+  clock = due + 6 * hour - 1;
+  sign._auto();
+  assert.equal(installs.length, 1, 'rests for cfg.retry (default 6 h)');
+  clock = due + 6 * hour;
+  sign._auto();
+  assert.equal(installs.length, 2, 'retried after exactly 6 h');
+  await settle();
+
+  // Guards: on, mode, auto, the device's own switch and the exact selection.
+  for (const [patch, why] of [[{ auto: false }, 'auto off'], [{ deviceAuto: { [IPAD]: false } }, 'paused for this device'],
+    [{ mode: 'apple' }, 'Apple ID mode'], [{ localDevice: IPHONE }, 'another device selected'], [{ localDevice: undefined }, 'no explicit selection']]) {
+    const saved = cfg;
+    cfg = { ...cfg, ...patch };
+    assert.equal(await fires(), 0, why);
+    cfg = saved;
+  }
+  sign.devices = [{ ...ipad, coreId: 'DDD00000-1000-4000-8000-000000000000' }];
+  assert.equal(await fires(), 0, 'another pairing of the same UDID is not the armed one');
+  await sign._look();
+  assert.equal(await fires(), 1, 'armed again on the next scan of the same pairing');
+
+  // A receipt of an install made here keeps priority.
+  cfg = { ...cfg, localInstalls: { [IPAD]: { expires: expiry + 30 * 86400 } } };
+  assert.equal(await fires(), 0, 'a later receipt wins over the cached profiles');
+  cfg = { ...cfg, localInstalls: { [IPAD]: { expires: expiry - 86400, version: '3.2.1' } } };
+  assert.equal(await fires(), 1);
+  assert.equal(installs.at(-1).minExpiry, expiry - 86400, 'the receipt still sets the floor');
+  assert.equal(lines.at(-1), `${prefix} (install receipt): failed: Connect or unlock the iPad`);
+  cfg = { ...cfg, localInstalls: undefined };
+  await sign._look();
+  assert.equal(await fires(), 1);
+
+  // No installed evidence, another bundle, an unreadable inventory, missing or expired profiles: disarmed.
+  const armedLines = () => lines.filter((l) => l.includes(' armed ')).length;
+  const logged = armedLines();
+  for (const [change, undo, why] of [
+    [() => { installed = undefined; }, () => { installed = { bundleIdentifier: APP, version: '3.2.1' }; }, 'not installed'],
+    [() => { installed = { bundleIdentifier: APP + '.share' }; }, () => { installed = { bundleIdentifier: APP, version: '3.2.1' }; }, 'another bundle'],
+    [() => { appsFail = true; }, () => { appsFail = false; }, 'stale inventory'],
+    [() => { expires = 0; }, () => { expires = expiry; }, 'missing or invalid profiles'],
+    [() => { expires = Math.floor(clock / 1000) - 1; }, () => { expires = expiry; }, 'expired profiles']]) {
+    change();
+    await sign._look();
+    assert.equal(await fires(), 0, why);
+    undo();
+    await sign._look();
+  }
+  assert.equal(armedLines(), logged, 'disarming and re-arming the same schedule logs no new arming');
+  assert.equal(cfg.localInstalls, undefined);
+
+  // cfg.days and cfg.retry move the schedule; the new one is logged once.
+  cfg = { ...cfg, days: 4, retry: 1 };
+  sign.tried.clear();
+  clock = due - 86400 * 1000;
+  sign._auto();
+  await settle();
+  assert.equal(lines.filter((l) => l.includes('armed')).at(-1), `[ios-developer] automatic refresh armed for ${IPAD} from cached profiles (no install receipt): `
+    + 'profiles until 2026-12-03T11:43:35.000Z, due 2026-11-29T11:43:35.000Z (4 days before), retry every 1 h');
+  assert.equal(installs.at(-1).renewWithin, 4 * 86400);
+  const n = installs.length;
+  clock += hour - 1;
+  sign._auto();
+  assert.equal(installs.length, n);
+  clock += 1;
+  sign._auto();
+  assert.equal(installs.length, n + 1, 'cfg.retry 1 h');
+  await settle();
+
+  // Stopping the run cancels it: no receipt.
+  outcome = (s) => new Promise((resolve, reject) => s.addEventListener('abort', () => reject(s.reason)));
+  sign.tried.clear();
+  sign._auto();
+  sign.stop();
+  await settle();
+  assert.equal(sign.view.devices[0].result.error.message, 'Stopped');
+  assert.equal(cfg.localInstalls, undefined);
+
+  // Only the app's own successful install records a receipt, and then the receipt schedules.
+  outcome = () => ({ udid: IPAD, expires: expiry + 7 * 86400, version: '3.2.1', bundleId: APP });
+  assert.equal(await fires(), 1);
+  assert.equal(cfg.localInstalls[IPAD].expires, expiry + 7 * 86400);
+  assert.equal(lines.at(-1), `${prefix} (cached profiles): installed, profiles until 2026-12-10T11:43:35.000Z`);
+  assert.equal(sign._armed(IPAD), null);
+  assert.equal(await fires(), 0, 'the new receipt is not due');
+});

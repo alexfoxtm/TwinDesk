@@ -235,6 +235,42 @@ function create({
     return Math.min(...[APP, ...EXTENSIONS].map((id) => chosen.get(id).expires));
   }
 
+  // profileExpiry(udid): the earliest expiry (seconds) of the app, share and broadcast profiles an
+  // install for this exact device would choose (the same rules as install()); 0 when any of them is
+  // missing, expired or invalid. Read only: no signing, Xcode, keychain or device. Remembered per
+  // device and profile listing (names, sizes, times), so it decodes again only after a change.
+  const expiryKnown = new Map();
+  async function profileExpiry(udid, signal = new AbortController().signal) {
+    if (typeof udid !== 'string' || !UDID.test(udid)) return 0;
+    const exact = udid.toUpperCase();
+    const stamps = [];
+    for (const dir of profileDirs) {
+      let files;
+      try { files = await fs.readdir(dir, { withFileTypes: true }); } catch (error) {
+        if (error.code === 'ENOENT') continue;
+        return 0;
+      }
+      for (const file of files) {
+        if (!file.isFile() || !file.name.endsWith('.mobileprovision')) continue;
+        const st = await fs.stat(path.join(dir, file.name)).catch(() => null);
+        if (st) stamps.push(`${dir}/${file.name}\0${st.size}\0${st.mtimeMs}`);
+      }
+    }
+    signal.throwIfAborted();
+    const key = stamps.sort().join('\n');
+    const prior = expiryKnown.get(exact);
+    if (prior?.key === key && (!prior.expires || prior.expires * 1000 > Date.now())) return prior.expires;
+    const work = await fs.mkdtemp(path.join(tmp, 'twindesk-ios-expiry-'));
+    let expires = 0;
+    try { expires = minimum(await profiles(work, exact, signal)); } catch {
+      signal.throwIfAborted();
+    } finally {
+      await fs.rm(work, { recursive: true, force: true });
+    }
+    expiryKnown.set(exact, { key, expires });
+    return expires;
+  }
+
   // renewWithin (seconds): profiles running out sooner are renewed through Xcode first (guarded,
   // mac/ios-provision-profiles.js); force: Refresh now always asks. onRenewal({state, message,
   // before, after}) hears the outcome; a blocked renewal still installs with valid cached profiles.
@@ -319,7 +355,7 @@ function create({
   }
 
   // bundled(): an IPA is there to install (stored, or the legacy copy in the app).
-  return { bundled: () => !!source(), source, stored, storedInfo: () => known?.info || null, list, apps, install };
+  return { bundled: () => !!source(), source, stored, storedInfo: () => known?.info || null, list, apps, profileExpiry, install };
 }
 
 function str(v, n = 250) { return typeof v === 'string' ? v.slice(0, n) : ''; }

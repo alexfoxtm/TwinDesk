@@ -48,6 +48,7 @@ const T = {
 };
 const TWINDESK = /^com\.twindesk\.ios\.[A-Z0-9]{6,20}$/; // as signed: its bundle id and the team's
 const TWINDESK_IPA = 'TwinDesk.ipa'; // TwinDesk's own IPA in the kept IPAs (cacheDir)
+const DEVELOPER_APP = 'com.twindesk.ios'; // developer mode's TwinDesk, as CoreDevice lists it
 const LOOK_MS = 30 * 60 * 1000; // how often the devices and their apps are looked at
 const RETRY_HOURS = [1, 3, 6, 12, 24]; // an automatic refresh isn't tried again sooner (cfg.retry)
 const INVITE_MS = 60 * 1000; // an iPhone near over Bluetooth is invited at most this often for a refresh
@@ -104,10 +105,13 @@ function stateFacts(state) {
 class IosSign extends EventEmitter {
   // seed: a state made outside the app (ios-signer/try.sh), handed to the iPhone's app like one made here.
   // cacheDir: where the IPAs installed from here are kept (cfg.cache, on), so each can be signed again.
-  constructor({ link, near, bins, usbSerials, cfg, setCfg, vault, seed, cacheDir, developer }) {
+  constructor({ link, near, bins, usbSerials, cfg, setCfg, vault, seed, cacheDir, developer, log }) {
     super();
     Object.assign(this, { link, near: near || null, usbSerials: usbSerials || (() => []), cfg, setCfg, vault: vault || null, cacheDir: cacheDir || '' });
     this.developer = developer || null;
+    this.log = typeof log === 'function' ? log : (line) => console.log(line); // the app's log file; no secrets
+    this.localArm = {}; // udid -> {expires, coreId}: no receipt yet, TwinDesk seen installed, cached profiles' end
+    this.armLogged = {}; // udid -> the arming last logged, so a scan doesn't log it again
     this.results = new Map(); // mode and UDID -> last result
     this.bin = (bins || []).find((b) => { try { return fs.statSync(b).isFile(); } catch { return false; } }) || '';
     this.info = null; // the helper's {anyIpa, anisette, version}
@@ -523,11 +527,12 @@ class IosSign extends EventEmitter {
 
   async _scan() {
     if ((!this.bin && !this.developer) || this.stopped) return;
-    if (this.cfg().on !== true) { this.devices = []; this.apps = {}; this.localApps = {}; return this._changed(); }
+    if (this.cfg().on !== true) { this.devices = []; this.apps = {}; this.localApps = {}; this.localArm = {}; return this._changed(); }
     const controller = new AbortController();
     this.scan = controller;
     const { signal } = controller;
     const local = this._local();
+    if (!local) this.localArm = {};
     this._release();
     try {
       const before = this._udid();
@@ -559,7 +564,11 @@ class IosSign extends EventEmitter {
                 this.setCfg({ localInstalls: next });
                 this.results.delete(`true:${d.udid}`);
               }
-            } catch {} // A disconnected or locked device can't confirm its inventory.
+              await this._arm(d, installed, signal);
+            } catch {
+              // A disconnected or locked device can't confirm its inventory (nor arm a refresh).
+              if (!signal.aborted) delete this.localArm[d.udid];
+            }
             return;
           }
           if (!d.muxUdid) return;
@@ -577,6 +586,33 @@ class IosSign extends EventEmitter {
     if (signal.aborted) return;
     this._changed();
     this._auto();
+  }
+
+  // No receipt yet (TwinDesk installed some other way, or by an earlier build): the selected device,
+  // with com.twindesk.ios just seen on it, is refreshed on the schedule of the profiles an install
+  // would use (developer.profileExpiry). Never written to localInstalls: only an install made here is.
+  async _arm(d, installed, signal) {
+    const c = this.cfg();
+    let armed = null;
+    if (installed && installed.bundleIdentifier === DEVELOPER_APP && !c.localInstalls?.[d.udid] && d.coreId
+        && d.udid === str(c.localDevice, 64).toUpperCase() && typeof this.developer.profileExpiry === 'function') {
+      const expires = await this.developer.profileExpiry(d.udid, signal).catch(() => 0);
+      if (signal.aborted) return;
+      if (Number.isInteger(expires) && expires * 1000 > Date.now()) armed = { expires, coreId: d.coreId };
+    }
+    if (armed) this.localArm[d.udid] = armed;
+    else delete this.localArm[d.udid];
+  }
+
+  // The armed fallback for this device, while it still holds: no receipt, the same paired device,
+  // still selected, still seen installed, profiles not yet run out.
+  _armed(udid) {
+    const c = this.cfg();
+    const a = this.localArm[udid];
+    const d = this.devices.find((x) => x.udid === udid);
+    if (!a || c.localInstalls?.[udid] || !this.localApps?.[udid] || !d?.coreId || d.coreId !== a.coreId
+        || udid !== str(c.localDevice, 64).toUpperCase() || udid !== this._udid() || !(a.expires * 1000 > Date.now())) return null;
+    return a;
   }
 
   _write(obj) {
@@ -811,8 +847,11 @@ class IosSign extends EventEmitter {
     if (!this._local() || c.on !== true || this.stopped || this.run) return null;
     const selected = this.devices.find((d) => d.udid === udid);
     const previous = (c.localInstalls || {})[udid];
-    if (!selected?.coreId || (automatic ? !previous || c.auto === false || c.deviceAuto?.[udid] === false : udid !== this._udid())) return null;
+    const armed = automatic && !previous ? this._armed(udid) : null;
+    if (!selected?.coreId || (automatic ? !(previous || armed) || c.auto === false || c.deviceAuto?.[udid] === false : udid !== this._udid())) return null;
     this.tried.set(`developer ${udid}`, Date.now());
+    const note = (what) => { if (automatic) this.log(`[ios-developer] automatic refresh for ${udid} (${previous ? 'install receipt' : 'cached profiles'}): ${what}`); };
+    note('started');
     const controller = new AbortController();
     const r = { from: 'developer', udid, automatic, step: 'start', seen: [], percent: 0, controller };
     this.run = r;
@@ -831,17 +870,21 @@ class IosSign extends EventEmitter {
       });
       controller.signal.throwIfAborted();
       if (!done) {
+        note('skipped, no newer profiles');
         this.run = null;
         this._changed();
         this._auto();
         return null;
       }
       this.setCfg({ localInstalls: { ...this.cfg().localInstalls, [udid]: done } });
+      delete this.localArm[udid];
+      note(`installed, profiles until ${new Date(done.expires * 1000).toISOString()}`);
       this._end(null, done);
       return done;
     } catch (error) {
       const failed = controller.signal.aborted ? { kind: 'stopped', message: 'Stopped' }
         : { kind: error.kind || 'other', message: error.kind === 'device' || !error.code ? str(error.message, 250) : 'Could not prepare or install TwinDesk' };
+      note(`failed: ${failed.message}`);
       this._end(failed);
       return null;
     }
@@ -951,9 +994,21 @@ class IosSign extends EventEmitter {
     const rested = (key) => Date.now() - (this.tried.get(key) || 0) >= again;
     if (this._local()) {
       if (!this.developer.bundled()) return;
+      // A receipt of an install made here comes first; without one, the armed cached profiles.
+      const expiresOf = (u) => c.localInstalls?.[u]?.expires || this._armed(u)?.expires || 0;
+      for (const d of this.devices) {
+        const a = d.coreId && c.deviceAuto?.[d.udid] !== false && !c.localInstalls?.[d.udid] && this._armed(d.udid);
+        if (!a) continue;
+        const days = c.days || 3;
+        const hours = again / 3600000;
+        const key = `${a.expires} ${days} ${hours}`;
+        if (this.armLogged[d.udid] === key) continue;
+        this.armLogged[d.udid] = key;
+        this.log(`[ios-developer] automatic refresh armed for ${d.udid} from cached profiles (no install receipt): profiles until ${new Date(a.expires * 1000).toISOString()}, due ${new Date((a.expires - days * 86400) * 1000).toISOString()} (${days} days before), retry every ${hours} h`);
+      }
       const due = this.devices.filter((d) => d.coreId && c.deviceAuto?.[d.udid] !== false
-        && soon(c.localInstalls?.[d.udid]?.expires) && rested(`developer ${d.udid}`))
-        .sort((a, b) => c.localInstalls[a.udid].expires - c.localInstalls[b.udid].expires)[0];
+        && soon(expiresOf(d.udid)) && rested(`developer ${d.udid}`))
+        .sort((a, b) => expiresOf(a.udid) - expiresOf(b.udid))[0];
       if (due) this.installDeveloper(due.udid, true);
       return;
     }
