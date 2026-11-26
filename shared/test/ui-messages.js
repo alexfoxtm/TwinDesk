@@ -34,7 +34,7 @@ function inbox(state, api = {}, globals = {}) {
       for (const node of nodes) if (node && typeof node === 'object') parents.set(node, this);
     },
   });
-  let tab;
+  let tab, page, shown;
   const UI = {
     el, state, api: { setChats() {}, hub() {}, notifReply: (msg) => { replies.push(msg); return true; }, ...api },
     tab(def) { tab = def; },
@@ -49,7 +49,7 @@ function inbox(state, api = {}, globals = {}) {
     hubOn: (type, fn) => received.set(type, fn),
     hubAsk: (msg) => { asked.push(msg); return globals.askResult ? globals.askResult(msg) : true; },
     hubReady: (s) => s.hub.messages,
-    onShown() {},
+    onShown(element, handler) { page = element; shown = handler; },
     onDeviceChange() {},
   };
   vm.runInNewContext(source, { UI, window: {}, clearTimeout, setTimeout, localStorage: { getItem() {} }, ...globals });
@@ -59,7 +59,8 @@ function inbox(state, api = {}, globals = {}) {
   const findPill = (label) => pills.children.find((b) => b.text === label);
   const rows = () => chat.children[0].children[1].children;
   const snippet = (row) => row.children[1].children[1].text;
-  return { received, asked, replies, paint, texts, chat, findPill, rows, snippet };
+  const show = (visible) => { page.hidden = !visible; shown?.(visible); };
+  return { received, asked, replies, paint, texts, chat, findPill, rows, snippet, show };
 }
 
 test('Messages opens on All for recent notification chats and keeps the carrier route under Texts', () => {
@@ -1150,11 +1151,10 @@ const gmPhone = 'fixture-phone';
 const gmDest = '+12025550100';
 const connected = (rows, history = { chat: rows[0]?.id, loaded: true, items: [] }) =>
   ({ owner: gmPhone, state: 'connected', enabled: true, rows, history });
-const photoFixture = (items, fetchPhoto) => {
+const photoFixture = (items, fetchPhoto, rows = [{ id: 'paired', addrs: [gmDest], at: 1000 }]) => {
   const state = {
     hub: { deviceId: gmPhone, session: 1, messages: true, perm: { messages: { missing: [] } } },
-    googleMessages: connected([{ id: 'paired', addrs: [gmDest], at: 1000 }],
-      { chat: 'paired', loaded: true, items }),
+    googleMessages: connected(rows, { chat: 'paired', loaded: true, items }),
   };
   const requests = [];
   const page = inbox(state, { async googleMessages(msg) {
@@ -1193,6 +1193,10 @@ test('Google photos load automatically in the open chat and stay cached across r
   page.paint(page.state);
   assert.equal(page.requests.length, 2, 'repainting both cached photos makes no additional fetch');
   assert.deepEqual(page.photos().map((node) => node.src), [image, image]);
+  page.state.hub.session++;
+  page.paint(page.state);
+  assert.equal(page.requests.length, 2, 'same-phone, same-chat session changes reuse the cache');
+  assert.deepEqual(page.photos().map((node) => node.src), [image, image]);
 
   const more = Array.from({ length: 15 }, (_, i) => ({ id: 'photo-' + i, at: 1500 + i, photos: [0] }));
   page.state.googleMessages.history.items = [first, second, ...more];
@@ -1200,24 +1204,26 @@ test('Google photos load automatically in the open chat and stay cached across r
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(page.requests.length, 14, 'only the 12 newest parts in the expanded history are fetched');
   assert.deepEqual(page.requests.slice(2).map((request) => request[2]), more.slice(-12).reverse().map((msg) => msg.id));
-  assert.equal(page.photos().filter((node) => node.src).length, 12, 'older URLs are evicted');
+  assert.equal(page.photos().filter((node) => node.src).length, 14, 'the existing two photos fit beside the recent set');
 
   const scroll = page.chat.children[1].children[1];
   const bubbles = scroll.children[0];
   scroll.getBoundingClientRect = () => ({ top: 0, bottom: 100 });
   const showEarlierPhoto = () => {
     page.photos().forEach((node, i) => {
-      node.getBoundingClientRect = () => i === 0 ? { top: 0, bottom: 60 } : { top: 200, bottom: 260 };
+      node.getBoundingClientRect = () => i >= 2 && i <= 4 ? { top: 0, bottom: 60 } : { top: 200, bottom: 260 };
     });
   };
   const replaceChildren = bubbles.replaceChildren.bind(bubbles);
   bubbles.replaceChildren = (...nodes) => { replaceChildren(...nodes); showEarlierPhoto(); };
   showEarlierPhoto();
-  scroll.listeners.scroll[0]();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(page.requests.slice(14), [[gmPhone, 'paired', 'first', 0]], 'scrolling loads just the newly visible part');
-  assert.equal(page.photos()[0].src, image, 'an earlier visible photo stays cached');
-  assert.equal(page.photos().filter((node) => node.src).length, 12);
+  for (let i = 0; i < 5; i++) scroll.listeners.scroll[0]();
+  assert.equal(page.requests.length, 14, 'a burst of scroll events defers layout work');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(page.requests.slice(14), more.slice(0, 3).map((msg) => [gmPhone, 'paired', msg.id, 0]),
+    'scrolling loads only the newly visible parts');
+  assert.ok(page.photos().slice(-12).every((node) => node.src === image), 'visible older parts do not evict recent photos');
+  assert.equal(page.photos().filter((node) => node.src).length, 16, 'the cache remains capped');
 });
 
 test('a failed automatic Google photo fetch shows a retry and discards stale results after disconnect', async () => {
@@ -1258,6 +1264,69 @@ test('a failed automatic Google photo fetch shows a retry and discards stale res
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(page.requests.length, 5);
   assert.equal(page.photos()[0].src, image, 'only the connected visit can fill its cache');
+});
+
+test('hidden Google chats resume photos when shown and a stale download cannot block the next chat', async () => {
+  const image = 'data:image/png;base64,AAAA';
+  const message = { id: 'same-id', at: 1000, photos: [0] };
+  let finish;
+  const page = photoFixture([message], ({ chat }) => chat === 'paired'
+    ? new Promise((resolve) => { finish = resolve; }) : image, [
+      { id: 'paired', addrs: [gmDest], at: 1000 },
+      { id: 'next', addrs: ['+12025550101'], at: 500 },
+    ]);
+  page.show(false);
+  page.rows()[0].onclick();
+  assert.equal(page.requests.length, 0);
+  page.show(true);
+  assert.deepEqual(page.requests, [[gmPhone, 'paired', 'same-id', 0]]);
+  page.rows()[1].onclick();
+  page.state.googleMessages.history = { chat: 'next', loaded: true, items: [message] };
+  page.paint(page.state);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(page.requests[1], [gmPhone, 'next', 'same-id', 0]);
+  assert.equal(page.photos()[0].src, image, 'the next chat loads with the earlier request unresolved');
+  finish('data:image/png;base64,BBBB');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(page.photos()[0].src, image);
+});
+
+test('a Google or carrier photo sizing in follows the bottom only for a reader still there', async () => {
+  const image = 'data:image/png;base64,AAAA';
+  const page = photoFixture([{ id: 'msg', at: 1000, photos: [0] }], () => image);
+  const chatScroll = page.chat.children[1].children[1];
+  Object.assign(chatScroll, { scrollHeight: 300, clientHeight: 100, scrollTop: 200 });
+  page.rows()[0].onclick();
+  await new Promise((resolve) => setImmediate(resolve));
+  const loaded = page.photos()[0];
+  loaded.isConnected = true;
+  chatScroll.scrollHeight = 450;
+  loaded.listeners.load[0]();
+  assert.equal(chatScroll.scrollTop, 450);
+
+  page.state.googleMessages.history.typing = true;
+  page.paint(page.state);
+  const cached = page.photos()[0];
+  cached.isConnected = true;
+  chatScroll.scrollTop = 100;
+  chatScroll.scrollHeight = 510;
+  cached.listeners.load[0]();
+  assert.equal(chatScroll.scrollTop, 100, 'an image does not pull a reader back down');
+
+  const carrier = inbox({ hub: { messages: true, perm: { messages: { mms: true } } } });
+  carrier.received.get('sms.threads')({ items: [{ id: 'thread', at: 1000, addrs: ['2025550100'] }] });
+  carrier.texts.children[0].children[1].children[0].onclick();
+  carrier.received.get('sms.thread')({ id: 'thread', items: [{ id: 'm1', at: 1000, parts: [{ id: 'p1' }] }] });
+  const scroll = carrier.texts.children[1].children[1];
+  const bubbles = scroll.children[1];
+  const mms = bubbles.children.find((node) => node.class?.includes('hub-bubble')).children[0];
+  mms.isConnected = true;
+  bubbles.querySelectorAll = () => [mms];
+  Object.assign(scroll, { scrollHeight: 300, clientHeight: 100, scrollTop: 200 });
+  carrier.received.get('sms.part')({ id: 'p1', data: image });
+  scroll.scrollHeight = 450;
+  mms.listeners.load[0]();
+  assert.equal(scroll.scrollTop, 450);
 });
 
 const gmPage = (googleMessages, extra = {}, result = () => true) => {

@@ -18,6 +18,7 @@ const { WebSocketServer } = require('ws');
 const P = require('../shared/protocol.js');
 const { unauthRoute } = require('../shared/reclaim.js');
 const Quiet = require('../shared/quiet.js'); // idle sessions stop pinging every second (#143)
+const CloseInfo = require('../shared/ws-close-info.js');
 
 const ICE_OFFERS = new Set([P.T.RTC_OFFER, P.T.AUDIO_OFFER]);
 const isLoopback = (a) => a === '127.0.0.1' || a === '::1';
@@ -87,13 +88,15 @@ class Server extends EventEmitter {
     this.sockets.add(ctx);
     this._arm();
     ws.on('message', (data, isBinary) => this._onMessage(ws.ctx, data, isBinary, ws));
-    ws.on('close', (code) => this._onSocketClose(ws, code));
+    CloseInfo.watch(ws, req.socket, now);
+    ws.on('close', (code, reason) => this._onSocketClose(ws, code, reason));
     ws.on('error', (err) => console.error(`[server] socket ${ws.address}: ${err.message}`));
   }
 
-  _onSocketClose(ws, code) {
+  _onSocketClose(ws, code, reason) {
     const ctx = ws.ctx;
     if (ws.detached) return;
+    if (ctx.authed && (ctx.ws === ws || ctx.alt === ws)) CloseInfo.log(ws, code, reason, Date.now());
     if (ctx.alt === ws) {
       ctx.alt = null;
       return this.emit('transport', ctx);
@@ -179,6 +182,7 @@ class Server extends EventEmitter {
         alt.detached = true;
         alt.close();
       }
+      CloseInfo.mark(ctx.ws, 'bye');
       return ctx.ws.close();
     }
     if (msg.t === P.T.PONG) {
@@ -217,7 +221,7 @@ class Server extends EventEmitter {
           if (ws.transport !== 'ble' && ws.readyState === ws.OPEN) {
             const q = Quiet.tick(ws, now, rx, (m) => ws.send(JSON.stringify(m)));
             if (q.quiet) {
-              if (q.dead) { console.log(`[server] ${ctx.name || ctx.address} silent on a quiet link, closing`); ws.terminate(); }
+              if (q.dead) { console.log(`[server] ${ctx.name || ctx.address} silent on a quiet link, closing`); CloseInfo.mark(ws, 'quiet-timeout'); ws.terminate(); }
               else if (q.ping) ws.send(JSON.stringify({ t: P.T.PING, ts: now }));
               continue;
             }
@@ -225,6 +229,7 @@ class Server extends EventEmitter {
           }
           if (now - rx > limit) {
             console.log(`[server] ${ctx.name || ctx.address} silent for ${limit} ms on ${ws.transport === 'ble' ? 'Bluetooth' : ws.address}, closing`);
+            CloseInfo.mark(ws, 'silence-timeout');
             ws.terminate();
           } else if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify({ t: P.T.PING, ts: now }));
@@ -261,6 +266,7 @@ class Server extends EventEmitter {
   // Send an error and close the socket.
   fail(ctx, code, message) {
     ctx.expectedClose = true;
+    CloseInfo.mark(ctx.ws, 'local-' + code);
     this.send(ctx, { t: P.T.ERROR, code, message });
     if (ctx.alt) { // the whole session goes, not just this path of it
       const alt = ctx.alt;
@@ -421,7 +427,11 @@ class Server extends EventEmitter {
     this.tick = null;
     clearTimeout(this.graceTimer);
     for (const ctx of this.sockets) {
-      if (ctx.alt) ctx.alt.terminate();
+      if (ctx.alt) {
+        CloseInfo.mark(ctx.alt, 'shutdown');
+        ctx.alt.terminate();
+      }
+      CloseInfo.mark(ctx.ws, 'shutdown');
       ctx.ws.terminate();
     }
     this.wss.close();

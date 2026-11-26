@@ -114,6 +114,20 @@ type command struct {
 	Image    string            `json:"image"`
 	Ref      int               `json:"ref"`
 	Deadline int64             `json:"deadline"`
+
+	photoContext context.Context
+}
+
+func (cmd command) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	call, cancel := context.WithDeadline(ctx, time.UnixMilli(cmd.Deadline))
+	if cmd.photoContext == nil {
+		return call, cancel
+	}
+	stop := context.AfterFunc(cmd.photoContext, cancel)
+	if cmd.photoContext.Err() != nil {
+		cancel()
+	}
+	return call, func() { stop(); cancel() }
 }
 
 type output struct {
@@ -745,8 +759,7 @@ func run(ctx context.Context, auth *libgm.AuthData, commands <-chan command, out
 			complete := b.sync(ctx)
 			syncTimer.Reset(syncDelay(complete, b.ready))
 		case cmd := <-commands:
-			deadline := time.UnixMilli(cmd.Deadline)
-			call, cancel := context.WithDeadline(ctx, deadline)
+			call, cancel := cmd.callContext(ctx)
 			ok := call.Err() == nil && b.handle(call, cmd)
 			cancel()
 			if cmd.Ref != 0 {
@@ -782,6 +795,32 @@ func run(ctx context.Context, auth *libgm.AuthData, commands <-chan command, out
 	}
 }
 
+// Cancel downloads when new history is requested, before the command reaches the serial inbox.
+// The HTTP media reader takes this context, so switching chats can interrupt a slow download.
+func readCommands(ctx context.Context, in *bufio.Scanner, commands chan<- command) {
+	photos, cancelPhotos := context.WithCancel(ctx)
+	defer func() { cancelPhotos() }()
+	for in.Scan() {
+		var cmd command
+		if json.Unmarshal(in.Bytes(), &cmd) != nil {
+			continue
+		}
+		switch cmd.Op {
+		case "history":
+			cancelPhotos()
+			nextPhotos, cancelNextPhotos := context.WithCancel(ctx)
+			photos, cancelPhotos = nextPhotos, cancelNextPhotos
+		case "photo":
+			cmd.photoContext = photos
+		}
+		select {
+		case commands <- cmd:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func main() {
 	debug.SetTraceback("none")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -799,16 +838,7 @@ func main() {
 	commands := make(chan command, 16)
 	go func() {
 		defer cancel()
-		for in.Scan() {
-			var cmd command
-			if json.Unmarshal(in.Bytes(), &cmd) == nil {
-				select {
-				case commands <- cmd:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
+		readCommands(ctx, in, commands)
 	}()
 	var auth *libgm.AuthData
 	switch first.Op {

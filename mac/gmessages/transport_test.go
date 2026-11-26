@@ -2,9 +2,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -19,6 +22,55 @@ import (
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestOpeningHistoryCancelsPreviousPhotoBeforeDispatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in, write := io.Pipe()
+	defer in.Close()
+	defer write.Close()
+	commands := make(chan command, 16)
+	go readCommands(ctx, bufio.NewScanner(in), commands)
+	deadline := time.Now().Add(time.Minute).UnixMilli()
+	send := func(op, chat string) command {
+		t.Helper()
+		if _, err := fmt.Fprintf(write, "{\"op\":%q,\"chat\":%q,\"deadline\":%d}\n", op, chat, deadline); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case cmd := <-commands:
+			return cmd
+		case <-time.After(time.Second):
+			t.Fatal("command reader did not forward " + op)
+			return command{}
+		}
+	}
+	send("history", "first")
+	first := send("photo", "first")
+	download, finish := first.callContext(ctx)
+	defer finish()
+	if download.Err() != nil {
+		t.Fatal("first photo was canceled before a conversation switch")
+	}
+	next := send("history", "next")
+	select {
+	case <-download.Done():
+	case <-time.After(time.Second):
+		t.Fatal("new history waited for the old photo deadline")
+	}
+	queued, finishQueued := first.callContext(ctx)
+	defer finishQueued()
+	if queued.Err() == nil {
+		t.Fatal("a canceled photo queued before the history must not dispatch")
+	}
+	history, finishHistory := next.callContext(ctx)
+	defer finishHistory()
+	photo, finishPhoto := send("photo", "next").callContext(ctx)
+	defer finishPhoto()
+	if history.Err() != nil || photo.Err() != nil {
+		t.Fatal("the new conversation inherited the previous cancellation")
+	}
+}
 
 func TestProjectUsesMessageTransport(t *testing.T) {
 	for kind, want := range map[int64]string{0: "", 1: "text", 2: "text", 3: "text", 4: "rcs", 9: ""} {
