@@ -269,6 +269,7 @@ UI.tab({
     const APP_NAME = { whatsapp: 'WhatsApp', telegram: 'Telegram', instagram: 'Instagram', messenger: 'Messenger', signal: 'Signal', rcs: tr('Chat') };
     let pill = 'texts';
     let chosePill = false;
+    let parkedPill = ''; // the pill an outage put away, with its open chat and draft: back when chats are
     const pills = el('div', { class: 'msg-pills', attrs: { role: 'tablist' } });
     const pillBtns = CHAT.map(([id, label]) => {
       const b = el('button', { class: 'msg-pill', text: label, attrs: { role: 'tab' } });
@@ -414,6 +415,7 @@ UI.tab({
     };
     function closeChat() {
       chatOpen = '';
+      parkedPill = '';
       chatDraft = null;
       openContact = null;
       chatEpoch++;
@@ -683,9 +685,15 @@ UI.tab({
       chatsSw.set(!!s.ui?.chats);
       pills.hidden = !on;
       chatsCard.hidden = !!s.ui?.chats || !api.setChats;
-      if (!on && pill !== 'texts') { pill = 'texts'; closeChat(); }
+      if (!on && pill !== 'texts') {
+        // Chats are out (no phone, or Google Messages is away): an open chat and its draft wait under
+        // Texts and return with them. Only the user, another phone or another device closes it.
+        if (chatOpen) parkedPill = pill; else closeChat();
+        pill = 'texts';
+      }
       const all = chatThreads(s);
       if (chatsRow.setHint) chatsRow.setHint(chatsHint(!!s.chatsMessaging));
+      if (on && parkedPill) { pill = parkedPill; parkedPill = ''; }
       if (on && !chosePill) pill = 'all';
       for (const [id, b] of pillBtns) {
         b.classList.toggle('on', id === pill);

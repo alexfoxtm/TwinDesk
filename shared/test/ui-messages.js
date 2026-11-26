@@ -778,3 +778,66 @@ test('a same-phone reconnect keeps the Texts draft, the open conversation and un
   assert.equal(conv.hidden, true, 'another phone closes the conversation');
   assert.doesNotMatch(shown(), /Synthetic refused/);
 });
+
+test('with the Chats switch off, an open chat and its draft outlast a phone drop and a Google Messages outage; another phone clears them', async () => {
+  const phone = 'fixture-phone';
+  const dest = '+12025550100';
+  const gm = (row) => ({ owner: phone, state: 'connected', enabled: true, rows: [row], history: { chat: row.id, loaded: true, items: [] } });
+  const paired = { id: 'paired', addrs: [dest], reply: true, at: 1000 };
+  const group = { id: 'group', name: 'Synthetic group', addrs: [dest, '+12025550101'], group: true, reply: true, at: 1000 };
+  const hub = { deviceId: phone, session: 1, messages: true, perm: { messages: { missing: [] } } };
+  const open = (row) => {
+    // No ui.chats: only the paired Google Messages shows the chats.
+    const state = { hub: { ...hub }, googleMessages: gm(row) };
+    const google = [];
+    const page = inbox(state, { async googleMessages(msg) { google.push(msg); return true; } });
+    page.paint(state);
+    page.findPill('All').onclick(); // a pill the user chose is not picked again by itself
+    page.rows()[0].onclick();
+    const conv = page.chat.children[1];
+    const composer = conv.children[3];
+    const box = composer.children[2].children[1];
+    return { ...page, state, google, conv, composer, box };
+  };
+
+  // The same phone drops and comes back; its Google Messages view goes and returns with it.
+  const one = open(paired);
+  one.box.value = 'Synthetic chat draft';
+  one.state.hub = { ...hub, deviceId: '', session: 2, messages: false };
+  one.state.googleMessages = null;
+  one.paint(one.state);
+  assert.equal(one.chat.hidden, true, 'no chats while the phone is away');
+  one.state.hub = { ...hub, session: 3 };
+  one.state.googleMessages = { owner: phone, state: 'connecting', enabled: true, rows: [] };
+  one.paint(one.state);
+  one.state.googleMessages = gm(paired);
+  one.paint(one.state);
+  assert.equal(one.box.value, 'Synthetic chat draft', 'the draft survives a same-phone reconnect');
+  assert.equal(one.findPill('All').attrs['aria-selected'], 'true', 'the chosen pill is back');
+  assert.ok(!one.chat.hidden && !one.conv.hidden, 'the conversation is open again');
+  await one.composer.children[3].onclick();
+  const sent = one.google.filter((m) => m.op === 'send');
+  assert.ok(sent.length === 1 && sent[0].chat === 'paired' && sent[0].text === 'Synthetic chat draft', 'the draft goes to its own conversation');
+  one.box.value = 'Synthetic second draft';
+  one.state.hub = { ...hub, deviceId: '', session: 4, messages: false };
+  one.state.googleMessages = null;
+  one.paint(one.state);
+  one.state.hub = { ...hub, deviceId: 'other-phone', session: 5 };
+  one.state.googleMessages = { ...gm(paired), owner: 'other-phone' };
+  one.paint(one.state);
+  assert.equal(one.box.value, '', 'another phone never inherits the draft');
+  assert.ok(one.chat.hidden || one.conv.hidden, 'another phone never shows the conversation');
+
+  // The phone stays; its Google Messages helper drops out and returns.
+  const two = open(group);
+  two.box.value = 'Synthetic group draft';
+  for (const state of ['connecting', 'offline']) {
+    two.state.googleMessages = { owner: phone, state, enabled: true, rows: [] };
+    two.paint(two.state);
+    assert.equal(two.chat.hidden, true);
+  }
+  two.state.googleMessages = gm(group);
+  two.paint(two.state);
+  assert.equal(two.box.value, 'Synthetic group draft', 'the draft survives a Google Messages outage');
+  assert.ok(!two.chat.hidden && !two.conv.hidden, 'the conversation is open again');
+});
