@@ -13,15 +13,38 @@ import (
 	"os/exec"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
+	"go.mau.fi/mautrix-gmessages/pkg/libgm/util"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestPairingDetailsUseComputerNameAndDesktopAppType(t *testing.T) {
+	for _, tc := range []struct{ computer, label string }{
+		{"Mac Studio\n", "TwinDesk (Mac Studio)"},
+		{"  Büro Mac  ", "TwinDesk (Büro Mac)"},
+		{" \n", "TwinDesk (Mac)"},
+		{"first\nsecond", "TwinDesk (Mac)"},
+		{"name\u202E", "TwinDesk (Mac)"},
+		{string([]byte{0xff}), "TwinDesk (Mac)"},
+		{strings.Repeat("M", 65), "TwinDesk (Mac)"},
+	} {
+		got := pairingDetails(tc.computer)
+		if got.GetOS() != tc.label {
+			t.Errorf("label for %q = %q, want %q", tc.computer, got.GetOS(), tc.label)
+		}
+		if got.GetDeviceType() != gmproto.DeviceType_PWA || got.GetBrowserType() != gmproto.BrowserType_OTHER ||
+			got.GetUserAgent() != util.UserAgent {
+			t.Fatalf("unexpected pairing metadata: %v", got)
+		}
+	}
+}
 
 func TestOpeningHistoryCancelsPreviousPhotoBeforeDispatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

@@ -11,10 +11,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -153,6 +156,30 @@ func (o *output) save(auth *libgm.AuthData) bool {
 	return valid
 }
 
+func computerName(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/usr/sbin/scutil", "--get", "ComputerName").Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+func pairingDetails(name string) *gmproto.BrowserDetails {
+	name = strings.TrimSpace(name)
+	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > 64 ||
+		strings.ContainsFunc(name, func(r rune) bool { return !unicode.IsPrint(r) }) {
+		name = "Mac"
+	}
+	return &gmproto.BrowserDetails{
+		UserAgent: util.UserAgent, BrowserType: gmproto.BrowserType_OTHER,
+		OS: "TwinDesk (" + name + ")",
+		// The protocol has no native Mac type. PWA identifies an installed app.
+		DeviceType: gmproto.DeviceType_PWA,
+	}
+}
+
 func pair(ctx context.Context, cookies map[string]string, out *output) *libgm.AuthData {
 	if !filterCookies(cookies) {
 		return nil
@@ -166,6 +193,8 @@ func pair(ctx context.Context, cookies map[string]string, out *output) *libgm.Au
 	if c.FetchConfig(ctx) != nil {
 		return nil
 	}
+	// This helper pairs at most once. Set libgm's pairing metadata before it builds either Gaia payload.
+	util.BrowserDetailsMessage = pairingDetails(computerName(ctx))
 	emoji, session, err := c.StartGaiaPairing(ctx, ctx)
 	if err != nil {
 		return nil
