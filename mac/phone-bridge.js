@@ -464,9 +464,9 @@ class PhoneBridge extends EventEmitter {
     if (ready) {
       this._known(true);
       this.serial = ready;
-      await this._setup(ready);
+      if (!embedded) await this._setup(ready);
       if (!live()) return;
-      if (!embedded && await this._tcpip(ready)) return; // adbd restarts: found again on the next poll
+      if (!embedded && !(a.keepWirelessTls && a.net && a.wifi) && await this._tcpip(ready)) return;
       if (!live()) return;
       await this._checkInput(ready);
       if (!live()) return;
