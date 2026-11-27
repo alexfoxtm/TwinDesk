@@ -72,9 +72,9 @@ class PingKeepaliveTest {
         }
 
         fun text(json: String) {
-            Link::class.java.getDeclaredMethod("onText", String::class.java, WebSocket::class.java)
+            Link::class.java.getDeclaredMethod("onText", String::class.java, WebSocket::class.java, Long::class.javaPrimitiveType)
                 .apply { isAccessible = true }
-                .invoke(link, json, socket)
+                .invoke(link, json, socket, android.os.SystemClock.elapsedRealtime())
             exec.submit {}.get(3, TimeUnit.SECONDS)
             Link::class.java.getDeclaredMethod("cancelBeat").apply { isAccessible = true }.invoke(link)
         }
