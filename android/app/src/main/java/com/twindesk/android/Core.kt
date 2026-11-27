@@ -38,9 +38,12 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val link = Link(store, this, context = ctx)
     internal val embeddedNetwork = EmbeddedNetwork(ctx, store) {
         changed()
-        if (returnEmbeddedNode() != null) timers.execute { returnTick() }
+        if (MainActivity.shown && returnHost()?.let { embeddedCandidates(it).isNotEmpty() } == true) {
+            timers.execute { retryRouteReturn() }
+        }
     }
     @Volatile private var embeddedTargetId: String? = null
+    private val embeddedCandidateOffsets = mutableMapOf<String, Int>()
     // Computers that aren't on this phone's network, through Bluetooth (Ble.kt).
     val ble = Ble(ctx, { JSONObject().put("id", store.deviceId).put("name", store.deviceName).put("os", Proto.OS) },
         { id -> store.hosts().any { it.id == id } }, ::changed, ::onInvite)
@@ -83,6 +86,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
     private var returnFailureDeadline = 0L
     private var lastRouteReturn = -ROUTE_RETURN_COOLDOWN_MS
     private var returnTailTurn = false
+    private enum class ReturnRoute { IP, EMBEDDED }
+    private var lastReturnRoute: ReturnRoute? = null
     @Volatile private var awayAttempts = 0
     @Volatile private var fastAdvertisingUntil = 0L
     private val interactive get() = ctx.getSystemService(android.os.PowerManager::class.java)?.isInteractive != false
@@ -337,10 +342,10 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (link.connected || link.state == "connecting" || link.pair != null || peer.connected) return
         val known = store.hosts().find { it.id == h.id } ?: return
         Log.i("TwinDesk", "opened: reconnecting to ${known.name}")
-        bg.execute { connect(known) }
+        bg.execute { connect(known, false) }
     }
     fun background() {
-        if (returnHost() != null && (inBackground() || returnEmbeddedNode() != null)) link.pauseConnecting()
+        if ((link.embedded && link.host != null) || (returnHost() != null && inBackground())) link.pauseConnecting()
         requestTimers()
     }
     // A linked computer came near (CompanionLink): the return to it starts now rather than at the next
@@ -425,33 +430,60 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     fun hosts(): List<Host> = store.hosts()
 
-    // The UI's Connect, or the Mac's invite: take the session.
-    fun connect(h: Host) {
+    // The UI's Connect prefers nearby routes. The Network card can switch this exact Mac.
+    @Synchronized fun connect(h: Host) {
         if (link.connected && link.host?.id == h.id && link.host?.fp == h.fp) return
-        if (h.address.isBlank() && !isNear(h.id) && h.embeddedNode != null && !link.isNetemPeer(h)) {
-            connectEmbedded(h)
-            return
+        if (h.os == "mac") {
+            val saved = store.hosts().firstOrNull { it.id == h.id && it.fp == h.fp && it.token == h.token } ?: return
+            // Keep the ordinary Connect action for an available legacy route; the Network card
+            // always offers its own route for the selected Mac.
+            val legacy = saved.relay != null ||
+                (tailscale && Tailnet.address(saved)?.let { it != saved.address } == true && Tailnet.onIt())
+            if (!legacy && !isNear(saved.id) && connectEmbedded(saved)) return
         }
         stopReturn()
         connect(h, false)
     }
 
     @Synchronized
-    internal fun connectEmbedded(h: Host) {
-        val saved = savedEmbeddedHost(h) ?: return
-        val node = saved.embeddedNode ?: return
-        if (!embeddedNetwork.online(node) || link.isNetemPeer(saved)) return
-        if (link.embedded && link.host?.let { it.id == saved.id && it.fp == saved.fp } == true &&
-            link.state in setOf("connected", "connecting")) return
-        stopReturn()
+    internal fun connectEmbedded(h: Host): Boolean = connectSavedEmbedded(h, embeddedCandidates(h))
+
+    internal fun canConnectEmbedded(h: Host): Boolean =
+        !peer.connected && (!link.connected || link.host?.sameEmbeddedPair(h) == true) && embeddedCandidates(h).isNotEmpty()
+
+    private fun connectSavedEmbedded(h: Host, nodes: List<String>, fromQr: Boolean = false): Boolean {
+        val saved = savedEmbeddedHost(h) ?: return false
+        if (nodes.isEmpty() || (!fromQr && !MainActivity.shown) || peer.connected || link.isNetemPeer(saved)) return false
+        val same = link.host?.sameEmbeddedPair(saved) == true
+        if (link.state == "connecting") return same
+        if (link.pair != null || (link.connected && !same)) return false
+        if (link.connected && link.embedded) return true
+        val candidates = nextEmbeddedCandidates(saved, nodes)
+        stopReturn(invalidateLink = !link.connected)
         resumeUntil = 0
         resumeHost = null
         resumeLater = null
         embeddedTargetId = saved.id
         val gen = returnGeneration
-        link.connectEmbedded(embeddedNetwork, node, saved) {
-            gen == returnGeneration && savedEmbeddedHost(saved) != null && embeddedNetwork.online(node)
+        link.connectEmbedded(embeddedNetwork, candidates, saved) {
+            val current = gen == returnGeneration && !peer.connected && savedEmbeddedHost(saved) != null
+            link.denyCode = if (current && !fromQr && !MainActivity.shown) "paused" else "local"
+            current && (fromQr || MainActivity.shown)
         }
+        return true
+    }
+
+    private fun embeddedCandidates(h: Host): List<String> {
+        if (h.os != "mac" || h.token.isBlank() || link.isNetemPeer(h)) return emptyList()
+        return embeddedNetwork.onlineCandidates(h.embeddedNode)
+    }
+
+    private fun nextEmbeddedCandidates(h: Host, nodes: List<String>): List<String> {
+        if (nodes.size <= EMBEDDED_CANDIDATES_PER_DIAL) return nodes
+        val offset = (embeddedCandidateOffsets[h.id] ?: 0) % nodes.size
+        val next = List(EMBEDDED_CANDIDATES_PER_DIAL) { nodes[(offset + it) % nodes.size] }
+        embeddedCandidateOffsets[h.id] = (offset + next.size) % nodes.size
+        return next
     }
 
     @Synchronized
@@ -459,6 +491,10 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (peer.connected || !embeddedNetwork.online(offer.node) || NetemRoute.configured?.peer == offer.id) return false
         val previous = store.hosts().find { it.id == offer.id }
         if (previous?.let { it.os != "mac" || it.fp != offer.pin || link.isNetemPeer(it) } == true) return false
+        if (previous != null) {
+            if (previous.embeddedNode?.let { it != offer.node } == true) return false
+            return connectSavedEmbedded(previous, listOf(offer.node), fromQr = true)
+        }
         stopReturn()
         resumeUntil = 0
         resumeHost = null
@@ -467,8 +503,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
         invite = null
         embeddedTargetId = offer.id
         val gen = returnGeneration
-        link.connectEmbedded(embeddedNetwork, offer.node, null, offer) {
-            gen == returnGeneration && !peer.connected && embeddedNetwork.online(offer.node)
+        link.connectEmbedded(embeddedNetwork, listOf(offer.node), null, offer) {
+            gen == returnGeneration && !peer.connected
         }
         return true
     }
@@ -477,7 +513,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     internal fun stopEmbedded(signOut: Boolean) {
         synchronized(store) {
             val goodbye = if (embeddedTargetId != null || link.embedded || returnEmbeddedNode() != null) {
-                stopReturn()
+                stopReturn(invalidateLink = link.embedded || !link.connected)
                 link.disconnectEmbedded()
             } else null
             embeddedNetwork.stop(signOut, goodbye)
@@ -485,7 +521,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     private fun savedEmbeddedHost(h: Host): Host? = store.hosts().firstOrNull {
-        it.id == h.id && it.fp == h.fp && it.token == h.token && it.os == "mac" && it.embeddedNode == h.embeddedNode
+        it.sameEmbeddedPair(h)
     }
 
     // skipNet: the network just failed to reach it (a stale address after the Wi-Fi went): Bluetooth first.
@@ -677,6 +713,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     @Synchronized
     fun forget(id: String) {
+        embeddedCandidateOffsets.remove(id)
         screen.forgetViewerRecovery(id)
         clip.forgetQueue(id)
         photos.forget(id)
@@ -704,7 +741,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 h.address = f.address
                 h.port = f.port
             }
-            connect(h)
+            stopReturn()
+            connect(h, false)
             return
         }
         if (link.pair != null) return
@@ -740,7 +778,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (link.wired) link.send(JSONObject().put("t", "phone.wired").put("nonce", wiredNonce))
         // Paired through the cable: its network address once discovery has seen it.
         val seen = discovery.found[host.id]
-        if (host.address == "127.0.0.1" && seen != null) {
+        if (!link.embedded && host.address == "127.0.0.1" && seen != null) {
             host.address = seen.address
             host.port = seen.port
             store.putHost(host)
@@ -803,6 +841,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     override fun onEmbeddedClosed(host: Host, code: String?) = onLinkClosed(host, code, embedded = true)
 
     private fun onLinkClosed(host: Host, code: String?, embedded: Boolean) {
+        if (embedded && embeddedTargetId == host.id) embeddedTargetId = null
         val accidental = code == null || code !in setOf("local", "paused", "reclaim", Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN, Proto.E.BUSY, Proto.E.ASLEEP)
         val retainViewer = accidental && link.state != "failed"
         main.post {
@@ -837,8 +876,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     // This is only consent to return to one already-paired Mac, never permission to take over.
     // Synchronous removal makes Disconnect survive an immediate process death.
-    @Synchronized private fun stopReturn() {
-        link.invalidateReturn()
+    @Synchronized private fun stopReturn(invalidateLink: Boolean = true) {
+        if (invalidateLink) link.invalidateReturn()
         returnGeneration++
         embeddedTargetId = null
         returnAfter = 0L
@@ -847,12 +886,14 @@ class Core private constructor(val ctx: Context) : Link.Events {
         lastRouteReturn = -ROUTE_RETURN_COOLDOWN_MS
         awayAttempts = 0
         returnTailTurn = false
+        lastReturnRoute = null
         returnPrefs.edit().remove("host").commit()
         changed()
     }
 
     @Synchronized private fun rememberReturn(h: Host, socket: Any?) {
         if (!link.canRememberReturn(h, socket)) return
+        val preferEmbedded = link.embedded && (lastReturnRoute != ReturnRoute.EMBEDDED || returnEmbeddedNode() != null)
         returnGeneration++
         returnAfter = 0L
         returnFailures = 0
@@ -860,10 +901,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
         lastRouteReturn = -ROUTE_RETURN_COOLDOWN_MS
         awayAttempts = 0
         returnTailTurn = false
+        lastReturnRoute = null
         returnPrefs.edit().remove("host").commit()
         if (h.os in RETURN_OS && link.canReclaim && !link.ble) {
             val saved = JSONObject().put("id", h.id).put("fp", h.fp)
-            if (link.embedded) saved.put("embeddedNode", h.embeddedNode)
+            if (preferEmbedded) saved.put("embeddedNode", h.embeddedNode)
             returnPrefs.edit().putString("host", saved.toString()).commit()
         }
     }
@@ -936,19 +978,25 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 stopReturn()
                 return
             }
-            val gen = returnGeneration
             returnAfter = now + 5000L
-            link.connectEmbedded(embeddedNetwork, embeddedNode, h, reclaim = true) {
-                val same = gen == returnGeneration && savedEmbeddedHost(h) != null
-                val ready = MainActivity.shown && !peer.connected && embeddedNetwork.online(embeddedNode)
-                link.denyCode = if (same && !ready) "paused" else "local"
-                same && ready
-            }
+            returnOverEmbedded(h, listOf(embeddedNode))
             return
         }
         val seen = discovery.found[h.id]?.takeIf { it.fp == h.fp }
         if (seen != null && (seen.os !in RETURN_OS || !seen.rc)) {
             returnAfter = now + 3000L
+            return
+        }
+        val nodes = if (MainActivity.shown) embeddedCandidates(h) else emptyList()
+        // A default cellular route can still match a stale Wi-Fi address. Try embedded
+        // once the local attempt fails, and alternate on later retries.
+        val savedAddress = h.address.lowercase().removeSurrounding("[", "]")
+        val canDialLan = returnEndpoint(savedAddress, h.port)
+        if (nodes.isNotEmpty() &&
+            (lastReturnRoute == ReturnRoute.IP || (seen == null && (!canDialLan || !routeAvailable(savedAddress)))) &&
+            (lastReturnRoute != ReturnRoute.EMBEDDED || !canDialLan)) {
+            returnAfter = now + 5000L
+            returnOverEmbedded(h, nextEmbeddedCandidates(h, nodes))
             return
         }
         val gen = returnGeneration
@@ -968,18 +1016,35 @@ class Core private constructor(val ctx: Context) : Link.Events {
         val address = testRoute?.address ?: dial.address.lowercase().removeSurrounding("[", "]")
         val port = if (testRoute != null) NetemRoute.CONTROL_PORT else dial.port
         if (Tailnet.isTailnet(address) && !onTailnet) return
-        if (port !in 1..65535 || address.isBlank() || address == "localhost" || address == "::1" || address.startsWith("127.") || address.startsWith("::ffff:127.") || address.startsWith("ble:") || address.startsWith("blp:")) return
+        if (!returnEndpoint(address, port)) return
         // With any usable route the Mac can come back without a network event. Keep polling it.
         val away = !interactive && seen == null && !onTailnet &&
             (!bleOn || (ble.get(h.id) == null && serve.get(h.id) == null)) && !routeAvailable(address)
         returnAfter = now + staleDialDelay(away, awayAttempts)
         awayAttempts = if (away) (awayAttempts + 1).coerceAtMost(3) else 0
+        lastReturnRoute = ReturnRoute.IP
         // Candidate addresses stay transient until Link verifies the pinned welcome.
         connect(dial) {
             val same = gen == returnGeneration && returnHost()?.let { it.id == h.id && it.fp == h.fp } == true
             val paused = same && inBackground()
             link.denyCode = if (paused) "paused" else "local"
             same && !paused && !peer.connected
+        }
+    }
+
+    private fun returnEndpoint(address: String, port: Int) = port in 1..65535 && address.isNotBlank() &&
+        address != "localhost" && address != "::1" && !address.startsWith("127.") &&
+        !address.startsWith("::ffff:127.") && !address.startsWith("ble:") && !address.startsWith("blp:")
+
+    private fun returnOverEmbedded(h: Host, nodes: List<String>) {
+        embeddedTargetId = h.id
+        lastReturnRoute = ReturnRoute.EMBEDDED
+        val gen = returnGeneration
+        link.connectEmbedded(embeddedNetwork, nodes, h, reclaim = true) {
+            val same = gen == returnGeneration && savedEmbeddedHost(h) != null
+            val ready = MainActivity.shown && !peer.connected
+            link.denyCode = if (same && !ready) "paused" else "local"
+            same && ready
         }
     }
 
@@ -999,6 +1064,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     companion object {
+        private const val EMBEDDED_CANDIDATES_PER_DIAL = 4
         private const val ROUTE_RETURN_COOLDOWN_MS = 5000L
         // Computers that take a paired phone back by itself after a long drop (hello rc:1,
         // #192/#266). Each still has to advertise rc, so an older computer is never dialed this way.

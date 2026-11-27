@@ -121,6 +121,13 @@ internal class EmbeddedNetwork(context: Context, private val store: Store, priva
 
     fun online(node: String) = desired && status.state == "running" && node in status.peers
 
+    fun onlineCandidates(bound: String?): List<String> {
+        val current = status
+        if (!desired || current.state != "running") return emptyList()
+        if (bound != null) return if (bound in current.peers) listOf(bound) else emptyList()
+        return current.peers.toList()
+    }
+
     fun dial(node: String): EmbeddedBridge? {
         val current = generation
         if (!online(node)) return null

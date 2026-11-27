@@ -813,18 +813,19 @@ private fun EmbeddedNetworkCard(core: Core, version: Int, connection: Boolean = 
             }
         }
         if (connection && status.state == "running") {
-            val pairs = core.hosts().filter { it.embeddedNode != null && !core.link.isNetemPeer(it) }
+            val pairs = core.hosts().filter { it.os == "mac" && !core.link.isNetemPeer(it) }
             for (host in pairs) {
                 val online = host.embeddedNode in status.peers
-                val current = core.link.embedded && core.link.host?.id == host.id
+                val current = core.link.embedded && core.link.host?.sameEmbeddedPair(host) == true
                 val hint = when {
                     current && core.link.connected -> tr("Connected")
                     current && core.link.state == "connecting" -> tr("Connecting…")
                     online -> tr("Online")
+                    host.embeddedNode == null -> tr("Paired")
                     else -> tr("Offline")
                 }
                 MacRow(host.name, hint) {
-                    if (!current && online) Secondary(tr("Connect")) { core.connectEmbedded(host) }
+                    if (!current && core.canConnectEmbedded(host)) Secondary(tr("Connect")) { core.connectEmbedded(host) }
                 }
             }
             MacRow(tr("Pair a Mac"), tr("Scan the TwinDesk Network pairing code shown on the Mac.")) {

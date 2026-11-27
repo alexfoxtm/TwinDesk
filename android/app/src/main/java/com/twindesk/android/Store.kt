@@ -24,6 +24,9 @@ data class Host(
     var relay: RelayInfo? = null, // its own relay, if it has one (Relay.kt)
     val embeddedNode: String? = null,
 ) {
+    internal fun sameEmbeddedPair(other: Host) = os == "mac" && other.os == "mac" &&
+        id == other.id && fp == other.fp && token == other.token && embeddedNode == other.embeddedNode
+
     fun json(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("os", os).put("address", address)
         .put("port", port).put("fp", fp).put("token", token).put("lastSeen", lastSeen)
