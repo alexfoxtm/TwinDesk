@@ -74,7 +74,14 @@ for (const mode of ['direct', 'mesh']) {
   const Pairing = mode === 'direct' ? impls.mac : require('../../mac/mesh/pairing.js').Pairing;
   const sent = [];
   const server = fakeServer(sent);
-  server.authenticate = (_ctx, who) => { server.accepted = who.deviceId; };
+  server.authenticate = (socket, who, _welcome, gate) => {
+    if (gate) {
+      const decision = gate();
+      if (!decision.ok) return server.fail(socket, decision.code, decision.message);
+    }
+    socket.authed = true;
+    server.accepted = who.deviceId;
+  };
   const pairing = new Pairing(server, { macId: 'host-id', macName: 'Mac', fp: '00' },
     { store: require('../../mac/store.js') });
   let remoteNonce = 'embed-nonce';
@@ -106,6 +113,27 @@ for (const mode of ['direct', 'mesh']) {
   assert.strictEqual(server.accepted, start.id);
   assert.strictEqual(embedded.fxWanted, false, 'the verified WSS tunnel does not advertise a second TCP path');
   assert.strictEqual(embedded.ilWanted, null, 'the tunnel does not advertise a direct UDP lane');
+
+  const lanToken = P.randomHex(32);
+  const lanPair = { id: 'lan-phone', name: 'LAN Phone', os: P.OS.ANDROID, tokenHash: P.sha256Hex(lanToken) };
+  pairing.paired.push(lanPair);
+  const lanHello = { ...hello, id: lanPair.id, token: lanToken };
+  const remote = { ...ctx, embeddedPeer: 'node-lan-phone' };
+  assert.throws(() => pairing._onMessage(remote, { ...lanHello, token: P.randomHex(32) }), /Not paired/);
+  assert.strictEqual(lanPair.tailNode, undefined, 'a failed hello cannot claim the binding');
+  if (mode === 'direct') {
+    pairing.returnPhone = lanPair.id;
+    Object.assign(lanHello, { rc: 1, resume: '0' });
+    server.current = { authed: true, deviceId: 'another-phone' };
+    assert.throws(() => pairing._onMessage(remote, lanHello), /in use by another device/i);
+    assert.strictEqual(lanPair.tailNode, undefined, 'a busy Mac does not learn a binding');
+    server.current = null;
+  }
+  pairing._onMessage(remote, lanHello);
+  assert.strictEqual(server.accepted, lanPair.id, 'the existing LAN token authenticates directly');
+  assert.strictEqual(lanPair.tailNode, remote.embeddedPeer);
+  assert.strictEqual(pairing.pending, null, 'reusing a pairing never starts the QR flow');
+  assert.throws(() => pairing._onMessage({ ...ctx, embeddedPeer: 'other-node' }, lanHello), /Not paired/);
 }
 
 console.log('qr-pairing: ok');

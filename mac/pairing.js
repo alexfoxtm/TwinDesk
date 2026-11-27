@@ -213,7 +213,10 @@ class Pairing extends EventEmitter {
       return this.server.fail(ctx, P.E.VERSION_MISMATCH, `Mac speaks protocol v${P.PROTOCOL_VERSION}`);
     }
     const e = this.paired.find((x) => x.id === msg.id);
-    if (!e || !P.tokenMatches(msg.token, e.tokenHash) || (ctx.embeddedPeer && ctx.embeddedPeer !== e.tailNode)) {
+    const newTailBinding = ctx.embeddedPeer && e?.tailNode == null &&
+      e?.os === P.OS.ANDROID && msg.os === P.OS.ANDROID;
+    if (!e || !P.tokenMatches(msg.token, e.tokenHash) ||
+        (ctx.embeddedPeer && ctx.embeddedPeer !== e.tailNode && !newTailBinding)) {
       return this.server.fail(ctx, P.E.BAD_TOKEN, 'Not paired with this Mac');
     }
     // A phone only says hello when someone asked for it (or to resume): it takes the session.
@@ -293,6 +296,11 @@ class Pairing extends EventEmitter {
       tail: require('../shared/tailnet.js').mine(), // its Tailscale addresses, for reconnecting away from this network (#161)
       relay: require('../shared/relay.js').welcome() || null, // your own relay (shared/relay.js), for reconnecting away from this network; null: none
     }, gate);
+    // Embedded HELLO authenticates synchronously. Learn its witnessed node only after admission.
+    if (ctx.embeddedPeer && ctx.authed && e.tailNode == null && this.paired.includes(e)) {
+      e.tailNode = ctx.embeddedPeer;
+      this._save();
+    }
     this.emit('change');
   }
 

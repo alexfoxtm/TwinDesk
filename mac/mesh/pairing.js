@@ -188,7 +188,10 @@ class Pairing extends EventEmitter {
       return this.server.fail(ctx, P.E.VERSION_MISMATCH, `Mac speaks protocol v${P.PROTOCOL_VERSION}`);
     }
     const e = this.paired.find((x) => x.id === msg.id);
-    if (!e || !P.tokenMatches(msg.token, e.tokenHash) || (ctx.embeddedPeer && ctx.embeddedPeer !== e.tailNode)) {
+    const newTailBinding = ctx.embeddedPeer && e?.tailNode == null &&
+      e?.os === P.OS.ANDROID && msg.os === P.OS.ANDROID;
+    if (!e || !P.tokenMatches(msg.token, e.tokenHash) ||
+        (ctx.embeddedPeer && ctx.embeddedPeer !== e.tailNode && !newTailBinding)) {
       return this.server.fail(ctx, P.E.BAD_TOKEN, 'Not paired with this Mac');
     }
     if (typeof msg.name === 'string' && msg.name && msg.name !== e.name) e.name = msg.name.slice(0, 64);
@@ -207,6 +210,11 @@ class Pairing extends EventEmitter {
       ...(ctx.appsPair ? { pa: 1 } : {}),
       tail: require('../../shared/tailnet.js').mine(), // its Tailscale addresses, for reconnecting away from this network (#161)
     });
+    // Embedded HELLO authenticates synchronously. Learn its witnessed node only after admission.
+    if (newTailBinding && ctx.authed && this.paired.includes(e)) {
+      e.tailNode = ctx.embeddedPeer;
+      this._save();
+    }
     this.emit('change');
   }
 
