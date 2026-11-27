@@ -1490,6 +1490,7 @@
   "The Mac didn’t accept this TwinDesk Network pairing. Scan a fresh pairing code.": "Mac bu TwinDesk Ağı eşleştirmesini kabul etmedi. Yeni bir kod tarayın.",
   "The Mac didn’t match the pairing code.": "Mac, eşleştirme koduyla eşleşmedi.",
   "The Mac is unavailable on TwinDesk Network.": "Mac, TwinDesk Ağı üzerinden kullanılamıyor.",
+  "Screen sharing is unavailable on TwinDesk Network.": "TwinDesk Ağı üzerinden ekran paylaşımı kullanılamıyor.",
   "The TwinDesk Network connection closed.": "TwinDesk Ağı bağlantısı kapandı.",
   "The TwinDesk Network pairing was cancelled.": "TwinDesk Ağı eşleştirmesi iptal edildi.",
   "TwinDesk Network": "TwinDesk Ağı",

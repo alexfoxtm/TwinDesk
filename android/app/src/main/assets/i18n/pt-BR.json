@@ -1490,6 +1490,7 @@
   "The Mac didn’t accept this TwinDesk Network pairing. Scan a fresh pairing code.": "O Mac não aceitou este pareamento pela rede TwinDesk. Escaneie um novo código.",
   "The Mac didn’t match the pairing code.": "O Mac não corresponde ao código de pareamento.",
   "The Mac is unavailable on TwinDesk Network.": "O Mac está indisponível na rede TwinDesk.",
+  "Screen sharing is unavailable on TwinDesk Network.": "O compartilhamento de tela está indisponível na rede TwinDesk.",
   "The TwinDesk Network connection closed.": "A conexão pela rede TwinDesk foi encerrada.",
   "The TwinDesk Network pairing was cancelled.": "O pareamento pela rede TwinDesk foi cancelado.",
   "TwinDesk Network": "Rede TwinDesk",

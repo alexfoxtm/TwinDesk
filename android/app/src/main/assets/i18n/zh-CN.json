@@ -1490,6 +1490,7 @@
   "The Mac didn’t accept this TwinDesk Network pairing. Scan a fresh pairing code.": "Mac 未接受此 TwinDesk 网络配对。请扫描新的配对二维码。",
   "The Mac didn’t match the pairing code.": "Mac 与配对码不匹配。",
   "The Mac is unavailable on TwinDesk Network.": "无法通过 TwinDesk 网络连接此 Mac。",
+  "Screen sharing is unavailable on TwinDesk Network.": "TwinDesk 网络上的屏幕共享不可用。",
   "The TwinDesk Network connection closed.": "TwinDesk 网络连接已关闭。",
   "The TwinDesk Network pairing was cancelled.": "TwinDesk 网络配对已取消。",
   "TwinDesk Network": "TwinDesk 网络",

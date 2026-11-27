@@ -56,10 +56,10 @@ internal class EmbeddedTurn(
 
     fun connectLocal(port: Int, ended: () -> Unit) {
         val socket = Socket()
-        admit(socket, prepare = { socket.connect(InetSocketAddress(loopback, port), 3000) }, ended = ended)
+        admit(socket, waitForDrain = true, prepare = { socket.connect(InetSocketAddress(loopback, port), 3000) }, ended = ended)
     }
 
-    private fun admit(socket: Socket, prepare: () -> Unit = {}, ended: () -> Unit = {}) {
+    private fun admit(socket: Socket, waitForDrain: Boolean = false, prepare: () -> Unit = {}, ended: () -> Unit = {}) {
         val stream = synchronized(lock) {
             if (active() && slots.tryAcquire()) Stream(socket).also { streams.add(it) } else null
         }
@@ -72,9 +72,11 @@ internal class EmbeddedTurn(
             try {
                 if (!active()) return@execute
                 prepare()
-                stream.pump()
+                stream.pump(waitForDrain)
             } catch (_: IOException) {
                 // The local service stopped before the child could connect.
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
             } finally {
                 stream.close()
                 synchronized(lock) { streams.remove(stream) }
@@ -101,7 +103,7 @@ internal class EmbeddedTurn(
 
         private fun allowed() = !local.isClosed && active()
 
-        fun pump() {
+        fun pump(waitForDrain: Boolean) {
             if (!allowed()) return
             val child = connect(::allowed, this) ?: return
             try {
@@ -112,9 +114,14 @@ internal class EmbeddedTurn(
                 val frame = ByteArray(MAX_FRAME)
                 while (allowed()) {
                     val size = input.read(frame)
-                    if (size <= 0 || !allowed() ||
-                        child.socket.queueSize() > MAX_QUEUE - size ||
-                        !child.socket.send(frame.toByteString(0, size))) return
+                    // File bytes must arrive intact. Pause this worker's local reads so
+                    // backpressure reaches WebDAV, while keeping the TURN policy bounded.
+                    val queueLimit = if (size > 0) MAX_QUEUE - size else 0L
+                    while (allowed() && child.socket.queueSize() > queueLimit) {
+                        if (!waitForDrain) return
+                        Thread.sleep(10)
+                    }
+                    if (size <= 0 || !allowed() || !child.socket.send(frame.toByteString(0, size))) return
                 }
             } catch (_: IOException) {
                 // Either endpoint closed.

@@ -13,9 +13,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class EmbeddedTurnTest {
     @Test fun rewritesOnlySingleRelayTcpOffers() {
@@ -81,6 +84,50 @@ class EmbeddedTurnTest {
                 proxy.close()
                 assertEquals(0, proxy.port)
                 assertEquals(-1, client.getInputStream().read())
+                assertTrue(released.await(5, TimeUnit.SECONDS))
+            }
+        }
+    }
+
+    @Test fun reverseFolderWaitsForTheNetworkInsteadOfDroppingTheFile() {
+        val blocked = AtomicBoolean(true)
+        val reachedLimit = CountDownLatch(1)
+        val released = CountDownLatch(1)
+        val request = Request.Builder().url("wss://127.0.0.1/embedded/dav").build()
+        ServerSocket(0, 1, InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))).use { server ->
+            server.soTimeout = 5000
+            EmbeddedTurn({ true }) { _, listener ->
+                val remote = object : WebSocket {
+                    override fun request() = request
+                    override fun queueSize(): Long {
+                        if (!blocked.get()) return 0
+                        reachedLimit.countDown()
+                        return 512L * 1024
+                    }
+                    override fun send(text: String) = error("Unexpected text frame")
+                    override fun send(bytes: ByteString): Boolean {
+                        listener.onMessage(this, bytes)
+                        return true
+                    }
+                    override fun close(code: Int, reason: String?) = true
+                    override fun cancel() {}
+                }
+                listener.onOpen(remote, Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                    .code(101).message("Switching Protocols").build())
+                EmbeddedTurn.Tunnel(remote) { released.countDown() }
+            }.use { proxy ->
+                proxy.connectLocal(server.localPort) {}
+                server.accept().use { folder ->
+                    folder.soTimeout = 5000
+                    val payload = ByteArray(80_000) { (it % 251).toByte() }
+                    folder.getOutputStream().write(payload)
+                    assertTrue(reachedLimit.await(5, TimeUnit.SECONDS))
+                    assertFalse(released.await(100, TimeUnit.MILLISECONDS))
+                    blocked.set(false)
+                    val reply = ByteArray(payload.size)
+                    java.io.DataInputStream(folder.getInputStream()).readFully(reply)
+                    assertArrayEquals(payload, reply)
+                }
                 assertTrue(released.await(5, TimeUnit.SECONDS))
             }
         }

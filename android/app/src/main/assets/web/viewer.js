@@ -62,6 +62,7 @@
   let sound = true;
   let pacing = 'fast';
   let captureUnavailable = false;
+  let routeError = '';
   let sharingUpdate = null;
   const captureUnavailableMessage = () => t('Screen capture is unavailable on {name}. Check the Mac’s lock and Screen Recording settings. Retrying…', { name });
   let touchMode = 'pad'; // 'pad' | 'direct' (opts.touch)
@@ -200,8 +201,9 @@
       if (captureUnavailable) t = captureUnavailableMessage();
     }
     if (sharingUpdate?.t === 'screen.state' && captureUnavailable) return;
-    overlay.textContent = t || '';
-    overlay.classList.toggle('hidden', !t);
+    const message = routeError || t || '';
+    overlay.textContent = message;
+    overlay.classList.toggle('hidden', !message);
   }
 
   // steady: no hints, and the answer leaves out the playout-delay extension, so the computer's
@@ -458,6 +460,7 @@
         if (!pc && !captureUnavailable) setOverlay(t('Waiting for {name}…', { name }));
         break;
       case 'rtc.offer':
+        routeError = '';
         setOverlay(t('Waiting for {name}…', { name }));
         onOffer(msg); break;
       case 'rtc.ice':
@@ -466,9 +469,14 @@
         else pc.addIceCandidate(msg.candidate).catch(() => {});
         break;
       case 'stream.stop':
+        routeError = '';
         if (viewGestures || scopedInput) cancelInput();
         closePc();
         setOverlay(t('{name} isn’t sharing its screen', { name }));
+        break;
+      case 'viewer.unavailable':
+        routeError = typeof msg.reason === 'string' ? msg.reason : '';
+        setOverlay(routeError);
         break;
       case 'viewer.input':
         inputAllowsCue = msg.on === true;

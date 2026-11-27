@@ -363,7 +363,7 @@ class Screen(core: Core) : Feature(core) {
         if (route != null && core.link.isEmbeddedRoute(route)) {
             if (viewer == null || core.lockView.locked) return
             if (!core.link.embeddedMediaReady(route)) {
-                embeddedViewer = EmbeddedViewer(viewer, route)
+                waitForEmbeddedMedia(viewer, route)
                 return
             }
             if (!acceptEmbeddedViewer(viewer, route, w, hpx)) return
@@ -384,6 +384,17 @@ class Screen(core: Core) : Feature(core) {
         if (!core.link.sendFor(route, acceptance(w, h))) return false
         if (core.link.accepts(route)) viewerRetry.opened(viewer, peer, route)
         return true
+    }
+
+    private fun waitForEmbeddedMedia(viewer: WebHost, route: Link.TrustedRoute, welcomedAt: Long? = null) {
+        val pending = EmbeddedViewer(viewer, route, welcomedAt)
+        embeddedViewer = pending
+        pendingTimer.postDelayed({
+            if (embeddedViewer === pending && host === viewer && viewing &&
+                core.link.isEmbeddedRoute(route) && !core.link.embeddedMediaReady(route)) {
+                viewer.post(msg("viewer.unavailable", "reason" to tr("Screen sharing is unavailable on TwinDesk Network.")), route)
+            }
+        }, 8000)
     }
 
     internal fun onEmbeddedMediaReady(route: Link.TrustedRoute) {
@@ -644,7 +655,7 @@ class Screen(core: Core) : Feature(core) {
                 core.link.ble || core.lockView.locked || !core.link.accepts(route) ||
                 !viewerRetry.reconnect(viewer, host, route, welcomedAt)) return@post
             if (core.link.isEmbeddedRoute(route) && !core.link.embeddedMediaReady(route)) {
-                embeddedViewer = EmbeddedViewer(viewer, route, welcomedAt)
+                waitForEmbeddedMedia(viewer, route, welcomedAt)
             } else if (core.link.sendFor(route, acceptance(w, h))) {
                 watchOffer(viewer, route, welcomedAt)
             }

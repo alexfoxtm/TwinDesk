@@ -7,6 +7,7 @@ package com.twindesk.android
 
 import android.app.AlarmManager
 import android.content.Context
+import android.net.ConnectivityManager
 import android.net.InetAddresses
 import android.os.Handler
 import android.os.Looper
@@ -616,7 +617,11 @@ class Link(
         !parting && connected && !ble && ws === source && host?.os == "mac"
 
     internal fun backupSessionCurrent(marker: Any?): Boolean =
-        marker is WebSocket && photoRoute(marker) && (!embedded || peerBackup)
+        marker is WebSocket && photoRoute(marker) && (!embedded || embeddedBackupAllowed())
+
+    private fun embeddedBackupAllowed(): Boolean = peerBackup && runCatching {
+        context?.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered == false
+    }.getOrDefault(false)
 
     internal fun sendPhoto(m: JSONObject, source: WebSocket): Boolean =
         photoRoute(source) && source.send(m.toString()).also { if (it) markProbe() }
@@ -716,7 +721,7 @@ class Link(
             return type in allowed && (!type.startsWith("audio.") || type == "audio.policy" ||
                 m.opt("dir") == "m2w")
         }
-        if (type.startsWith("backup.")) return peerBackup
+        if (type.startsWith("backup.")) return embeddedBackupAllowed()
         if (type == Proto.T.SHARE_HOST) return !outgoing
         if (type == Proto.T.SHARE_OFFER || type == "embedded.dav.open") {
             return embeddedTurn != null && outgoing == (type == Proto.T.SHARE_OFFER)
@@ -731,7 +736,8 @@ class Link(
             Thread(work, "td-lock-view").apply { isDaemon = true }
         }
         private val embeddedMirrorSlots = Semaphore(2)
-        private val embeddedFolderSlots = Semaphore(2)
+        private val embeddedFolderReads = Semaphore(2, true)
+        private val embeddedFolderWrites = Semaphore(1, true)
         private val embeddedFolderPath = Regex("/[0-9a-f]{32}/(list|stat|file|mkdir|delete|rename)\\?p=[^#\\r\\n]*")
         private val embeddedMediaOutgoing = setOf(
             "screen.policy", "screen.ctl", "rtc.answer", "rtc.ice", "rtc.detail",
@@ -814,8 +820,14 @@ class Link(
         if (!current() || relativePath.length > 12000 || !embeddedFolderPath.matches(relativePath)) {
             throw IOException("The shared folder is unavailable")
         }
-        if (!embeddedFolderSlots.tryAcquire()) throw IOException("The shared folder is busy")
+        val slots = if (method == "GET" || method == "HEAD") embeddedFolderReads else embeddedFolderWrites
+        val until = SystemClock.elapsedRealtime() + 60_000
+        while (!slots.tryAcquire(250, TimeUnit.MILLISECONDS)) {
+            if (!current()) throw IOException("The shared folder disconnected")
+            if (SystemClock.elapsedRealtime() >= until) throw IOException("The shared folder is busy")
+        }
         try {
+            if (!current()) throw IOException("The shared folder disconnected")
             val bridge = dial.network.dial(node) ?: throw IOException("The shared folder is unavailable")
             try {
                 val request = Request.Builder().url("https://127.0.0.1:${bridge.port}/embedded/folder$relativePath")
@@ -836,7 +848,7 @@ class Link(
                 dial.network.releaseNow(bridge)
             }
         } finally {
-            embeddedFolderSlots.release()
+            slots.release()
         }
     }
 
