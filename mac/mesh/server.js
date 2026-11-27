@@ -209,6 +209,14 @@ class Server extends EventEmitter {
 
     if (!ctx.authed) {
       if (this.asleep && msg.t === P.T.HELLO) return this.fail(ctx, P.E.ASLEEP, 'Asleep');
+      if (msg.t === P.T.BYE) {
+        ctx.released = true;
+        const current = this.clients.get(ctx.pendingId);
+        if (ctx.pendingOs === P.OS.ANDROID && (!current || current === ctx.returnBase) &&
+            !(ctx.automaticReturn && msg.retry === true)) this.emit('noreclaim', ctx.pendingId);
+        return ctx.ws.close();
+      }
+      if (msg.t === P.T.HELLO && msg.rc === 1) return this.emit('preauth', ctx, msg);
       if (msg.t === P.T.HELLO && typeof msg.resume === 'string') return this._resume(ctx, msg);
       if (msg.t === P.T.HELLO || msg.t.startsWith('pair.')) return this.emit('preauth', ctx, msg);
       return this.fail(ctx, P.E.BAD_MESSAGE, `"${msg.t}" is not allowed before welcome`);
@@ -219,6 +227,8 @@ class Server extends EventEmitter {
     if (msg.t === P.T.PING) return this.send(ctx, { t: P.T.PONG, ts: msg.ts });
     if (msg.t === P.T.BYE) { // Disconnect there: nothing to wait for
       ctx.released = true;
+      if (ctx.os === P.OS.ANDROID && this.clients.get(ctx.deviceId) === ctx &&
+          !(ctx.automaticReturn && msg.retry === true)) this.emit('noreclaim', ctx.deviceId);
       if (ctx.alt) { // the whole session goes, its fallback path too
         const alt = ctx.alt;
         ctx.alt = null;
@@ -329,19 +339,24 @@ class Server extends EventEmitter {
 
   // Mark ctx authenticated. A client with the same device id replaces the older socket of that
   // device only; other devices are untouched.
-  authenticate(ctx, who, welcome) {
+  authenticate(ctx, who, welcome, gate) {
     // The files engine (fx2, shared/meshfx.js) starts on demand and its port goes in this welcome:
     // when it isn't listening yet the welcome waits for it, a few tens of ms, never long.
     if (this.asleep) return this.fail(ctx, P.E.ASLEEP, 'Asleep');
     const { deviceId, name, os } = who;
     ctx.pendingId = deviceId;
+    ctx.pendingOs = os;
+    if (ctx.released) return this.fail(ctx, P.E.RELEASED, 'The Mac disconnected');
     const wait = ctx.fxWanted && ctx.fx2Wanted && !ctx.fx2Waited && this.fx2Wait ? this.fx2Wait(1500) : null;
     if (wait) {
       ctx.fx2Waited = true;
-      const go = () => { if (!ctx.released && !ctx.authed && this.sockets.has(ctx) && ctx.ws.readyState === ctx.ws.OPEN) this.authenticate(ctx, who, welcome); };
+      const go = () => { if (!ctx.released && !ctx.authed && this.sockets.has(ctx) && ctx.ws.readyState === ctx.ws.OPEN) this.authenticate(ctx, who, welcome, gate); };
       return void wait.then(go, go);
     }
     const old = this.clients.get(deviceId);
+    if (gate && (!gate() || (old && old !== ctx.returnBase))) {
+      return this.fail(ctx, P.E.RELEASED, 'The Mac disconnected');
+    }
     if (old && old !== ctx) {
       this.clients.delete(deviceId);
       this.fail(old, P.E.REPLACED, 'Another connection from a paired device replaced this one');
@@ -383,6 +398,7 @@ class Server extends EventEmitter {
   release(ctx = this.current) {
     if (ctx) {
       ctx.released = true;
+      if (ctx.os === P.OS.ANDROID && this.clients.get(ctx.deviceId) === ctx) this.emit('noreclaim', ctx.deviceId);
       this.fail(ctx, P.E.RELEASED, 'The Mac disconnected');
       setTimeout(() => ctx.ws.terminate(), 1000); // an older app never answers the close
     }
@@ -394,6 +410,7 @@ class Server extends EventEmitter {
     for (const c of this.clients.values()) {
       if (!P.isPhoneOs(c.os) || (ctx && c.deviceId !== ctx.deviceId)) continue;
       c.released = true;
+      if (c.os === P.OS.ANDROID) this.emit('noreclaim', c.deviceId);
       this.fail(c, P.E.RELEASED, 'The Mac disconnected the phone');
       setTimeout(() => c.ws.terminate(), 1000); // an older phone app never answers the close
     }

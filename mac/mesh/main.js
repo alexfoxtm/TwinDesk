@@ -631,7 +631,7 @@ app.whenReady().then(() => {
     pushState();
   });
 
-  discovery = new Discovery(id, server.port);
+  discovery = new Discovery(id, server.port, { rc: true });
   require('../../shared/sleepwake.js').sleepWake({
     powerMonitor: require('electron').powerMonitor, server: () => server, discovery: () => discovery,
     // A plain invite can reconnect a phone after Stop. Only invite paired computers seen since wake.

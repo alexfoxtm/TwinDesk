@@ -12,6 +12,7 @@ const { PairFails } = require('../../shared/pairfail.js');
 const store = require('./store');
 
 const HEX = (n) => new RegExp(`^[0-9a-f]{${n}}$`);
+const RETURNS = 'phone-return-mesh.json';
 
 class Pairing extends EventEmitter {
   // identity: {macId, macName, fp}. storage: {read, write} (default: store.js). No client is refused
@@ -22,11 +23,18 @@ class Pairing extends EventEmitter {
     this.server = server;
     this.id = identity;
     this.paired = this.store.read('paired.json', []);
+    const saved = this.store.read(RETURNS, []);
+    this.returnPairs = new Set(this.paired.filter((e) =>
+      e.os === P.OS.ANDROID && Array.isArray(saved) && saved.includes(e.tokenHash)).map((e) => e.tokenHash));
     this.previews = new PhonePreviews(this);
     this.pending = null; // {ctx, id, name, commit, nm, nw, code, confirmed, allowed, timer}
     this.fails = new PairFails(); // failed pairings per address: a lockout after too many (#136)
     server.on('preauth', (ctx, msg) => this._onMessage(ctx, msg));
     server.on('closed', (ctx) => this._onClosed(ctx));
+    server.on('client', (ctx) => {
+      if (ctx.os === P.OS.ANDROID) this._setReturn(ctx.deviceId, true);
+    });
+    server.on('noreclaim', (id) => this._setReturn(id, false));
   }
 
   list() {
@@ -47,6 +55,7 @@ class Pairing extends EventEmitter {
   }
 
   forget(id) {
+    this._setReturn(id, false);
     // A pairing from it still going would add it straight back when it finishes: it ends here.
     const p = this.pending;
     if (p && p.id === id) { this._clear(); this.server.fail(p.ctx, P.E.PAIR_REFUSED, 'The pairing was forgotten'); }
@@ -63,6 +72,7 @@ class Pairing extends EventEmitter {
     if (!this.paired.some((x) => x.id === id) && this.paired.length >= P.MAX_DEVICES) return null;
     const token = P.randomHex(32);
     const now = Date.now();
+    this._setReturn(id, false);
     const entry = { id, name: String(name || 'Device').slice(0, 64), os: Object.values(P.OS).includes(os) ? os : P.OS.WIN, tokenHash: P.sha256Hex(token), pairedAt: now, lastSeen: now };
     this.paired = this.paired.filter((x) => x.id !== id);
     this.paired.push(entry);
@@ -85,6 +95,23 @@ class Pairing extends EventEmitter {
 
   _save() {
     this.store.write('paired.json', this.paired);
+  }
+
+  _setReturn(id, allow) {
+    const e = this.paired.find((entry) => entry.id === id && entry.os === P.OS.ANDROID);
+    if (!e || this.returnPairs.has(e.tokenHash) === allow) return;
+    if (allow) this.returnPairs.add(e.tokenHash);
+    else this.returnPairs.delete(e.tokenHash);
+    try {
+      this.store.write(RETURNS, [...this.returnPairs]);
+    } catch (error) {
+      this.returnPairs.clear();
+      try { require('fs').unlinkSync(this.store.filePath(RETURNS)); }
+      catch (removeError) {
+        if (removeError.code !== 'ENOENT') console.error('[pairing] automatic return revocation failed:', removeError.code);
+      }
+      console.error('[pairing] automatic return disabled:', error.code || 'write');
+    }
   }
 
   _onMessage(ctx, msg) {
@@ -169,6 +196,7 @@ class Pairing extends EventEmitter {
     }
     const token = P.randomHex(32);
     const now = Date.now();
+    this._setReturn(p.id, false);
     this.paired = this.paired.filter((x) => x.id !== p.id);
     this.paired.push({
       id: p.id, name: p.name, os: p.os, tokenHash: P.sha256Hex(token), pairedAt: now, lastSeen: now,
@@ -194,6 +222,16 @@ class Pairing extends EventEmitter {
         (ctx.embeddedPeer && ctx.embeddedPeer !== e.tailNode && !newTailBinding)) {
       return this.server.fail(ctx, P.E.BAD_TOKEN, 'Not paired with this Mac');
     }
+    let gate;
+    if (msg.rc === 1) {
+      if (e.os !== P.OS.ANDROID || msg.os !== P.OS.ANDROID) {
+        return this.server.fail(ctx, P.E.BAD_MESSAGE, 'Reclaim is only for a paired phone');
+      }
+      gate = () => this.paired.includes(e) && this.returnPairs.has(e.tokenHash);
+      if (!gate()) return this.server.fail(ctx, P.E.RELEASED, 'The Mac disconnected');
+      ctx.automaticReturn = true;
+      ctx.returnBase = this.server.clients.get(e.id);
+    }
     if (typeof msg.name === 'string' && msg.name && msg.name !== e.name) e.name = msg.name.slice(0, 64);
     if (Object.values(P.OS).includes(msg.os)) e.os = msg.os;
     e.lastSeen = Date.now();
@@ -208,8 +246,9 @@ class Pairing extends EventEmitter {
     this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN }, {
       t: P.T.WELCOME, v: P.PROTOCOL_VERSION, macId: this.id.macId, macName: this.id.macName, os: P.OS.MAC, mesh: 1,
       ...(ctx.appsPair ? { pa: 1 } : {}),
+      ...(e.os === P.OS.ANDROID ? { rc: 1 } : {}),
       tail: require('../../shared/tailnet.js').mine(), // its Tailscale addresses, for reconnecting away from this network (#161)
-    });
+    }, gate);
     // Embedded HELLO authenticates synchronously. Learn its witnessed node only after admission.
     if (newTailBinding && ctx.authed && this.paired.includes(e)) {
       e.tailNode = ctx.embeddedPeer;

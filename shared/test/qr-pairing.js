@@ -74,12 +74,15 @@ for (const mode of ['direct', 'mesh']) {
   const Pairing = mode === 'direct' ? impls.mac : require('../../mac/mesh/pairing.js').Pairing;
   const sent = [];
   const server = fakeServer(sent);
+  server.clients = new Map();
   server.authenticate = (socket, who, _welcome, gate) => {
     if (gate) {
       const decision = gate();
-      if (!decision.ok) return server.fail(socket, decision.code, decision.message);
+      if (decision === false) return server.fail(socket, P.E.RELEASED, 'The Mac disconnected');
+      if (decision?.ok === false) return server.fail(socket, decision.code, decision.message);
     }
-    socket.authed = true;
+    Object.assign(socket, who, { authed: true });
+    server.emit('client', socket);
     server.accepted = who.deviceId;
   };
   const pairing = new Pairing(server, { macId: 'host-id', macName: 'Mac', fp: '00' },
@@ -128,12 +131,17 @@ for (const mode of ['direct', 'mesh']) {
     assert.throws(() => pairing._onMessage(remote, lanHello), /in use by another device/i);
     assert.strictEqual(lanPair.tailNode, undefined, 'a busy Mac does not learn a binding');
     server.current = null;
+  } else {
+    pairing._onMessage({ ...ctx }, lanHello);
+    Object.assign(lanHello, { rc: 1, resume: '0' });
   }
   pairing._onMessage(remote, lanHello);
   assert.strictEqual(server.accepted, lanPair.id, 'the existing LAN token authenticates directly');
   assert.strictEqual(lanPair.tailNode, remote.embeddedPeer);
   assert.strictEqual(pairing.pending, null, 'reusing a pairing never starts the QR flow');
   assert.throws(() => pairing._onMessage({ ...ctx, embeddedPeer: 'other-node' }, lanHello), /Not paired/);
+  server.emit('noreclaim', lanPair.id);
+  assert.throws(() => pairing._onMessage({ ...ctx, embeddedPeer: remote.embeddedPeer }, lanHello), /The Mac disconnected/);
 }
 
 console.log('qr-pairing: ok');
