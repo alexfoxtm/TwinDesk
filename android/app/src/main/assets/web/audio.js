@@ -36,13 +36,13 @@ async function onOffer(m) {
     out.srcObject = new MediaStream([e.track]);
     out.play().catch(() => {});
   };
-  pc.onicecandidate = (e) => e.candidate && recv === me && send({ t: 'audio.ice', dir: 'm2w', session: m.session, candidate: e.candidate.toJSON() });
+  pc.onicecandidate = (e) => e.candidate && recv === me && send({ t: 'audio.ice', dir: 'm2w', session: m.session, _embeddedOffer: m._embeddedOffer, candidate: e.candidate.toJSON() });
   try {
     await pc.setRemoteDescription({ type: 'offer', sdp: withOpus(m.sdp) });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription({ type: 'answer', sdp: withOpus(answer.sdp) });
     if (recv !== me) return;
-    send({ t: 'audio.answer', dir: 'm2w', session: m.session, sdp: pc.localDescription.sdp });
+    send({ t: 'audio.answer', dir: 'm2w', session: m.session, _embeddedOffer: m._embeddedOffer, sdp: pc.localDescription.sdp });
     me.remoteSet = true;
     for (const c of me.pending.splice(0)) await pc.addIceCandidate(c);
   } catch (e) {

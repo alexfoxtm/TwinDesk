@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong
 class PhoneMirror(core: Core) : Feature(core) {
     @Volatile var wanted = false; private set
     @Volatile var key = ""; private set
+    @Volatile internal var embeddedTarget: Link.EmbeddedMirrorTarget? = null; private set
     @Volatile var maxSize = 0; private set
     @Volatile var bitrate = 8_000_000; private set
     @Volatile var fps = 60; private set
@@ -48,18 +49,35 @@ class PhoneMirror(core: Core) : Feature(core) {
 
     val on get() = SoundService.running?.screenOn == true
 
-    override fun onClosed() = want(false, "")
+    override fun onClosed() {
+        want(false, "")
+        if (embeddedTarget != null) {
+            key = ""
+            embeddedTarget = null
+        }
+    }
 
-    override fun onMessage(t: String, m: JSONObject): Boolean {
+    internal fun onMessage(t: String, m: JSONObject, route: Link.TrustedRoute?, fromEmbedded: Boolean): Boolean {
         if (t != Proto.T.PHONE_MIRROR_WANT) return false
         val on = m.optBoolean("on")
-        if (on && m.optBoolean("sync")) { SoundService.running?.syncFrame(); return true }
+        val sync = on && m.optBoolean("sync")
+        val ticket = m.optString("key").take(64)
+        if (fromEmbedded) {
+            if (route == null || (m.opt("key") as? String)?.matches(embeddedTicket) != true) return true
+            val target = embeddedTarget
+            if (!on || sync) {
+                if (target?.route?.marker !== route.marker || !target.current() || !wanted || key != ticket) return true
+            } else if (target?.route?.marker !== route.marker || key != ticket) {
+                embeddedTarget = core.link.embeddedMirrorTarget(route) ?: return true
+            }
+        }
+        if (sync) { SoundService.running?.syncFrame(); return true }
         if (on) {
             maxSize = m.optInt("maxSize", 0).coerceIn(0, 4096)
             bitrate = m.optInt("bitrate", 8_000_000).coerceIn(500_000, 40_000_000)
             fps = m.optInt("fps", 60).coerceIn(10, 60)
         }
-        want(on, m.optString("key").take(64))
+        want(on, ticket)
         return true
     }
 
@@ -84,10 +102,17 @@ class PhoneMirror(core: Core) : Feature(core) {
     fun tell() {
         if (!core.link.connected) return
         val s = size
-        core.send(msg(
+        val state = msg(
             Proto.T.PHONE_MIRROR_STATE, "on" to on, "waiting" to (wanted && SoundService.running == null), "error" to error,
             "w" to s[0], "h" to s[1], "sw" to s[2], "sh" to s[3], "key" to key,
-        ))
+        )
+        val target = embeddedTarget
+        if (target != null) core.link.sendFor(target.route, state)
+        else if (!core.link.embedded) core.send(state)
+    }
+
+    private companion object {
+        val embeddedTicket = Regex("[0-9a-f]{32}")
     }
 }
 
@@ -123,12 +148,27 @@ class ScreenStreamer(private val ctx: Context, private val projection: MediaProj
     private var codec: MediaCodec? = null
     private var surface: Surface? = null
     private var encoder: Thread? = null
-    private var sender: Thread? = null
-    @Volatile private var call: Call? = null
+    @Volatile private var sender: Sender? = null
+
+    private class Sender {
+        val queue = LinkedBlockingQueue<ByteArray>()
+        val queued = AtomicLong(0)
+        @Volatile var dropping = false
+        private var cancelled = false
+        private var call: Call? = null
+
+        @Synchronized fun attach(next: Call): Boolean {
+            if (cancelled) return false
+            call = next
+            return true
+        }
+
+        @Synchronized fun cancel() {
+            cancelled = true
+            call?.cancel()
+        }
+    }
     @Volatile var running = false; private set
-    private val queue = LinkedBlockingQueue<ByteArray>()
-    private val queued = AtomicLong(0)
-    @Volatile private var dropping = false
     private var gen = 0 // encoder generation: a rotation makes a new one
     private val main = Handler(Looper.getMainLooper())
     private val dm = ctx.getSystemService(DisplayManager::class.java)
@@ -146,13 +186,13 @@ class ScreenStreamer(private val ctx: Context, private val projection: MediaProj
 
     fun start() {
         if (running) return
+        val attempt = Sender()
+        sender = attempt
         running = true
-        dropping = false
-        queue.clear(); queued.set(0)
         try {
             encode()
             dm.registerDisplayListener(rotation, main)
-            send(core.mirror.key)
+            send(core.mirror.key, attempt)
         } catch (e: Exception) {
             fail(e)
         }
@@ -162,10 +202,11 @@ class ScreenStreamer(private val ctx: Context, private val projection: MediaProj
         if (!running) return
         running = false
         runCatching { dm.unregisterDisplayListener(rotation) }
-        call?.cancel(); call = null
+        val retired = sender
+        sender = null
+        retired?.cancel()
         stopEncoder()
         runCatching { display?.surface = null }
-        queue.clear(); queued.set(0)
         core.mirror.size = intArrayOf(0, 0, 0, 0)
     }
 
@@ -277,43 +318,59 @@ class ScreenStreamer(private val ctx: Context, private val projection: MediaProj
 
     // Late pictures are worse than none: behind by too much, skip to the next keyframe (asked for now).
     private fun put(p: ByteArray, important: Boolean) {
-        if (queued.get() > MAX_QUEUED && !important) {
-            if (!dropping) { dropping = true; sync() }
+        val attempt = sender ?: return
+        if (attempt.queued.get() > MAX_QUEUED && !important) {
+            if (!attempt.dropping) { attempt.dropping = true; sync() }
             return
         }
-        if (dropping && !important) return
-        if (important) dropping = false
-        queued.addAndGet(p.size.toLong())
-        queue.offer(p)
+        if (attempt.dropping && !important) return
+        if (important) attempt.dropping = false
+        attempt.queued.addAndGet(p.size.toLong())
+        attempt.queue.offer(p)
     }
 
     // The stream: one long POST to the computer, written as the pictures come.
-    private fun send(key: String) {
-        val client = core.link.https() ?: throw IllegalStateException("not connected")
-        val (address, port) = core.link.endpoint() ?: throw IllegalStateException("not connected")
+    private fun send(key: String, attempt: Sender) {
+        val target = core.mirror.embeddedTarget
+        val client = if (target == null) core.link.https() ?: throw IllegalStateException("not connected") else null
+        val endpoint = if (target == null) core.link.endpoint() ?: throw IllegalStateException("not connected") else null
+        fun current() = running && sender === attempt && (target == null ||
+            (target.current() && core.mirror.embeddedTarget === target && core.mirror.wanted && core.mirror.key == key))
         val body = object : RequestBody() {
             override fun contentType() = "application/octet-stream".toMediaType()
             override fun isOneShot() = true
             override fun writeTo(sink: BufferedSink) {
-                while (running) {
-                    val p = queue.poll(500, TimeUnit.MILLISECONDS) ?: continue
-                    queued.addAndGet(-p.size.toLong())
+                while (current()) {
+                    val p = attempt.queue.poll(500, TimeUnit.MILLISECONDS) ?: continue
+                    attempt.queued.addAndGet(-p.size.toLong())
+                    if (!current()) return
                     sink.write(p)
-                    if (queue.isEmpty()) sink.flush()
+                    if (attempt.queue.isEmpty()) sink.flush()
                 }
             }
         }
-        val req = Request.Builder().url("https://$address:$port/twindesk/mirror").header("x-twindesk-mirror", key).post(body).build()
-        sender = Thread({
-            try {
-                val c = client.newCall(req)
-                call = c
+        val execute: (Call) -> Unit = { call ->
+            if (current() && attempt.attach(call) && current()) {
                 core.mirror.tell() // on: the picture is coming
-                c.execute().use { r -> if (!r.isSuccessful && running) throw IllegalStateException("The computer refused the picture (${r.code})") }
-            } catch (e: Exception) {
-                if (running) main.post { fail(e) }
+                call.execute().use { r ->
+                    if (!r.isSuccessful && current()) throw IllegalStateException("The computer refused the picture (${r.code})")
+                }
             }
-        }, "td-mirror-send").apply { start() }
+        }
+        Thread({
+            try {
+                if (target != null) {
+                    target.post(key, body, ::current, execute)
+                } else if (endpoint != null && client != null) {
+                    val (address, port) = endpoint
+                    val request = Request.Builder().url("https://$address:$port/twindesk/mirror")
+                        .header("x-twindesk-mirror", key).post(body).build()
+                    execute(client.newCall(request))
+                }
+            } catch (e: Exception) {
+                if (current()) main.post { if (current()) fail(e) }
+            }
+        }, "td-mirror-send").start()
     }
 
     companion object {

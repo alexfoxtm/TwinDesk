@@ -279,6 +279,7 @@ class Pairing extends EventEmitter {
     e.lastSeen = Date.now();
     this._save();
     if (!ctx.embeddedPeer && msg.netem === 1) ctx.netemRequested = true;
+    ctx.embeddedMediaWanted = !!ctx.embeddedPeer && e.os === P.OS.ANDROID && msg.em === 1;
     ctx.fxWanted = !ctx.embeddedPeer && msg.fx === 1;
     ctx.fx2Wanted = !ctx.embeddedPeer && msg.fx2 === 1; // fast files v2 (shared/fx2.js)
     ctx.fxPlainWanted = !ctx.embeddedPeer && msg.fxPlain === 1; // unencrypted file transfers allowed (shared/fastfile.js plainOffer)

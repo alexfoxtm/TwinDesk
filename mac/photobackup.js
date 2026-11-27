@@ -233,9 +233,10 @@ function attach({ store, settings, peer, pushState, save, enabled = () => true }
       connectionOf(ctx, ctx.ws) ? ctx : null;
   }
 
-  // Only the primary IP socket can carry backup, even when cursor sharing uses a fallback.
+  // Only the primary authenticated network socket can carry backup.
   function socket(ctx) {
-    if (!control(ctx) || ctx.photoBackup !== true || ctx.transport !== 'ip') return null;
+    const network = ctx?.transport === 'ip' || (ctx?.transport === 'embedded-tailnet' && ctx.embeddedPeer);
+    if (!control(ctx) || ctx.photoBackup !== true || !network) return null;
     const ws = peer.outbound(ctx);
     return ws && ws === ctx.ws && ws.transport !== 'ble' ? ws : null;
   }

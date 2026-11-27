@@ -15,19 +15,27 @@ import android.util.Log
 import com.twindesk.android.embedded.EmbeddedBridge
 import com.twindesk.android.embedded.EmbeddedNetwork
 import com.twindesk.android.embedded.EmbeddedOffer
+import com.twindesk.android.embedded.EmbeddedTurn
+import com.twindesk.android.embedded.embeddedMediaKey
+import com.twindesk.android.embedded.rewriteEmbeddedOffer
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.io.IOException
 import java.net.Inet4Address
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 
@@ -68,6 +76,7 @@ class Link(
         fun onMessage(m: JSONObject, route: TrustedRoute?, source: WebSocket)
         fun onClosed(host: Host, code: String?)
         fun onEmbeddedClosed(host: Host, code: String?) = onClosed(host, code)
+        fun onEmbeddedMediaReady(route: TrustedRoute) {}
     }
 
     // idle | connecting | connected | failed
@@ -131,11 +140,23 @@ class Link(
         var node = ""
         @Volatile var cancelled = false
         var bridge: EmbeddedBridge? = null
+        val mirrorCall = AtomicReference<Call?>()
+        val folderCalls = mutableSetOf<Call>()
+        val davChildren = mutableMapOf<String, EmbeddedTurn>()
+        fun closeFolderCalls() = synchronized(folderCalls) {
+            folderCalls.forEach { it.cancel() }
+            folderCalls.clear()
+        }
+        fun closeDavChildren() = synchronized(davChildren) {
+            davChildren.values.forEach { it.close() }
+            davChildren.clear()
+        }
         fun current() = !cancelled && admit()
         fun allowed() = current() && network.online(node)
     }
 
     @Volatile private var embeddedDial: EmbeddedDial? = null
+    @Volatile private var embeddedTurn: EmbeddedTurn? = null
     @Volatile private var rejectedEmbeddedPair: Host? = null
     val embedded get() = embeddedDial != null
 
@@ -405,7 +426,7 @@ class Link(
         if (id != null && (dial.offer?.id ?: host?.id) != id) return CompletableFuture.completedFuture(Unit)
         val drained = CompletableFuture<Unit>()
         dial.cancelled = true
-        parting = true
+        invalidateReturn()
         run {
             if (embeddedDial !== dial) {
                 drained.complete(Unit)
@@ -461,7 +482,7 @@ class Link(
     }
 
     fun disconnect() {
-        parting = true
+        invalidateReturn()
         run {
             var goodbye = false
             if (state == "connected" || helloSent) {
@@ -574,7 +595,8 @@ class Link(
     }
 
     private fun sendOn(w: WebSocket, m: JSONObject): Boolean {
-        if (isEmbeddedSource(w) && (parting || !embeddedMessageAllowed(m.optString("t")))) return false
+        if (w !== ws) return false
+        if (embedded && (parting || !embeddedMessageAllowed(m, outgoing = true))) return false
         val sent = w.send(m.toString())
         if (sent) markProbe()
         if (netemDial?.socket !== w) return sent
@@ -590,7 +612,10 @@ class Link(
     }
 
     internal fun photoRoute(source: WebSocket): Boolean =
-        !parting && connected && !ble && !embedded && ws === source && host?.os == "mac"
+        !parting && connected && !ble && ws === source && host?.os == "mac"
+
+    internal fun backupSessionCurrent(marker: Any?): Boolean =
+        marker is WebSocket && photoRoute(marker) && (!embedded || peerBackup)
 
     internal fun sendPhoto(m: JSONObject, source: WebSocket): Boolean =
         photoRoute(source) && source.send(m.toString()).also { if (it) markProbe() }
@@ -666,20 +691,167 @@ class Link(
     internal fun sessionMarker(): Any? = ws
     internal fun isEmbeddedSource(socket: WebSocket) = embedded && ws === socket
 
+    internal fun isEmbeddedRoute(route: TrustedRoute): Boolean =
+        embedded && accepts(route)
+
+    internal fun embeddedMediaReady(route: TrustedRoute): Boolean =
+        isEmbeddedRoute(route) && (embeddedTurn?.port ?: 0) > 0
+
+    internal fun acceptsPostedMessage(source: WebSocket, fromEmbedded: Boolean, m: JSONObject): Boolean {
+        if (!fromEmbedded && !embedded) return true
+        return fromEmbedded && isEmbeddedSource(source) && !parting && connected &&
+            embeddedMessageAllowed(m, outgoing = false)
+    }
+
+    private fun embeddedMessageAllowed(m: JSONObject, outgoing: Boolean): Boolean {
+        val type = m.optString("t")
+        if (type == Proto.T.PHONE_MIRROR_WANT || type == Proto.T.PHONE_MIRROR_STATE) {
+            return embeddedTurn != null && type == (if (outgoing) Proto.T.PHONE_MIRROR_STATE else Proto.T.PHONE_MIRROR_WANT)
+        }
+        if (type in embeddedMediaTypes || type.startsWith("rtc.") || type.startsWith("audio.")) {
+            if (embeddedTurn?.port?.let { it > 0 } != true) return false
+            val allowed = if (outgoing) embeddedMediaOutgoing else embeddedMediaIncoming
+            return type in allowed && (!type.startsWith("audio.") || type == "audio.policy" ||
+                m.opt("dir") == "m2w")
+        }
+        if (type.startsWith("backup.")) return peerBackup
+        if (type == Proto.T.SHARE_HOST) return !outgoing
+        if (type == Proto.T.SHARE_OFFER || type == "embedded.dav.open") {
+            return embeddedTurn != null && outgoing == (type == Proto.T.SHARE_OFFER)
+        }
+        return type != "embedded.media" && type !in sideChannelTypes && !type.startsWith("rtc2.")
+    }
+
     internal companion object {
+        private val embeddedMirrorSlots = Semaphore(2)
+        private val embeddedFolderSlots = Semaphore(2)
+        private val embeddedFolderPath = Regex("/[0-9a-f]{32}/(list|stat|file|mkdir|delete|rename)\\?p=[^#\\r\\n]*")
+        private val embeddedMediaOutgoing = setOf(
+            "screen.policy", "screen.ctl", "rtc.answer", "rtc.ice", "rtc.detail",
+            "audio.policy", "audio.answer", "audio.ice",
+        )
+        private val embeddedMediaIncoming = setOf("rtc.offer", "rtc.ice", "audio.offer", "audio.ice", "audio.stop")
+        private val embeddedMediaTypes = embeddedMediaOutgoing + embeddedMediaIncoming
         private val sideChannelTypes = setOf(
-            "audio.offer", "audio.answer", "audio.ice", "audio.policy", "screen.policy", "screen.ctl",
             Proto.T.SHARE_HOST, Proto.T.SHARE_OFFER, Proto.T.TETHER, Proto.T.TETHER_STATE, Proto.T.TETHER_SET,
             Proto.T.NET_CAPS, Proto.T.NET_NEED, Proto.T.NET_JOIN, Proto.T.NET_JOINED, Proto.T.NET_HOTSPOT, Proto.T.NET_RELEASE,
         )
-
-        fun embeddedMessageAllowed(type: String) =
-            type !in sideChannelTypes && !type.startsWith("rtc.") && !type.startsWith("rtc2.") && !type.startsWith("backup.")
     }
     // Called synchronously before Core removes durable return intent. An already queued welcome
     // must not re-arm that intent after Stop, Forget or another explicit connection choice.
-    internal fun invalidateReturn() { parting = true }
+    internal fun invalidateReturn() {
+        parting = true
+        embeddedTurn?.close()
+        embeddedDial?.mirrorCall?.getAndSet(null)?.cancel()
+        embeddedDial?.closeFolderCalls()
+        embeddedDial?.closeDavChildren()
+    }
     internal fun canRememberReturn(h: Host, socket: Any?): Boolean = !parting && socket != null && ws === socket && state == "connected" && host?.id == h.id && host?.fp == h.fp
+
+    internal interface EmbeddedMirrorTarget {
+        val route: TrustedRoute
+        fun current(): Boolean
+        fun post(ticket: String, body: RequestBody, sending: () -> Boolean, execute: (Call) -> Unit)
+    }
+
+    internal fun embeddedMirrorTarget(source: TrustedRoute): EmbeddedMirrorTarget? {
+        val dial = embeddedDial ?: return null
+        val node = dial.node
+        val turn = embeddedTurn ?: return null
+        if (!accepts(source) || host?.embeddedNode != node) return null
+        return object : EmbeddedMirrorTarget {
+            override val route = source
+
+            override fun current() = embeddedDial === dial && embeddedTurn === turn &&
+                !dial.cancelled && accepts(source) && host?.embeddedNode == node
+
+            override fun post(ticket: String, body: RequestBody, sending: () -> Boolean, execute: (Call) -> Unit) {
+                if (!sending() || !current()) return
+                if (!embeddedMirrorSlots.tryAcquire()) throw IOException("The mirror connection is busy")
+                try {
+                    if (!sending() || !current()) return
+                    val bridge = dial.network.dial(node) ?: throw IOException("The Mac is unavailable on TwinDesk Network")
+                    try {
+                        if (!sending() || !current()) return
+                        val request = Request.Builder().url("https://127.0.0.1:${bridge.port}/twindesk/mirror")
+                            .header("x-twindesk-mirror", ticket).post(body).build()
+                        val call = client(source.fp, bridge).newBuilder().writeTimeout(0, TimeUnit.MILLISECONDS)
+                            .build().newCall(request)
+                        val previous = synchronized(dial.mirrorCall) {
+                            if (!sending() || !current()) return
+                            dial.mirrorCall.getAndSet(call)
+                        }
+                        previous?.cancel()
+                        try {
+                            if (sending() && current()) execute(call)
+                        } finally {
+                            call.cancel()
+                            dial.mirrorCall.compareAndSet(call, null)
+                        }
+                    } finally {
+                        dial.network.releaseNow(bridge)
+                    }
+                } finally {
+                    embeddedMirrorSlots.release()
+                }
+            }
+        }
+    }
+
+    internal fun <T> embeddedFolderCall(owner: TrustedRoute, relativePath: String, method: String,
+                                        body: RequestBody?, use: (Call) -> T): T {
+        val dial = embeddedDial ?: throw IOException("The shared folder disconnected")
+        val node = dial.node
+        fun current() = embeddedDial === dial && !dial.cancelled && accepts(owner) && host?.embeddedNode == node
+        if (!current() || relativePath.length > 12000 || !embeddedFolderPath.matches(relativePath)) {
+            throw IOException("The shared folder is unavailable")
+        }
+        if (!embeddedFolderSlots.tryAcquire()) throw IOException("The shared folder is busy")
+        try {
+            val bridge = dial.network.dial(node) ?: throw IOException("The shared folder is unavailable")
+            try {
+                val request = Request.Builder().url("https://127.0.0.1:${bridge.port}/embedded/folder$relativePath")
+                    .method(method, body).build()
+                val call = client(owner.fp, bridge).newBuilder().readTimeout(60, TimeUnit.SECONDS)
+                    .writeTimeout(60, TimeUnit.SECONDS).build().newCall(request)
+                synchronized(dial.folderCalls) {
+                    if (!current()) throw IOException("The shared folder disconnected")
+                    dial.folderCalls.add(call)
+                }
+                try {
+                    return use(call)
+                } finally {
+                    call.cancel()
+                    synchronized(dial.folderCalls) { dial.folderCalls.remove(call) }
+                }
+            } finally {
+                dial.network.releaseNow(bridge)
+            }
+        } finally {
+            embeddedFolderSlots.release()
+        }
+    }
+
+    internal fun openEmbeddedDav(owner: TrustedRoute, key: String, port: Int, serving: () -> Boolean) {
+        val dial = embeddedDial ?: return
+        val node = dial.node
+        fun current() = serving() && embeddedDial === dial && !dial.cancelled && accepts(owner) && host?.embeddedNode == node
+        if (!embeddedMediaKey.matches(key) || port !in 1..65535 || !current()) return
+        val child = EmbeddedTurn(::current, connect = { allowed, listener ->
+            openEmbeddedStream(dial, node, owner, allowed, listener) { local ->
+                Request.Builder().url("wss://127.0.0.1:$local/embedded/dav")
+                    .header("X-TwinDesk-Dav", key).build()
+            }
+        })
+        synchronized(dial.davChildren) {
+            if (!current() || key in dial.davChildren || dial.davChildren.size >= 2) return
+            dial.davChildren[key] = child
+        }
+        child.connectLocal(port) {
+            synchronized(dial.davChildren) { dial.davChildren.remove(key, child) }
+            child.close()
+        }
+    }
 
     // An HTTPS client for the session's computer, its certificate pinned as the session's is.
     fun https(): OkHttpClient? {
@@ -908,9 +1080,11 @@ class Link(
             if (!embedded) {
                 put("fx", 1)
                 put("fxPlain", 1)
-                if (offerPhotoBackup() && h.os == "mac") put("pb", 1)
                 if (!wired) put("fx2", 1)
+            } else if (h.os == "mac") {
+                put("em", 1)
             }
+            if (offerPhotoBackup() && h.os == "mac") put("pb", 1)
             put("pa", 1)
             if (netemDial?.let { it.socket === ws } == true) put("netem", 1)
             if (reclaimHello) { put("rc", 1); put("resume", "0") }
@@ -923,7 +1097,15 @@ class Link(
     private fun onText(text: String, ingress: WebSocket) {
         val m = runCatching { JSONObject(text) }.getOrNull() ?: return
         val t = m.optString("t")
-        if (isEmbeddedSource(ingress) && (!embeddedMessageAllowed(t) || (parting && t != Proto.T.WELCOME))) return
+        if (t == "embedded.media") {
+            onEmbeddedMedia(ingress, m)
+            return
+        }
+        if (isEmbeddedSource(ingress)) {
+            if ((parting && t != Proto.T.WELCOME) || !embeddedMessageAllowed(m, outgoing = false)) return
+            if ((t == "rtc.offer" || t == "audio.offer") &&
+                !rewriteEmbeddedOffer(m, embeddedTurn?.port ?: 0)) return
+        }
         lastRx = System.currentTimeMillis()
         // Other frames still arrive on the fallback socket. Backup frames do not: the socket they
         // came in on used to be discarded before Core.post, so a retired path could stop the new one.
@@ -974,6 +1156,43 @@ class Link(
             if (t == "rtc.offer") netemMark(ingress, "rx_rtc_offer")
             events.onMessage(m, trustedRoute(ingress), ingress)
         }
+    }
+
+    private fun onEmbeddedMedia(source: WebSocket, m: JSONObject) {
+        val dial = embeddedDial ?: return
+        val route = trustedRoute(source) ?: return
+        val node = dial.node
+        if (embeddedTurn != null || host?.os != "mac" || host?.embeddedNode != node) return
+        val key = (m.opt("key") as? String)?.takeIf(embeddedMediaKey::matches) ?: return
+        val turn = EmbeddedTurn(
+            current = { embeddedDial === dial && !dial.cancelled && accepts(route) && host?.embeddedNode == node },
+            connect = { allowed, listener ->
+                openEmbeddedStream(dial, node, route, allowed, listener) { local ->
+                    Request.Builder().url("wss://127.0.0.1:$local/embedded/turn")
+                        .header("X-TwinDesk-Media", key).build()
+                }
+            },
+        )
+        embeddedTurn = turn
+        turn.start {
+            run {
+                if (embeddedTurn === turn && embeddedMediaReady(route)) events.onEmbeddedMediaReady(route)
+            }
+        }
+    }
+
+    private fun openEmbeddedStream(dial: EmbeddedDial, node: String, route: TrustedRoute, allowed: () -> Boolean,
+                                   listener: WebSocketListener, request: (Int) -> Request): EmbeddedTurn.Tunnel? {
+        if (!allowed()) return null
+        val bridge = dial.network.dial(node) ?: return null
+        if (allowed()) {
+            val socket = runCatching {
+                client(route.fp, bridge).newWebSocket(request(bridge.port), listener)
+            }.getOrNull()
+            if (socket != null) return EmbeddedTurn.Tunnel(socket) { dial.network.releaseNow(bridge) }
+        }
+        dial.network.releaseNow(bridge)
+        return null
     }
 
     private fun onNonce(m: JSONObject) {
@@ -1134,9 +1353,9 @@ class Link(
         probed = false
         lastUse = System.currentTimeMillis()
         scheduleBeat(Proto.PING_MS)
+        peerBackup = m.opt("pb") == 1
         setState("connected", "")
         netemElapsed(ws)?.let { Log.i("TwinDeskNetem", "welcome_ms=$it") }
-        peerBackup = !embedded && m.opt("pb") == 1
         events.onWelcome(welcomed)
     }
 
@@ -1440,7 +1659,16 @@ class Link(
     private fun closeEmbedded() {
         val dial = embeddedDial ?: return
         embeddedDial = null
+        closeEmbeddedTurn()
+        dial.mirrorCall.getAndSet(null)?.cancel()
+        dial.closeFolderCalls()
+        dial.closeDavChildren()
         dial.bridge?.let(dial.network::release)
+    }
+
+    private fun closeEmbeddedTurn() {
+        embeddedTurn?.close()
+        embeddedTurn = null
     }
 
     private fun closeSocket(drainEmbedded: Boolean = false, onDrained: () -> Unit = {}) {
@@ -1454,6 +1682,10 @@ class Link(
         val w = ws
         ws = null
         embeddedDial = null
+        closeEmbeddedTurn()
+        dial?.mirrorCall?.getAndSet(null)?.cancel()
+        dial?.closeFolderCalls()
+        dial?.closeDavChildren()
         appsReady = false
         netemDial = null
         fxToken = ""

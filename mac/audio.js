@@ -120,7 +120,7 @@ class Audio extends EventEmitter {
         this.sending = { session, status: `error: ${this.hub.error}` };
         return this.emit('change');
       }
-      this._toWin('send-start', { session, ice: (this.server.current && this.server.current.ice) || null });
+      this._toWin('send-start', { session, ice: this.server.current?.embeddedIce || this.server.current?.ice || null });
     } else if (!want && this.sending) {
       this._stopSend(true);
     }
@@ -157,7 +157,7 @@ class Audio extends EventEmitter {
     if (!this._on('receive')) return;
     this.receiving = { session: m.session, status: 'connecting' };
     await this._ensureWin();
-    this._toWin('recv', { session: m.session, sdp: m.sdp, ice: (this.server.current && this.server.current.ice) || null });
+    this._toWin('recv', { session: m.session, sdp: m.sdp, ice: this.server.current?.embeddedIce || this.server.current?.ice || null });
     this._syncAudioSticky();
     this.emit('change');
   }

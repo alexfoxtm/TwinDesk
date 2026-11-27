@@ -148,6 +148,11 @@ internal class EmbeddedNetwork(context: Context, private val store: Store, priva
         worker.execute { call("close", "handle" to bridge.handle) }
     }
 
+    fun releaseNow(bridge: EmbeddedBridge) {
+        bridge.retire()
+        call("close", "handle" to bridge.handle)
+    }
+
     private fun poll(current: Long) {
         val reply = call("status") ?: return publish(current, Status("error"))
         val list = reply.optJSONArray("peers")

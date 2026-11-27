@@ -33,28 +33,39 @@ import javax.net.ssl.SSLServerSocket
 import kotlin.concurrent.thread
 
 class Dav(private val root: File, private val secret: String, private val volume: String, private val ssl: SSLContext, private val allow: (InetAddress) -> Boolean) {
-    private var server: ServerSocket? = null
+    @Volatile private var server: ServerSocket? = null
     val port get() = server?.localPort ?: 0
+    private val clients = ConcurrentHashMap.newKeySet<Socket>()
     private val sidecars = ConcurrentHashMap<String, Pair<ByteArray, Long>>() // relative path -> (data, mtime)
 
-    fun start() {
+    fun start(loopbackOnly: Boolean = false) {
         if (server != null) return
         val s = ssl.serverSocketFactory.createServerSocket() as SSLServerSocket
         s.reuseAddress = true
-        s.bind(InetSocketAddress(0))
+        s.bind(if (loopbackOnly) InetSocketAddress(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)), 0) else InetSocketAddress(0))
         server = s
         thread(isDaemon = true, name = "td-dav") {
             while (!s.isClosed) {
                 val c = runCatching { s.accept() }.getOrNull() ?: break
                 if (!allow(c.inetAddress)) { runCatching { c.close() }; continue } // only the computer in the session
-                thread(isDaemon = true, name = "td-dav-c") { runCatching { serve(c) } }
+                clients.add(c)
+                if (server !== s) {
+                    clients.remove(c)
+                    runCatching { c.close() }
+                    break
+                }
+                thread(isDaemon = true, name = "td-dav-c") {
+                    try { runCatching { serve(c) } } finally { clients.remove(c) }
+                }
             }
         }
     }
 
     fun stop() {
-        runCatching { server?.close() }
+        val old = server
         server = null
+        runCatching { old?.close() }
+        clients.forEach { runCatching { it.close() } }
         sidecars.clear()
     }
 

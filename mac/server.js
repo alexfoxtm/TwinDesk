@@ -12,6 +12,8 @@
 //   'listening' / 'listenError' (err)
 'use strict';
 
+const { embeddedMediaAllowed } = require('./embedded-media.js');
+
 const https = require('https');
 const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
@@ -171,11 +173,12 @@ class Server extends EventEmitter {
       if (route === 'reclaim' || route === 'preauth') return this.emit('preauth', ctx, msg);
       return this.fail(ctx, P.E.BAD_MESSAGE, `"${msg.t}" is not allowed before welcome`);
     }
-    if (Quiet.seen(ws, msg)) return; // `idle {on}`: the other end's side of a quiet link
+    if (!embeddedMediaAllowed(ctx, msg.t) || Quiet.seen(ws, msg)) return;
 
     if (msg.t === P.T.PING) return this.send(ctx, { t: P.T.PONG, ts: msg.ts });
     if (msg.t === P.T.BYE) { // Disconnect there: nothing to wait for
       ctx.released = true;
+      this.retireEmbeddedMedia?.(ctx);
       // A phone's own Disconnect. A Windows or Linux guest must not be written into noreclaim.json.
       if (this.current === ctx && P.isPhoneOs(ctx.os) && !(ctx.automaticReturn && msg.retry === true)) this.noteReleased(ctx.deviceId);
       if (ctx.alt) { // the whole session goes, its fallback path too
@@ -251,9 +254,9 @@ class Server extends EventEmitter {
 
   send(ctx, msg) {
     const ws = this.socketFor(ctx, msg);
-    if (!ws) return false;
+    if (!ws || !embeddedMediaAllowed(ctx, msg.t)) return false;
     // A phone on the USB cable: its WebRTC goes through the relay too (wired.js).
-    const ice = (msg.t === P.T.RTC_OFFER && ctx.netemIce) || ctx.ice;
+    const ice = (msg.t === P.T.RTC_OFFER && ctx.netemIce) || ctx.embeddedIce || ctx.ice;
     if (ice && ICE_OFFERS.has(msg.t)) msg = { ...msg, ice };
     Quiet.sent(ws, msg);
     ws.send(JSON.stringify(msg));
@@ -268,6 +271,7 @@ class Server extends EventEmitter {
   // Send an error and close the socket.
   fail(ctx, code, message) {
     ctx.expectedClose = true;
+    this.retireEmbeddedMedia?.(ctx);
     CloseInfo.mark(ctx.ws, 'local-' + code);
     this.send(ctx, { t: P.T.ERROR, code, message });
     if (ctx.alt) { // the whole session goes, not just this path of it

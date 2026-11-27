@@ -150,7 +150,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         if (!canToggle()) return emptyList()
         val id = macId()
         val socket = core.link.sessionMarker() ?: return emptyList()
-        if (!core.link.lockSessionCurrent(socket)) return emptyList()
+        if (!core.link.backupSessionCurrent(socket)) return emptyList()
         if (!permissionsReady()) {
             armMac = id
             armSocket = socket
@@ -226,7 +226,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                 return
             }
             val now = core.link.sessionMarker()
-            val next = if (now != null && core.link.lockSessionCurrent(now)) now else null
+            val next = if (now != null && core.link.backupSessionCurrent(now)) now else null
             if (next === marker) {
                 syncWatchLocked()
                 return
@@ -278,7 +278,7 @@ class PhotoBackup(core: Core) : Feature(core) {
     override fun onClosed() {
         synchronized(lock) {
             // A close posted for the socket we already left must not wipe the replacement.
-            if (marker != null && core.link.lockSessionCurrent(marker)) return
+            if (marker != null && core.link.backupSessionCurrent(marker)) return
             revokeLocked(false)
             marker = null
             boundMac = ""
@@ -609,7 +609,7 @@ class PhotoBackup(core: Core) : Feature(core) {
                 flight = null
                 lock.notifyAll()
                 clearAckLocked()
-                if (core.link.lockSessionCurrent(socket)) core.link.sendFor(socket, msg(Proto.T.BACKUP_STOP, "req" to f.req))
+                if (core.link.backupSessionCurrent(socket)) core.link.sendFor(socket, msg(Proto.T.BACKUP_STOP, "req" to f.req))
             } else {
                 refuseEcho(f, why)
                 flight = null
@@ -861,7 +861,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         val sent = synchronized(lock) {
             val mark = owner?.socket ?: marker ?: return@synchronized null
             val id = macId()
-            val current = if (owner != null) live(owner) else core.link.lockSessionCurrent(mark)
+            val current = if (owner != null) live(owner) else core.link.backupSessionCurrent(mark)
             if (id.isEmpty() || !core.link.peerBackup || (!moduleOn() && !announceOff) || !current) null else mark to id
         } ?: return
         val (mark, id) = sent
@@ -874,12 +874,12 @@ class PhotoBackup(core: Core) : Feature(core) {
     private fun admit(): Boolean {
         if (!moduleOn() || !core.link.peerBackup) return false
         val h = core.host ?: return false
-        return h.os == "mac" && core.link.lockSessionCurrent(core.link.sessionMarker())
+        return h.os == "mac" && core.link.backupSessionCurrent(core.link.sessionMarker())
     }
 
     private fun blocked(): String {
         if (!core.link.peerBackup) return "peer"
-        if (core.link.ble || !core.link.lockSessionCurrent(marker)) return "transport"
+        if (core.link.ble || !core.link.backupSessionCurrent(marker)) return "transport"
         if (Build.VERSION.SDK_INT < 30) return "api"
         val perm = photoPerm()
         if (perm != "ok") return if (perm == "partial") "partial" else "media"
@@ -901,7 +901,7 @@ class PhotoBackup(core: Core) : Feature(core) {
         lock.notifyAll()
         clearAckLocked()
         if (f != null) rememberDead(f.req)
-        if (sendStop && f != null && core.link.lockSessionCurrent(f.owner.socket)) {
+        if (sendStop && f != null && core.link.backupSessionCurrent(f.owner.socket)) {
             core.link.sendFor(f.owner.socket, msg(Proto.T.BACKUP_STOP, "req" to f.req))
         }
     }
@@ -914,11 +914,11 @@ class PhotoBackup(core: Core) : Feature(core) {
         if (!owner.module || !moduleOn() || !owner.peer || !core.link.peerBackup) return false
         if (owner.macId.isEmpty() || macId() != owner.macId || revOf(owner.macId) != owner.rev) return false
         if (core.link.sessionMarker() !== owner.socket) return false
-        return core.link.lockSessionCurrent(owner.socket)
+        return core.link.backupSessionCurrent(owner.socket)
     }
 
     private fun sameSocket(owner: PbOwner): Boolean {
-        return owner.macId.isNotEmpty() && macId() == owner.macId && core.link.sessionMarker() === owner.socket && core.link.lockSessionCurrent(owner.socket)
+        return owner.macId.isNotEmpty() && macId() == owner.macId && core.link.sessionMarker() === owner.socket && core.link.backupSessionCurrent(owner.socket)
     }
 
     private fun setOn(on: Boolean, id: String, socket: Any?) {
@@ -943,7 +943,7 @@ class PhotoBackup(core: Core) : Feature(core) {
 
     private fun watchable(): Boolean {
         if (Build.VERSION.SDK_INT < 30 || !moduleOn() || !core.link.peerBackup) return false
-        if (!core.link.lockSessionCurrent(marker)) return false
+        if (!core.link.backupSessionCurrent(marker)) return false
         val id = macId()
         if (id.isEmpty() || !allowed(id) || sinceOf(id) <= 0L) return false
         if (!heard || !remoteOn || remoteSince <= 0L) return false
@@ -989,7 +989,7 @@ class PhotoBackup(core: Core) : Feature(core) {
             lock.notifyAll()
             ackReq = ""
             rememberDead(req)
-            if (core.link.lockSessionCurrent(socket)) socket to req else null
+            if (core.link.backupSessionCurrent(socket)) socket to req else null
         }
         if (stop != null) core.link.sendFor(stop.first, msg(Proto.T.BACKUP_STOP, "req" to stop.second))
     }

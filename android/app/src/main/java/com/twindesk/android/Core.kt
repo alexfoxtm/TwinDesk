@@ -787,7 +787,17 @@ class Core private constructor(val ctx: Context) : Link.Events {
         changed()
     }
 
+    override fun onEmbeddedMediaReady(route: Link.TrustedRoute) {
+        main.post {
+            if (!link.embeddedMediaReady(route)) return@post
+            screen.onEmbeddedMediaReady(route)
+            macSound.sendPolicy(route)
+            bg.execute { share.sync() }
+        }
+    }
+
     override fun onMessage(m: JSONObject, route: Link.TrustedRoute?, source: okhttp3.WebSocket) {
+        val fromEmbedded = link.isEmbeddedSource(source)
         val t = m.optString("t")
         if (t == Proto.T.TASK_ALERT) {
             val alert = TaskAlertGate.parse(m.opt("id"), m.opt("title"), m.opt("ok"))
@@ -797,7 +807,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // Still the socket thread. Pointer compares this with the time it runs on its overlay worker (after the main-thread hop).
         val pointerAt = if (t == Proto.T.PHONE_POINTER) SystemClock.uptimeMillis() else -1L
         main.post {
-            if (link.embedded && !Link.embeddedMessageAllowed(t)) return@post
+            if (!link.acceptsPostedMessage(source, fromEmbedded, m)) return@post
             if (t == "chat.want") {
                 notifs.chatWant(m, route)
                 return@post
@@ -819,8 +829,15 @@ class Core private constructor(val ctx: Context) : Link.Events {
                         f === tether -> tether.onMessage(t, m, route)
                         f === hub -> hub.onMessage(t, m, route)
                         f === apps -> apps.onMessage(t, m, route)
+                        f === share -> share.onMessage(t, m, route, fromEmbedded)
+                        f === mirror -> mirror.onMessage(t, m, route, fromEmbedded)
+                        f === macSound -> macSound.onMessage(t, m, route.takeIf { fromEmbedded })
                         f === screen && t == "rtc.offer" -> {
-                            screen.onOffer(m, route)
+                            screen.onOffer(m, route, fromEmbedded)
+                            true
+                        }
+                        f === screen && t == "rtc.ice" && fromEmbedded -> {
+                            screen.onEmbeddedIce(m, route)
                             true
                         }
                         f === screen && t == "screen.state" -> {

@@ -3,7 +3,7 @@
 // one with this phone (FolderShare.kt, shared/foldershare.js there): browse, open, save, new
 // folder, rename, delete. Files open from a copy here (apps want to seek in them); what an app
 // writes goes back to the computer when it closes the file. No root when nothing is shared.
-// Over HTTPS with the session's certificate, pinned as the session pins it (paired).
+// Over paired HTTPS on the LAN or cable, or through the exact TwinDesk Network session.
 package com.twindesk.android
 
 import android.content.Context
@@ -20,11 +20,16 @@ import android.provider.DocumentsContract.Root
 import android.provider.DocumentsProvider
 import android.util.Log
 import android.webkit.MimeTypeMap
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
+import java.io.InputStream
 import java.net.URL
-import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import javax.net.ssl.HostnameVerifier
@@ -46,16 +51,29 @@ class PcShareProvider : DocumentsProvider() {
 
     override fun onCreate() = true
 
-    private fun pc(): FolderShare.Pc = Core.get(context!!).let { it.net.touch("folder"); it.share.pc } ?: throw FileNotFoundException("not shared") // in use: Wi-Fi Direct stays
+    private val core get() = Core.get(context!!)
+
+    private fun pc(): FolderShare.Pc = core.share.pc?.also(::requireCurrent)
+        ?: throw FileNotFoundException("not shared")
+
+    private fun requireCurrent(p: FolderShare.Pc) {
+        if (core.share.pc !== p || p.embeddedRoute?.let(core.link::isEmbeddedRoute) == false) {
+            throw FileNotFoundException("share ended")
+        }
+    }
 
     // Document ids: "/" the folder, "/a/b" inside it.
     private fun rel(id: String) = id.trim('/')
     private fun idOf(rel: String) = "/" + rel.trim('/')
     private fun parentId(id: String) = idOf(rel(id).substringBeforeLast('/', ""))
 
-    private fun open(op: String, id: String, extra: String = ""): HttpsURLConnection {
-        val p = pc()
-        val c = URL("https://${if (p.host.contains(':')) "[${p.host}]" else p.host}:${p.port}/${p.token}/$op?p=${Uri.encode(rel(id))}$extra").openConnection() as HttpsURLConnection
+    private fun path(p: FolderShare.Pc, op: String, id: String, extra: String = "") =
+        "/${p.token}/$op?p=${Uri.encode(rel(id))}$extra"
+
+    private fun open(p: FolderShare.Pc, op: String, id: String, extra: String = ""): HttpsURLConnection {
+        requireCurrent(p)
+        core.net.touch("folder") // Keep Wi-Fi Direct up while Files uses the share.
+        val c = URL("https://${if (p.host.contains(':')) "[${p.host}]" else p.host}:${p.port}${path(p, op, id, extra)}").openConnection() as HttpsURLConnection
         c.sslSocketFactory = pinned(p.fp).socketFactory
         c.hostnameVerifier = HostnameVerifier { _, _ -> true } // the pin is the identity, not the name
         return c
@@ -76,9 +94,38 @@ class PcShareProvider : DocumentsProvider() {
         SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), null) }
     }
 
+    private fun <T> withEmbeddedResponse(
+        p: FolderShare.Pc, relativePath: String, method: String, body: RequestBody? = null,
+        signal: CancellationSignal? = null, use: (Response) -> T,
+    ): T {
+        requireCurrent(p)
+        signal?.throwIfCanceled()
+        return try {
+            core.link.embeddedFolderCall(checkNotNull(p.embeddedRoute), relativePath, method, body) { call ->
+                requireCurrent(p)
+                signal?.setOnCancelListener { call.cancel() }
+                try {
+                    signal?.throwIfCanceled()
+                    call.execute().use(use)
+                } finally {
+                    signal?.setOnCancelListener(null)
+                }
+            }
+        } catch (e: IOException) {
+            signal?.throwIfCanceled()
+            throw e
+        }
+    }
+
     // A request to the computer: (status, body text).
-    private fun call(method: String, op: String, id: String, extra: String = "", body: File? = null): Pair<Int, String> {
-        val c = open(op, id, extra)
+    private fun call(p: FolderShare.Pc, method: String, op: String, id: String, extra: String = "", body: File? = null): Pair<Int, String> {
+        if (p.embeddedRoute != null) {
+            val requestBody = body?.asRequestBody() ?: if (method == "GET") null else ByteArray(0).toRequestBody()
+            return withEmbeddedResponse(p, path(p, op, id, extra), method, requestBody) { response ->
+                response.code to runCatching { response.body.string() }.getOrDefault("")
+            }
+        }
+        val c = open(p, op, id, extra)
         try {
             c.requestMethod = method
             c.connectTimeout = 8000
@@ -103,13 +150,13 @@ class PcShareProvider : DocumentsProvider() {
     private fun mime(name: String, dir: Boolean) = if (dir) Document.MIME_TYPE_DIR
     else MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
 
-    private fun addRow(c: MatrixCursor, id: String, o: JSONObject) {
+    private fun addRow(c: MatrixCursor, id: String, o: JSONObject, rootName: String) {
         val dir = o.optBoolean("dir")
         val name = o.optString("name")
         val root = rel(id).isEmpty()
         c.newRow().apply {
             add(Document.COLUMN_DOCUMENT_ID, id)
-            add(Document.COLUMN_DISPLAY_NAME, if (root) pc().name else name)
+            add(Document.COLUMN_DISPLAY_NAME, if (root) rootName else name)
             add(Document.COLUMN_MIME_TYPE, mime(name, dir))
             add(Document.COLUMN_SIZE, if (dir) null else o.optLong("size"))
             add(Document.COLUMN_LAST_MODIFIED, o.optLong("mtime"))
@@ -126,7 +173,8 @@ class PcShareProvider : DocumentsProvider() {
 
     override fun queryRoots(projection: Array<out String>?): Cursor {
         val c = MatrixCursor(projection ?: ROOT_COLS)
-        val p = Core.get(context!!).share.pc ?: return c.apply { setNotificationUri(context!!.contentResolver, DocumentsContract.buildRootsUri(auth)) }
+        val p = core.share.pc?.takeUnless { it.embeddedRoute?.let(core.link::isEmbeddedRoute) == false }
+            ?: return c.apply { setNotificationUri(context!!.contentResolver, DocumentsContract.buildRootsUri(auth)) }
         c.newRow().apply {
             add(Root.COLUMN_ROOT_ID, ROOT)
             add(Root.COLUMN_DOCUMENT_ID, "/")
@@ -143,15 +191,17 @@ class PcShareProvider : DocumentsProvider() {
 
     override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor {
         val c = MatrixCursor(projection ?: DOC_COLS)
-        val (code, text) = call("GET", "stat", documentId)
+        val p = pc()
+        val (code, text) = call(p, "GET", "stat", documentId)
         if (code != 200) throw FileNotFoundException(documentId)
-        addRow(c, documentId, JSONObject(text))
+        addRow(c, documentId, JSONObject(text), p.name)
         return c
     }
 
     override fun queryChildDocuments(parentDocumentId: String, projection: Array<out String>?, sortOrder: String?): Cursor {
         val c = MatrixCursor(projection ?: DOC_COLS)
-        val (code, text) = call("GET", "list", parentDocumentId)
+        val p = pc()
+        val (code, text) = call(p, "GET", "list", parentDocumentId)
         if (code != 200) throw FileNotFoundException(parentDocumentId)
         val o = JSONObject(text)
         free = o.optLong("free", -1)
@@ -159,7 +209,7 @@ class PcShareProvider : DocumentsProvider() {
         val base = rel(parentDocumentId)
         for (i in 0 until (items?.length() ?: 0)) {
             val it = items!!.getJSONObject(i)
-            addRow(c, idOf(if (base.isEmpty()) it.optString("name") else "$base/${it.optString("name")}"), it)
+            addRow(c, idOf(if (base.isEmpty()) it.optString("name") else "$base/${it.optString("name")}"), it, p.name)
         }
         c.setNotificationUri(context!!.contentResolver, DocumentsContract.buildChildDocumentsUri(auth, parentDocumentId))
         return c
@@ -171,46 +221,83 @@ class PcShareProvider : DocumentsProvider() {
         return p.isEmpty() && d.isNotEmpty() || d.startsWith("$p/")
     }
 
-    // A copy here to read from (and write to, sent back on close).
-    private fun copy(id: String, signal: CancellationSignal?): File {
-        val dir = File(context!!.cacheDir, "pcshare").apply { mkdirs() }
-        val key = MessageDigest.getInstance("SHA-1").digest(id.toByteArray()).joinToString("") { "%02x".format(it) }
-        val f = File(dir, key + "." + id.substringAfterLast('.', "bin").take(8))
-        val c = open("file", id)
-        try {
-            c.connectTimeout = 8000
-            c.readTimeout = 60000
-            if (c.responseCode != 200) throw FileNotFoundException(id)
-            c.inputStream.use { i ->
-                f.outputStream().use { o ->
-                    val buf = ByteArray(64 * 1024)
-                    while (true) {
-                        signal?.throwIfCanceled()
-                        val n = i.read(buf)
-                        if (n < 0) break
-                        o.write(buf, 0, n)
-                    }
+    private fun tempFile() = File.createTempFile("pcshare-", ".part", File(context!!.cacheDir, "pcshare").apply { mkdirs() })
+
+    private fun copyTo(input: InputStream, f: File, signal: CancellationSignal?) {
+        input.use { i ->
+            f.outputStream().use { o ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    signal?.throwIfCanceled()
+                    val n = i.read(buf)
+                    if (n < 0) break
+                    o.write(buf, 0, n)
                 }
             }
-        } finally {
-            c.disconnect()
         }
-        return f
+    }
+
+    // A private copy per descriptor, so concurrent opens do not truncate or upload each other's bytes.
+    private fun copy(p: FolderShare.Pc, id: String, signal: CancellationSignal?): File {
+        signal?.throwIfCanceled()
+        val f = tempFile()
+        try {
+            if (p.embeddedRoute != null) {
+                withEmbeddedResponse(p, path(p, "file", id), "GET", signal = signal) { response ->
+                    if (response.code != 200) throw FileNotFoundException(id)
+                    copyTo(response.body.byteStream(), f, signal)
+                }
+            } else {
+                val c = open(p, "file", id)
+                try {
+                    c.connectTimeout = 8000
+                    c.readTimeout = 60000
+                    if (c.responseCode != 200) throw FileNotFoundException(id)
+                    copyTo(c.inputStream, f, signal)
+                } finally {
+                    c.disconnect()
+                }
+            }
+            signal?.throwIfCanceled()
+            requireCurrent(p)
+            return f
+        } catch (e: Exception) {
+            f.delete()
+            throw e
+        }
     }
 
     override fun openDocument(documentId: String, mode: String, signal: CancellationSignal?): ParcelFileDescriptor {
         val m = ParcelFileDescriptor.parseMode(mode)
-        val writing = mode.contains('w')
-        if (!writing) return ParcelFileDescriptor.open(copy(documentId, signal), ParcelFileDescriptor.MODE_READ_ONLY)
-        // Writing: from what's there unless it's being replaced (w, wt), then back on close.
-        val f = if (mode.contains('t') || mode == "w") File.createTempFile("w", ".part", File(context!!.cacheDir, "pcshare").apply { mkdirs() })
-        else copy(documentId, signal)
-        return ParcelFileDescriptor.open(f, m, writes) { e ->
-            if (e == null) {
-                runCatching { call("PUT", "file", documentId, body = f) }.onFailure { Log.w("TwinDesk", "pcshare: write back $documentId: $it") }
-                notifyChildren(parentId(documentId))
+        val p = pc()
+        if (!mode.contains('w')) {
+            val f = copy(p, documentId, signal)
+            try {
+                return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY)
+            } finally {
+                f.delete()
             }
+        }
+        // Writing: from what's there unless it's being replaced (w, wt), then back on close.
+        signal?.throwIfCanceled()
+        val f = if (mode.contains('t') || mode == "w") tempFile() else copy(p, documentId, signal)
+        try {
+            return ParcelFileDescriptor.open(f, m, writes) { e ->
+                try {
+                    if (e == null) {
+                        val (code, _) = call(p, "PUT", "file", documentId, body = f)
+                        if (code in 200..299) notifyChildren(parentId(documentId))
+                        else Log.w("TwinDesk", "pcshare: write back failed, HTTP $code")
+                    }
+                } catch (e: Exception) {
+                    Log.w("TwinDesk", "pcshare: write back failed (${e.javaClass.simpleName})")
+                } finally {
+                    f.delete()
+                }
+            }
+        } catch (e: Exception) {
             f.delete()
+            throw e
         }
     }
 
@@ -219,7 +306,8 @@ class PcShareProvider : DocumentsProvider() {
         val dir = mimeType == Document.MIME_TYPE_DIR
         val clean = displayName.replace(Regex("[/\\\\\\u0000-\\u001f]"), "_").trim().ifEmpty { if (dir) "New Folder" else "File" }
         // Name taken: "name 2.ext", as Finder does.
-        val (code0, text) = call("GET", "list", parentDocumentId)
+        val p = pc()
+        val (code0, text) = call(p, "GET", "list", parentDocumentId)
         val taken = if (code0 == 200) JSONObject(text).optJSONArray("items")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).optString("name").lowercase() }.toSet() } ?: emptySet() else emptySet()
         var name = clean
         var n = 2
@@ -227,20 +315,20 @@ class PcShareProvider : DocumentsProvider() {
         val ext = if (dir || !clean.contains('.')) "" else "." + clean.substringAfterLast('.')
         while (name.lowercase() in taken) name = "$stem ${n++}$ext"
         val id = idOf(if (base.isEmpty()) name else "$base/$name")
-        val (code, _) = if (dir) call("POST", "mkdir", id) else call("PUT", "file", id)
+        val (code, _) = if (dir) call(p, "POST", "mkdir", id) else call(p, "PUT", "file", id)
         if (code !in 200..299) throw FileNotFoundException("couldn’t make $name")
         notifyChildren(parentDocumentId)
         return id
     }
 
     override fun deleteDocument(documentId: String) {
-        val (code, _) = call("POST", "delete", documentId)
+        val (code, _) = call(pc(), "POST", "delete", documentId)
         if (code !in 200..299) throw FileNotFoundException("couldn’t delete")
         notifyChildren(parentId(documentId))
     }
 
     override fun renameDocument(documentId: String, displayName: String): String {
-        val (code, _) = call("POST", "rename", documentId, "&name=${Uri.encode(displayName)}")
+        val (code, _) = call(pc(), "POST", "rename", documentId, "&name=${Uri.encode(displayName)}")
         if (code !in 200..299) throw FileNotFoundException("couldn’t rename")
         val p = rel(parentId(documentId))
         notifyChildren(parentId(documentId))

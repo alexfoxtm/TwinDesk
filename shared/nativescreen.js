@@ -153,14 +153,15 @@ class NativeScreen extends EventEmitter {
   }
 
   // The stream arrived (request()).
-  _stream(req, res) {
+  _stream(req, res, routeCurrent) {
     if (this.req) this.req.destroy(); // a newer one replaces it
     this.req = req;
     let buf = Buffer.alloc(0);
     let need = 12;
     let head = null;
     req.on('data', (chunk) => {
-      if (this.closed || this.req !== req || (this.owns && !this.owns())) return req.destroy();
+      if (this.closed || this.req !== req || (this.owns && !this.owns()) ||
+          (routeCurrent && !routeCurrent())) return req.destroy();
       buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
       while (buf.length >= need) {
         if (!head) {
@@ -260,7 +261,7 @@ class NativeScreen extends EventEmitter {
   setClipboard() {}
 
   // The stream's HTTPS request on the session's server (peer.js): true when it was one.
-  static request(req, res) {
+  static request(req, res, claim) {
     if (!String(req.url || '').startsWith(PATH)) return false;
     const s = live.get(String(req.headers[HEADER] || ''));
     if (req.method !== 'POST' || !s || s.closed || (s.owns && !s.owns())) {
@@ -268,9 +269,14 @@ class NativeScreen extends EventEmitter {
       res.end();
       return true;
     }
+    const routeCurrent = claim?.(s);
+    if (claim && !routeCurrent) {
+      res.writeHead(403).end();
+      return true;
+    }
     res.writeHead(200, { 'content-type': 'application/octet-stream' });
     if (res.flushHeaders) res.flushHeaders();
-    s._stream(req, res);
+    s._stream(req, res, routeCurrent);
     return true;
   }
 

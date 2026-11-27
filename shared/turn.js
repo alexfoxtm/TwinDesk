@@ -321,9 +321,16 @@ class TurnThread {
       const w = new Worker(__filename, { workerData: { turn: { port: this.port, host: this.host,
         password: this.password, allocationsOnly: this.allocationsOnly } } });
       this.worker = w;
-      w.once('message', (m) => (m && m.ok ? resolve() : reject(new Error((m && m.error) || 'relay failed'))));
+      w.once('message', (m) => {
+        if (this.worker !== w || !m?.ok) return reject(new Error(m?.error || 'relay failed'));
+        this.port = m.port;
+        resolve();
+      });
       w.once('error', reject);
-      w.on('exit', () => { if (this.worker === w) this.worker = null; });
+      w.once('exit', () => {
+        if (this.worker === w) this.worker = null;
+        reject(new Error('relay stopped'));
+      });
       w.unref(); // never keeps the app from quitting
     });
   }
@@ -340,7 +347,8 @@ class TurnThread {
 
 if (!isMainThread && workerData && workerData.turn) {
   const t = new Turn(workerData.turn);
-  t.start().then(() => parentPort.postMessage({ ok: true }), (e) => parentPort.postMessage({ ok: false, error: e.message }));
+  t.start().then(() => parentPort.postMessage({ ok: true, port: t.server.address().port }),
+    (e) => parentPort.postMessage({ ok: false, error: e.message }));
 }
 
 module.exports = { Turn, TurnThread };

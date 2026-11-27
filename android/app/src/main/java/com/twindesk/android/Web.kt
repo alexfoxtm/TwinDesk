@@ -23,7 +23,11 @@ import org.json.JSONObject
 class WebHost(ctx: Context, private val page: String, private val core: Core, private val onPageEvent: (String, JSONObject?) -> Unit = { _, _ -> }) {
     private val main = Handler(Looper.getMainLooper())
     private var ready = false
-    private val queue = mutableListOf<JSONObject>()
+    private data class Delivery(val message: JSONObject, val embeddedRoute: Link.TrustedRoute?)
+    private data class EmbeddedOffer(val id: Int, val route: Link.TrustedRoute)
+    private val queue = mutableListOf<Delivery>()
+    private var offerId = 0
+    @Volatile private var embeddedOffer: EmbeddedOffer? = null
     private val videoDecoders by lazy {
         runCatching { MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter { !it.isEncoder } }
             .getOrDefault(emptyList())
@@ -71,7 +75,16 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
         }
 
         @JavascriptInterface fun send(json: String) {
-            runCatching { core.send(JSONObject(json)) }
+            runCatching {
+                val m = JSONObject(json)
+                val id = m.remove("_embeddedOffer")
+                if (id != null) {
+                    val offer = embeddedOffer
+                    if (offer != null && id == offer.id) core.link.sendFor(offer.route, m)
+                } else if (!core.link.embedded || m.optString("t") !in rtcReplies) {
+                    core.send(m)
+                }
+            }
         }
         // A pointer move or a wheel step (remote.js, viewer.js), many a second: written straight to the
         // socket (Link.sendMove), with no JSON string from the page and no JSONObject to parse and
@@ -152,11 +165,22 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
     }
 
     // A message to the page (any thread).
-    fun post(m: JSONObject): Boolean {
-        return main.post { if (ready) deliver(m) else queue.add(m) }
+    fun post(m: JSONObject, embeddedRoute: Link.TrustedRoute? = null): Boolean {
+        val delivery = Delivery(m, embeddedRoute)
+        return main.post { if (ready) deliver(delivery) else queue.add(delivery) }
     }
 
-    private fun deliver(m: JSONObject) {
+    private fun deliver(delivery: Delivery) {
+        val (m, route) = delivery
+        if (route != null && !core.link.embeddedMediaReady(route)) return
+        when (m.optString("t")) {
+            "rtc.offer", "audio.offer" -> {
+                embeddedOffer = route?.let { EmbeddedOffer(++offerId, it) }
+                m.remove("_embeddedOffer")
+                embeddedOffer?.let { m.put("_embeddedOffer", it.id) }
+            }
+            "stream.stop", "audio.stop" -> embeddedOffer = null
+        }
         if (page == "viewer.html" && core.lockView.locked) when (m.optString("t")) {
             "opts" -> m.put("inputOn", false)
             "viewer.input" -> m.put("on", false)
@@ -177,9 +201,14 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
         motion?.stop()
         motion = null
         ready = false
+        embeddedOffer = null
+        queue.clear()
         view.removeJavascriptInterface("TD")
         view.loadUrl("about:blank")
         view.destroy()
+    }
+    private companion object {
+        val rtcReplies = setOf("rtc.answer", "rtc.ice", "audio.answer", "audio.ice")
     }
 }
 
@@ -261,6 +290,13 @@ class Screen(core: Core) : Feature(core) {
     private fun clearDoctor() { doctorReading = null }
 
     private var wantStart = false // the viewer opened before we knew whether the Mac shares
+    private var wantStartRoute: Link.TrustedRoute? = null
+    private data class EmbeddedViewer(
+        val viewer: WebHost,
+        val route: Link.TrustedRoute,
+        val welcomedAt: Long? = null,
+    )
+    private var embeddedViewer: EmbeddedViewer? = null
     private var startedByUs = false // we started the Mac's sharing: stop it when the viewer closes
     @Volatile var autoOpened = false; private set // the computer started sharing and opened the viewer: it closes when that stops
 
@@ -324,12 +360,47 @@ class Screen(core: Core) : Feature(core) {
         val route = core.link.currentTrustedRoute()
         val peer = core.link.host
         val viewer = host
+        if (route != null && core.link.isEmbeddedRoute(route)) {
+            if (viewer == null || core.lockView.locked) return
+            if (!core.link.embeddedMediaReady(route)) {
+                embeddedViewer = EmbeddedViewer(viewer, route)
+                return
+            }
+            if (!acceptEmbeddedViewer(viewer, route, w, hpx)) return
+            startWhenKnown(route)
+            core.changed()
+            return
+        }
         if (route != null && core.link.sendFor(route, acceptance(w, hpx))) {
             if (viewer != null && peer != null && core.link.accepts(route)) viewerRetry.opened(viewer, peer, route)
         }
         // Show the Mac's screen = the Mac starts sharing, in the mode used last.
         if (state == null) wantStart = true else startIfNeeded()
         core.changed()
+    }
+
+    private fun acceptEmbeddedViewer(viewer: WebHost, route: Link.TrustedRoute, w: Int, h: Int): Boolean {
+        val peer = core.link.host ?: return false
+        if (!core.link.sendFor(route, acceptance(w, h))) return false
+        if (core.link.accepts(route)) viewerRetry.opened(viewer, peer, route)
+        return true
+    }
+
+    internal fun onEmbeddedMediaReady(route: Link.TrustedRoute) {
+        val pending = embeddedViewer ?: return
+        if (pending.route.marker !== route.marker || pending.viewer !== host) return
+        embeddedViewer = null
+        val (w, h) = viewerSize ?: return
+        if (!viewing || core.lockView.locked || !core.link.embeddedMediaReady(route) ||
+            !acceptEmbeddedViewer(pending.viewer, route, w, h)) return
+        if (pending.welcomedAt != null) watchOffer(pending.viewer, route, pending.welcomedAt)
+        else startWhenKnown(route)
+        core.changed()
+    }
+
+    private fun startWhenKnown(route: Link.TrustedRoute) {
+        wantStartRoute = route
+        if (state == null) wantStart = true else startIfNeeded()
     }
 
     private fun acceptance(w: Int, h: Int) = msg("screen.policy", "accept" to true, "width" to w, "height" to h)
@@ -372,14 +443,17 @@ class Screen(core: Core) : Feature(core) {
     }
 
     private fun startIfNeeded() {
+        val route = wantStartRoute
         wantStart = false
-        if (!viewing || sharing || !remote) return
+        wantStartRoute = null
+        if (!viewing || sharing || !remote ||
+            (route != null && (core.lockView.locked || !core.link.embeddedMediaReady(route)))) return
         startedByUs = true
         // Opening again sends Mirror, and Mirror on the computer means the main screen.
         // A screen already picked stays that screen. Extend (no displayId) still starts on Mirror.
         val id = displayId
-        if (id.isNotEmpty() && displays.any { it.id == id }) control(share = true, displayId = id)
-        else control(share = true, mode = pickMode())
+        if (id.isNotEmpty() && displays.any { it.id == id }) controlOn(route, share = true, displayId = id)
+        else controlOn(route, share = true, mode = pickMode())
     }
 
     // Always Mirror to start with (the computer's screen as it is); Extend is a tap away in the viewer.
@@ -411,6 +485,8 @@ class Screen(core: Core) : Feature(core) {
         viewing = false
         size = null
         wantStart = false
+        wantStartRoute = null
+        embeddedViewer = null
         waitWifi = null
         core.net.release("screen")
         if (core.link.connected) {
@@ -564,10 +640,12 @@ class Screen(core: Core) : Feature(core) {
             // ViewerActivity can survive a dropped socket without another attach/resize.
             // Reassert its acceptance on the new authenticated socket only.
             val (w, h) = viewerSize ?: return@post
-            if (viewer != null && this.host === viewer && viewing && route != null &&
-                !core.link.ble && !core.lockView.locked && core.link.accepts(route) &&
-                viewerRetry.reconnect(viewer, host, route, welcomedAt) &&
-                core.link.sendFor(route, acceptance(w, h))) {
+            if (viewer == null || this.host !== viewer || !viewing || route == null ||
+                core.link.ble || core.lockView.locked || !core.link.accepts(route) ||
+                !viewerRetry.reconnect(viewer, host, route, welcomedAt)) return@post
+            if (core.link.isEmbeddedRoute(route) && !core.link.embeddedMediaReady(route)) {
+                embeddedViewer = EmbeddedViewer(viewer, route, welcomedAt)
+            } else if (core.link.sendFor(route, acceptance(w, h))) {
                 watchOffer(viewer, route, welcomedAt)
             }
         }
@@ -593,7 +671,7 @@ class Screen(core: Core) : Feature(core) {
         core.changed()
     }
 
-    internal fun onOffer(m: JSONObject, route: Link.TrustedRoute?) {
+    internal fun onOffer(m: JSONObject, route: Link.TrustedRoute?, fromEmbedded: Boolean = false) {
         // Link's socket can change while Core hands this message to the UI thread.
         if (route == null || !core.link.accepts(route)) return
         viewerRetry.stopRetries(route.marker)
@@ -607,8 +685,12 @@ class Screen(core: Core) : Feature(core) {
             offer.put("_netemTurn", it.turnUrl)
             core.link.netemMark(route.marker, "native_offer", " viewing=${if (viewing && host != null) 1 else 0}")
         }
-        host?.post(offer)
+        host?.post(offer, route.takeIf { fromEmbedded })
         core.changed()
+    }
+
+    internal fun onEmbeddedIce(m: JSONObject, route: Link.TrustedRoute?) {
+        if (route != null) host?.post(m, route)
     }
 
     fun netemStage(h: WebHost, generation: Int, session: Int, kind: Int, relay: Boolean) {
@@ -670,20 +752,26 @@ class Screen(core: Core) : Feature(core) {
 
     // Start/stop the Mac's sharing, or switch Mirror/Extend (when the Mac allows it).
     // displayId mirrors that real display and does not switch Extend/Mirror by itself.
-    fun control(share: Boolean? = null, mode: String? = null, close: Boolean = false, displayId: String? = null) {
+    fun control(share: Boolean? = null, mode: String? = null, close: Boolean = false, displayId: String? = null) =
+        controlOn(null, share, mode, close, displayId)
+
+    private fun controlOn(route: Link.TrustedRoute?, share: Boolean? = null, mode: String? = null, close: Boolean = false, displayId: String? = null) {
         val m = msg("screen.ctl")
         if (share != null) m.put("share", share)
         if (mode != null) m.put("mode", mode)
         if (close) m.put("close", true)
         if (displayId != null) m.put("displayId", displayId)
         if (share == false) {
+            wantStart = false
+            wantStartRoute = null
+            embeddedViewer = null
             sharingRoute = null
             viewerRetry.cancel()
             startedByUs = false
             resetVideo(keepDoctor = true)
             cancelDesktopWait()
         }
-        core.send(m)
+        if (route == null) core.send(m) else core.link.sendFor(route, m)
     }
 
     // Mirror one of the computer's real displays. Ownership matches Mirror: the viewer sets
@@ -959,7 +1047,10 @@ class Screen(core: Core) : Feature(core) {
 
     override fun onClosed() = onLinkClosed(null, false)
 
-    internal fun stopViewerRecovery() { pendingTimer.post { viewerRetry.cancel() } }
+    internal fun stopViewerRecovery() { pendingTimer.post {
+        viewerRetry.cancel()
+        embeddedViewer = null
+    } }
 
     internal fun forgetViewerRecovery(id: String) { pendingTimer.post { viewerRetry.forget(id) } }
 
@@ -969,6 +1060,8 @@ class Screen(core: Core) : Feature(core) {
         sharingRoute = null
         viewerRetry.closed(peer, retain)
         wantStart = false
+        wantStartRoute = null
+        embeddedViewer = null
         resetVideo()
         lastInfo = null
         startedByUs = false
@@ -1084,9 +1177,13 @@ class MacSound(core: Core) : Feature(core) {
     private var host: WebHost? = null
     @Volatile var playing = false; private set
 
-    fun sendPolicy() {
-        core.send(msg("audio.policy", "accept" to core.sync.get("audio", "in")))
-        if (!core.sync.get("audio", "in")) stop()
+    fun sendPolicy() = sendPolicy(null)
+
+    internal fun sendPolicy(route: Link.TrustedRoute?) {
+        val accept = core.sync.get("audio", "in")
+        val policy = msg("audio.policy", "accept" to accept)
+        if (route == null) core.send(policy) else core.link.sendFor(route, policy)
+        if (!accept) stop()
     }
 
     override fun onWelcome(host: Host) = sendPolicy()
@@ -1099,18 +1196,18 @@ class MacSound(core: Core) : Feature(core) {
         if (playing) { playing = false; core.changed() }
     }
 
-    override fun onMessage(t: String, m: JSONObject): Boolean {
+    internal fun onMessage(t: String, m: JSONObject, embeddedRoute: Link.TrustedRoute?): Boolean {
         if (!t.startsWith("audio.") || m.optString("dir") != "m2w") return false
         when (t) {
             "audio.offer" -> {
                 if (!core.sync.get("audio", "in")) return true
                 val h = host ?: WebHost(core.ctx, "audio.html", core).also { host = it }
-                h.post(m)
+                h.post(m, embeddedRoute)
                 playing = true
                 core.changed()
             }
             "audio.stop" -> stop()
-            else -> host?.post(m)
+            else -> host?.post(m, embeddedRoute)
         }
         return true
     }

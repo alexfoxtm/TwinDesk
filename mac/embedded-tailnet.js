@@ -9,6 +9,9 @@ const path = require('node:path');
 const readline = require('node:readline');
 const { spawn } = require('node:child_process');
 const P = require('../shared/protocol.js');
+const { EmbeddedMedia } = require('./embedded-media.js');
+const { PATH: MIRROR_PATH } = require('../shared/nativescreen.js');
+const { EMBEDDED_FOLDER } = require('../shared/foldershare.js');
 
 const local = '127.0.0.1';
 const helperPath = path.join(__dirname, '..', 'mac-helper', '.build', 'release', 'twindesk-network');
@@ -30,6 +33,9 @@ class EmbeddedTailnet {
     this.pending = new Map();
     this.sockets = new Map();
     this.proofs = new Map();
+    this.media = new EmbeddedMedia(server);
+    server.on('client', (ctx) => { void this.media.start(ctx); });
+    server.retireEmbeddedMedia = (ctx) => this.media.close(ctx);
     this.server.embeddedPeer = (socket) => {
       if (socket.localPort !== this.backend?.address()?.port || socket.remoteAddress !== local) return null;
       return this.sockets.get(socket.remotePort)?.peer || null;
@@ -91,6 +97,7 @@ class EmbeddedTailnet {
   }
 
   _closeBackend() {
+    this.media.closeAll();
     this.generation = '';
     this.selfID = '';
     this.proofs.clear();
@@ -116,13 +123,24 @@ class EmbeddedTailnet {
   }
 
   async _serve(epoch) {
-    const tls = https.createServer({ ...this.server.tls, handshakeTimeout: 5000 }, (_req, res) => {
+    const tls = https.createServer({ ...this.server.tls, handshakeTimeout: 5000 }, (req, res) => {
+      if (epoch === this.epoch && req.url?.startsWith(EMBEDDED_FOLDER + '/')) {
+        res.setHeader('Connection', 'close');
+        return this.media.folder(req, res, this.server.embeddedPeer(req.socket));
+      }
+      if (epoch === this.epoch && req.url === MIRROR_PATH) {
+        res.setHeader('Connection', 'close');
+        return this.media.mirror(req, res, this.server.embeddedPeer(req.socket));
+      }
       res.writeHead(404).end();
     });
     tls.on('upgrade', (req, socket, head) => {
-      // The loopback listener only accepts engine-witnessed sockets. This route exposes
-      // TwinDesk's control WebSocket, with the same certificate and pairing handler.
-      if (epoch !== this.epoch || req.url !== '/' || !this.server.embeddedPeer(socket)) return socket.destroy();
+      // Both control and TURN children enter through the same witnessed, pinned listener.
+      const peer = this.server.embeddedPeer(socket);
+      if (epoch !== this.epoch || !peer) return socket.destroy();
+      if (req.url === '/embedded/turn') return this.media.upgrade(req, socket, head, peer);
+      if (req.url === '/embedded/dav') return this.media.upgradeDav(req, socket, head, peer);
+      if (req.url !== '/') return socket.destroy();
       this.server.wss.handleUpgrade(req, socket, head, (ws) => this.server.wss.emit('connection', ws, req));
     });
     const backend = net.createServer({ pauseOnConnect: true }, async (socket) => {

@@ -27,6 +27,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const tls = require('tls');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const P = require('./protocol.js');
@@ -34,6 +35,26 @@ const P = require('./protocol.js');
 const op = (url) => String(url).replace(/^\/[^/?]+/, '/…'); // a request, for the log: never the token
 const isLoopback = (a) => a === '127.0.0.1' || a === '::1' || a === 'localhost';
 const str = (v, n = 200) => (typeof v === 'string' ? v.slice(0, n) : '');
+const EMBEDDED_FOLDER = '/embedded/folder';
+const embeddedShares = new WeakMap();
+
+function embeddedFolder(owner, req, res, current) {
+  const offer = embeddedShares.get(owner);
+  const url = req.url.slice(EMBEDDED_FOLDER.length);
+  if (!offer || !url.startsWith(`/${offer.token}/`)) return false;
+  const allowed = () => current() && embeddedShares.get(owner) === offer &&
+    offer.share._ctx()?.ws === owner && offer.share.folder === offer.folder;
+  if (!allowed()) return false;
+  const close = () => req.destroy();
+  offer.closers.add(close);
+  res.once('close', () => offer.closers.delete(close));
+  void offer.share._handle(req, res, { url, folder: offer.folder, token: offer.token, allowed })
+    .catch(() => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
+  return true;
+}
 
 class FolderShare extends EventEmitter {
   // hub: phonehub.js (settings, save, phone, server). mounter: phonedrive.js's for this system.
@@ -84,6 +105,7 @@ class FolderShare extends EventEmitter {
   }
 
   async stopped() {
+    this._stopEmbedded();
     this.offer = null;
     this.offerBle = '';
     this.wantMount = false;
@@ -94,6 +116,7 @@ class FolderShare extends EventEmitter {
   }
 
   stop() {
+    this._stopEmbedded();
     clearInterval(this.timer);
     if (this.mountPath) {
       try { this.mounter.unmountSync(this.mountPath); } catch {}
@@ -104,12 +127,17 @@ class FolderShare extends EventEmitter {
 
   // From the phone: {on, port, secret, name, cert (its certificate, DER in base64)}.
   onOffer(m) {
+    const embedded = !!this._ctx()?.embeddedPeer;
+    if (embedded !== (m?.embedded === 1)) return;
     const cert = str(m && m.cert, 8000);
     const ok = m && m.on && Number.isInteger(m.port) && m.port > 0 && m.port < 65536 && /^[a-f0-9]{16,64}$/.test(String(m.secret || '')) && /^[A-Za-z0-9+/=]{100,}$/.test(cert);
     const was = this.offer;
     this.offerBle = m && !m.on && m.wifi ? this._volume(str(m.name, 80)) : '';
-    this.offer = ok ? { port: m.port, secret: m.secret, name: this._volume(str(m.name, 80)), cert: `-----BEGIN CERTIFICATE-----\n${cert.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----\n` } : null;
-    const same = was && this.offer && was.port === this.offer.port && was.secret === this.offer.secret && was.cert === this.offer.cert;
+    this.offer = ok ? { port: m.port, secret: m.secret, name: this._volume(str(m.name, 80)),
+      cert: `-----BEGIN CERTIFICATE-----\n${cert.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----\n`, embedded } : null;
+    const same = was && this.offer && was.port === this.offer.port && was.secret === this.offer.secret &&
+      was.cert === this.offer.cert && was.embedded === this.offer.embedded && was.name === this.offer.name;
+    if (same) this.offer = was;
     if (!this.offer || !same) this.unmount('').then(() => this._auto());
     else this._auto();
     this.emit('change');
@@ -156,9 +184,17 @@ class FolderShare extends EventEmitter {
     this.wantMount = false;
     this._set('mounting', '');
     try {
+      const offer = this.offer;
+      const current = () => this._ctx()?.ws === ctx.ws && this.offer === offer;
       let host = ctx.address;
-      let port = this.offer.port;
-      if (isLoopback(host)) { // through the cable
+      let port = offer.port;
+      let open;
+      if (offer.embedded) {
+        if (!ctx.openEmbeddedDav) throw new Error('the phone folder is unavailable');
+        host = '127.0.0.1';
+        open = (callback) => current() ? ctx.openEmbeddedDav(offer.secret, callback)
+          : callback(new Error('the phone folder disconnected'));
+      } else if (isLoopback(host)) { // through the cable
         const serial = this.serialOf && this.serialOf(ctx.deviceId);
         if (!serial || !this.adb) throw new Error('the phone is on the cable, but adb can’t reach it');
         const r = await this.adb.run(['-s', serial, 'forward', 'tcp:0', `tcp:${port}`], { timeout: 5000 });
@@ -166,12 +202,17 @@ class FolderShare extends EventEmitter {
         if (!port) throw new Error(`adb forward: ${String(r.err || r.out).trim()}`);
         host = '127.0.0.1';
       }
-      const { secret, name, cert } = this.offer;
-      const local = await this._proxy({ host, port, cert });
+      const { secret, name, cert } = offer;
+      const local = await this._proxy({ host, port, cert, open });
       const url = `http://127.0.0.1:${local}/${secret}/${encodeURIComponent(name)}`;
       this.mountHost = '127.0.0.1';
       this.mountPort = local;
-      this.mountPath = await this.mounter.mount(url, { user: 'twindesk', password: secret, port: local, host: '127.0.0.1', volume: name });
+      const mounted = await this.mounter.mount(url, { user: 'twindesk', password: secret, port: local, host: '127.0.0.1', volume: name });
+      if (offer.embedded && !current()) {
+        await this.mounter.unmount(mounted).catch(() => {});
+        throw new Error('the phone folder disconnected');
+      }
+      this.mountPath = mounted;
       this._set('', '');
       this.reveal();
     } catch (e) {
@@ -198,6 +239,20 @@ class FolderShare extends EventEmitter {
     if (this.proxy) { this.proxy.server.close(); this.proxy.agent.destroy(); this.proxy = null; }
     if (!to) return Promise.resolve(0);
     const agent = new https.Agent({ keepAlive: true, maxSockets: 8, ca: to.cert, checkServerIdentity: () => undefined });
+    if (to.open) {
+      agent.maxSockets = 2;
+      agent.createConnection = (opts, callback) => {
+        to.open((error, socket) => {
+          if (error) return callback(error);
+          if (this.proxy?.agent !== agent) {
+            socket.destroy();
+            return callback(new Error('the phone folder disconnected'));
+          }
+          try { callback(null, tls.connect({ ...opts, socket })); }
+          catch (failure) { socket.destroy(); callback(failure); }
+        });
+      };
+    }
     const srv = http.createServer((req, res) => {
       const headers = { ...req.headers, host: `${to.host}:${to.port}` };
       if (headers.destination) {
@@ -241,11 +296,19 @@ class FolderShare extends EventEmitter {
     const ctx = this._ctx();
     const want = !!(this.settings.shareServe && ctx);
     if (!want) {
-      if (this.hub.phone) this.hub.server.sendToClient({ t: P.T.SHARE_HOST, on: false, serve: !!this.settings.shareServe });
+      this._stopEmbedded();
+      if (this.hub.phone) this.hub.server.sendToClient({ t: P.T.SHARE_HOST, on: false, serve: !!this.settings.shareServe,
+        ...(ctx?.embeddedPeer ? { embedded: 1 } : {}) });
       return this._serve(false);
     }
     try {
       fs.mkdirSync(this.folder, { recursive: true });
+      if (ctx.embeddedPeer) {
+        this._serve(false);
+        if (ctx.embeddedMediaWanted) this._hostEmbedded(ctx);
+        return;
+      }
+      this._stopEmbedded();
       await this._serve(true);
       let port = this.port;
       if (isLoopback(ctx.address)) { // through the cable: the phone's 127.0.0.1:<port> is ours
@@ -258,9 +321,33 @@ class FolderShare extends EventEmitter {
       this.hub.server.sendToClient({ t: P.T.SHARE_HOST, on: true, serve: true, port, token: this.token, name: `${path.basename(this.folder)} on ${os.hostname().replace(/\.local$/, '')}`.slice(0, 80) });
     } catch (e) {
       this.serveError = String(e.message).split('\n')[0];
-      this.hub.server.sendToClient({ t: P.T.SHARE_HOST, on: false, serve: true });
+      this.hub.server.sendToClient({ t: P.T.SHARE_HOST, on: false, serve: true,
+        ...(ctx.embeddedPeer ? { embedded: 1 } : {}) });
     }
     this.emit('change');
+  }
+
+  _hostEmbedded(ctx) {
+    if (!ctx.ws || this._ctx()?.ws !== ctx.ws) return;
+    const folder = this.folder;
+    const name = `${path.basename(folder)} on ${os.hostname().replace(/\.local$/, '')}`.slice(0, 80);
+    if (this.embedded?.owner !== ctx.ws || this.embedded.folder !== folder) {
+      this._stopEmbedded();
+      this.embedded = { owner: ctx.ws, share: this, folder, token: crypto.randomBytes(16).toString('hex'), closers: new Set() };
+      embeddedShares.set(ctx.ws, this.embedded);
+    }
+    this.serveError = '';
+    this.hub.server.sendToClient({ t: P.T.SHARE_HOST, on: true, serve: true, port: P.PORT,
+      token: this.embedded.token, name, embedded: 1 });
+    this.emit('change');
+  }
+
+  _stopEmbedded() {
+    if (!this.embedded) return;
+    const offer = this.embedded;
+    this.embedded = null;
+    if (embeddedShares.get(offer.owner) === offer) embeddedShares.delete(offer.owner);
+    for (const close of offer.closers) close();
   }
 
   _serve(on) {
@@ -301,9 +388,9 @@ class FolderShare extends EventEmitter {
   // A path the phone sent, inside the folder (null when it isn't). By its real path: a link inside
   // the folder that points out of it is outside. One that doesn't exist yet (a new file or
   // folder) goes by its parent's.
-  async _local(rel) {
+  async _local(rel, folder = this.folder) {
     const fsp = fs.promises;
-    const root = await fsp.realpath(path.resolve(this.folder)).catch(() => null);
+    const root = await fsp.realpath(path.resolve(folder)).catch(() => null);
     if (!root) return null;
     const parts = String(rel || '').split('/').filter((p) => p && p !== '.');
     if (parts.some((p) => p === '..' || /[\u0000-\u001f\\]/.test(p))) return null;
@@ -317,22 +404,24 @@ class FolderShare extends EventEmitter {
   }
 
   // /<token>/<op>?p=<path>[&name=]: list, stat, file (GET, PUT), mkdir, delete, rename.
-  async _handle(req, res) {
-    const u = new URL(req.url, 'http://x');
+  async _handle(req, res, embedded) {
+    const u = new URL(embedded?.url || req.url, 'http://x');
     const [token, op] = u.pathname.split('/').filter(Boolean);
     const done = (code, body = '', type = 'application/json') => {
       req.resume();
       res.writeHead(code, { 'Content-Type': type, 'Content-Length': Buffer.byteLength(body) });
       res.end(body);
     };
-    if (!this._allowed(req.socket.remoteAddress)) return req.socket.destroy(); // kept alive from before the session moved
-    const t = Buffer.from(String(token || '')), mine = Buffer.from(this.token);
+    const allowed = () => embedded ? embedded.allowed() : this._allowed(req.socket.remoteAddress);
+    if (!allowed()) return req.socket.destroy();
+    const t = Buffer.from(String(token || '')), mine = Buffer.from(embedded?.token || this.token);
     if (t.length !== mine.length || !crypto.timingSafeEqual(t, mine) || !this.settings.shareServe) return done(404); // constant time
-    const p = await this._local(u.searchParams.get('p'));
+    const p = await this._local(u.searchParams.get('p'), embedded?.folder);
     if (!p) return done(400);
-    const root = await fs.promises.realpath(path.resolve(this.folder));
+    const root = await fs.promises.realpath(path.resolve(embedded?.folder || this.folder));
     const entry = (f, st) => ({ name: path.basename(f), dir: st.isDirectory(), size: st.isDirectory() ? 0 : st.size, mtime: Math.floor(st.mtimeMs) });
     const fsp = fs.promises;
+    if (embedded && !allowed()) return req.socket.destroy();
     switch (`${req.method} ${op}`) {
       case 'GET list': {
         const names = await fsp.readdir(p).catch(() => null);
@@ -378,7 +467,7 @@ class FolderShare extends EventEmitter {
         return s.pipe(res);
       }
       case 'PUT file': {
-        const tmp = `${p}.twindesk-part`;
+        const tmp = `${p}.twindesk-part${embedded ? '-' + crypto.randomBytes(8).toString('hex') : ''}`;
         const ok = await new Promise((resolve) => {
           const out = fs.createWriteStream(tmp);
           out.on('error', () => resolve(false));
@@ -386,7 +475,7 @@ class FolderShare extends EventEmitter {
           req.on('aborted', () => { out.destroy(); resolve(false); });
           req.pipe(out);
         });
-        if (!ok) { fs.rm(tmp, { force: true }, () => {}); return done(409); }
+        if (!ok || (embedded && !allowed())) { fs.rm(tmp, { force: true }, () => {}); return done(409); }
         await fsp.rename(tmp, p);
         return done(201, JSON.stringify(entry(p, await fsp.stat(p))));
       }
@@ -402,6 +491,7 @@ class FolderShare extends EventEmitter {
         if (!name || /[/\\\u0000-\u001f]/.test(name) || name === '.' || name === '..' || p === root) return done(400);
         const to = path.join(path.dirname(p), name);
         if (fs.existsSync(to)) return done(412);
+        if (embedded && !allowed()) return req.socket.destroy();
         await fsp.rename(p, to);
         return done(200, JSON.stringify(entry(to, await fsp.stat(to))));
       }
@@ -441,9 +531,9 @@ class FolderShare extends EventEmitter {
   get view() {
     return {
       phone: { offered: !!(this.offer || this.offerBle), name: this.offer ? this.offer.name : this.offerBle, wifi: !this.offer && !!this.offerBle && !!this.wifi, mounted: this.mountPath, busy: this.busy, message: this.message, auto: !!this.settings.shareMount },
-      mine: { on: !!this.settings.shareServe, folder: this.folder, error: this.serveError, serving: !!this.server && !!this._ctx() },
+      mine: { on: !!this.settings.shareServe, folder: this.folder, error: this.serveError, serving: !!(this.server || this.embedded) && !!this._ctx() },
     };
   }
 }
 
-module.exports = { FolderShare };
+module.exports = { FolderShare, EMBEDDED_FOLDER, embeddedFolder };

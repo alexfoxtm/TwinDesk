@@ -21,6 +21,8 @@
 //   'phoneFree'           — a phone's hold on the session ended (kept for the phone code)
 'use strict';
 
+const { embeddedMediaAllowed } = require('../embedded-media.js');
+
 const https = require('https');
 const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
@@ -221,12 +223,14 @@ class Server extends EventEmitter {
       if (msg.t === P.T.HELLO || msg.t.startsWith('pair.')) return this.emit('preauth', ctx, msg);
       return this.fail(ctx, P.E.BAD_MESSAGE, `"${msg.t}" is not allowed before welcome`);
     }
+    if (!embeddedMediaAllowed(ctx, msg.t)) return;
     if (ws?.netemTrace && ws === ctx.ws && this.clients.get(ctx.deviceId) === ctx) ws.netemTrace.control('rx', msg, data);
     if (ws && Quiet.seen(ws, msg)) return; // `idle {on}`: the other end's side of a quiet link
 
     if (msg.t === P.T.PING) return this.send(ctx, { t: P.T.PONG, ts: msg.ts });
     if (msg.t === P.T.BYE) { // Disconnect there: nothing to wait for
       ctx.released = true;
+      this.retireEmbeddedMedia?.(ctx);
       if (ctx.os === P.OS.ANDROID && this.clients.get(ctx.deviceId) === ctx &&
           !(ctx.automaticReturn && msg.retry === true)) this.emit('noreclaim', ctx.deviceId);
       if (ctx.alt) { // the whole session goes, its fallback path too
@@ -308,9 +312,9 @@ class Server extends EventEmitter {
 
   send(ctx, msg) {
     const ws = this.socketFor(ctx, msg);
-    if (!ws) return false;
+    if (!ws || !embeddedMediaAllowed(ctx, msg.t)) return false;
     // A phone on the USB cable: its WebRTC goes through the relay too (wired.js).
-    const ice = (msg.t === P.T.RTC_OFFER && ctx.netemIce) || ctx.ice;
+    const ice = (msg.t === P.T.RTC_OFFER && ctx.netemIce) || ctx.embeddedIce || ctx.ice;
     if (ice && ICE_OFFERS.has(msg.t)) msg = { ...msg, ice };
     Quiet.sent(ws, msg);
     this._raw(ws, msg);
@@ -326,6 +330,7 @@ class Server extends EventEmitter {
   // Send an error and close the socket(s) of that client.
   fail(ctx, code, message) {
     ctx.expectedClose = true;
+    this.retireEmbeddedMedia?.(ctx);
     CloseInfo.mark(ctx.ws, 'local-' + code);
     this.send(ctx, { t: P.T.ERROR, code, message });
     if (ctx.alt) { // the whole session goes, not just this path of it

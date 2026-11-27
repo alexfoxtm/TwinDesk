@@ -56,6 +56,8 @@ function viewOf(s) {
     authed: true,
     ws: c ? c.ws : (s.link ? s.link.ws : null),
     ice: c ? c.ice : null,
+    ...(c?.embeddedPeer && !s.linkUp ? { embeddedPeer: true, embeddedIce: c.embeddedIce,
+      embeddedMediaWanted: c.embeddedMediaWanted, openEmbeddedDav: c.openEmbeddedDav } : {}),
     ...(netemIce ? { netemIce } : {}),
     // Save binds this: the outbound socket. Route.deliver replaces it with the ingress socket
     // when a message names the one it arrived on. Not a protocol field.

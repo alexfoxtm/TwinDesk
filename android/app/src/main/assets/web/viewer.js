@@ -393,7 +393,7 @@
     my.onicecandidate = (e) => {
       if (!e.candidate || my !== pc) return;
       if (netem && !notedRelay && e.candidate.type === 'relay') { notedRelay = true; note(1); }
-      send({ t: 'rtc.ice', session: msg.session, candidate: e.candidate.toJSON() });
+      send({ t: 'rtc.ice', session: msg.session, _embeddedOffer: msg._embeddedOffer, candidate: e.candidate.toJSON() });
     };
     my.onconnectionstatechange = () => {
       if (my !== pc) return;
@@ -410,7 +410,7 @@
       pending = null;
       await my.setLocalDescription(await my.createAnswer());
       if (my !== pc) return;
-      send({ t: 'rtc.answer', session: msg.session, sdp: my.localDescription.sdp });
+      send({ t: 'rtc.answer', session: msg.session, _embeddedOffer: msg._embeddedOffer, sdp: my.localDescription.sdp });
     } catch (err) {
       if (my === pc) note(4);
       const error = netem ? 'WebRTC setup failed' : err.message;

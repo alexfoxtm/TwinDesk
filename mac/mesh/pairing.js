@@ -239,6 +239,7 @@ class Pairing extends EventEmitter {
     ctx.ilWanted = !ctx.embeddedPeer && msg.il && typeof msg.il === 'object' ? msg.il : null; // the input lane (shared/inputlane.js)
     ctx.fx2Wanted = !ctx.embeddedPeer && msg.fx2 === 1; // … and the files engine (shared/meshfx2.js)
     if (!ctx.embeddedPeer && msg.netem === 1) ctx.netemRequested = true;
+    ctx.embeddedMediaWanted = !!ctx.embeddedPeer && e.os === P.OS.ANDROID && msg.em === 1;
     if (e.os === P.OS.ANDROID && msg.pa === 1) ctx.appsPair = P.sha256Hex(`phone apps:${e.id}:${e.tokenHash}`);
     ctx.fxWanted = !ctx.embeddedPeer && msg.fx === 1; // fast files (shared/fastfile.js): the bytes over HTTPS, a token of this session
     ctx.mesh = !!msg.mesh; // the device speaks the mesh (docs/mesh.md): it gets the roster

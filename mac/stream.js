@@ -275,6 +275,7 @@ class Stream extends EventEmitter {
     if (reason !== 'retry') this._retryN = 0; // the user asked, the display changed, or the Mac woke
     if (!this.getSettings().sharing.on) return this.stop('off');
     if (!this.server.current) return this._stopWindow('nothing connected');
+    if (this.server.current.embeddedPeer && !this.server.current.embeddedIce) return this._stopWindow('no viewer');
     if (this.viewer === false || this.waitingPolicy) return this._stopWindow('no viewer');
     // Bluetooth can't carry the picture: it starts once the session is on Wi-Fi (netlink.js, 'transport').
     if (this.server.current.transport === 'ble') return this._stopWindow('waiting for Wi-Fi');
@@ -322,7 +323,7 @@ class Stream extends EventEmitter {
         session: s, bitrateMbps: set.bitrateMbps, // Share screen › Quality, for phones too
         sourceId: src.id, width, height, audio,
         detailSource: detailOwner ? { width: target.pixelWidth, height: target.pixelHeight } : null,
-        ice: this.server.current?.netemIce || this.server.current?.ice || null,
+        ice: this.server.current?.netemIce || this.server.current?.embeddedIce || this.server.current?.ice || null,
         fps: ScreenCodec.fps(target.hz, set.sharing && set.sharing.fps), // Share screen › Frame rate
         steady: !!(set.sharing && set.sharing.pace === 'steady'), // Playback › Steady (shared/screencodec.js)
         codec: ScreenCodec.mode(set.sharing && set.sharing.codec), // Share screen › Encoder

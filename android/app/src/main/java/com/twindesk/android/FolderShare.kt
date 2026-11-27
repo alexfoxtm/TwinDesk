@@ -1,6 +1,6 @@
 // TwinDesk — Copyright (C) 2026 inukaasith. GPL-3.0, see LICENSE.
 // Shared folders with the computer, both ways (shared/foldershare.js there). On USB, Wi-Fi or
-// Wi-Fi Direct; through Bluetooth neither runs.
+// Wi-Fi Direct; through Bluetooth neither runs. The computer can also share over TwinDesk Network.
 //   - This phone's folder there: switched on in File access, the folder chosen (TwinDesk in the
 //     phone's storage unless another is) is served over WebDAV (Dav.kt) and the computer mounts it
 //     in its file manager (share.offer). Needs All files access: TwinDesk reads and writes the files
@@ -35,14 +35,21 @@ import android.util.Base64
 private const val FOLDER_IDLE_MS = 10 * 60_000L // Wi-Fi Direct for the computer's folder: this long after it was last used
 
 class FolderShare(core: Core) : Feature(core) {
-    // The computer's shared folder, while it shares one: http://<host>:<port>/<token>/...
-    data class Pc(val host: String, val port: Int, val token: String, val name: String, val fp: String) // fp: the session's certificate, pinned
+    // Direct HTTPS uses the paired certificate. TwinDesk Network uses the exact control route.
+    data class Pc(
+        val host: String, val port: Int, val token: String, val name: String, val fp: String,
+        val embeddedRoute: Link.TrustedRoute? = null,
+    )
 
+    private val embeddedToken = Regex("[a-f0-9]{32}")
+
+    private val pcLock = Any()
     @Volatile var pc: Pc? = null; private set
     @Volatile var pcServe = false; private set // the computer's folder switched on (its setting, either side)
     @Volatile private var dav: Dav? = null
+    @Volatile private var davRoute: Link.TrustedRoute? = null
     @Volatile var error = ""; private set
-    private var secret = Proto.randomHex(16)
+    @Volatile private var secret = Proto.randomHex(16)
     private var lastLink = ""
 
     val on get() = core.store.flag("shareOn", false)
@@ -67,9 +74,35 @@ class FolderShare(core: Core) : Feature(core) {
         setPc(null)
     }
 
-    override fun onMessage(t: String, m: JSONObject): Boolean {
+    override fun onMessage(t: String, m: JSONObject): Boolean = onMessage(t, m, null, false)
+
+    internal fun onMessage(t: String, m: JSONObject, route: Link.TrustedRoute?, fromEmbedded: Boolean): Boolean {
+        if (t == "embedded.dav.open") {
+            val current = dav
+            val expected = davRoute
+            val key = m.opt("key") as? String
+            val token = m.opt("share")
+            if (fromEmbedded && route != null && current != null && expected != null && key != null &&
+                expected.matches(route.marker, route.id, route.fp) && token == secret) {
+                core.link.openEmbeddedDav(route, key, current.port) {
+                    dav === current && davRoute === expected && token == secret && on && allowed
+                }
+            }
+            return true
+        }
         if (t != Proto.T.SHARE_HOST) return false
-        if (core.link.embedded) return true
+        if (fromEmbedded) {
+            if (route == null || !core.link.isEmbeddedRoute(route) || m.opt("embedded") != 1) return true
+            pcServe = m.optBoolean("serve", m.optBoolean("on"))
+            val token = m.opt("token") as? String
+            // Repeated announcements on the same socket keep existing Files opens valid.
+            val owner = pc?.embeddedRoute?.takeIf { it.matches(route.marker, route.id, route.fp) } ?: route
+            val name = m.str("name", 80).ifEmpty { "Computer" }
+            setPc(if (m.optBoolean("on") && token != null && embeddedToken.matches(token))
+                Pc("", 0, token, name, route.fp, owner) else null)
+            return true
+        }
+        if (core.link.embedded || m.opt("embedded") == 1) return true
         pcServe = m.optBoolean("serve", m.optBoolean("on"))
         val port = m.optInt("port")
         val token = m.str("token", 64)
@@ -87,9 +120,12 @@ class FolderShare(core: Core) : Feature(core) {
         core.changed()
     }
 
-    private fun setPc(p: Pc?) {
-        if (p == pc) return
-        pc = p
+    private fun setPc(p: Pc?, expected: Pc? = null) {
+        synchronized(pcLock) {
+            if (p == pc || (expected != null && pc !== expected)) return
+            if (p?.embeddedRoute?.let(core.link::isEmbeddedRoute) == false) return
+            pc = p
+        }
         if (p != null && opening) { opening = false; openPcShare(core.ctx) }
         runCatching { core.ctx.contentResolver.notifyChange(DocumentsContract.buildRootsUri(PcShareProvider.authority(core.ctx)), null) }
         core.changed()
@@ -97,36 +133,56 @@ class FolderShare(core: Core) : Feature(core) {
 
     // The session started, moved or dropped (Link's onChange): offer again when its way changed.
     fun linkChanged() {
+        val p = pc
+        val owner = p?.embeddedRoute
+        if (p != null && (core.link.ble || core.link.embedded != (owner != null) ||
+            (owner != null && !core.link.isEmbeddedRoute(owner)))) setPc(null, expected = p)
         val key = "${core.link.connected}|${core.link.ble}|${core.link.wired}|${core.link.embedded}|${core.link.host?.address}"
         if (key == lastLink) return
         lastLink = key
-        if (core.link.ble || core.link.embedded) setPc(null) // the computer sends it again on Wi-Fi
         core.bg.execute { sync() }
     }
 
     // Serving while on, allowed and not through Bluetooth; the computer hears either way.
     @Synchronized
     fun sync() {
-        val live = core.link.connected && !core.link.ble && !core.link.embedded
+        val route = core.link.currentTrustedRoute()?.takeIf(core.link::embeddedMediaReady)
+        val live = core.link.connected && !core.link.ble && (!core.link.embedded || route != null)
         val want = live && on && allowed
+        fun offer(m: JSONObject) {
+            if (route != null) core.link.sendFor(route, m.put("embedded", 1)) else core.send(m)
+        }
         error = ""
         if (want) {
             runCatching {
                 val f = folder
                 if (!f.isDirectory && !f.mkdirs()) throw Exception("can’t make ${shown(f)}")
-                val d = dav ?: Dav(f, secret, volumeName(f), ShareKey.ssl(), ::fromComputer).also { it.start(); dav = it }
-                core.send(msg(Proto.T.SHARE_OFFER, "on" to true, "port" to d.port, "secret" to secret, "name" to volumeName(f), "cert" to ShareKey.cert()))
+                if (davRoute?.marker !== route?.marker) {
+                    stopDav()
+                    secret = Proto.randomHex(16)
+                }
+                val token = secret
+                val access: (InetAddress) -> Boolean = if (route == null) ::fromComputer else { addr ->
+                    addr.isLoopbackAddress && davRoute?.marker === route.marker && core.link.isEmbeddedRoute(route) &&
+                        secret == token && on && allowed && folder == f
+                }
+                val d = dav ?: Dav(f, token, volumeName(f), ShareKey.ssl(), access).also {
+                    davRoute = route
+                    it.start(loopbackOnly = route != null)
+                    dav = it
+                }
+                offer(msg(Proto.T.SHARE_OFFER, "on" to true, "port" to d.port, "secret" to token, "name" to volumeName(f), "cert" to ShareKey.cert()))
             }.onFailure {
                 Log.w("TwinDesk", "share: $it")
                 error = it.message ?: "didn’t start"
                 stopDav()
-                core.send(msg(Proto.T.SHARE_OFFER, "on" to false))
+                offer(msg(Proto.T.SHARE_OFFER, "on" to false))
             }
         } else {
             stopDav()
             // Through Bluetooth: shared all the same, opened there over Wi-Fi Direct (foldershare.js).
             val ble = core.link.connected && core.link.ble && on && allowed
-            if (core.link.connected) core.send(if (ble) msg(Proto.T.SHARE_OFFER, "on" to false, "wifi" to true, "name" to volumeName(folder)) else msg(Proto.T.SHARE_OFFER, "on" to false))
+            if (core.link.connected) offer(if (ble) msg(Proto.T.SHARE_OFFER, "on" to false, "wifi" to true, "name" to volumeName(folder)) else msg(Proto.T.SHARE_OFFER, "on" to false))
         }
         core.changed()
     }
@@ -145,6 +201,7 @@ class FolderShare(core: Core) : Feature(core) {
 
     @Synchronized
     private fun stopDav() {
+        davRoute = null
         dav?.stop()
         dav = null
     }
