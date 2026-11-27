@@ -225,7 +225,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     private fun canReturn(): Boolean {
         if (!returnTimerNeeded(inBackground(), link.connected, link.state == "connecting", link.pair != null, peer.connected)) return false
         val node = returnEmbeddedNode() ?: return true
-        if (returnHost()?.let { preferredHomeRoute(it) } != null) return true
+        if (returnHost()?.let { preferredHomeRoute(it, allowSaved = false) } != null) return true
         return MainActivity.shown && embeddedNetwork.online(node)
     }
 
@@ -1022,12 +1022,12 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // A default route is not proof of a LAN. Prefer the paired Mac's fresh beacon,
     // and try its saved LAN address on networks that suppress discovery.
     @Suppress("DEPRECATION")
-    private fun homeRoute(host: Host): HomeRoute? {
+    private fun homeRoute(host: Host, allowSaved: Boolean = true): HomeRoute? {
         if (host.os != "mac" || host.fp.isBlank()) return null
         val discovered = discovery.found[host.id]?.let { seen ->
             homeBeaconAddress(host, seen, System.currentTimeMillis())?.let { it to seen.port }
         }
-        val ip = discovered?.first ?: localWifiAddress(host.address) ?: return null
+        val ip = discovered?.first ?: host.address.takeIf { allowSaved }?.let(::localWifiAddress) ?: return null
         val port = discovered?.second ?: host.port
         if (port !in 1..65535) return null
         val cm = ctx.getSystemService(ConnectivityManager::class.java) ?: return null
@@ -1042,7 +1042,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
         return HomeRoute(network, ip.hostAddress ?: return null, port)
     }
 
-    private fun preferredHomeRoute(host: Host) = homeRoute(host)?.takeUnless { it.network == manualEmbeddedWifi }
+    private fun preferredHomeRoute(host: Host, allowSaved: Boolean = true) =
+        homeRoute(host, allowSaved)?.takeUnless { it.network == manualEmbeddedWifi }
 
     @Synchronized private fun preferHomeWifi() {
         if (!link.connected || !link.embedded || !link.canReclaim || inBackground() || peer.connected || bank.pending) return
@@ -1061,7 +1062,12 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     @Synchronized internal fun returnTick(
         routeAvailable: (String) -> Boolean = ::hasRoute,
-        connect: (Host, () -> Boolean) -> Unit = { host, admit -> link.connect(host, reclaim = true) { admit() } },
+        connect: (Host, () -> Boolean) -> Unit = { host, admit ->
+            val route = preferredHomeRoute(host, allowSaved = false)?.takeIf {
+                it.address == host.address && it.port == host.port
+            }
+            link.connect(host, reclaim = true, network = route?.network) { admit() }
+        },
     ) {
         if (!canReturn()) return
         val h = returnHost() ?: return
@@ -1069,7 +1075,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (now < returnAfter) return
         val seen = discovery.found[h.id]?.takeIf { it.fp == h.fp }
         val embeddedNode = returnEmbeddedNode()
-        val home = if (embeddedNode == null) null else preferredHomeRoute(h)
+        val home = if (embeddedNode == null) null else preferredHomeRoute(h, allowSaved = false)
         if (embeddedNode != null) {
             if (h.embeddedNode != embeddedNode || link.isNetemPeer(h)) {
                 stopReturn()

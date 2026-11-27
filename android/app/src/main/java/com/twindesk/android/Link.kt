@@ -334,7 +334,8 @@ class Link(
     // blePort: through a Bluetooth pipe on 127.0.0.1 instead.
     // admit: reclaim only. Checked here, on the link thread, before this dial can replace a socket,
     // and again in hello(). The generation Core captured is already stale if Disconnect ran first.
-    fun connect(h: Host, usbPort: Int = 0, blePort: Int = 0, reclaim: Boolean = false, admit: (() -> Boolean)? = null) = run {
+    fun connect(h: Host, usbPort: Int = 0, blePort: Int = 0, reclaim: Boolean = false,
+                network: Network? = null, admit: (() -> Boolean)? = null) = run {
         val viaUsb = usbPort > 0
         val viaBle = blePort > 0
         val wantReclaim = reclaim && !viaUsb && !viaBle
@@ -361,7 +362,7 @@ class Link(
                 open("session", testRoute.address, NetemRoute.CONTROL_PORT, h.fp)
                 ws?.let { netemDial = NetemDial(testRoute, it, start) }
             }
-            else -> open("session", h.address, h.port, h.fp)
+            else -> open("session", h.address, h.port, h.fp, network = network)
         }
         if (wantReclaim) {
             val candidate = ws
@@ -714,12 +715,13 @@ class Link(
 
     // ---- socket ----
 
-    private fun open(m: String, address: String, port: Int, pinFp: String?, bridge: EmbeddedBridge? = null) {
+    private fun open(m: String, address: String, port: Int, pinFp: String?, bridge: EmbeddedBridge? = null,
+                     network: Network? = null) {
         mode = m
         nw = ""
         seenFp = pinFp.orEmpty()
         lastCode = null
-        ws = socket("wss://$address:$port", pinFp, bridge)
+        ws = socket("wss://$address:$port", pinFp, bridge, network)
     }
 
     // Where each socket goes ("address", port), for the session's other HTTPS calls (Mirror.kt).
@@ -1101,7 +1103,7 @@ class Link(
         }
         val ssl = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), null) }
         return OkHttpClient.Builder()
-            .socketFactory(bridge?.sockets ?: network?.socketFactory ?: NoDelaySockets)
+            .socketFactory(bridge?.sockets ?: network?.socketFactory?.let(::NoDelaySocketFactory) ?: noDelaySockets)
             .apply {
                 if (bridge != null || network != null) {
                     proxy(java.net.Proxy.NO_PROXY)
@@ -1927,8 +1929,9 @@ class Link(
 // The session's sockets without Nagle: input (a pen's 120–240 samples a second, pointer moves) goes
 // out at once instead of waiting for the computer to acknowledge what went before (40–200 ms with
 // its delayed ACKs). OkHttp leaves Nagle on; the TLS socket is layered over these.
-private object NoDelaySockets : javax.net.SocketFactory() {
-    private val base = javax.net.SocketFactory.getDefault()
+private val noDelaySockets = NoDelaySocketFactory(javax.net.SocketFactory.getDefault())
+
+private class NoDelaySocketFactory(private val base: javax.net.SocketFactory) : javax.net.SocketFactory() {
     private fun nd(s: java.net.Socket) = s.apply { runCatching { tcpNoDelay = true } }
     override fun createSocket() = nd(base.createSocket())
     override fun createSocket(host: String?, port: Int) = nd(base.createSocket(host, port))

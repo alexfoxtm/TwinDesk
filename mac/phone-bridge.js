@@ -602,6 +602,7 @@ class PhoneBridge extends EventEmitter {
   }
 
   async pair(code, where) {
+    if (this.embeddedAdb.active) return this._set('needsPair', 'Pair this Mac with the phone once on the same Wi-Fi: Wireless debugging › Pair device with pairing code.');
     const epoch = this._epoch;
     this.setup = true;
     code = String(code || '').replace(/\D/g, '');
@@ -617,7 +618,7 @@ class PhoneBridge extends EventEmitter {
       if (!p) return this._set('needsPair', 'Can’t see the phone’s pairing code screen. Keep it open, or type its address and port.');
       [address, port] = [this.adbAddress() || p.address, p.port];
     }
-    if (!this._live(epoch)) return;
+    if (!this._live(epoch) || this.embeddedAdb.active) return;
     this._set('connecting', 'Pairing…');
     const r = await this.adb.pair(address, port, code);
     if (!this._live(epoch)) return;
