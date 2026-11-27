@@ -193,7 +193,10 @@ class Adb(core: Core) : Feature(core) {
     private var connectWatch: ConnectWatch? = null
     private val retryConnectWatch = Runnable { sendState() }
     @Volatile private var embeddedGrant: EmbeddedAdbGrant? = null
+    @Volatile private var cellularAdb: CellularAdb? = null
+    private val retryCellularAdb = Runnable { sendState() }
     private val wifiWatchRegistered: Boolean
+    private val cellularWatchRegistered: Boolean
 
     // check() switched it on and waits 2 s to see if it stayed on. Android switches it straight back
     // off on a network it doesn't trust: starting over on that change would switch it on again at
@@ -275,6 +278,22 @@ class Adb(core: Core) : Feature(core) {
             }, connectHandler)
             true
         }.getOrDefault(false)
+        cellularWatchRegistered = runCatching {
+            val cm = connectivity ?: return@runCatching false
+            cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    if (core.link.embedded && cellularAdb?.network != embeddedCellularNetwork()) sendState()
+                }
+
+                override fun onLost(network: Network) {
+                    if (core.link.embedded && cellularAdb?.network == network) {
+                        cellularAdb = null
+                        sendState(startWatch = false)
+                    }
+                }
+            }, connectHandler)
+            true
+        }.getOrDefault(false)
     }
 
     private val unlocked get() = core.ctx.getSystemService(PowerManager::class.java)?.isInteractive != false &&
@@ -301,6 +320,59 @@ class Adb(core: Core) : Feature(core) {
 
     private val connectivity get() = core.ctx.getSystemService(ConnectivityManager::class.java)
     private data class Wifi(val network: Network, val addresses: Set<Inet4Address>)
+    private class CellularAdb(val owner: Link.TrustedRoute, val network: Network) {
+        @Volatile var ready = false
+        val checking = AtomicBoolean()
+        var retryAfter = 0L
+    }
+
+    private fun embeddedCellularNetwork(): Network? = runCatching {
+        if (!cellularWatchRegistered || !devOptions || Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) != 1) {
+            return null
+        }
+        val cm = connectivity ?: return null
+        val network = cm.activeNetwork ?: return null
+        val caps = cm.getNetworkCapabilities(network) ?: return null
+        network.takeIf {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+                !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        }
+    }.getOrNull()
+
+    private fun cellularAdbCurrent(candidate: CellularAdb): Boolean =
+        cellularAdb === candidate && core.link.embeddedMediaReady(candidate.owner)
+
+    private fun updateCellularAdb(route: Link.TrustedRoute?, startWatch: Boolean): CellularAdb? {
+        val network = route?.let { embeddedCellularNetwork() }
+        if (route == null || network == null || !core.link.embeddedMediaReady(route)) {
+            cellularAdb = null
+            connectHandler.removeCallbacks(retryCellularAdb)
+            return null
+        }
+        val candidate = cellularAdb?.takeIf {
+            it.owner.matches(route.marker, route.id, route.fp) && it.network == network
+        } ?: CellularAdb(route, network).also { cellularAdb = it }
+        if (startWatch && !candidate.ready && SystemClock.elapsedRealtime() >= candidate.retryAfter &&
+            candidate.checking.compareAndSet(false, true)) {
+            core.bg.execute {
+                val ready = cellularAdbCurrent(candidate) && embeddedCellularNetwork() == candidate.network &&
+                    offersCellularAdb()
+                connectHandler.post {
+                    candidate.checking.set(false)
+                    if (!cellularAdbCurrent(candidate)) return@post
+                    candidate.ready = ready && embeddedCellularNetwork() == candidate.network
+                    candidate.retryAfter = SystemClock.elapsedRealtime() + 10000L
+                    sendState(startWatch = false)
+                    connectHandler.removeCallbacks(retryCellularAdb)
+                    if (!candidate.ready && cellularAdbCurrent(candidate)) {
+                        connectHandler.postDelayed(retryCellularAdb, 10000L)
+                    }
+                }
+            }
+        }
+        return candidate.takeIf { it.ready }
+    }
 
     private fun physicalWifi(caps: NetworkCapabilities): Boolean =
         caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
@@ -368,9 +440,16 @@ class Adb(core: Core) : Feature(core) {
             "net" to onWifiNetwork, "hotspot" to isHotspotActive,
             "keepWirelessTls" to (core.link.host?.embeddedNode != null && core.embeddedNetwork.enabled))
         if (route != null) {
+            val cell = updateCellularAdb(route.takeIf { wifi == null }, startWatch)
             val grant = embeddedGrant?.takeIf { core.link.embeddedMediaReady(it.owner) }
-            core.link.sendFor(route, state.put("embeddedPort", grant?.endpoint?.port ?: 0))
-        } else if (!embedded) core.send(state)
+            if (cell != null) {
+                state.put("embeddedAdbMode", "cellular").put("embeddedPort", CELLULAR_ADB_PORT)
+            } else state.put("embeddedPort", grant?.endpoint?.port ?: 0)
+            core.link.sendFor(route, state)
+        } else {
+            updateCellularAdb(null, startWatch = false)
+            if (!embedded) core.send(state)
+        }
         core.changed()
     }
 
@@ -450,6 +529,10 @@ class Adb(core: Core) : Feature(core) {
         viewed = false
         camera = Camera()
         if (!core.link.connected || connectWatch?.marker !== core.link.sessionMarker()) stopConnectWatch()
+        if (!core.link.connected || cellularAdb?.owner?.marker !== core.link.sessionMarker()) {
+            cellularAdb = null
+            connectHandler.removeCallbacks(retryCellularAdb)
+        }
         main.post { check() }
         scheduleAutoOff()
     }
@@ -492,6 +575,16 @@ class Adb(core: Core) : Feature(core) {
     internal fun onMessage(t: String, m: JSONObject, route: Link.TrustedRoute?, fromEmbedded: Boolean): Boolean {
         if (fromEmbedded && t == Proto.T.ADB_ENABLE) return true
         if (t != "embedded.adb.open") return onMessage(t, m)
+        if (m.opt("mode") == "cellular") {
+            val cell = cellularAdb ?: return true
+            val key = embeddedAdbKey(m, CELLULAR_ADB_PORT, cell.owner, route, fromEmbedded, cellular = true)
+                ?: return true
+            val serving = { cell.ready && cellularAdbCurrent(cell) }
+            if (serving() && embeddedCellularNetwork() == cell.network) {
+                core.link.openEmbeddedAdb(cell.owner, key, cellularAdbEndpoint, cellular = true, serving = serving)
+            }
+            return true
+        }
         val grant = embeddedGrant ?: return true
         val key = embeddedAdbKey(m, grant.endpoint.port, grant.owner, route, fromEmbedded) ?: return true
         fun serving() = embeddedGrant === grant && core.link.embeddedMediaReady(grant.owner)
@@ -508,7 +601,7 @@ class Adb(core: Core) : Feature(core) {
                     return@execute
                 }
                 if (serving() && wirelessDebugging && devOptions && embeddedWifi() == grant.wifi) {
-                    core.link.openEmbeddedAdb(grant.owner, key, grant.endpoint, ::serving)
+                    core.link.openEmbeddedAdb(grant.owner, key, grant.endpoint, serving = ::serving)
                 }
             } finally {
                 grant.verifying.set(false)
@@ -772,19 +865,22 @@ internal fun embeddedAdbEndpoint(
 
 internal fun embeddedAdbKey(
     m: JSONObject, port: Int, owner: Link.TrustedRoute, route: Link.TrustedRoute?, fromEmbedded: Boolean,
+    cellular: Boolean = false,
 ): String? {
     if (!fromEmbedded || route == null || !owner.matches(route.marker, route.id, route.fp)) return null
+    if (cellular != (m.opt("mode") == "cellular") || (!cellular && m.has("mode"))) return null
     if ((m.opt("port") as? Int) != port) return null
     return (m.opt("key") as? String)?.takeIf(embeddedMediaKey::matches)
 }
 
-// Wireless adbd answers CNXN with STLS. Stop before TLS so this check never supplies a
-// key, starts pairing, or attempts authorization. A TCP connect alone also admits other services.
-internal fun offersAdbTls(endpoint: InetSocketAddress): Boolean = runCatching {
+internal const val CELLULAR_ADB_PORT = 5555
+internal val cellularAdbEndpoint = InetSocketAddress(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)), CELLULAR_ADB_PORT)
+
+// Stop after the first ADB header. The probe does not supply a signature or a new key.
+private fun adbResponseHeader(endpoint: InetSocketAddress): ByteBuffer? = runCatching {
     Socket().use { socket ->
         val version = 0x01000000
         val connect = 0x4e584e43 // CNXN
-        val tls = 0x534c5453 // STLS
         val banner = "host::\u0000".encodeToByteArray()
         val hello = ByteBuffer.allocate(24 + banner.size).order(ByteOrder.LITTLE_ENDIAN)
             .putInt(connect).putInt(version).putInt(4096).putInt(banner.size)
@@ -795,8 +891,18 @@ internal fun offersAdbTls(endpoint: InetSocketAddress): Boolean = runCatching {
         socket.getOutputStream().write(hello.array())
         val response = ByteArray(24)
         DataInputStream(socket.getInputStream()).readFully(response)
-        val header = ByteBuffer.wrap(response).order(ByteOrder.LITTLE_ENDIAN)
-        header.getInt(0) == tls && header.getInt(4) == version && header.getInt(8) == 0 &&
-            header.getInt(12) == 0 && header.getInt(16) == 0 && header.getInt(20) == tls.inv()
+        ByteBuffer.wrap(response).order(ByteOrder.LITTLE_ENDIAN).takeIf { it.getInt(20) == it.getInt(0).inv() }
     }
-}.getOrDefault(false)
+}.getOrNull()
+
+internal fun offersAdbTls(endpoint: InetSocketAddress): Boolean {
+    val header = adbResponseHeader(endpoint) ?: return false
+    return header.getInt(0) == 0x534c5453 && header.getInt(4) == 0x01000000 && header.getInt(8) == 0 &&
+        header.getInt(12) == 0 && header.getInt(16) == 0
+}
+
+internal fun offersCellularAdb(endpoint: InetSocketAddress = cellularAdbEndpoint): Boolean {
+    val header = adbResponseHeader(endpoint) ?: return false
+    // ADB AUTH TOKEN carries the device's 20-byte challenge.
+    return header.getInt(0) == 0x48545541 && header.getInt(4) == 1 && header.getInt(8) == 0 && header.getInt(12) == 20
+}

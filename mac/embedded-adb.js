@@ -23,7 +23,8 @@ class EmbeddedAdb {
   get wanted() {
     const b = this.bridge;
     const id = b.server.current?.deviceId;
-    return !!id && (b.need || (b.phone.adb?.wifi && (b.known.has(id) || b._rzApps())));
+    return !!id && (b.need || ((b.phone.adb?.wifi || this.grant?.mode === 'cellular') &&
+      (b.known.has(id) || b._rzApps())));
   }
 
   get usb() {
@@ -92,6 +93,9 @@ class EmbeddedAdb {
       return null;
     }
 
+    const cellular = grant.mode === 'cellular';
+    const connecting = cellular ? 'Connecting to the phone’s ADB over cellular…' : 'Connecting to the phone’s wireless debugging…';
+    if (cellular) b.canPair = false;
     let attempt = this.attempt;
     if (!attempt) {
       attempt = { grant, abort: new AbortController() };
@@ -99,18 +103,18 @@ class EmbeddedAdb {
       if (!tunnel) return null;
       attempt.tunnel = tunnel;
       this.attempt = attempt;
+      if (cellular && b.state !== 'error') b._set('connecting', connecting);
       const port = await tunnel.ready;
       if (!port || this.attempt !== attempt) return null;
       attempt.serial = `127.0.0.1:${port}`;
       const r = await b.adb.connectEmbedded(attempt.serial, attempt.abort.signal);
       if (this.grant !== grant || !this.wanted || this.usb) return this.close();
       const status = `${r.out}${r.err}`;
-      if (/authenticat|unauthorized/i.test(status)) return this._needsPair();
+      if (/authenticat|unauthorized/i.test(status)) return this._authorizationFailed(cellular);
       if (this.attempt !== attempt || !/connected to/i.test(status) || /failed|unable|cannot/i.test(status)) {
         this.close();
-        b.misses++;
-        b.canPair = b.misses >= 5;
-        b._set('connecting', b.canPair ? 'Can’t reach wireless debugging. Check it’s on, or pair again on the same Wi-Fi.' : 'Connecting to the phone’s wireless debugging…');
+        if (!cellular) b.canPair = ++b.misses >= 5;
+        b._set('connecting', b.canPair ? 'Can’t reach wireless debugging. Check it’s on, or pair again on the same Wi-Fi.' : connecting);
         return null;
       }
       attempt.deadline = Date.now() + 10000;
@@ -122,14 +126,18 @@ class EmbeddedAdb {
       b.misses = 0;
       return attempt.serial;
     }
-    if (device?.state === 'unauthorized') return this._needsPair();
+    if (device?.state === 'unauthorized') return this._authorizationFailed(cellular);
     if (Date.now() >= attempt.deadline) this.close();
-    b._set('connecting', 'Connecting to the phone’s wireless debugging…');
+    b._set('connecting', connecting);
     return null;
   }
 
-  _needsPair() {
+  _authorizationFailed(cellular) {
     this.close();
+    if (cellular) {
+      this.bridge._set('error', 'This Mac’s ADB key isn’t authorized for debugging over cellular.');
+      return null;
+    }
     this.bridge._known(false);
     this.bridge._set('needsPair', 'Pair this Mac with the phone once on the same Wi-Fi: Wireless debugging › Pair device with pairing code.');
     return null;

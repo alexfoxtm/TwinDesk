@@ -103,7 +103,7 @@ test('Direct and Mesh require the exact authorized loopback serial and cancel a 
   for (const Bridge of [PhoneBridge, MeshBridge]) {
     const h = harness('adb', Bridge);
     t.after(() => h.stop());
-    const { bridge, server, phoneHub } = h;
+    const { bridge, server, phoneHub, settings } = h;
     const ws = {};
     const owner = { ...phone('galaxy', '127.0.0.1'), ws, conn: ws, embeddedPeer: true };
     if (Bridge === MeshBridge) server.route = {};
@@ -136,6 +136,27 @@ test('Direct and Mesh require the exact authorized loopback serial and cancel a 
     assert.equal(bridge.serial, null);
     assert.deepEqual(disconnected, ['127.0.0.1:40123']);
 
+    Object.assign(settings.phone, { input: 'phone', mirror: 'native', soundVia: 'native' });
+    phoneHub.adb = { wifi: false, net: false };
+    grant.mode = 'cellular';
+    assert.equal(bridge.need, false);
+    assert.equal(bridge.embeddedAdb.wanted, false);
+    bridge.known.add(owner.deviceId);
+    await bridge._poll();
+    assert.equal(bridge.state, 'error');
+    assert.match(bridge.message, /ADB key isn’t authorized/);
+    assert.equal(bridge.canPair, false);
+    assert.equal(bridge.known.has(owner.deviceId), true);
+    assert.equal(bridge.serial, null);
+
+    h.setDevices(async () => [{ serial: '127.0.0.1:40123', state: 'device' }]);
+    bridge._checkInput = async (serial) => assert.equal(serial, '127.0.0.1:40123');
+    bridge._startControl = () => bridge._set('ready', '');
+    await bridge._poll();
+    assert.equal(bridge.state, 'ready');
+    assert.equal(bridge.serial, '127.0.0.1:40123');
+    bridge.embeddedAdb.close();
+
     let reportSignal;
     const started = new Promise((resolve) => { reportSignal = resolve; });
     bridge.adb.connectEmbedded = (_serial, signal) => new Promise((resolve) => {
@@ -149,8 +170,8 @@ test('Direct and Mesh require the exact authorized loopback serial and cancel a 
     assert.equal(signal.aborted, true);
     await connecting;
     assert.equal(bridge.serial, null);
-    assert.equal(closed, 2);
-    assert.deepEqual(disconnected, ['127.0.0.1:40123', '127.0.0.1:40123']);
+    assert.equal(closed, 4);
+    assert.deepEqual(disconnected, Array(4).fill('127.0.0.1:40123'));
     h.stop();
   }
 });

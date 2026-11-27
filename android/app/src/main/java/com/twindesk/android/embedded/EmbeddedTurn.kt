@@ -59,13 +59,33 @@ internal class EmbeddedTurn(
     }
 
     fun connectLocal(endpoint: InetSocketAddress, ended: () -> Unit) {
-        val socket = Socket()
-        admit(socket, waitForDrain = true, prepare = { socket.connect(endpoint, 3000) }, ended = ended)
+        connectLocal(endpoint, requireAdbAuthorization = false, ended)
     }
 
-    private fun admit(socket: Socket, waitForDrain: Boolean = false, prepare: () -> Unit = {}, ended: () -> Unit = {}) {
+    fun connectLocal(endpoint: InetSocketAddress, requireAdbAuthorization: Boolean, ended: () -> Unit) {
+        if (requireAdbAuthorization && endpoint.address != loopback) {
+            ended()
+            return
+        }
+        val socket = Socket()
+        admit(
+            socket,
+            waitForDrain = true,
+            adbAdmission = if (requireAdbAuthorization) AdbAdmission() else null,
+            prepare = { socket.connect(endpoint, 3000) },
+            ended = ended,
+        )
+    }
+
+    private fun admit(
+        socket: Socket,
+        waitForDrain: Boolean = false,
+        adbAdmission: AdbAdmission? = null,
+        prepare: () -> Unit = {},
+        ended: () -> Unit = {},
+    ) {
         val stream = synchronized(lock) {
-            if (active() && slots.tryAcquire()) Stream(socket).also { streams.add(it) } else null
+            if (active() && slots.tryAcquire()) Stream(socket, adbAdmission).also { streams.add(it) } else null
         }
         if (stream == null) {
             runCatching { socket.close() }
@@ -101,7 +121,8 @@ internal class EmbeddedTurn(
         for (stream in children) stream.close()
     }
 
-    private inner class Stream(private val local: Socket) : WebSocketListener(), Closeable {
+    private inner class Stream(private val local: Socket, private val adbAdmission: AdbAdmission?) :
+        WebSocketListener(), Closeable {
         private val opened = CountDownLatch(1)
         @Volatile private var remote: WebSocket? = null
 
@@ -116,16 +137,35 @@ internal class EmbeddedTurn(
                 local.tcpNoDelay = true
                 val input = local.getInputStream()
                 val frame = ByteArray(MAX_FRAME)
-                while (allowed()) {
-                    val size = input.read(frame)
+                fun waitForQueue(queueLimit: Long) {
                     // File bytes must arrive intact. Pause this worker's local reads so
                     // backpressure reaches WebDAV, while keeping the TURN policy bounded.
-                    val queueLimit = if (size > 0) MAX_QUEUE - size else 0L
                     while (allowed() && child.socket.queueSize() > queueLimit) {
-                        if (!waitForDrain) return
+                        if (!waitForDrain) throw IOException("TURN WebSocket queue full")
+                        adbAdmission?.readTimeoutMillis()
                         Thread.sleep(10)
                     }
-                    if (size <= 0 || !allowed() || !child.socket.send(frame.toByteString(0, size))) return
+                }
+                fun forward(bytes: ByteArray, offset: Int, size: Int) {
+                    waitForQueue(MAX_QUEUE - size)
+                    if (!allowed() || !child.socket.send(bytes.toByteString(offset, size))) {
+                        throw IOException("TURN stream closed")
+                    }
+                }
+                var readTimeout = 0
+                while (allowed()) {
+                    val timeout = adbAdmission?.readTimeoutMillis() ?: 0
+                    if (timeout != readTimeout) {
+                        local.soTimeout = timeout
+                        readTimeout = timeout
+                    }
+                    val size = input.read(frame)
+                    if (size <= 0) {
+                        waitForQueue(0)
+                        return
+                    }
+                    if (adbAdmission == null) forward(frame, 0, size)
+                    else adbAdmission.relay(AdbAdmission.Source.DEVICE, frame, size, ::forward)
                 }
             } catch (_: IOException) {
                 // Either endpoint closed.
@@ -142,7 +182,15 @@ internal class EmbeddedTurn(
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             // The socket's send buffer provides backpressure on this WebSocket's reader.
             if (!allowed() || bytes.size !in 1..MAX_FRAME ||
-                runCatching { local.getOutputStream().write(bytes.toByteArray()) }.isFailure) close()
+                runCatching {
+                    val output = local.getOutputStream()
+                    val frame = bytes.toByteArray()
+                    if (adbAdmission == null) output.write(frame)
+                    else adbAdmission.relay(AdbAdmission.Source.HOST, frame, frame.size) { data, offset, size ->
+                        if (!allowed()) throw IOException("TURN stream closed")
+                        output.write(data, offset, size)
+                    }
+                }.isFailure) close()
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) = close()

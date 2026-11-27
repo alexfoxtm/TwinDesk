@@ -906,15 +906,20 @@ class Link(
         openEmbeddedReverse(owner, key, endpoint, serving, adb = false)
     }
 
-    internal fun openEmbeddedAdb(owner: TrustedRoute, key: String, endpoint: InetSocketAddress, serving: () -> Boolean) {
-        val address = endpoint.address ?: return
-        if (endpoint.port !in 1..65535 || endpoint.port == 5555 ||
-            address.isAnyLocalAddress || address.isLoopbackAddress || address.isMulticastAddress) return
-        openEmbeddedReverse(owner, key, endpoint, serving, adb = true)
+    internal fun openEmbeddedAdb(owner: TrustedRoute, key: String, endpoint: InetSocketAddress,
+                                 cellular: Boolean = false, serving: () -> Boolean) {
+        if (cellular) {
+            if (endpoint != cellularAdbEndpoint) return
+        } else {
+            val address = endpoint.address ?: return
+            if (endpoint.port !in 1..65535 || endpoint.port == CELLULAR_ADB_PORT ||
+                address.isAnyLocalAddress || address.isLoopbackAddress || address.isMulticastAddress) return
+        }
+        openEmbeddedReverse(owner, key, endpoint, serving, adb = true, requireAdbAuthorization = cellular)
     }
 
     private fun openEmbeddedReverse(owner: TrustedRoute, key: String, endpoint: InetSocketAddress,
-                                    serving: () -> Boolean, adb: Boolean) {
+                                    serving: () -> Boolean, adb: Boolean, requireAdbAuthorization: Boolean = false) {
         val dial = embeddedDial ?: return
         val node = dial.node
         fun current() = embeddedDial === dial && !dial.cancelled && accepts(owner) &&
@@ -935,7 +940,7 @@ class Link(
         }
         val guard = if (adb) exec.scheduleWithFixedDelay({ if (!current()) child.close() },
             250, 250, TimeUnit.MILLISECONDS) else null
-        child.connectLocal(endpoint) {
+        child.connectLocal(endpoint, requireAdbAuthorization) {
             guard?.cancel(false)
             synchronized(children) { children.remove(key, child) }
             child.close()

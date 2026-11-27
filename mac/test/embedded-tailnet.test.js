@@ -170,11 +170,14 @@ test('embedded control and TURN require a current engine witness and TURN follow
   await t.test('ADB uses a single same-node child and closes it with the port grant', async () => {
     const owner = server.current.ws;
     const state = { t: 'adb.state', wifi: true, net: true, embeddedPort: 37123 };
+    const sendState = async (report) => {
+      const received = once(server, 'message');
+      ws.send(JSON.stringify(report));
+      await received;
+    };
     server.emit('message', state, server.current, {});
     assert.equal(server.embeddedAdbGrant(owner), null);
-    const granted = once(server, 'message');
-    ws.send(JSON.stringify(state));
-    await granted;
+    await sendState(state);
     const grant = server.embeddedAdbGrant(owner);
     assert.equal(grant.port, state.embeddedPort);
     let closed = 0;
@@ -208,11 +211,39 @@ test('embedded control and TURN require a current engine witness and TURN follow
     tcp.write(payload);
     assert.deepEqual(await echoed, payload);
     const retired = Promise.all([once(tcp, 'close'), once(child, 'close')]);
-    ws.send(JSON.stringify({ ...state, embeddedPort: 37124 }));
+    const cellular = { t: 'adb.state', wifi: false, net: false, embeddedPort: 5555, embeddedAdbMode: 'cellular' };
+    server.emit('message', cellular, server.current, {});
+    assert.equal(server.embeddedAdbGrant(owner), grant);
+    await sendState(cellular);
     await retired;
     assert.equal(closed, 1);
-    assert.equal(server.embeddedAdbGrant(owner).port, 37124);
     assert.equal(grant.open(() => true, assert.fail), null);
+
+    const cellularGrant = server.embeddedAdbGrant(owner);
+    assert.equal(cellularGrant.port, 5555);
+    assert.equal(cellularGrant.mode, 'cellular');
+    await sendState(cellular);
+    assert.equal(server.embeddedAdbGrant(owner), cellularGrant);
+    const cellularTunnel = cellularGrant.open(() => true, () => { closed++; });
+    const cellularTicketMessage = once(ws, 'message');
+    const cellularTcp = net.connect({ host: '127.0.0.1', port: await cellularTunnel.ready });
+    const cellularTicket = JSON.parse((await cellularTicketMessage)[0]);
+    assert.match(cellularTicket.key, /^[0-9a-f]{64}$/);
+    assert.deepEqual(cellularTicket, { t: 'embedded.adb.open', key: cellularTicket.key, port: 5555, mode: 'cellular' });
+
+    const cellularRetired = once(cellularTcp, 'close');
+    for (const invalid of [
+      { ...state, embeddedPort: 5555 },
+      { ...cellular, embeddedPort: '5555' },
+      { ...state, embeddedAdbMode: 'cellular' },
+      { ...state, embeddedAdbMode: null },
+    ]) {
+      await sendState(invalid);
+      assert.equal(server.embeddedAdbGrant(owner), null);
+    }
+    await cellularRetired;
+    assert.equal(closed, 2);
+    await assert.rejects(once(dial('/embedded/adb', { 'X-TwinDesk-Adb': cellularTicket.key }), 'open'));
   });
 
   const closing = Promise.all([once(ws, 'close'), once(relay, 'close'), once(reverse, 'close')]);

@@ -32,6 +32,9 @@ class EmbeddedAdbGrantTest {
         val sameRoute = Link.TrustedRoute(owner.marker, owner.id, owner.fp)
         assertEquals(key, embeddedAdbKey(request(), port, owner, sameRoute, true))
         assertTrue(probe(replyCommand = 0x534c5453)) // STLS
+        val cellular = request(CELLULAR_ADB_PORT).put("mode", "cellular")
+        assertEquals(key, embeddedAdbKey(cellular, CELLULAR_ADB_PORT, owner, sameRoute, true, cellular = true))
+        assertTrue(probe(replyCommand = 0x48545541, cellular = true)) // AUTH TOKEN
     }
 
     @Test
@@ -46,10 +49,13 @@ class EmbeddedAdbGrantTest {
         assertNull(embeddedAdbKey(request(port + 1), port, owner, owner, true))
         assertNull(embeddedAdbKey(request(port.toString()), port, owner, owner, true))
         assertNull(embeddedAdbKey(request(key = "a".repeat(63)), port, owner, owner, true))
+        assertNull(embeddedAdbKey(request(CELLULAR_ADB_PORT), CELLULAR_ADB_PORT, owner, owner, true, cellular = true))
+        assertNull(embeddedAdbKey(request().put("mode", "cellular"), port, owner, owner, true))
         assertFalse(probe(replyCommand = 0x48545541)) // AUTH
+        assertFalse(probe(replyCommand = 0x4e584e43, cellular = true)) // an auth-disabled CNXN
     }
 
-    private fun probe(replyCommand: Int): Boolean {
+    private fun probe(replyCommand: Int, cellular: Boolean = false): Boolean {
         val loopback = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         ServerSocket(0, 1, loopback).use { server ->
             server.soTimeout = 3000
@@ -63,14 +69,17 @@ class EmbeddedAdbGrantTest {
                     assertEquals(7, connect.getInt(12))
                     val banner = ByteArray(7).also(input::readFully)
                     assertEquals("host::\u0000", banner.decodeToString())
+                    val auth = cellular && replyCommand == 0x48545541
                     val reply = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
-                        .putInt(replyCommand).putInt(0x01000000).putInt(0).putInt(0).putInt(0).putInt(replyCommand.inv())
+                        .putInt(replyCommand).putInt(if (auth) 1 else 0x01000000).putInt(0).putInt(if (auth) 20 else 0)
+                        .putInt(0).putInt(replyCommand.inv())
                     client.getOutputStream().write(reply.array())
                     assertEquals(-1, input.read()) // The check closes before sending TLS or credentials.
                 }
             }
             thread(isDaemon = true) { checkExchange.run() }
-            val accepted = offersAdbTls(InetSocketAddress(loopback, server.localPort))
+            val endpoint = InetSocketAddress(loopback, server.localPort)
+            val accepted = if (cellular) offersCellularAdb(endpoint) else offersAdbTls(endpoint)
             checkExchange.get(4, TimeUnit.SECONDS)
             return accepted
         }

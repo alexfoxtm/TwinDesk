@@ -12,6 +12,8 @@ After returning to Wi-Fi, Android verifies the paired Mac's certificate over its
 
 An already-authorized Mac can use Android Wireless debugging through the embedded route while the phone has Wi-Fi and its current wireless ADB listener is available. Android's own debugging approval still applies, and Stop or a connection change closes the tunnel. TwinDesk preserves the wireless TLS listener when the Galaxy returns to its LAN connection. Initial Wireless debugging pairing remains on the same Wi-Fi.
 
+On cellular, TwinDesk can use an already-running authenticated ADB listener at the phone's loopback address. It forwards the Android authorization handshake and accepts only an existing Mac key. TwinDesk does not enable the listener or enroll keys over this route.
+
 Updated Macs and Android phones carry screen and audio through a per-session TURN relay. Native Android mirroring and shared folders in both directions also use the embedded route. These connections require a current pairing session and keep the existing screen and folder permissions. Ordinary file transfer and Photo Save As use the authenticated session. Automatic Direct-mode photo backup over the embedded route requires an unmetered connection.
 
 Direct mode can use the Android lock viewer over the embedded route when the Mac's existing Screen Sharing and remote-view permissions allow it. USB and Wi-Fi Direct require their underlying physical links. Separate fast-file endpoints continue to use the normal connection. Local and standalone Tailscale routes retain their existing behavior.

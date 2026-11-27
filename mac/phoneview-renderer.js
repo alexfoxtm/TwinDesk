@@ -284,9 +284,10 @@
     if (retry && 'retryIpad' in s) retry.hidden = !s.retryIpad;
     if (s.via) {
       const el = document.getElementById('via');
-      I.literal(el, s.via === 'usb' ? 'USB' : 'Wi-Fi');
+      const tunneled = s.via === 'embedded';
+      I.literal(el, tunneled ? 'TwinDesk Network' : s.via === 'usb' ? 'USB' : 'Wi-Fi');
       el.className = s.via;
-      el.setAttribute('data-i18n-title', s.via === 'usb' ? 'Through the USB cable' : 'Through wireless debugging');
+      el.setAttribute('data-i18n-title', tunneled ? 'TwinDesk Network' : s.via === 'usb' ? 'Through the USB cable' : 'Through wireless debugging');
       I.translate(el);
       el.hidden = false;
     }

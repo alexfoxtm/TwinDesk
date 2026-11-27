@@ -575,7 +575,8 @@ class PhoneViews extends EventEmitter {
       : new Session(adb, serial, dark ? { ...opts, powerOn: false, keepActive: true } : opts);
     const current = () => this.views.get(v.id) === v && v.session === s && !v.ending && !s.closed
       && this.bridge.serial === serial && !v.win.isDestroyed();
-    const via = v.native || v.usb ? null : this.bridge.via;
+    const tunneledAdb = serial && this.bridge.embeddedAdb?.attempt?.serial === serial;
+    const via = v.native || v.usb ? null : tunneledAdb ? 'embedded' : this.bridge.via;
     if (v.native && !v.usb) setImmediate(() => this.bridge._sound()); // its sound, when it plays it
     if (v.native) s.on('waiting', () => {
       const errorKey = v.ios?.pad ? 'On the iPad tap Share Screen, then Start Broadcast with TwinDesk selected' : 'Tap Start on the phone to share its screen';

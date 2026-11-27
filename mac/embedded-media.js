@@ -44,14 +44,16 @@ class EmbeddedMedia {
 
   adbState(ctx, owner, msg) {
     if (!ctx.embeddedPeer || ctx.os !== OS.ANDROID || !this._owns(ctx, owner)) return;
-    const port = msg.embeddedPort;
-    const granted = msg.wifi === true && msg.devOptions !== false && msg.net !== false &&
+    const { embeddedPort: port, embeddedAdbMode: mode } = msg;
+    const cellular = mode === 'cellular' && port === 5555;
+    const wifi = mode === undefined && msg.wifi === true && msg.net !== false &&
       Number.isInteger(port) && port > 0 && port < 65536 && port !== 5555;
+    const granted = msg.devOptions !== false && (cellular || wifi);
     const old = this.adbGrants.get(ctx);
-    if (granted && old?.owner === owner && old.port === port && old.peer === ctx.embeddedPeer) return;
+    if (granted && old?.owner === owner && old.port === port && old.mode === mode && old.peer === ctx.embeddedPeer) return;
     this.adbGrants.delete(ctx);
     if (granted) {
-      const grant = { ctx, owner, peer: ctx.embeddedPeer, port };
+      const grant = { ctx, owner, peer: ctx.embeddedPeer, port, mode };
       grant.open = (current, onClose) => this._openAdb(grant, current, onClose);
       this.adbGrants.set(ctx, grant);
     }
@@ -65,7 +67,7 @@ class EmbeddedMedia {
   }
 
   _openAdb(grant, current, onClose) {
-    const { ctx, owner, port } = grant;
+    const { ctx, owner, port, mode } = grant;
     if (this.adbGrant(owner) !== grant || !current() || this.adbTunnels.has(ctx) || this.adbTunnels.size >= MAX_SESSIONS) return null;
     let resolvePort;
     const ready = new Promise((resolve) => { resolvePort = resolve; });
@@ -82,6 +84,7 @@ class EmbeddedMedia {
       timer = setTimeout(close, 9000);
       timer.unref();
       const msg = { t: 'embedded.adb.open', key: tunnel.key, port };
+      if (mode === 'cellular') msg.mode = mode;
       try {
         if ((this.server.socketFor && this.server.socketFor(ctx, msg) !== owner) || !this.server.send(ctx, msg)) close();
       } catch { close(); }
