@@ -136,7 +136,10 @@ class Link(
     }
 
     @Volatile private var embeddedDial: EmbeddedDial? = null
+    @Volatile private var rejectedEmbeddedPair: Host? = null
     val embedded get() = embeddedDial != null
+
+    internal fun embeddedPairRejected(pair: Host) = rejectedEmbeddedPair?.sameEmbeddedPair(pair) == true
 
     private var mode = "" // session | pair
     private var nw = ""
@@ -1095,6 +1098,7 @@ class Link(
                 ws?.cancel()
                 return
             }
+            if (embeddedPairRejected(h)) rejectedEmbeddedPair = null
             host = saved
             saved
         } else {
@@ -1336,8 +1340,11 @@ class Link(
         val code = m.optString("code")
         lastCode = code
         if (mode == "pair") return pairFailed(pairErrors[code] ?: tr("Pairing failed ({code}).", "code" to code))
+        if (embedded && state == "connecting" && helloSent && code == Proto.E.BAD_TOKEN) {
+            rejectedEmbeddedPair = host?.copy()
+        }
         message = when (code) {
-            Proto.E.BAD_TOKEN -> if (embedded) tr("{name} didn’t confirm this pairing. Use Connect to try again.", "name" to (host?.name ?: tr("The computer")))
+            Proto.E.BAD_TOKEN -> if (embedded) tr("The Mac didn’t accept this TwinDesk Network pairing. Scan a fresh pairing code.")
                 else tr("{name} forgot this phone. Pair again.", "name" to (host?.name ?: tr("The computer")))
             Proto.E.BUSY -> m.optString("message").ifEmpty { tr("Busy with another device") }
             Proto.E.REPLACED -> m.optString("message").ifEmpty { tr("Another device connected") }

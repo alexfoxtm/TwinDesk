@@ -439,7 +439,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
             // always offers its own route for the selected Mac.
             val legacy = saved.relay != null ||
                 (tailscale && Tailnet.address(saved)?.let { it != saved.address } == true && Tailnet.onIt())
-            if (!legacy && !isNear(saved.id) && connectEmbedded(saved)) return
+            if (saved.address.isBlank() && !legacy && !isNear(saved.id) && connectEmbedded(saved)) return
         }
         stopReturn()
         connect(h, false)
@@ -491,8 +491,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (peer.connected || !embeddedNetwork.online(offer.node) || NetemRoute.configured?.peer == offer.id) return false
         val previous = store.hosts().find { it.id == offer.id }
         if (previous?.let { it.os != "mac" || it.fp != offer.pin || link.isNetemPeer(it) } == true) return false
-        if (previous != null) {
-            if (previous.embeddedNode?.let { it != offer.node } == true) return false
+        if (previous != null && (previous.embeddedNode == null || previous.embeddedNode == offer.node) &&
+            !link.embeddedPairRejected(previous)) {
             return connectSavedEmbedded(previous, listOf(offer.node), fromQr = true)
         }
         stopReturn()
