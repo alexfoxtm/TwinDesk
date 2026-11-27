@@ -53,6 +53,7 @@ class EmbeddedMedia {
       ctx.embeddedMediaReady = () => this._current(session);
       ctx.openEmbeddedDav = (share, callback) => this._openDav(session, share, callback);
       if (!this.server.send(ctx, { t: 'embedded.media', key: session.key })) this.close(ctx);
+      else this.server.lockviewRefresh?.();
     } catch {
       this.close(ctx);
     }

@@ -5,7 +5,7 @@
 const net = require('net');
 const os = require('os');
 const { execFile } = require('child_process');
-const { LockTunnel } = require('../shared/locktunnel');
+const { LockTunnel, lockTransport } = require('../shared/locktunnel');
 const Quiet = require('../shared/quiet');
 const P = require('../shared/protocol');
 const DAEMON = '/System/Library/CoreServices/RemoteManagement/screensharingd.bundle/Contents/MacOS/screensharingd';
@@ -268,7 +268,8 @@ function startLockView({ server, powerMonitor, remoteAllowed, readLock = readLoc
   const transport = () => { cancel('session-ended'); sent = ''; state(); };
   const message = async (msg, ctx, source) => {
     if (msg.t !== P.T.LOCK_OPEN && msg.t !== P.T.LOCK_END && msg.t !== P.T.LOCK_READY && msg.t !== P.T.LOCK_KEEP) return;
-    if (ctx !== server.current || source !== ctx.ws || source.transport === 'ble' || !ctx.authed || ctx.released || ctx.os !== P.OS.ANDROID || ctx.transport !== 'ip') return;
+    if (ctx !== server.current || source !== ctx.ws || source.transport === 'ble' || !ctx.authed || ctx.released ||
+        ctx.os !== P.OS.ANDROID || !lockTransport(ctx)) return;
     const id = typeof msg.request === 'string' && /^[a-f0-9]{32}$/.test(msg.request) ? msg.request : undefined;
     if (msg.t === P.T.LOCK_READY) { if (id && id === request?.id) tunnel.markReady(ctx, id); return; }
     if (msg.t === P.T.LOCK_KEEP) { if (id && id === request?.id) tunnel.keep(ctx, id); return; }

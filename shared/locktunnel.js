@@ -10,6 +10,8 @@ const digest = (value) => crypto.createHash('sha256').update(value).digest();
 const address = (value) => String(value || '').replace(/^::ffff:/, '');
 const MAX_CHUNK = 1024 * 1024;
 const MAX_BUFFER = 4 * 1024 * 1024;
+const lockTransport = (ctx) => ctx?.transport === 'ip' ||
+  (ctx?.transport === 'embedded-tailnet' && !!ctx.embeddedPeer && ctx.embeddedMediaReady?.() === true);
 
 // Only the RFB version and security negotiation are inspected. Credentials and framebuffer data
 // remain opaque. Reject pipelined bytes until the server has offered, and the client selected, ARD.
@@ -65,13 +67,14 @@ class LockTunnel {
 
   eligible(ctx) {
     return !this.closed && !!ctx && this.current() === ctx && ctx.authed === true && !ctx.released &&
-      ctx.os === P.OS.ANDROID && ctx.transport === 'ip' && typeof ctx.resumeKey === 'string' && !!ctx.resumeKey &&
+      ctx.os === P.OS.ANDROID && lockTransport(ctx) && typeof ctx.resumeKey === 'string' && !!ctx.resumeKey &&
       ctx.ws && ctx.ws.readyState === ctx.ws.OPEN && this.allowed();
   }
 
   valid(binding) {
     return this.eligible(binding.ctx) && binding.ctx.ws === binding.ws &&
-      binding.ctx.resumeKey === binding.key && address(binding.ctx.address) === binding.address;
+      binding.ctx.resumeKey === binding.key && address(binding.ctx.address) === binding.address &&
+      (binding.ctx.embeddedPeer || null) === binding.embeddedPeer;
   }
 
   issue(ctx, request) {
@@ -79,17 +82,18 @@ class LockTunnel {
     const ticket = crypto.randomBytes(32).toString('base64url');
     this.lastIssued = this.now();
     this.pending = { hash: digest(ticket), until: this.now() + P.LOCK_TICKET_MS, request,
-      ctx, ws: ctx.ws, key: ctx.resumeKey, address: address(ctx.address) };
+      ctx, ws: ctx.ws, key: ctx.resumeKey, address: address(ctx.address), embeddedPeer: ctx.embeddedPeer || null };
     return { ticket, request, path: P.LOCK_PATH, expiresIn: P.LOCK_TICKET_MS };
   }
 
-  accept(ws, req) {
+  accept(ws, req, embeddedPeer = null) {
     const ticket = req.headers[P.LOCK_TICKET_HEADER];
     const binding = this.pending;
     // No URL credentials, cookies, destination, or forwarded address is trusted.
     if (req.url !== P.LOCK_PATH || typeof ticket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(ticket) ||
         !binding || this.active || this.now() >= binding.until || !this.valid(binding) ||
-        address(req.socket.remoteAddress) !== binding.address || !crypto.timingSafeEqual(digest(ticket), binding.hash)) {
+        address(req.socket.remoteAddress) !== binding.address || embeddedPeer !== binding.embeddedPeer ||
+        !crypto.timingSafeEqual(digest(ticket), binding.hash)) {
       ws.on('error', () => {});
       ws.close(1008, 'Unavailable');
       const timer = setTimeout(() => ws.terminate(), 1000);
@@ -230,4 +234,4 @@ class LockTunnel {
   }
 }
 
-module.exports = { LockTunnel, ArdGate };
+module.exports = { LockTunnel, ArdGate, lockTransport };

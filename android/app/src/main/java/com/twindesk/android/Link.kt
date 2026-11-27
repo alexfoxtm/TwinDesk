@@ -157,6 +157,7 @@ class Link(
 
     @Volatile private var embeddedDial: EmbeddedDial? = null
     @Volatile private var embeddedTurn: EmbeddedTurn? = null
+    private val lockTunnel = AtomicReference<LockTunnel?>()
     @Volatile private var rejectedEmbeddedPair: Host? = null
     val embedded get() = embeddedDial != null
 
@@ -698,6 +699,7 @@ class Link(
         isEmbeddedRoute(route) && (embeddedTurn?.port ?: 0) > 0
 
     internal fun acceptsPostedMessage(source: WebSocket, fromEmbedded: Boolean, m: JSONObject): Boolean {
+        if (m.optString("t").startsWith("lock.") && !ownsVideoSession(source)) return false
         if (!fromEmbedded && !embedded) return true
         return fromEmbedded && isEmbeddedSource(source) && !parting && connected &&
             embeddedMessageAllowed(m, outgoing = false)
@@ -723,6 +725,11 @@ class Link(
     }
 
     internal companion object {
+        private const val LOCK_TICKET_RECEIVED_AT = "lockTicketReceivedAt"
+        private val embeddedLockDialSlot = Semaphore(1)
+        private val lockWorkers = Executors.newCachedThreadPool { work ->
+            Thread(work, "td-lock-view").apply { isDaemon = true }
+        }
         private val embeddedMirrorSlots = Semaphore(2)
         private val embeddedFolderSlots = Semaphore(2)
         private val embeddedFolderPath = Regex("/[0-9a-f]{32}/(list|stat|file|mkdir|delete|rename)\\?p=[^#\\r\\n]*")
@@ -741,6 +748,7 @@ class Link(
     // must not re-arm that intent after Stop, Forget or another explicit connection choice.
     internal fun invalidateReturn() {
         parting = true
+        lockTunnel.get()?.cancel()
         embeddedTurn?.close()
         embeddedDial?.mirrorCall?.getAndSet(null)?.cancel()
         embeddedDial?.closeFolderCalls()
@@ -860,20 +868,113 @@ class Link(
         return client(fp).newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).writeTimeout(0, TimeUnit.MILLISECONDS).build()
     }
 
-    internal fun lockSessionCurrent(marker: Any?): Boolean = connected && !parting && !ble && !embedded && marker != null && ws === marker && host?.os == "mac"
+    internal fun lockSessionCurrent(marker: Any?): Boolean {
+        val pairedHost = host ?: return false
+        if (!ownsVideoSession(marker) || ble || pairedHost.os != "mac") return false
+        val dial = embeddedDial ?: return true
+        return !dial.cancelled && dial.node == pairedHost.embeddedNode
+    }
+
+    internal fun lockTicketDeadline(m: JSONObject): Long? {
+        val expiresIn = m.optLong("expiresIn")
+        val receivedAt = m.optLong(LOCK_TICKET_RECEIVED_AT, -1)
+        return if (receivedAt >= 0 && expiresIn in 1..10000) receivedAt + expiresIn else null
+    }
+
+    internal inner class LockTunnel(
+        val marker: Any,
+        private val gate: LockReadGate,
+        private val routeCurrent: () -> Boolean,
+    ) {
+        @Volatile private var cancelled = false
+        private var closeTransport: (() -> Unit)? = null
+
+        fun current() = !cancelled && routeCurrent()
+
+        @Synchronized
+        fun install(close: () -> Unit): Boolean {
+            if (!current()) return false
+            closeTransport = close
+            return true
+        }
+
+        fun cancel() {
+            val close = synchronized(this) {
+                if (cancelled) return
+                cancelled = true
+                closeTransport.also { closeTransport = null }
+            }
+            gate.cancel()
+            lockTunnel.compareAndSet(this, null)
+            close?.invoke()
+        }
+    }
 
     // Separate RFB channel on the authenticated socket's exact endpoint and certificate.
-    // A ticket never selects a destination, and BLE is deliberately unsupported.
-    internal fun openLockTunnel(ticket: String, marker: Any?, listener: WebSocketListener): WebSocket? {
+    internal fun openLockTunnel(ticket: String, marker: Any?, deadline: Long, gate: LockReadGate,
+                                listener: WebSocketListener, failed: () -> Unit): LockTunnel? {
         val source = ws ?: return null
         val pairedHost = host ?: return null
         if (source !== marker || !lockSessionCurrent(marker)) return null
         val fp = pairedHost.fp.takeIf { it.isNotBlank() } ?: return null
-        val (address, port) = endOf[source] ?: return null
-        if (ws !== source || host !== pairedHost || !lockSessionCurrent(marker)) return null
-        val hostname = if (address.contains(':')) "[$address]" else address
-        return client(fp).newWebSocket(Request.Builder().url("wss://$hostname:$port/lockview")
-            .header("X-TwinDesk-Lock-Ticket", ticket).build(), listener)
+        val dial = embeddedDial
+        val node = dial?.node
+        val endpoint = if (dial == null) endOf[source] ?: return null else null
+        val tunnel = LockTunnel(source, gate) {
+            lockSessionCurrent(source) && host === pairedHost && embeddedDial === dial &&
+                (dial == null || (dial.node == node && pairedHost.embeddedNode == node))
+        }
+        fun canOpen() = tunnel.current() && SystemClock.elapsedRealtime() < deadline
+        if (!canOpen() || !lockTunnel.compareAndSet(null, tunnel)) return null
+        if (dial != null && !embeddedLockDialSlot.tryAcquire()) {
+            tunnel.cancel()
+            return null
+        }
+        lockWorkers.execute {
+            var bridge: EmbeddedBridge? = null
+            var installed = false
+            try {
+                if (!canOpen()) return@execute
+                if (dial != null) bridge = dial.network.dial(node ?: return@execute) ?: return@execute
+                if (!canOpen()) return@execute
+                val (address, port) = bridge?.let { "127.0.0.1" to it.port } ?: endpoint ?: return@execute
+                val hostname = if (address.contains(':')) "[$address]" else address
+                val request = Request.Builder().url("wss://$hostname:$port/lockview")
+                    .header("X-TwinDesk-Lock-Ticket", ticket).build()
+                val builder = client(fp, bridge).newBuilder()
+                    .retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
+                    .addInterceptor { chain ->
+                        if (!canOpen()) throw IOException("The lock view attempt ended")
+                        chain.proceed(chain.request())
+                    }
+                val remaining = deadline - SystemClock.elapsedRealtime()
+                if (remaining <= 0 || !tunnel.current()) return@execute
+                // OkHttp clears its call timeout when the WebSocket upgrades.
+                val childSocket = builder.callTimeout(remaining, TimeUnit.MILLISECONDS).build()
+                    .newWebSocket(request, listener)
+                val childBridge = bridge
+                installed = tunnel.install {
+                    childSocket.cancel()
+                    if (dial != null && childBridge != null) {
+                        lockWorkers.execute { dial.network.releaseNow(childBridge) }
+                    }
+                }
+                if (!installed) childSocket.cancel()
+            } catch (_: Exception) {
+                // Setup failed before a WebSocket listener could report it.
+            } finally {
+                try {
+                    if (!installed) {
+                        tunnel.cancel()
+                        failed()
+                        if (dial != null) bridge?.let(dial.network::releaseNow)
+                    }
+                } finally {
+                    if (dial != null) embeddedLockDialSlot.release()
+                }
+            }
+        }
+        return tunnel
     }
 
     // Fast files for the next file: the computer gave a token, and the session is on the network, a
@@ -967,6 +1068,7 @@ class Link(
         alt = ws
         altBle = ble
         ws = w
+        lockTunnel.get()?.takeIf { it.marker === alt }?.cancel()
         ble = false
         movedAt = System.currentTimeMillis()
         endOf[w]?.let { (address, port) ->
@@ -1001,8 +1103,10 @@ class Link(
     // The session's socket closed: carry on through the other one if it's still there.
     private fun fallBack(): Boolean {
         val a = alt ?: return false
+        val previous = ws
         alt = null
         ws = a
+        lockTunnel.get()?.takeIf { it.marker === previous }?.cancel()
         ble = altBle
         Log.i("TwinDesk", "session back on ${if (ble) "Bluetooth" else "the network"}")
         events.onChange()
@@ -1013,13 +1117,16 @@ class Link(
         override fun onOpen(webSocket: WebSocket, response: Response) = run {
             if (webSocket === ws) onOpen() else if (webSocket === pending) onPendingOpen(webSocket)
         }
-        override fun onMessage(webSocket: WebSocket, text: String) = run {
-            lastRxOf[webSocket] = System.currentTimeMillis()
-            if (webSocket === pending) {
-                val m = runCatching { JSONObject(text) }.getOrNull()
-                if (!parting && m?.optString("t") == Proto.T.WELCOME && m.optBoolean("resumed")) promote(webSocket)
-                else { pending = null; webSocket.cancel() }
-            } else if (webSocket === ws || webSocket === alt) onText(text, webSocket)
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            val receivedAt = SystemClock.elapsedRealtime()
+            run {
+                lastRxOf[webSocket] = System.currentTimeMillis()
+                if (webSocket === pending) {
+                    val m = runCatching { JSONObject(text) }.getOrNull()
+                    if (!parting && m?.optString("t") == Proto.T.WELCOME && m.optBoolean("resumed")) promote(webSocket)
+                    else { pending = null; webSocket.cancel() }
+                } else if (webSocket === ws || webSocket === alt) onText(text, webSocket, receivedAt)
+            }
         }
         // The computer closed it (Disconnect, Forget…): answer at once. OkHttp waits for us to,
         // and until then neither side saw the session end.
@@ -1094,9 +1201,11 @@ class Link(
         helloTimer = exec.schedule({ if (state != "connected") { message = tr("No answer"); ws?.cancel() } }, if (ble) Proto.BLE_TIMEOUT_MS else Proto.TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
 
-    private fun onText(text: String, ingress: WebSocket) {
+    private fun onText(text: String, ingress: WebSocket, receivedAt: Long) {
         val m = runCatching { JSONObject(text) }.getOrNull() ?: return
         val t = m.optString("t")
+        // Replace any wire value with the local ingress time before posting to the feature.
+        if (t == "lock.ticket") m.put(LOCK_TICKET_RECEIVED_AT, receivedAt)
         if (t == "embedded.media") {
             onEmbeddedMedia(ingress, m)
             return
@@ -1619,6 +1728,7 @@ class Link(
         dialAdmit = null
         helloSent = false
         ws = null
+        lockTunnel.get()?.cancel()
         closeEmbedded()
         appsReady = false
         netemDial = null
@@ -1681,6 +1791,7 @@ class Link(
         helloSent = false
         val w = ws
         ws = null
+        lockTunnel.get()?.cancel()
         embeddedDial = null
         closeEmbeddedTurn()
         dial?.mirrorCall?.getAndSet(null)?.cancel()

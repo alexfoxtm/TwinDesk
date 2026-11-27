@@ -10,4 +10,4 @@ The embedded path carries TwinDesk's authenticated WebSocket. Already-paired And
 
 Updated Macs and Android phones carry screen and audio through a per-session TURN relay. Native Android mirroring and shared folders in both directions also use the embedded route. These connections require a current pairing session and keep the existing screen and folder permissions. Ordinary file transfer uses its in-session fallback. Photo Save As and Direct-mode photo backup use the authenticated session.
 
-USB and Wi-Fi Direct require their underlying physical links. Separate lock-view and fast-file endpoints continue to use the normal connection. Local and standalone Tailscale routes retain their existing behavior.
+Direct mode can use the Android lock viewer over the embedded route when the Mac's existing Screen Sharing and remote-view permissions allow it. USB and Wi-Fi Direct require their underlying physical links. Separate fast-file endpoints continue to use the normal connection. Local and standalone Tailscale routes retain their existing behavior.

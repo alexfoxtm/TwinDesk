@@ -59,7 +59,7 @@ class Server extends EventEmitter {
 
   _onConnection(ws, req) {
     if (req.url && req.url.split('?')[0] === P.LOCK_PATH) {
-      if (this.lockview) return this.lockview.accept(ws, req);
+      if (this.lockview) return this.lockview.accept(ws, req, this.embeddedPeer?.(req.socket) || null);
       ws.on('error', () => {});
       return ws.close(1008, 'Unavailable');
     }

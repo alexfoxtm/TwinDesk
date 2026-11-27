@@ -140,7 +140,7 @@ class EmbeddedTailnet {
       if (epoch !== this.epoch || !peer) return socket.destroy();
       if (req.url === '/embedded/turn') return this.media.upgrade(req, socket, head, peer);
       if (req.url === '/embedded/dav') return this.media.upgradeDav(req, socket, head, peer);
-      if (req.url !== '/') return socket.destroy();
+      if (req.url !== '/' && (req.url !== P.LOCK_PATH || !this.server.lockview)) return socket.destroy();
       this.server.wss.handleUpgrade(req, socket, head, (ws) => this.server.wss.emit('connection', ws, req));
     });
     const backend = net.createServer({ pauseOnConnect: true }, async (socket) => {

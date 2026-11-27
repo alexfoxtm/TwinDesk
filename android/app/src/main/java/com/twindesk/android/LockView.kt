@@ -3,6 +3,7 @@ package com.twindesk.android
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -18,7 +19,8 @@ class LockView(core: Core) : Feature(core) {
     @Volatile var capable = false; private set
     @Volatile private var continuing = false
     @Volatile var layoutStale = false; private set
-    val available get() = (locked || (active && continuing)) && capable && core.host?.os == "mac" && !core.link.ble
+    val available get() = (locked || (active && continuing)) && capable &&
+        core.link.lockSessionCurrent(core.link.sessionMarker())
     @Volatile var active = false; private set
     @Volatile var presented = false; private set
     private var presentationOwner: Any? = null
@@ -27,9 +29,11 @@ class LockView(core: Core) : Feature(core) {
     private var request = ""
     private var marker: Any? = null
     private var deliver: ((JSONObject) -> Unit)? = null
+    private var tunnel: Link.LockTunnel? = null
     private var socket: WebSocket? = null
     private var reader: LockReadGate? = null
     private var attempt = 0
+    private var attemptDeadline = 0L
 
     fun attach(pageOwner: Any, post: (JSONObject) -> Unit) {
         end()
@@ -40,13 +44,20 @@ class LockView(core: Core) : Feature(core) {
         deliver = post
         marker = core.link.sessionMarker()
         request = Proto.randomHex(16)
-        core.send(msg("lock.open", "request" to request))
         val mine = ++attempt
-        main.postDelayed({ if (active && attempt == mine && socket == null) end() }, 12000)
+        attemptDeadline = SystemClock.elapsedRealtime() + 12000
+        if (!valid() || !core.link.sendFor(marker, msg("lock.open", "request" to request))) {
+            end(false)
+            return
+        }
+        main.postDelayed(
+            { if (active && attempt == mine && socket == null) end() },
+            maxOf(0, attemptDeadline - SystemClock.elapsedRealtime()),
+        )
         main.postDelayed(object : Runnable {
             override fun run() {
                 if (!active || mine != attempt || owner !== pageOwner) return
-                if (continuing && valid()) core.send(msg("lock.keep", "request" to request))
+                if (continuing && valid()) core.link.sendFor(marker, msg("lock.keep", "request" to request))
                 main.postDelayed(this, 60000)
             }
         }, 60000)
@@ -59,7 +70,7 @@ class LockView(core: Core) : Feature(core) {
     }
 
     fun linkChanged() = main.post {
-        if (active && (!core.link.connected || core.link.ble || core.link.sessionMarker() !== marker)) end()
+        if (active && !valid()) end()
     }
 
     fun send(pageOwner: Any, encoded: String) = main.post {
@@ -73,12 +84,14 @@ class LockView(core: Core) : Feature(core) {
     fun ack(pageOwner: Any) = main.post { if (owner === pageOwner) reader?.ack() }
 
     fun markReady(pageOwner: Any) = main.post {
-        if (owner === pageOwner && valid() && socket != null && request.isNotEmpty()) core.send(msg("lock.ready", "request" to request))
+        if (owner === pageOwner && valid() && socket != null && request.isNotEmpty()) {
+            core.link.sendFor(marker, msg("lock.ready", "request" to request))
+        }
     }
 
     fun endFor(pageOwner: Any) { if (owner === pageOwner) end() }
 
-    private fun valid() = active && core.link.connected && !core.link.ble && core.link.lockSessionCurrent(marker) && available
+    private fun valid() = active && available && core.link.lockSessionCurrent(marker) && tunnel?.current() != false
 
     fun end(notify: Boolean = true) {
         val wasActive = active
@@ -86,18 +99,19 @@ class LockView(core: Core) : Feature(core) {
         continuing = false
         layoutStale = false
         attempt++
-        val ws = socket
         socket = null
         reader?.cancel() // release a blocked OkHttp reader before cancelling its socket
         reader = null
-        ws?.cancel()
+        tunnel?.cancel()
+        tunnel = null
+        val endedMarker = marker
         marker = null
         owner = null
         val endedRequest = request
         request = ""
         val post = deliver
         deliver = null
-        if (notify && wasActive) core.send(msg("lock.end", "request" to endedRequest))
+        if (notify && wasActive) core.link.sendFor(endedMarker, msg("lock.end", "request" to endedRequest))
         post?.invoke(msg("closed"))
         if (wasActive) core.changed()
     }
@@ -129,9 +143,12 @@ class LockView(core: Core) : Feature(core) {
                 end(false)
             }
             "lock.ticket" -> {
-                if (!valid() || socket != null || m.optString("request") != request) return true
+                if (!valid() || tunnel != null || m.optString("request") != request) return true
                 val ticket = m.optString("ticket")
-                if (!Regex("[A-Za-z0-9_-]{43}").matches(ticket) || m.optString("path") != "/lockview" || m.optLong("expiresIn") !in 1..10000) { end(); return true }
+                val ticketDeadline = core.link.lockTicketDeadline(m)
+                if (!Regex("[A-Za-z0-9_-]{43}").matches(ticket) || m.optString("path") != "/lockview" || ticketDeadline == null) { end(); return true }
+                val deadline = minOf(attemptDeadline, ticketDeadline)
+                if (SystemClock.elapsedRealtime() >= deadline) { end(); return true }
                 val mine = attempt
                 val gate = reader ?: return true
                 val metadata = msg("metadata")
@@ -148,9 +165,11 @@ class LockView(core: Core) : Feature(core) {
                 }
                 deliver?.invoke(metadata)
                 if (mine != attempt || !valid()) return true
-                socket = core.link.openLockTunnel(ticket, marker, object : WebSocketListener() {
+                tunnel = core.link.openLockTunnel(ticket, marker, deadline, gate, object : WebSocketListener() {
                     override fun onOpen(ws: WebSocket, response: Response) { main.post {
-                        if (mine != attempt || !valid() || ws !== socket) { ws.cancel(); return@post }
+                        if (mine != attempt) { ws.cancel(); return@post }
+                        if (!valid() || SystemClock.elapsedRealtime() >= deadline) { end(); return@post }
+                        socket = ws
                         deliver?.invoke(msg("open"))
                     } }
                     override fun onMessage(ws: WebSocket, bytes: ByteString) {
@@ -176,8 +195,12 @@ class LockView(core: Core) : Feature(core) {
                     override fun onMessage(ws: WebSocket, text: String) { main.post { if (mine == attempt) end() } }
                     override fun onClosed(ws: WebSocket, code: Int, reason: String) { main.post { if (mine == attempt) end(false) } }
                     override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) { main.post { if (mine == attempt) end(false) } }
-                })
-                if (socket == null) end()
+                }) { main.post { if (mine == attempt) end() } }
+                if (tunnel == null) end()
+                else main.postDelayed(
+                    { if (mine == attempt && socket == null) end() },
+                    maxOf(0, deadline - SystemClock.elapsedRealtime()),
+                )
             }
             else -> return false
         }

@@ -394,6 +394,24 @@ async function failurePath() {
     ws.emit('message', Buffer.from('text forbidden'), false);
     assert(tcp.destroyed);
   } finally { f.server.close(); }
+  const embedded = fixture();
+  try {
+    Object.assign(embedded.ctx, { transport: 'embedded-tailnet', address: '127.0.0.1',
+      embeddedPeer: 'fixture-node', embeddedMediaReady: () => true });
+    embedded.server.embeddedPeer = (socket) => socket.fixturePeer;
+    const ticket = await open(embedded);
+    const acceptFrom = (fixturePeer) => embedded.accept(ticket.ticket, {
+      socket: { remoteAddress: '127.0.0.1', fixturePeer },
+    });
+    assert.strictEqual(acceptFrom('other-node').readyState, 3);
+    assert.strictEqual(acceptFrom(null).readyState, 3);
+    assert.strictEqual(embedded.connections.length, 0);
+    const ws = acceptFrom('fixture-node');
+    assert.strictEqual(ws.readyState, ws.OPEN);
+    assert.strictEqual(embedded.connections.length, 1);
+    embedded.server.release();
+    assert.strictEqual(ws.readyState, 3);
+  } finally { embedded.server.close(); }
   let now = 0;
   const ctx = { authed: true, os: 'android', transport: 'ip', resumeKey: 'key', ws: new Socket(), address: '100.70.0.2' };
   const tunnel = new LockTunnel({ current: () => ctx, allowed: () => true, now: () => now,
