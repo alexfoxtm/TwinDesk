@@ -7,6 +7,7 @@
 
 const os = require('os');
 const fs = require('fs');
+const path = require('path');
 
 const LINKS = {
   portfolio: 'https://inukaasith.vercel.app',
@@ -48,11 +49,17 @@ function gb(bytes) {
 function aboutInfo(app) {
   const cpus = os.cpus() || [];
   const v = process.versions;
+  const version = app.getVersion();
+  // The Mac packager ships this build setting beside shared/ for About.
+  const config = process.platform === 'darwin'
+    ? fs.readFileSync(path.join(__dirname, '../ios/ForkBuild.xcconfig'), 'utf8')
+    : '';
+  const build = /^CURRENT_PROJECT_VERSION = ([1-9][0-9]{0,3})$/m.exec(config)?.[1];
   return {
     app: {
       name: NAME[process.platform] || 'TwinDesk',
       thanks: THANKS[process.platform] || '',
-      version: app.getVersion(),
+      version: build ? version + ' (' + build.padStart(3, '0') + ')' : version,
       electron: v.electron || '',
       chrome: v.chrome || '',
       node: v.node || '',

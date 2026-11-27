@@ -10,6 +10,8 @@ const path = require('node:path');
 
 const repoScript = path.join(__dirname, '..', 'fork-install.sh');
 const repoBuild = path.join(__dirname, '..', 'build-app.sh');
+const repoCounter = path.join(__dirname, '..', 'scripts', 'fork-build.sh');
+const repoBadging = path.join(__dirname, '..', 'scripts', 'apk-badging.sh');
 const bash = '/bin/bash';
 
 function write(file, text, mode) {
@@ -76,6 +78,14 @@ cp -R "$1"/. "$2"/
 if [ -n "\${STUB_DITTO_FAIL:-}" ]; then exit 1; fi
 exit 0
 `, 0o755);
+  write(path.join(bin, 'plutil'), `#!/bin/bash
+[ "$1" = -extract ] && [ "$3" = raw ] || exit 1
+sed -n "s/^$2=//p" "$4"
+`, 0o755);
+  write(path.join(bin, 'aapt'), `${header}
+[ "$1" = dump ] && [ "$2" = badging ] && [ -f "$3" ] || exit 1
+printf "package: name='io.github.alexfoxtm.twindesk.android' versionCode='%s' versionName='3.2.1'\\n" "\${STUB_APK_VERSION_CODE:-100074}"
+`, 0o755);
   write(path.join(bin, 'open'), `${header}exit 0\n`, 0o755);
   write(path.join(bin, 'codesign'), `${header}
 if [ -n "\${STUB_CODESIGN_INSTALL_FAIL:-}" ]; then
@@ -94,6 +104,7 @@ root=\${STUB_ROOT}
 app="$root/mac/dist/TwinDesk Fork.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/app/mac/vendor"
 printf 'x' > "$app/Contents/MacOS/TwinDesk"
+printf 'CFBundleShortVersionString=3.2.1\\nCFBundleVersion=74\\n' > "$app/Contents/Info.plist"
 src=\$(ls "$root"/android/dist/*-full.apk 2>/dev/null | sort | tail -1)
 dest="$app/Contents/Resources/app/mac/vendor/twindesk-android-full.apk"
 if [ -n "\${STUB_BAD_APK:-}" ]; then printf 'not-the-apk\\n' > "$dest"; else cp "$src" "$dest"; fi
@@ -209,6 +220,9 @@ function makeCheckout() {
   write(path.join(root, 'mac/phone-bridge.js'), "const APP_ID = 'io.github.alexfoxtm.twindesk.android';\n");
   write(path.join(root, 'mac/main.js'), "app.setAppLogsPath(path.join(require('os').homedir(), 'Library', 'Logs', 'AlexfoxtmTwinDesk'));\n");
   write(path.join(root, 'mac/package.json'), '{ "version": "3.2.1" }\n');
+  write(path.join(root, 'ios/ForkBuild.xcconfig'), 'CURRENT_PROJECT_VERSION = 74\n');
+  write(path.join(root, 'mac/scripts/fork-build.sh'), fs.readFileSync(repoCounter));
+  write(path.join(root, 'mac/scripts/apk-badging.sh'), fs.readFileSync(repoBadging));
   write(path.join(root, 'shared/applog.js'), "const file = (i) => path.join(folder, i ? `TwinDesk.${i}.log` : 'TwinDesk.log');\n");
   write(path.join(root, 'android/gradlew'), `#!/bin/bash
 printf '%s\\t%s' "$(date +%s)" "gradlew" >> ${shellQuote(calls)}
@@ -239,6 +253,7 @@ function run(ctx, args, extra) {
       FORK_INSTALL_POLL_INTERVAL: '1',
       FORK_INSTALL_POST_WAIT: '0',
       FORK_INSTALL_ADB: path.join(ctx.bin, 'adb'),
+      AAPT: path.join(ctx.bin, 'aapt'),
       FORK_INSTALL_LOG_DIR: path.join(ctx.root, 'mac/dist'),
       ...extra,
     },
@@ -250,11 +265,15 @@ function run(ctx, args, extra) {
 function placeBuiltApp(ctx, apkBytes) {
   const vendor = path.join(ctx.root, 'mac/dist/TwinDesk Fork.app/Contents/Resources/app/mac/vendor');
   write(path.join(ctx.root, 'mac/dist/TwinDesk Fork.app/Contents/MacOS/TwinDesk'), 'x');
+  write(path.join(ctx.root, 'mac/dist/TwinDesk Fork.app/Contents/Info.plist'),
+    'CFBundleShortVersionString=3.2.1\nCFBundleVersion=74\n');
   write(path.join(vendor, 'twindesk-android-full.apk'), apkBytes || 'new-apk-bytes\n');
 }
 
-function placeInstalled(ctx, dir) {
-  write(path.join(dir || ctx.applications, 'TwinDesk Fork.app/MARKER'), 'installed');
+function placeInstalled(ctx, dir, build = '3.2.1') {
+  const app = path.join(dir || ctx.applications, 'TwinDesk Fork.app');
+  write(path.join(app, 'MARKER'), 'installed');
+  write(path.join(app, 'Contents/Info.plist'), 'CFBundleVersion=' + build + '\n');
 }
 
 function commitApk(ctx, bytes) {
@@ -827,6 +846,22 @@ function main() {
     assert.equal(called(callsOf(freshSignFail.calls), 'open').length, 0);
   } finally {
     fs.rmSync(freshSignFail.tmp, { recursive: true, force: true });
+  }
+
+  const reusedBuild = makeCheckout();
+  try {
+    placeInstalled(reusedBuild, reusedBuild.applications, '74');
+    const result = run(reusedBuild, []);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /fork build 74 must exceed installed Mac build 74/);
+    assert.deepEqual(stateChanging(callsOf(reusedBuild.calls)), []);
+    commitApk(reusedBuild);
+    const staleApk = run(reusedBuild, ['--no-install', '--skip-android'], { STUB_APK_VERSION_CODE: '30201' });
+    assert.notEqual(staleApk.status, 0);
+    assert.match(staleApk.stderr, /APK metadata must match 3\.2\.1 \(versionCode 100074\)/);
+    assert.deepEqual(stateChanging(callsOf(reusedBuild.calls)), []);
+  } finally {
+    fs.rmSync(reusedBuild.tmp, { recursive: true, force: true });
   }
 
   // adb that cannot list devices: the phone is skipped and reported once, with no false "step failed".

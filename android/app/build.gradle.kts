@@ -6,6 +6,13 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val forkBuild = providers.fileContents(rootProject.layout.projectDirectory.file("../ios/ForkBuild.xcconfig"))
+    .asText.map { config ->
+        val assignment = Regex("(?m)^CURRENT_PROJECT_VERSION = ([1-9][0-9]{0,3})$").find(config)
+        requireNotNull(assignment) { "Set a positive numeric build (1–9999) in ios/ForkBuild.xcconfig" }
+        assignment.groupValues[1].toInt()
+    }.get()
+
 android {
     namespace = "com.twindesk.android"
     compileSdk = 37
@@ -14,8 +21,10 @@ android {
         applicationId = "io.github.alexfoxtm.twindesk.android"
         minSdk = 29 // Android 10: wireless debugging needs 11, everything else works from 10
         targetSdk = 36
-        versionCode = 30201
+        // Keep the fork's update sequence above the last distributed versionCode (30201).
+        versionCode = 100_000 + forkBuild
         versionName = "3.2.1"
+        buildConfigField("int", "FORK_BUILD", forkBuild.toString())
         buildConfigField("String", "NETEM_PEER", "\"\"")
         buildConfigField("String", "NETEM_ADDRESS", "\"\"")
     }

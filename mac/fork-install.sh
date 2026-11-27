@@ -43,6 +43,7 @@ exe_name=""
 apk_dest=""
 version_name=""
 mac_version=""
+fork_build=""
 log_folder=""
 log_file=""
 short_sha=""
@@ -69,6 +70,9 @@ Options:
   --allow-dirty        Build even when the checkout has uncommitted changes.
   -h, --help           Show this help.
 
+Before distributing a new build, increment CURRENT_PROJECT_VERSION in
+ios/ForkBuild.xcconfig. Installing requires a higher build than the installed Mac app.
+
 A phone install needs --device, or exactly one attached physical device
 (emulator-* is ignored). If that install fails, the Mac install is left as it is.
 
@@ -78,6 +82,7 @@ Environment (overrides for tests and unusual layouts):
                                (default: $HOME/Library/Logs/<folder>/TwinDesk.log).
   FORK_INSTALL_LOG_DIR         Directory for this script's log (default: mac/dist).
   FORK_INSTALL_ADB             adb binary (default: $ANDROID_HOME/platform-tools/adb, else adb).
+  AAPT                         aapt binary for APK metadata checks (default: SDK build-tools).
   FORK_INSTALL_POLL_INTERVAL   Whole seconds between quit polls (default: 1).
   FORK_INSTALL_POST_WAIT       Whole seconds to wait before reading logs (default: 25).
 EOF
@@ -402,6 +407,7 @@ build_android() {
     fi
     NEW_APK=$(commit_apk_path)
     [ -f "$NEW_APK" ] || fail "no apk for this commit at ${NEW_APK}; run without --skip-android"
+    verify_android_build "$NEW_APK"
     # Keep an older name that sorts later from being the one build-app.sh bundles.
     if [ "$SKIP_MAC" -eq 0 ]; then
       move_other_full_apks 0
@@ -423,6 +429,7 @@ build_android() {
     would cp "$src" "$NEW_APK"
   else
     [ -f "$src" ] || fail "gradle did not produce ${src}"
+    verify_android_build "$src"
     mkdir -p "$ROOT/android/dist"
     if [ -e "$NEW_APK" ]; then
       move_apk_aside "$NEW_APK"
@@ -439,6 +446,19 @@ build_android() {
   selected=$(selected_full_apk)
   [ "$selected" = "$NEW_APK" ] || fail "build-app.sh would bundle ${selected:-nothing}, not ${NEW_APK}"
   step "android: build-app.sh will bundle $(basename "$NEW_APK")"
+}
+
+verify_android_build() {
+  [ "$DRY_RUN" -eq 0 ] || return 0
+  local apk="$1" badging expected_code actual_code actual_name
+  CURRENT_STEP="android: verify apk version"
+  expected_code=$((100000 + fork_build))
+  badging=$(sh "$ROOT/mac/scripts/apk-badging.sh" "$apk") ||
+    fail "could not read metadata for $apk"
+  actual_code=$(sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p" <<<"$badging")
+  actual_name=$(sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p" <<<"$badging")
+  [ "$actual_code" = "$expected_code" ] && [ "$actual_name" = "$version_name" ] ||
+    fail "APK metadata must match $version_name (versionCode $expected_code); rebuild without --skip-android"
 }
 
 build_mac() {
@@ -470,8 +490,22 @@ build_mac() {
   run_in "$ROOT/mac" npm run dist
 }
 
+require_newer_fork_build() {
+  [ "$NO_INSTALL" -eq 0 ] || return 0
+  local installed="$APPLICATIONS/$app_name" previous
+  [ -e "$installed" ] || return 0
+  previous=$(plutil -extract CFBundleVersion raw "$installed/Contents/Info.plist" 2>/dev/null) ||
+    fail "could not read the installed Mac CFBundleVersion"
+  # Before the fork counter, CFBundleVersion used the dotted release version.
+  # A single-component build is newer than a dotted one if its first component is greater.
+  [[ "$previous" =~ ^[0-9]{1,4}([.][0-9]+){0,2}$ ]] ||
+    fail "unexpected installed Mac CFBundleVersion: ${previous}"
+  (( fork_build > 10#${previous%%.*} )) ||
+    fail "fork build ${fork_build} must exceed installed Mac build ${previous}; bump ios/ForkBuild.xcconfig"
+}
+
 verify_build() {
-  local built bundled want got apk_path
+  local built bundled want got apk_path info
   built="$ROOT/mac/dist/${app_name}"
   if [ "$SKIP_MAC" -eq 1 ] && [ "$NO_INSTALL" -eq 1 ]; then
     return 0
@@ -485,6 +519,7 @@ verify_build() {
   if [ "$DRY_RUN" -eq 1 ]; then
     step "mac: would verify the signature"
     would codesign --verify --deep --strict "$built"
+    step "mac: would verify build ${mac_version} (${fork_build})"
     if [ -n "$apk_path" ] && [ "$SKIP_MAC" -eq 0 ]; then
       step "mac: would verify the bundled apk"
       would shasum -a 256 "$apk_path"
@@ -501,6 +536,10 @@ verify_build() {
     fail "signature check failed for ${built}"
   fi
   step "mac: signature ok"
+  info="$built/Contents/Info.plist"
+  [ "$(plutil -extract CFBundleShortVersionString raw "$info")" = "$mac_version" ] &&
+    [ "$(plutil -extract CFBundleVersion raw "$info")" = "$fork_build" ] ||
+    fail "Mac bundle metadata must match ${mac_version} (${fork_build}); rebuild without --skip-mac"
   if [ -n "$apk_path" ] && [ "$SKIP_MAC" -eq 0 ]; then
     CURRENT_STEP="mac: bundled apk sha256"
     [ -f "$bundled" ] || fail "bundled apk not found at ${bundled}"
@@ -964,6 +1003,8 @@ main() {
   [ -n "$APPLICATIONS" ] || fail "FORK_INSTALL_APPLICATIONS is empty"
   load_identity
   load_commit
+  fork_build=$(sh "$ROOT/mac/scripts/fork-build.sh" "$ROOT")
+  require_newer_fork_build
   require_commit_apk
   open_log
   build_android

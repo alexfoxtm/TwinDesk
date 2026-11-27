@@ -12,6 +12,10 @@ on:
         description: Release to put the IPA on (e.g. v2.6.0; made as a draft if it isn't there). Empty = run artifacts only.
         required: false
         default: ''
+      build_number:
+        description: Optional numeric CFBundleVersion override. Empty uses the fork counter in ios/ForkBuild.xcconfig.
+        required: false
+        default: ''
       ref:
         description: Branch to build.
         required: false
@@ -46,7 +50,7 @@ jobs:
 
       - name: Build
         env:
-          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
         run: bash ios/build.sh
 
       - uses: actions/upload-artifact@v4

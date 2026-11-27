@@ -6,10 +6,12 @@ options:
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
+configFiles:
+  Debug: ForkBuild.xcconfig
+  Release: ForkBuild.xcconfig
 settings:
   base:
     MARKETING_VERSION: "3.2.1"
-    CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Manual

@@ -757,7 +757,11 @@ struct AboutView: View {
     private static let licence = URL(string: "https://github.com/InukaAsith/TwinDesk/blob/main/LICENSE")!
 
     private var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "" }
-    private var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "" }
+    private var build: String {
+        let value = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+        guard let number = Int(value) else { return value }
+        return String(format: "%03d", number)
+    }
 
     var body: some View {
         PageScroll(title: tr("About")) {

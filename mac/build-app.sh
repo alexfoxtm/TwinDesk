@@ -7,6 +7,8 @@ set -e
 unset ELECTRON_RUN_AS_NODE
 cd "$(dirname "$0")"
 ROOT=..
+FORK_BUILD=$(sh scripts/fork-build.sh "$ROOT")
+VER="$(node -p "require('./package.json').version")"
 STAGE=dist/stage
 FORK_APP='dist/TwinDesk Fork.app'
 if [ -e "$FORK_APP" ]; then
@@ -41,14 +43,8 @@ APK_DEST=vendor/twindesk-android-full.apk
 APK=${FULL_APK:-}
 if [ -z "$APK" ] && [ -f "$APK_DEST" ]; then APK=$APK_DEST; fi
 if [ -n "$APK" ]; then
-  AAPT_BIN=${AAPT:-}
-  if [ -z "$AAPT_BIN" ]; then
-    for tool in "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"/build-tools/*/aapt; do
-      [ ! -x "$tool" ] || AAPT_BIN=$tool
-    done
-  fi
-  [ -n "$AAPT_BIN" ] && [ -x "$AAPT_BIN" ] || { echo 'error: aapt is required to verify the bundled Android package' >&2; exit 1; }
-  APK_ID=$("$AAPT_BIN" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1)
+  BADGING=$(sh scripts/apk-badging.sh "$APK")
+  APK_ID=$(printf '%s\n' "$BADGING" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1)
   [ "$APK_ID" = 'io.github.alexfoxtm.twindesk.android' ] || { echo 'error: the bundled Android APK is not the fork package' >&2; exit 1; }
   [ "$APK" = "$APK_DEST" ] || cp "$APK" "$APK_DEST"
 else
@@ -61,6 +57,8 @@ sh scripts/fetch-adb.sh
 rm -rf "$STAGE" && mkdir -p "$STAGE/mac" "$STAGE/shared" "$STAGE/mac-helper/.build/release" "$STAGE/node_modules"
 rsync -a --exclude node_modules --exclude dist --exclude dev --exclude test --exclude ios-developer --exclude dmg --exclude build-app.sh --exclude build-dmg.sh --exclude scripts/signing-identity.sh --exclude entitlements.plist ./ "$STAGE/mac/"
 cp "$ROOT"/shared/*.js "$ROOT"/shared/*.css "$ROOT"/shared/*.html "$STAGE/shared/"
+mkdir -p "$STAGE/ios"
+printf 'CURRENT_PROJECT_VERSION = %s\n' "$FORK_BUILD" > "$STAGE/ios/ForkBuild.xcconfig"
 cp -R "$ROOT/shared/lang" "$STAGE/shared/"
 # TwinDesk Web (shared/web/webwire.js): its server, the page (web/, without the Shortcuts sources) and
 # the phone app's screen viewer and remote, which the page shows as they are.
@@ -133,7 +131,7 @@ EOF
 ./node_modules/.bin/electron-packager "$STAGE" "TwinDesk Fork" \
   --executable-name=TwinDesk \
   --platform=darwin --arch="$ARCH" --electron-version="$EV" \
-  --app-bundle-id=io.github.alexfoxtm.twindesk --helper-bundle-id=io.github.alexfoxtm.twindesk.helper --app-version="$(node -p "require('./package.json').version")" \
+  --app-bundle-id=io.github.alexfoxtm.twindesk --helper-bundle-id=io.github.alexfoxtm.twindesk.helper --app-version="$VER" --build-version="$FORK_BUILD" \
   --icon=dist/TwinDesk.icns --extend-info=dist/extra.plist \
   --no-prune --asar=false --out=dist --overwrite --quiet
 
@@ -158,7 +156,6 @@ cp -R locales/zh-Hans.lproj locales/ru.lproj locales/tr.lproj locales/pt-BR.lpro
 rm -rf dist/TwinDesk.app && mv "$APP" dist/TwinDesk.app && rm -rf "dist/TwinDesk Fork-darwin-$ARCH" "$STAGE" dist/extra.plist
 # The Share menu extension (mac-helper/Sources/macshare-share), sandboxed as macOS requires.
 APPEX=dist/TwinDesk.app/Contents/PlugIns/MacShareShare.appex
-VER="$(node -p "require('./package.json').version")"
 mkdir -p "$APPEX/Contents/MacOS"
 cp "$ROOT/mac-helper/.build/release/macshare-share" "$APPEX/Contents/MacOS/MacShareShare"
 cat > "$APPEX/Contents/Info.plist" <<PLIST
@@ -171,7 +168,7 @@ cat > "$APPEX/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>MacShareShare</string>
   <key>CFBundlePackageType</key><string>XPC!</string>
   <key>CFBundleShortVersionString</key><string>$VER</string>
-  <key>CFBundleVersion</key><string>$VER</string>
+  <key>CFBundleVersion</key><string>$FORK_BUILD</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSExtension</key><dict>
@@ -230,7 +227,7 @@ if [ -n "$MAC_IDENTITY" ] && [ -n "$TEAM" ] && [ -f "$MAC_APP_PROFILE" ] && [ -f
   <key>CFBundleExecutable</key><string>io.github.alexfoxtm.twindesk.camera</string>
   <key>CFBundlePackageType</key><string>SYSX</string>
   <key>CFBundleShortVersionString</key><string>$VER</string>
-  <key>CFBundleVersion</key><string>$VER</string>
+  <key>CFBundleVersion</key><string>$FORK_BUILD</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>CMIOExtension</key><dict>

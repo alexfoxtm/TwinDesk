@@ -2382,7 +2382,8 @@ private fun AboutPage(core: Core, v: Int) {
     Column(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Logo(110)
         Text("TwinDesk", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = pal.text, modifier = Modifier.padding(top = 10.dp))
-        Text(tr("Version {version}", "version" to BuildConfig.VERSION_NAME), color = pal.muted)
+        val build = BuildConfig.FORK_BUILD.toString().padStart(3, '0')
+        Text(tr("Version {version}", "version" to "${BuildConfig.VERSION_NAME} ($build)"), color = pal.muted)
         Text(tr("Use your computer and phone together as one workspace."), color = pal.muted, modifier = Modifier.padding(top = 6.dp, bottom = 20.dp))
     }
     val ctx = LocalContext.current
