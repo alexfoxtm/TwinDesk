@@ -1,10 +1,12 @@
 package com.twindesk.android.embedded
 
 import android.net.Uri
+import com.twindesk.android.Found
 import com.twindesk.android.Host
 import com.twindesk.android.Link
 import com.twindesk.android.Proto
 import com.twindesk.android.Store
+import com.twindesk.android.homeBeaconAddress
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket
@@ -29,6 +31,7 @@ import java.net.Proxy
 import java.net.ServerSocket
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], manifest = Config.NONE)
@@ -86,6 +89,90 @@ class EmbeddedRouteTest {
 
     @Test fun aDifferentWelcomeIdCannotBindOrReplaceTheSavedPair() {
         savedPairWelcome("otherMac", accepted = false)
+    }
+
+    @Test fun pinnedHomeWifiReclaimsTheExactMacWithoutAnEmbeddedGoodbye() {
+        homeHandoff(admitted = true)
+    }
+
+    @Test fun aRevokedHomeHandoffLeavesTheEmbeddedSocketInPlace() {
+        homeHandoff(admitted = false)
+    }
+
+    private fun homeHandoff(admitted: Boolean) {
+        val ctx = RuntimeEnvironment.getApplication()
+        val store = Store(ctx)
+        val saved = Host("mac123", "Office Mac", "mac", "192.168.1.4", 47800, "b".repeat(64), "c".repeat(64),
+            0, embeddedNode = "nABC")
+        store.putHost(saved, verifiedNode = "nABC")
+        val beacon = Found(saved.id, saved.name, "mac", "192.168.1.9", 47800, saved.fp, 1000, false, rc = true)
+        assertEquals(beacon.address, homeBeaconAddress(saved, beacon, 2000)?.hostAddress)
+        assertNull(homeBeaconAddress(saved, beacon.copy(fp = "other"), 2000))
+        assertNull(homeBeaconAddress(saved, beacon.copy(address = "100.64.0.1"), 2000))
+        assertNull(homeBeaconAddress(saved, beacon, 1001 + Proto.DEVICE_STALE_MS))
+        val network = EmbeddedNetwork(ctx, store) {}
+        var welcomed: Host? = null
+        val ended = mutableListOf<String?>()
+        val link = Link(store, object : Link.Events {
+            override fun onChange() {}
+            override fun onWelcome(host: Host) { welcomed = host }
+            override fun onMessage(m: JSONObject, route: Link.TrustedRoute?, source: WebSocket) {}
+            override fun onClosed(host: Host, code: String?) { ended += code }
+        })
+        fun field(owner: Any, name: String) = owner.javaClass.getDeclaredField(name).apply { isAccessible = true }
+        fun socket(sent: MutableList<JSONObject>, closed: () -> Unit) =
+            ReflectProxy.newProxyInstance(WebSocket::class.java.classLoader, arrayOf(WebSocket::class.java)) { self, method, args ->
+                when (method.name) {
+                    "hashCode" -> System.identityHashCode(self)
+                    "equals" -> self === args[0]
+                    "send" -> { sent.add(JSONObject(args[0] as String)); true }
+                    "cancel" -> { closed(); null }
+                    else -> error(method.name)
+                }
+            } as WebSocket
+        val oldSent = mutableListOf<JSONObject>()
+        val lanSent = mutableListOf<JSONObject>()
+        var oldClosed = false
+        var lanClosed = false
+        val old = socket(oldSent) { oldClosed = true }
+        val lan = socket(lanSent) { lanClosed = true }
+        val dial = Link::class.java.declaredClasses.single { it.simpleName == "EmbeddedDial" }
+            .declaredConstructors.single().apply { isAccessible = true }.newInstance(network, listOf("nABC"), null, { true })
+        field(link, "embeddedDial").set(link, dial)
+        field(link, "ws").set(link, old)
+        field(link, "host").set(link, saved)
+        field(link, "state").set(link, "connected")
+        val moveClass = Link::class.java.declaredClasses.single { it.simpleName == "LanHandoff" }
+        val move = moveClass.declaredConstructors.single().apply { isAccessible = true }
+            .newInstance(old, lan, saved.copy(address = beacon.address), { admitted })
+        @Suppress("UNCHECKED_CAST")
+        (field(link, "lanHandoff").get(link) as AtomicReference<Any>).set(move)
+        val executor = field(link, "exec").get(link) as ScheduledExecutorService
+        try {
+            Link::class.java.getDeclaredMethod("handbackOpen", moveClass).apply { isAccessible = true }.invoke(link, move)
+            assertTrue(oldSent.isEmpty())
+            if (admitted) {
+                assertTrue(oldClosed)
+                assertFalse(lanClosed)
+                assertFalse(link.embedded)
+                assertEquals(listOf("route-handoff"), ended)
+                assertEquals(1, lanSent.single().getInt("rc"))
+                assertEquals(saved.token, lanSent.single().getString("token"))
+                Link::class.java.getDeclaredMethod("onWelcome", JSONObject::class.java).apply { isAccessible = true }
+                    .invoke(link, JSONObject().put("macId", saved.id).put("rc", 1))
+                assertTrue(link.connected)
+                assertEquals(beacon.address, welcomed?.address)
+                assertEquals("nABC", store.hosts().single().embeddedNode)
+            } else {
+                assertFalse(oldClosed)
+                assertTrue(lanClosed)
+                assertTrue(lanSent.isEmpty())
+                assertTrue(link.connected)
+                assertTrue(link.embedded)
+            }
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     // Start at the pinned WebSocket's onOpen. The bridge/TLS ordering is exercised above.

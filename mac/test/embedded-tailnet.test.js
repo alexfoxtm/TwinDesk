@@ -53,6 +53,8 @@ test('embedded control and TURN require a current engine witness and TURN follow
     assert.equal(server.embeddedPeer(req.socket), 'fixture-phone');
     accepted++;
     server.current = { ws, authed: true, deviceId: 'fixture-pair', embeddedPeer: 'fixture-phone', embeddedMediaWanted: true };
+    ws.ctx = server.current;
+    ws.on('message', (data) => server.emit('message', JSON.parse(data), ws.ctx, ws));
     server.emit('client', server.current);
   });
   const dial = (route = '/', headers) => new WebSocket(`wss://127.0.0.1:${port}${route}`, { ca: server.tls.cert, headers });
@@ -164,6 +166,54 @@ test('embedded control and TURN require a current engine witness and TURN follow
   reverseStream.on('close', () => localDav.destroy());
   assert.deepEqual(await listing, [200, 'phone folder']);
   await assert.rejects(once(dial('/embedded/dav', headersDav), 'open'), 'a consumed ticket cannot open another socket');
+
+  await t.test('ADB uses a single same-node child and closes it with the port grant', async () => {
+    const owner = server.current.ws;
+    const state = { t: 'adb.state', wifi: true, net: true, embeddedPort: 37123 };
+    server.emit('message', state, server.current, {});
+    assert.equal(server.embeddedAdbGrant(owner), null);
+    const granted = once(server, 'message');
+    ws.send(JSON.stringify(state));
+    await granted;
+    const grant = server.embeddedAdbGrant(owner);
+    assert.equal(grant.port, state.embeddedPort);
+    let closed = 0;
+    const tunnel = grant.open(() => true, () => { closed++; });
+    const ticketMessage = once(ws, 'message');
+    const tcp = net.connect({ host: '127.0.0.1', port: await tunnel.ready });
+    const ticket = JSON.parse((await ticketMessage)[0]);
+    assert.match(ticket.key, /^[0-9a-f]{64}$/);
+    assert.deepEqual(ticket, { t: 'embedded.adb.open', key: ticket.key, port: state.embeddedPort });
+    const headers = { 'X-TwinDesk-Adb': ticket.key };
+    peer = 'other-fixture-phone';
+    await assert.rejects(once(dial('/embedded/adb', headers), 'open'));
+    peer = 'fixture-phone';
+    const child = dial('/embedded/adb', headers);
+    await once(child, 'open');
+    await assert.rejects(once(dial('/embedded/adb', headers), 'open'));
+    let size = 0;
+    const payload = Buffer.alloc(65553, 42);
+    const echoed = new Promise((resolve) => {
+      const received = [];
+      tcp.on('data', (chunk) => {
+        received.push(chunk);
+        size += chunk.length;
+        if (size >= payload.length) resolve(Buffer.concat(received));
+      });
+    });
+    child.on('message', (data, binary) => {
+      assert.ok(binary && data.length >= 1 && data.length <= 32768);
+      child.send(data);
+    });
+    tcp.write(payload);
+    assert.deepEqual(await echoed, payload);
+    const retired = Promise.all([once(tcp, 'close'), once(child, 'close')]);
+    ws.send(JSON.stringify({ ...state, embeddedPort: 37124 }));
+    await retired;
+    assert.equal(closed, 1);
+    assert.equal(server.embeddedAdbGrant(owner).port, 37124);
+    assert.equal(grant.open(() => true, assert.fail), null);
+  });
 
   const closing = Promise.all([once(ws, 'close'), once(relay, 'close'), once(reverse, 'close')]);
   host.close();

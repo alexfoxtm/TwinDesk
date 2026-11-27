@@ -9,6 +9,7 @@ import android.app.AlarmManager
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.InetAddresses
+import android.net.Network
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -29,6 +30,8 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.io.IOException
 import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.concurrent.CompletableFuture
@@ -144,13 +147,16 @@ class Link(
         val mirrorCall = AtomicReference<Call?>()
         val folderCalls = mutableSetOf<Call>()
         val davChildren = mutableMapOf<String, EmbeddedTurn>()
+        val adbChildren = mutableMapOf<String, EmbeddedTurn>()
         fun closeFolderCalls() = synchronized(folderCalls) {
             folderCalls.forEach { it.cancel() }
             folderCalls.clear()
         }
-        fun closeDavChildren() = synchronized(davChildren) {
-            davChildren.values.forEach { it.close() }
-            davChildren.clear()
+        fun closeReverseChildren() {
+            for (children in listOf(davChildren, adbChildren)) synchronized(children) {
+                children.values.forEach { it.close() }
+                children.clear()
+            }
         }
         fun current() = !cancelled && admit()
         fun allowed() = current() && network.online(node)
@@ -182,6 +188,8 @@ class Link(
     val hasBluetoothFallback get() = alt != null && altBle
     private var movedAt = 0L // when the session moved onto the network (dropAlt)
     private var pending: WebSocket? = null
+    private data class LanHandoff(val owner: WebSocket, val socket: WebSocket, val host: Host, val admit: () -> Boolean)
+    private val lanHandoff = AtomicReference<LanHandoff?>()
     private data class LanOffer(val addresses: List<String>, val port: Int)
     private var lanOffer: LanOffer? = null // only while this authenticated socket is primary on BLE
     private var lanCapable = false
@@ -362,6 +370,42 @@ class Link(
             }, CONNECT_TIMEOUT_MS + Proto.TIMEOUT_MS, TimeUnit.MILLISECONDS)
         }
         setState("connecting", "")
+    }
+
+    internal fun handbackToLan(h: Host, network: Network, admit: () -> Boolean) = run {
+        val owner = ws ?: return@run
+        if (parting || !connected || !embedded || !canReclaim || host?.sameEmbeddedPair(h) != true ||
+            lanHandoff.get() != null || !admit()) return@run
+        val socket = socket("wss://${h.address}:${h.port}", h.fp, network = network)
+        val move = LanHandoff(owner, socket, h, admit)
+        lanHandoff.set(move)
+        exec.schedule({
+            if (lanHandoff.compareAndSet(move, null)) socket.cancel()
+        }, CONNECT_TIMEOUT_MS + Proto.TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    }
+
+    private fun handbackOpen(move: LanHandoff) {
+        if (!lanHandoff.compareAndSet(move, null)) return
+        // No token or departure until the Wi-Fi socket proved the saved certificate.
+        if (parting || !connected || !embedded || ws !== move.owner ||
+            host?.sameEmbeddedPair(move.host) != true || !move.admit()) {
+            move.socket.cancel()
+            return
+        }
+        closeSocket(closeCode = "route-handoff")
+        ws = move.socket
+        host = move.host
+        pair = null
+        wired = false
+        ble = false
+        mode = "session"
+        lastCode = null
+        denyCode = "paused"
+        reclaimHello = true
+        dialAdmit = { !parting && move.admit() }
+        connectionObservations.select(move.host.id, move.host.fp)
+        setState("connecting", "")
+        onOpen()
     }
 
     internal fun connectEmbedded(
@@ -726,6 +770,7 @@ class Link(
         if (type == Proto.T.SHARE_OFFER || type == "embedded.dav.open") {
             return embeddedTurn != null && outgoing == (type == Proto.T.SHARE_OFFER)
         }
+        if (type == "embedded.adb.open") return !outgoing && embeddedTurn != null
         return type != "embedded.media" && type !in sideChannelTypes && !type.startsWith("rtc2.")
     }
 
@@ -754,11 +799,12 @@ class Link(
     // must not re-arm that intent after Stop, Forget or another explicit connection choice.
     internal fun invalidateReturn() {
         parting = true
+        lanHandoff.getAndSet(null)?.socket?.cancel()
         lockTunnel.get()?.cancel()
         embeddedTurn?.close()
         embeddedDial?.mirrorCall?.getAndSet(null)?.cancel()
         embeddedDial?.closeFolderCalls()
-        embeddedDial?.closeDavChildren()
+        embeddedDial?.closeReverseChildren()
     }
     internal fun canRememberReturn(h: Host, socket: Any?): Boolean = !parting && socket != null && ws === socket && state == "connected" && host?.id == h.id && host?.fp == h.fp
 
@@ -853,22 +899,43 @@ class Link(
     }
 
     internal fun openEmbeddedDav(owner: TrustedRoute, key: String, port: Int, serving: () -> Boolean) {
+        if (port !in 1..65535) return
+        val endpoint = InetSocketAddress(InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)), port)
+        openEmbeddedReverse(owner, key, endpoint, serving, adb = false)
+    }
+
+    internal fun openEmbeddedAdb(owner: TrustedRoute, key: String, endpoint: InetSocketAddress, serving: () -> Boolean) {
+        val address = endpoint.address ?: return
+        if (endpoint.port !in 1..65535 || endpoint.port == 5555 ||
+            address.isAnyLocalAddress || address.isLoopbackAddress || address.isMulticastAddress) return
+        openEmbeddedReverse(owner, key, endpoint, serving, adb = true)
+    }
+
+    private fun openEmbeddedReverse(owner: TrustedRoute, key: String, endpoint: InetSocketAddress,
+                                    serving: () -> Boolean, adb: Boolean) {
         val dial = embeddedDial ?: return
         val node = dial.node
-        fun current() = serving() && embeddedDial === dial && !dial.cancelled && accepts(owner) && host?.embeddedNode == node
-        if (!embeddedMediaKey.matches(key) || port !in 1..65535 || !current()) return
+        fun current() = embeddedDial === dial && !dial.cancelled && accepts(owner) &&
+            host?.embeddedNode == node && serving()
+        if (!embeddedMediaKey.matches(key) || !current()) return
+        val path = if (adb) "adb" else "dav"
+        val header = if (adb) "X-TwinDesk-Adb" else "X-TwinDesk-Dav"
+        val children = if (adb) dial.adbChildren else dial.davChildren
         val child = EmbeddedTurn(::current, connect = { allowed, listener ->
             openEmbeddedStream(dial, node, owner, allowed, listener) { local ->
-                Request.Builder().url("wss://127.0.0.1:$local/embedded/dav")
-                    .header("X-TwinDesk-Dav", key).build()
+                Request.Builder().url("wss://127.0.0.1:$local/embedded/$path")
+                    .header(header, key).build()
             }
         })
-        synchronized(dial.davChildren) {
-            if (!current() || key in dial.davChildren || dial.davChildren.size >= 2) return
-            dial.davChildren[key] = child
+        synchronized(children) {
+            if (!current() || key in children || children.size >= 2) return
+            children[key] = child
         }
-        child.connectLocal(port) {
-            synchronized(dial.davChildren) { dial.davChildren.remove(key, child) }
+        val guard = if (adb) exec.scheduleWithFixedDelay({ if (!current()) child.close() },
+            250, 250, TimeUnit.MILLISECONDS) else null
+        child.connectLocal(endpoint) {
+            guard?.cancel(false)
+            synchronized(children) { children.remove(key, child) }
             child.close()
         }
     }
@@ -1016,13 +1083,13 @@ class Link(
     }
 
     // Self-signed certificates: the fingerprint is the identity (pinned once paired).
-    private fun socket(url: String, pinFp: String?, bridge: EmbeddedBridge? = null): WebSocket {
-        val w = client(pinFp, bridge).newWebSocket(Request.Builder().url(url).build(), Listener())
+    private fun socket(url: String, pinFp: String?, bridge: EmbeddedBridge? = null, network: Network? = null): WebSocket {
+        val w = client(pinFp, bridge, network).newWebSocket(Request.Builder().url(url).build(), Listener())
         if (bridge == null) Regex("^wss://([^:/]+):(\\d+)").find(url)?.let { endOf[w] = it.groupValues[1] to it.groupValues[2].toInt() }
         return w
     }
 
-    private fun client(pinFp: String?, bridge: EmbeddedBridge? = null): OkHttpClient {
+    private fun client(pinFp: String?, bridge: EmbeddedBridge? = null, network: Network? = null): OkHttpClient {
         val trust = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
             override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String?) {
@@ -1034,9 +1101,9 @@ class Link(
         }
         val ssl = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), null) }
         return OkHttpClient.Builder()
-            .socketFactory(bridge?.sockets ?: NoDelaySockets)
+            .socketFactory(bridge?.sockets ?: network?.socketFactory ?: NoDelaySockets)
             .apply {
-                if (bridge != null) {
+                if (bridge != null || network != null) {
                     proxy(java.net.Proxy.NO_PROXY)
                     retryOnConnectionFailure(false)
                     followRedirects(false)
@@ -1053,6 +1120,7 @@ class Link(
     // ---- the resume socket and the fallback ----
 
     private fun gone(w: WebSocket, failure: String?) {
+        lanHandoff.get()?.takeIf { it.socket === w }?.let { lanHandoff.compareAndSet(it, null) }
         lastRxOf.remove(w)
         lastPeerPingOf.remove(w)
         endOf.remove(w)
@@ -1127,7 +1195,10 @@ class Link(
 
     private inner class Listener : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) = run {
-            if (webSocket === ws) onOpen() else if (webSocket === pending) onPendingOpen(webSocket)
+            val move = lanHandoff.get()
+            if (webSocket === ws) onOpen()
+            else if (webSocket === pending) onPendingOpen(webSocket)
+            else if (move?.socket === webSocket) handbackOpen(move)
         }
         override fun onMessage(webSocket: WebSocket, text: String) {
             val receivedAt = SystemClock.elapsedRealtime()
@@ -1718,6 +1789,7 @@ class Link(
     }
 
     private fun onClose(failure: String?) {
+        lanHandoff.getAndSet(null)?.socket?.cancel()
         val dial = embeddedDial
         val embeddedHost = host
         if (dial != null && dial.offer == null && embeddedHost != null && !helloSent && lastCode == null &&
@@ -1784,7 +1856,7 @@ class Link(
         closeEmbeddedTurn()
         dial.mirrorCall.getAndSet(null)?.cancel()
         dial.closeFolderCalls()
-        dial.closeDavChildren()
+        dial.closeReverseChildren()
         dial.bridge?.let(dial.network::release)
     }
 
@@ -1793,7 +1865,8 @@ class Link(
         embeddedTurn = null
     }
 
-    private fun closeSocket(drainEmbedded: Boolean = false, onDrained: () -> Unit = {}) {
+    private fun closeSocket(drainEmbedded: Boolean = false, closeCode: String = "local", onDrained: () -> Unit = {}) {
+        lanHandoff.getAndSet(null)?.socket?.cancel()
         val dial = embeddedDial
         val wasEmbedded = dial != null
         cancelBeat()
@@ -1808,7 +1881,7 @@ class Link(
         closeEmbeddedTurn()
         dial?.mirrorCall?.getAndSet(null)?.cancel()
         dial?.closeFolderCalls()
-        dial?.closeDavChildren()
+        dial?.closeReverseChildren()
         appsReady = false
         netemDial = null
         fxToken = ""
@@ -1836,7 +1909,7 @@ class Link(
             onDrained()
         }
         if (wasConnected) host?.let {
-            if (wasEmbedded) events.onEmbeddedClosed(it, "local") else events.onClosed(it, "local")
+            if (wasEmbedded) events.onEmbeddedClosed(it, closeCode) else events.onClosed(it, closeCode)
         }
     }
 

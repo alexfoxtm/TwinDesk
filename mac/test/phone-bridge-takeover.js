@@ -99,6 +99,62 @@ function harness(input = 'adb', Bridge = PhoneBridge) {
   };
 }
 
+test('Direct and Mesh require the exact authorized loopback serial and cancel a pending connect on LAN handback', async (t) => {
+  for (const Bridge of [PhoneBridge, MeshBridge]) {
+    const h = harness('adb', Bridge);
+    t.after(() => h.stop());
+    const { bridge, server, phoneHub } = h;
+    const ws = {};
+    const owner = { ...phone('galaxy', '127.0.0.1'), ws, conn: ws, embeddedPeer: true };
+    if (Bridge === MeshBridge) server.route = {};
+    server.current = owner;
+    server.emit('client', owner);
+    clearTimeout(bridge.kickTimer);
+    phoneHub.adb = { wifi: true, net: true, address: '192.168.1.20', port: 37123 };
+    let closed = 0;
+    const disconnected = [];
+    const grant = { open: (live, onClose) => ({
+      ready: Promise.resolve(40123),
+      attached: true,
+      close() { closed++; onClose(); },
+    }) };
+    phoneHub.raw = { embeddedAdbGrant: (socket) => socket === ws ? grant : null };
+    bridge.adb.connectEmbedded = async (serial) => {
+      assert.equal(serial, '127.0.0.1:40123');
+      return { out: `connected to ${serial}`, err: '' };
+    };
+    bridge.adb.connect = async () => assert.fail('embedded control cannot dial a LAN ADB port');
+    bridge.adb.disconnect = async (serial) => disconnected.push(serial);
+    bridge.adb.shell = async () => assert.fail('ADB commands need the authorized exact serial');
+    h.setDevices(async () => [
+      { serial: '127.0.0.1:40123', state: 'unauthorized' },
+      { serial: '127.0.0.1:40124', state: 'device' },
+      { serial: '192.168.1.20:37123', state: 'device' },
+    ]);
+    await bridge._poll();
+    assert.equal(bridge.state, 'needsPair');
+    assert.equal(bridge.serial, null);
+    assert.deepEqual(disconnected, ['127.0.0.1:40123']);
+
+    let reportSignal;
+    const started = new Promise((resolve) => { reportSignal = resolve; });
+    bridge.adb.connectEmbedded = (_serial, signal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => resolve({ out: '', err: '' }), { once: true });
+      reportSignal(signal);
+    });
+    const connecting = bridge._poll();
+    const signal = await started;
+    server.current = phone('galaxy', '192.168.1.20');
+    server.emit('transport', server.current);
+    assert.equal(signal.aborted, true);
+    await connecting;
+    assert.equal(bridge.serial, null);
+    assert.equal(closed, 2);
+    assert.deepEqual(disconnected, ['127.0.0.1:40123', '127.0.0.1:40123']);
+    h.stop();
+  }
+});
+
 test('the adb poll and the phone clipboard poll wait until a phone can use them', () => {
   const h = harness();
   try {

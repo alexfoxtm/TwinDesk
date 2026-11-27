@@ -55,10 +55,10 @@ class Adb {
     return !!(this.bin && this.server);
   }
 
-  run(args, { timeout = 15000, input } = {}) {
+  run(args, { timeout = 15000, input, signal } = {}) {
     return new Promise((resolve) => {
       if (!this.bin) return resolve({ code: -1, out: '', err: 'adb is missing' });
-      const p = execFile(this.bin, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, out, errOut) => {
+      const p = execFile(this.bin, args, { timeout, signal, maxBuffer: 8 * 1024 * 1024 }, (err, out, errOut) => {
         resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, out: String(out || ''), err: String(errOut || (err && err.message) || '') });
       });
       if (input != null) p.stdin.end(input);
@@ -115,6 +115,10 @@ class Adb {
     const r = await this._lan(['connect', `${address}:${port}`], 10000);
     const text = `${r.out}${r.err}`;
     return { ok: /connected to|already connected/i.test(text) && !/failed|unable|cannot/i.test(text), text: text.trim() };
+  }
+
+  connectEmbedded(serial, signal) {
+    return this.run(['connect', serial], { timeout: 10000, signal });
   }
 
   disconnect(serial) {

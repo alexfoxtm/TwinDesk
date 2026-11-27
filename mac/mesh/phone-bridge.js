@@ -25,6 +25,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const P = require('../../shared/protocol.js');
 const { Adb } = require('../adb');
+const { EmbeddedAdb } = require('../embedded-adb');
 const { Session, ACTION } = require('../scrcpy');
 const { KeyState, ANDROID } = require('../android-keys');
 const chat = require('../../shared/phonechat.js');
@@ -123,6 +124,7 @@ class PhoneBridge extends EventEmitter {
     this.inputBlocked = false; // Xiaomi with “USB debugging (Security settings)” off: touches and keys are refused
     this.wired = null; // wired.js: the phone on the USB cable
     this.install = null; // {state: 'installing'|'done'|'failed', message} for the full build
+    this.embeddedAdb = new EmbeddedAdb(this);
 
     phone.on('adb', () => this._kick());
     // The pairing code typed on the phone (its guide's notification), with its pairing port.
@@ -305,6 +307,7 @@ class PhoneBridge extends EventEmitter {
   }
 
   async _poll() {
+    this.embeddedAdb.sync();
     this._sound();
     if (this.polling || !isPhone(this.server.current)) return;
     const epoch = this._epoch;
@@ -339,7 +342,8 @@ class PhoneBridge extends EventEmitter {
   }
 
   async _step(epoch = this._epoch) {
-    const live = () => this._live(epoch);
+    const embedded = this.embeddedAdb.active;
+    const live = () => this._live(epoch) && this.embeddedAdb.active === embedded;
     if (!live()) return;
     if (!this.adb.available) return this._set('missing', 'adb or the scrcpy server is missing from this build.');
     const a = this.phone.adb;
@@ -348,25 +352,26 @@ class PhoneBridge extends EventEmitter {
     // for a phone this computer reached before: connect quietly (Automatic then goes through it).
     // ReZume's phone apps (Mirror apps) open through it as well: with wireless debugging on there,
     // it's used even when the mouse, the screen and the sound are all Limited.
-    if (!this.need && !(a.wifi && (this.known.has(this.server.current.deviceId) || this._rzApps()))) {
+    if (!this.embeddedAdb.wanted) {
       this.misses = 0;
       return this._set('idle', 'Not in use: the mouse and keyboard, the screen and the sound are set to Limited.');
     }
     this.adb.wake();
     const address = this.adbAddress();
-    const ready = await this._findDevice(address);
+    const ready = embedded ? await this.embeddedAdb.find() : await this._findDevice(address);
     if (!live()) return;
     if (ready) {
       this._known(true);
       this.serial = ready;
       await this._setup(ready);
       if (!live()) return;
-      if (await this._tcpip(ready)) return; // adbd restarts: found again on the next poll
+      if (!embedded && await this._tcpip(ready)) return; // adbd restarts: found again on the next poll
       if (!live()) return;
       await this._checkInput(ready);
       if (live()) await this._startControl();
       return;
     }
+    if (embedded) return;
     // Say once per change why it was not found (the user has no console): which adb devices exist, what the cable knows.
     const id = this.server.current && this.server.current.deviceId;
     const list = await this.adb.devices();
@@ -537,7 +542,7 @@ class PhoneBridge extends EventEmitter {
     const cmds = [
       `pm grant ${APP_ID} android.permission.WRITE_SECURE_SETTINGS`,
       // Android forgets a computer's pairing after 7 days without a connection; 0 keeps it.
-      'settings put global adb_allowed_connection_time 0',
+      ...(this.embeddedAdb.attempt?.serial === serial ? [] : ['settings put global adb_allowed_connection_time 0']),
       `pm grant ${APP_ID} android.permission.POST_NOTIFICATIONS`,
       `appops set ${APP_ID} SYSTEM_ALERT_WINDOW allow`,
       `cmd notification allow_listener ${APP_ID}/${APP_CLASS}.NotifListener`,
@@ -724,6 +729,7 @@ class PhoneBridge extends EventEmitter {
   adbAddress() {
     const c = this.server.current;
     const a = this.phone.adb || {};
+    if (this.embeddedAdb.active) return a.address || '';
     const onNet = c && c.address && c.address !== '127.0.0.1' && c.address !== '::1' && c.transport !== 'ble';
     return (onNet ? c.address.replace(/^::ffff:/, '') : '') || a.address || (c && c.address) || '';
   }
@@ -816,6 +822,7 @@ class PhoneBridge extends EventEmitter {
   // A choice changed (here or on the phone): the phone hears whether it's still needed, the sound
   // goes the new way, and the bridge looks again.
   modesChanged() {
+    this.embeddedAdb.sync();
     this._tellPhone();
     this._sound();
     this._kick();
@@ -1199,7 +1206,7 @@ class PhoneBridge extends EventEmitter {
   sessionOpts(kind, extra = {}) {
     const ph = this.getSettings().phone || {};
     // direct: Skip adbd over wireless debugging (scrcpy.js); lowLatency: the encoder's low-latency profile.
-    const base = { video: true, control: true, maxFps: 60, videoBitRate: (ph.bitrateMbps || 8) * 1000000, direct: !!ph.direct, lowLatency: !!ph.lowLatency };
+    const base = { video: true, control: true, maxFps: 60, videoBitRate: (ph.bitrateMbps || 8) * 1000000, direct: !!ph.direct && !this.embeddedAdb.active, lowLatency: !!ph.lowLatency };
     if (kind === 'camera') return { ...base, audio: false, stayAwake: true, flex: false, ...extra };
     if (kind === 'screen') return { ...base, audio: !!ph.sound, maxSize: ph.maxSize || 0, stayAwake: true, ...extra };
     return { ...base, audio: false, flex: true, ...extra };

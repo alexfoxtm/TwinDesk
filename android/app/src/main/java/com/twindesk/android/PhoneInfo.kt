@@ -20,7 +20,12 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.hardware.display.DisplayManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
@@ -30,10 +35,18 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Base64
 import android.view.Display
+import com.twindesk.android.embedded.embeddedMediaKey
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
 import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
+import java.net.Socket
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 
 class PhoneInfo(core: Core) : Feature(core) {
     private var battery: Int? = null
@@ -171,13 +184,16 @@ class Adb(core: Core) : Feature(core) {
     val needed get() = need ?: core.host?.let { neededBy(it) } ?: true
     val setupNeeded get() = (!paired && (!known || bridge == "needsPair" || canPair)) || inputBlocked
     @Volatile var pairing = false; private set // a code went to the computer, waiting for the answer
-    private var nsd: android.net.nsd.NsdManager.DiscoveryListener? = null
+    private var nsd: NsdManager.DiscoveryListener? = null
     @Volatile private var pairPort = 0 // our own "Pair device with pairing code" port, from mDNS
     // Our own wireless debugging port (it changes every time it's switched on), from mDNS here: the
     // computer connects to it straight away instead of waiting for its own mDNS, which misses
     // phones often enough (MIUI, One UI) that it used to look like the pairing was gone.
-    private var connectNsd: android.net.nsd.NsdManager.DiscoveryListener? = null
-    @Volatile private var connectPort = 0
+    private val connectHandler = Handler(Looper.getMainLooper())
+    private var connectWatch: ConnectWatch? = null
+    private val retryConnectWatch = Runnable { sendState() }
+    @Volatile private var embeddedGrant: EmbeddedAdbGrant? = null
+    private val wifiWatchRegistered: Boolean
 
     // check() switched it on and waits 2 s to see if it stayed on. Android switches it straight back
     // off on a network it doesn't trust: starting over on that change would switch it on again at
@@ -221,6 +237,7 @@ class Adb(core: Core) : Feature(core) {
                 if (!on) ours = false
                 else if (!seenOn && SystemClock.elapsedRealtime() - ourWriteAt > 3000) ours = false
                 seenOn = on
+                if (connectWatch?.owner != null) stopConnectWatch()
                 sendState()
                 if (!trying || wifiDebugging) check()
             }
@@ -233,6 +250,31 @@ class Adb(core: Core) : Feature(core) {
         core.ctx.registerReceiver(object : BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) = check()
         }, IntentFilter().apply { addAction(Intent.ACTION_USER_PRESENT); addAction(Intent.ACTION_SCREEN_ON) })
+        val request = NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build()
+        wifiWatchRegistered = runCatching {
+            val cm = connectivity ?: return@runCatching false
+            cm.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+                override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
+                    if (!core.link.embedded) return
+                    val wifi = connectWatch?.wifi
+                    if (wifi?.network == network && wifi.addresses != wifiAddresses(properties)) stopConnectWatch()
+                    sendState()
+                }
+
+                override fun onLost(network: Network) {
+                    if (!core.link.embedded) return
+                    if (connectWatch?.wifi?.network == network) stopConnectWatch()
+                    sendState()
+                }
+
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    if (!core.link.embedded) return
+                    if (connectWatch?.wifi?.network == network && !physicalWifi(caps)) stopConnectWatch()
+                    sendState()
+                }
+            }, connectHandler)
+            true
+        }.getOrDefault(false)
     }
 
     private val unlocked get() = core.ctx.getSystemService(PowerManager::class.java)?.isInteractive != false &&
@@ -241,7 +283,8 @@ class Adb(core: Core) : Feature(core) {
     val devOptions get() = Settings.Global.getInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
     // Wireless debugging only runs while USB debugging is on, and MIUI switches that off too.
     private val usbReach get() = core.link.wired && Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) == 1
-    val wifiDebugging get() = Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) == 1 && Settings.Global.getInt(cr, "adb_wifi_enabled", 0) == 1
+    private val wirelessDebugging get() = Settings.Global.getInt(cr, "adb_wifi_enabled", 0) == 1
+    val wifiDebugging get() = Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) == 1 && wirelessDebugging
     val canEnable get() = core.ctx.checkSelfPermission("android.permission.WRITE_SECURE_SETTINGS") == PackageManager.PERMISSION_GRANTED
     val isHotspotActive get(): Boolean = runCatching {
         val ifaces = NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback }
@@ -255,6 +298,32 @@ class Adb(core: Core) : Feature(core) {
         @Suppress("DEPRECATION")
         cm.allNetworks.any { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
     }.getOrDefault(true)
+
+    private val connectivity get() = core.ctx.getSystemService(ConnectivityManager::class.java)
+    private data class Wifi(val network: Network, val addresses: Set<Inet4Address>)
+
+    private fun physicalWifi(caps: NetworkCapabilities): Boolean =
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+
+    @Suppress("DEPRECATION")
+    private fun embeddedWifi(): Wifi? = runCatching {
+        if (!wifiWatchRegistered) return null
+        val cm = connectivity ?: return null
+        val active = cm.activeNetwork
+        val networks = cm.allNetworks.mapNotNull { network ->
+            val caps = cm.getNetworkCapabilities(network) ?: return@mapNotNull null
+            if (!physicalWifi(caps)) return@mapNotNull null
+            val addresses = wifiAddresses(cm.getLinkProperties(network))
+            Wifi(network, addresses).takeIf { addresses.isNotEmpty() }
+        }
+        networks.firstOrNull { it.network == active } ?: networks.singleOrNull()
+    }.getOrNull()
+
+    private fun wifiAddresses(properties: LinkProperties?): Set<Inet4Address> =
+        properties?.linkAddresses.orEmpty().map { it.address }.filterIsInstance<Inet4Address>()
+            .filter { !it.isAnyLocalAddress && !it.isLoopbackAddress && !it.isLinkLocalAddress && !it.isMulticastAddress }
+            .toSet()
 
     // Where the computer reaches this phone for wireless debugging: its Wi-Fi address, or on its own
     // hotspot (no Wi-Fi network here) the hotspot's, which a computer joined to it reaches.
@@ -272,11 +341,35 @@ class Adb(core: Core) : Feature(core) {
             .firstOrNull { it is Inet4Address && !it.isLoopbackAddress && !it.isLinkLocalAddress }?.hostAddress
     }.getOrNull() ?: ""
 
-    fun sendState() {
-        val on = wifiDebugging
-        if (on && core.link.connected) watchConnectPort() else { stopConnectWatch(); connectPort = 0 }
-        val hotspot = isHotspotActive
-        core.send(msg(Proto.T.ADB_STATE, "devOptions" to devOptions, "wifi" to on, "canEnable" to canEnable, "address" to address(), "full" to BuildConfig.NOTIF_LISTENER, "port" to connectPort, "net" to onWifiNetwork, "hotspot" to hotspot))
+    fun sendState() = sendState(startWatch = true)
+
+    private fun sendState(startWatch: Boolean) {
+        if (Looper.myLooper() != connectHandler.looper) {
+            connectHandler.post { sendState(startWatch) }
+            return
+        }
+        val embedded = core.link.embedded
+        val on = if (embedded) wirelessDebugging else wifiDebugging
+        val dev = devOptions
+        val route = core.link.currentTrustedRoute()?.takeIf(core.link::isEmbeddedRoute)
+        val wifi = if (on && dev && route != null && core.link.embeddedMediaReady(route)) embeddedWifi() else null
+        val address = address()
+        val marker = route?.marker ?: core.link.sessionMarker()
+        val watch = connectWatch
+        if (watch != null && (watch.marker !== marker || watch.wifi != wifi ||
+                (watch.owner == null) != (route == null) ||
+                (route != null && watch.owner?.matches(route.marker, route.id, route.fp) != true))) stopConnectWatch()
+        if (on && core.link.connected && (!embedded || wifi != null)) {
+            if (startWatch && connectWatch == null && marker != null) watchConnectPort(marker, route, wifi, address)
+        } else stopConnectWatch()
+
+        val state = msg(Proto.T.ADB_STATE, "devOptions" to dev, "wifi" to on, "canEnable" to canEnable,
+            "address" to address, "full" to BuildConfig.NOTIF_LISTENER, "port" to (connectWatch?.port ?: 0),
+            "net" to onWifiNetwork, "hotspot" to isHotspotActive)
+        if (route != null) {
+            val grant = embeddedGrant?.takeIf { core.link.embeddedMediaReady(it.owner) }
+            core.link.sendFor(route, state.put("embeddedPort", grant?.endpoint?.port ?: 0))
+        } else if (!embedded) core.send(state)
         core.changed()
     }
 
@@ -326,7 +419,7 @@ class Adb(core: Core) : Feature(core) {
         // Not asked either while the computer reaches adb anyway (#239: a Pixel on the USB cable, its
         // wireless debugging off, was asked again and again): paired is its adb answering now, and
         // on the cable with USB debugging on, that's the way it goes.
-        if (!core.link.connected || wifiDebugging || !onWifiNetwork || !needed || paired || usbReach) return settle(false) // not used there: nothing to ask
+        if (!core.link.connected || core.link.embedded || wifiDebugging || !onWifiNetwork || !needed || paired || usbReach) return settle(false) // not used there: nothing to ask
         if (!unlocked) return
         trying = enable(true)
         main.postDelayed({
@@ -355,14 +448,14 @@ class Adb(core: Core) : Feature(core) {
     override fun onClosed() {
         viewed = false
         camera = Camera()
-        stopConnectWatch()
+        if (!core.link.connected || connectWatch?.marker !== core.link.sessionMarker()) stopConnectWatch()
         main.post { check() }
         scheduleAutoOff()
     }
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
         when (t) {
-            Proto.T.ADB_ENABLE -> { enable(m.optBoolean("on", true)); sendState() }
+            Proto.T.ADB_ENABLE -> if (!core.link.embedded) { enable(m.optBoolean("on", true)); sendState() }
             Proto.T.ADB_BRIDGE -> {
                 val was = bridge
                 bridge = m.optString("state")
@@ -391,6 +484,34 @@ class Adb(core: Core) : Feature(core) {
                 core.changed()
             }
             else -> return false
+        }
+        return true
+    }
+
+    internal fun onMessage(t: String, m: JSONObject, route: Link.TrustedRoute?, fromEmbedded: Boolean): Boolean {
+        if (fromEmbedded && t == Proto.T.ADB_ENABLE) return true
+        if (t != "embedded.adb.open") return onMessage(t, m)
+        val grant = embeddedGrant ?: return true
+        val key = embeddedAdbKey(m, grant.endpoint.port, grant.owner, route, fromEmbedded) ?: return true
+        fun serving() = embeddedGrant === grant && core.link.embeddedMediaReady(grant.owner)
+        if (serving() && grant.verifying.compareAndSet(false, true)) core.bg.execute {
+            try {
+                if (!serving() || !wirelessDebugging || !devOptions || embeddedWifi() != grant.wifi) return@execute
+                if (!offersAdbTls(grant.endpoint)) {
+                    connectHandler.post {
+                        if (embeddedGrant === grant) {
+                            stopConnectWatch()
+                            sendState()
+                        }
+                    }
+                    return@execute
+                }
+                if (serving() && wirelessDebugging && devOptions && embeddedWifi() == grant.wifi) {
+                    core.link.openEmbeddedAdb(grant.owner, key, grant.endpoint, ::serving)
+                }
+            } finally {
+                grant.verifying.set(false)
+            }
         }
         return true
     }
@@ -431,51 +552,250 @@ class Adb(core: Core) : Feature(core) {
         nsd = watchOwn("_adb-tls-pairing._tcp", { nsd = null }) { pairPort = it }
     }
 
-    private fun watchConnectPort() {
-        if (connectNsd != null) return
-        connectNsd = watchOwn("_adb-tls-connect._tcp", { connectNsd = null }) { port ->
-            if (port != connectPort) {
-                connectPort = port
-                main.post { sendState() }
-            }
+    private fun watchConnectPort(marker: Any, owner: Link.TrustedRoute?, wifi: Wifi?, ownAddress: String) {
+        val mgr = core.ctx.getSystemService(NsdManager::class.java) ?: return
+        val watch = ConnectWatch(mgr, marker, owner, wifi, ownAddress)
+        connectWatch = watch
+        if (!watch.start()) {
+            connectWatch = null
+            if (owner != null) retryDiscovery()
         }
     }
 
     private fun stopConnectWatch() {
-        val l = connectNsd ?: return
-        connectNsd = null
-        runCatching { core.ctx.getSystemService(android.net.nsd.NsdManager::class.java).stopServiceDiscovery(l) }
+        embeddedGrant = null
+        connectHandler.removeCallbacks(retryConnectWatch)
+        val watch = connectWatch ?: return
+        connectWatch = null
+        watch.stop()
+    }
+
+    private class EmbeddedAdbGrant(
+        val owner: Link.TrustedRoute,
+        val wifi: Wifi,
+        val endpoint: InetSocketAddress,
+    ) {
+        val verifying = AtomicBoolean()
+    }
+
+    private fun retryDiscovery() {
+        connectHandler.removeCallbacks(retryConnectWatch)
+        connectHandler.postDelayed(retryConnectWatch, 2000)
+    }
+
+    // Re-resolve the currently selected instance as well as listening for loss. Android's
+    // discovery listener may keep the same instance name when only its SRV port changes.
+    private inner class ConnectWatch(
+        private val mgr: NsdManager,
+        val marker: Any,
+        val owner: Link.TrustedRoute?,
+        val wifi: Wifi?,
+        private val ownAddress: String,
+    ) : NsdManager.DiscoveryListener {
+        private val pending = linkedMapOf<String, NsdServiceInfo>()
+        private var resolving = false
+        private var selected: NsdServiceInfo? = null
+        private var candidate: InetSocketAddress? = null
+        var port = 0
+            private set
+        private val refresh = Runnable { selected?.let(::resolve) }
+
+        fun start() = runCatching {
+            val type = "_adb-tls-connect._tcp"
+            if (wifi != null && Build.VERSION.SDK_INT >= 33) {
+                mgr.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, wifi.network, { connectHandler.post(it) }, this)
+            } else mgr.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, this)
+        }.isSuccess
+
+        fun stop() {
+            connectHandler.removeCallbacks(refresh)
+            runCatching { mgr.stopServiceDiscovery(this) }
+        }
+
+        override fun onDiscoveryStarted(serviceType: String) {}
+        override fun onDiscoveryStopped(serviceType: String) = failed()
+        override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) = failed()
+        override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = failed()
+
+        private fun failed() {
+            connectHandler.post {
+                if (connectWatch !== this) return@post
+                stopConnectWatch()
+                if (owner != null && core.link.isEmbeddedRoute(owner)) {
+                    sendState(startWatch = false)
+                    retryDiscovery()
+                }
+            }
+        }
+
+        override fun onServiceFound(info: NsdServiceInfo) {
+            connectHandler.post { if (connectWatch === this) resolve(info) }
+        }
+
+        override fun onServiceLost(info: NsdServiceInfo) {
+            connectHandler.post {
+                if (connectWatch !== this) return@post
+                pending.remove(info.serviceName)
+                if (selected?.serviceName == info.serviceName) {
+                    stopConnectWatch()
+                    sendState()
+                }
+            }
+        }
+
+        private fun resolve(info: NsdServiceInfo) {
+            pending.putIfAbsent(info.serviceName, info)
+            resolveNext()
+        }
+
+        private fun resolveNext() {
+            if (resolving || connectWatch !== this) return
+            val info = pending.values.firstOrNull() ?: return
+            val name = info.serviceName
+            resolving = true
+            resolveService(mgr, info) { result ->
+                connectHandler.post {
+                    if (connectWatch !== this) return@post
+                    if (pending[name] === info) {
+                        pending.remove(name)
+                        resolved(info, result)
+                    }
+                    resolving = false
+                    resolveNext()
+                }
+            }
+        }
+
+        private fun resolved(info: NsdServiceInfo, result: NsdServiceInfo?) {
+            val addresses = result?.let(::resolvedAddresses).orEmpty()
+            if (owner == null || wifi == null) {
+                if (result != null && (ownAddress.isEmpty() || addresses.any { it.hostAddress == ownAddress })) {
+                    selected = info
+                    if (port != result.port) {
+                        port = result.port
+                        sendState()
+                    }
+                }
+                return
+            }
+            val sameService = selected?.serviceName == info.serviceName
+            val endpoint = result?.let {
+                val networkMatches = Build.VERSION.SDK_INT < 33 || it.network == null || it.network == wifi.network
+                embeddedAdbEndpoint(wifi.addresses, addresses, it.port, networkMatches)
+            }
+            if (endpoint == null) {
+                if (sameService) {
+                    stopConnectWatch()
+                    sendState()
+                }
+                return
+            }
+            if (sameService && candidate == endpoint) {
+                refresh()
+                return
+            }
+            if (!sameService && candidate != null) return
+            selected = info
+            candidate = endpoint
+            embeddedGrant = null
+            sendState()
+            core.bg.execute {
+                val live = core.link.embeddedMediaReady(owner) && wirelessDebugging && devOptions &&
+                    embeddedWifi() == wifi && offersAdbTls(endpoint)
+                connectHandler.post {
+                    if (connectWatch !== this || candidate !== endpoint || !core.link.isEmbeddedRoute(owner)) return@post
+                    if (!live) {
+                        candidate = null
+                    } else if (wirelessDebugging && devOptions && embeddedWifi() == wifi) {
+                        embeddedGrant = EmbeddedAdbGrant(owner, wifi, endpoint)
+                    }
+                    refresh()
+                    sendState()
+                }
+            }
+        }
+
+        private fun refresh() {
+            connectHandler.removeCallbacks(refresh)
+            connectHandler.postDelayed(refresh, 5000)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun resolvedAddresses(info: NsdServiceInfo): List<InetAddress> =
+        if (Build.VERSION.SDK_INT >= 34) info.hostAddresses else listOfNotNull(info.host)
+
+    @Suppress("DEPRECATION")
+    private fun resolveService(mgr: NsdManager, info: NsdServiceInfo, resolved: (NsdServiceInfo?) -> Unit) {
+        runCatching {
+            mgr.resolveService(info, object : NsdManager.ResolveListener {
+                override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) = resolved(null)
+                override fun onServiceResolved(info: NsdServiceInfo) = resolved(info)
+            })
+        }.onFailure { resolved(null) }
     }
 
     // Look for one of our own wireless debugging services over mDNS (this device's address).
-    private fun watchOwn(type: String, failed: () -> Unit, found: (Int) -> Unit): android.net.nsd.NsdManager.DiscoveryListener? {
-        val mgr = core.ctx.getSystemService(android.net.nsd.NsdManager::class.java) ?: return null
+    private fun watchOwn(type: String, failed: () -> Unit, found: (Int) -> Unit): NsdManager.DiscoveryListener? {
+        val mgr = core.ctx.getSystemService(NsdManager::class.java) ?: return null
         val me = address()
-        val l = object : android.net.nsd.NsdManager.DiscoveryListener {
+        val l = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {}
             override fun onDiscoveryStopped(serviceType: String) {}
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) { failed() }
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
-            override fun onServiceLost(info: android.net.nsd.NsdServiceInfo) {}
-            override fun onServiceFound(info: android.net.nsd.NsdServiceInfo) {
-                @Suppress("DEPRECATION")
-                runCatching {
-                    mgr.resolveService(info, object : android.net.nsd.NsdManager.ResolveListener {
-                        override fun onResolveFailed(i: android.net.nsd.NsdServiceInfo, errorCode: Int) {}
-                        override fun onServiceResolved(i: android.net.nsd.NsdServiceInfo) {
-                            val host = i.host?.hostAddress ?: ""
-                            if (me.isEmpty() || host == me) found(i.port)
-                        }
-                    })
+            override fun onServiceLost(info: NsdServiceInfo) {}
+            override fun onServiceFound(info: NsdServiceInfo) {
+                resolveService(mgr, info) { service ->
+                    if (service != null && (me.isEmpty() || resolvedAddresses(service).any { it.hostAddress == me })) found(service.port)
                 }
             }
         }
-        return runCatching { mgr.discoverServices(type, android.net.nsd.NsdManager.PROTOCOL_DNS_SD, l); l }.getOrElse { null }
+        return runCatching { mgr.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, l); l }.getOrElse { null }
     }
 
     private fun stopPortSearch() {
         val l = nsd ?: return
         nsd = null
-        runCatching { core.ctx.getSystemService(android.net.nsd.NsdManager::class.java).stopServiceDiscovery(l) }
+        runCatching { core.ctx.getSystemService(NsdManager::class.java).stopServiceDiscovery(l) }
     }
 }
+
+internal fun embeddedAdbEndpoint(
+    self: Set<Inet4Address>, resolved: List<InetAddress>, port: Int, networkMatches: Boolean,
+): InetSocketAddress? {
+    if (!networkMatches || port !in 1..65535 || port == 5555) return null
+    val address = resolved.filterIsInstance<Inet4Address>().firstOrNull { it in self } ?: return null
+    return InetSocketAddress(address, port)
+}
+
+internal fun embeddedAdbKey(
+    m: JSONObject, port: Int, owner: Link.TrustedRoute, route: Link.TrustedRoute?, fromEmbedded: Boolean,
+): String? {
+    if (!fromEmbedded || route == null || !owner.matches(route.marker, route.id, route.fp)) return null
+    if ((m.opt("port") as? Int) != port) return null
+    return (m.opt("key") as? String)?.takeIf(embeddedMediaKey::matches)
+}
+
+// Wireless adbd answers CNXN with STLS. Stop before TLS so this check never supplies a
+// key, starts pairing, or attempts authorization. A TCP connect alone also admits other services.
+internal fun offersAdbTls(endpoint: InetSocketAddress): Boolean = runCatching {
+    Socket().use { socket ->
+        val version = 0x01000000
+        val connect = 0x4e584e43 // CNXN
+        val tls = 0x534c5453 // STLS
+        val banner = "host::\u0000".encodeToByteArray()
+        val hello = ByteBuffer.allocate(24 + banner.size).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(connect).putInt(version).putInt(4096).putInt(banner.size)
+            .putInt(banner.sumOf { it.toInt() }).putInt(connect.inv()).put(banner)
+        socket.bind(InetSocketAddress(endpoint.address, 0))
+        socket.connect(endpoint, 700)
+        socket.soTimeout = 700
+        socket.getOutputStream().write(hello.array())
+        val response = ByteArray(24)
+        DataInputStream(socket.getInputStream()).readFully(response)
+        val header = ByteBuffer.wrap(response).order(ByteOrder.LITTLE_ENDIAN)
+        header.getInt(0) == tls && header.getInt(4) == version && header.getInt(8) == 0 &&
+            header.getInt(12) == 0 && header.getInt(16) == 0 && header.getInt(20) == tls.inv()
+    }
+}.getOrDefault(false)

@@ -52,6 +52,11 @@ const localError = (messageKey, messageVars = {}) => Object.assign(
   { messageKey, messageVars });
 
 class Session extends EventEmitter {
+  static forgetSerial(serial) {
+    pushed.delete(serial);
+    relayPushed.delete(serial);
+  }
+
   // opts: {video, audio, control, maxSize, maxFps, videoBitRate, newDisplay ('WxH/dpi'), flex, displayId,
   //        clipboardAutosync, audioSource ('output'|'playback'), powerOn, stayAwake, keepActive,
   //        direct (skip adbd), lowLatency}

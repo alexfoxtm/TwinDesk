@@ -344,7 +344,8 @@
       PHONE_ACTIVE_APP: 'phone.activeApp', // phone->computer {pkg}: current foreground package
       // Wireless debugging (adb), which the Mac uses for the screen, touch, mouse and keyboard,
       // the clipboard in the background and apps in their own windows (scrcpy):
-      ADB_STATE: 'adb.state', // phone->Mac {devOptions, wifi (wireless debugging on), canEnable (WRITE_SECURE_SETTINGS granted), address, full, port (its wireless debugging port from its own mDNS, 0 if not known yet), net (on a Wi-Fi network: wireless debugging can't be on without one)}
+      // embeddedPort: verified Wi-Fi ADB TLS port for this embedded control connection, 0 if unavailable.
+      ADB_STATE: 'adb.state', // phone->Mac {devOptions, wifi (wireless debugging on), canEnable (WRITE_SECURE_SETTINGS granted), address, full, port (its wireless debugging port from its own mDNS, 0 if not known yet), net (on a Wi-Fi network: wireless debugging can't be on without one), embeddedPort?}
       ADB_ENABLE: 'adb.enable', // Mac->phone {on}: switch wireless debugging (needs canEnable)
       ADB_PAIR: 'adb.pair', // phone->computer {code, port?}: the code from "Pair device with pairing code", typed on the phone (port: its pairing port, 0 if unknown)
       ADB_BRIDGE: 'adb.bridge', // computer->phone {state, message}: how the computer's wireless debugging link is doing (off|missing|waitingWifi|needsPair|connecting|ready|error), viewed, camera {on, facing, error, virtual} (its camera running there, for its Camera page), need? (bool: something here uses wireless debugging; false: the phone doesn't switch it on or ask for it; an older computer never says, and the phone does as before)

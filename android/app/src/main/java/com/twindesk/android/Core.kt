@@ -9,6 +9,10 @@
 package com.twindesk.android
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.InetAddresses
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -17,6 +21,7 @@ import com.twindesk.android.embedded.EmbeddedNetwork
 import com.twindesk.android.embedded.EmbeddedOffer
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
+import java.net.Inet4Address
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -25,6 +30,18 @@ abstract class Feature(val core: Core) {
     open fun onClosed() {}
     // Return true when the message was this feature's.
     open fun onMessage(t: String, m: JSONObject): Boolean = false
+}
+
+internal fun homeBeaconAddress(host: Host, seen: Found, now: Long): Inet4Address? {
+    if (host.os != "mac" || seen.os != "mac" || host.id != seen.id ||
+        host.fp.isBlank() || host.fp != seen.fp || !seen.rc || seen.port !in 1..65535 ||
+        now - seen.lastSeen !in 0..Proto.DEVICE_STALE_MS) return null
+    return localWifiAddress(seen.address)
+}
+
+private fun localWifiAddress(literal: String): Inet4Address? {
+    val address = runCatching { InetAddresses.parseNumericAddress(literal) }.getOrNull() as? Inet4Address
+    return address?.takeIf { it.hostAddress == literal && (it.isSiteLocalAddress || it.isLinkLocalAddress) }
 }
 
 class Core private constructor(val ctx: Context) : Link.Events {
@@ -55,6 +72,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         link.bleRx = { maxOf(ble.lastDown, serve.lastRx) }
         discovery.onBeaconCycle = { link.checkBeatDeadline(); peer.link.checkBeatDeadline() }
         discovery.onHost = { seen, changed ->
+            if (link.embedded && link.host?.id == seen.id) preferHomeWifi()
             if (changed && canReturn() && returnHost()?.let { it.id == seen.id && it.fp == seen.fp } == true) {
                 retryReturnNow()
             } else returnTick()
@@ -69,7 +87,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                 main.removeCallbacks(advertisingSettled)
                 main.postDelayed(advertisingSettled, 15_000L)
                 requestTimers()
-                timers.execute { retryReturnNow() }
+                timers.execute { preferHomeWifi(); retryReturnNow() }
             }
         }
     }
@@ -88,6 +106,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
     private var returnTailTurn = false
     private enum class ReturnRoute { IP, EMBEDDED }
     private var lastReturnRoute: ReturnRoute? = null
+    @Volatile private var manualEmbeddedWifi: Network? = null
+    private var nextLanHandoff = 0L
     @Volatile private var awayAttempts = 0
     @Volatile private var fastAdvertisingUntil = 0L
     private val interactive get() = ctx.getSystemService(android.os.PowerManager::class.java)?.isInteractive != false
@@ -205,6 +225,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     private fun canReturn(): Boolean {
         if (!returnTimerNeeded(inBackground(), link.connected, link.state == "connecting", link.pair != null, peer.connected)) return false
         val node = returnEmbeddedNode() ?: return true
+        if (returnHost()?.let { preferredHomeRoute(it) } != null) return true
         return MainActivity.shown && embeddedNetwork.online(node)
     }
 
@@ -336,6 +357,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         requestTimers()
         bank.opened() // Banking apps: Restore when TwinDesk opens
         link.wake()
+        if (link.connected && link.embedded) timers.execute { preferHomeWifi() }
         if (returnHost() != null) { timers.execute { retryReturnNow() }; return }
         val h = resumeLater ?: return
         resumeLater = null
@@ -459,7 +481,9 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (link.pair != null || (link.connected && !same)) return false
         if (link.connected && link.embedded) return true
         val candidates = nextEmbeddedCandidates(saved, nodes)
+        val manualWifi = homeRoute(saved)?.network
         stopReturn(invalidateLink = !link.connected)
+        manualEmbeddedWifi = manualWifi
         resumeUntil = 0
         resumeHost = null
         resumeLater = null
@@ -785,6 +809,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         }
         for (f in features) runCatching { f.onWelcome(host) }.onFailure { Log.e("TwinDesk", "welcome", it) }
         changed()
+        if (link.embedded) timers.execute { preferHomeWifi() }
     }
 
     override fun onEmbeddedMediaReady(route: Link.TrustedRoute) {
@@ -792,6 +817,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
             if (!link.embeddedMediaReady(route)) return@post
             screen.onEmbeddedMediaReady(route)
             macSound.sendPolicy(route)
+            adb.sendState()
             bg.execute { share.sync() }
         }
     }
@@ -828,6 +854,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                         f === clip -> clip.onMessage(t, m, route)
                         f === tether -> tether.onMessage(t, m, route)
                         f === hub -> hub.onMessage(t, m, route)
+                        f === adb -> adb.onMessage(t, m, route, fromEmbedded)
                         f === apps -> apps.onMessage(t, m, route)
                         f === share -> share.onMessage(t, m, route, fromEmbedded)
                         f === mirror -> mirror.onMessage(t, m, route, fromEmbedded)
@@ -869,6 +896,13 @@ class Core private constructor(val ctx: Context) : Link.Events {
             }
             changed()
         }
+        if (embedded && code == "route-handoff") {
+            synchronized(this) {
+                lastReturnRoute = ReturnRoute.IP
+                manualEmbeddedWifi = null
+            }
+            return
+        }
         // Capable Macs can be reclaimed without taking another session. Keep this intent across
         // outages, sleep and process death, until Disconnect/Forget/replacement explicitly ends it.
         if (link.ble && returnHost()?.id == host.id) stopReturn()
@@ -904,6 +938,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
         awayAttempts = 0
         returnTailTurn = false
         lastReturnRoute = null
+        manualEmbeddedWifi = null
+        nextLanHandoff = 0L
         returnPrefs.edit().remove("host").commit()
         changed()
     }
@@ -981,6 +1017,48 @@ class Core private constructor(val ctx: Context) : Link.Events {
         }
     }.getOrDefault(true)
 
+    private data class HomeRoute(val network: Network, val address: String, val port: Int)
+
+    // A default route is not proof of a LAN. Prefer the paired Mac's fresh beacon,
+    // and try its saved LAN address on networks that suppress discovery.
+    @Suppress("DEPRECATION")
+    private fun homeRoute(host: Host): HomeRoute? {
+        if (host.os != "mac" || host.fp.isBlank()) return null
+        val discovered = discovery.found[host.id]?.let { seen ->
+            homeBeaconAddress(host, seen, System.currentTimeMillis())?.let { it to seen.port }
+        }
+        val ip = discovered?.first ?: localWifiAddress(host.address) ?: return null
+        val port = discovered?.second ?: host.port
+        if (port !in 1..65535) return null
+        val cm = ctx.getSystemService(ConnectivityManager::class.java) ?: return null
+        val network = runCatching {
+            cm.allNetworks.firstOrNull { network ->
+                val caps = cm.getNetworkCapabilities(network) ?: return@firstOrNull false
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                    !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                    cm.getLinkProperties(network)?.routes?.any { !it.isDefaultRoute && !it.hasGateway() && it.matches(ip) } == true
+            }
+        }.getOrNull() ?: return null
+        return HomeRoute(network, ip.hostAddress ?: return null, port)
+    }
+
+    private fun preferredHomeRoute(host: Host) = homeRoute(host)?.takeUnless { it.network == manualEmbeddedWifi }
+
+    @Synchronized private fun preferHomeWifi() {
+        if (!link.connected || !link.embedded || !link.canReclaim || inBackground() || peer.connected || bank.pending) return
+        val current = link.host ?: return
+        val saved = returnHost()?.takeIf { it.sameEmbeddedPair(current) } ?: return
+        val route = preferredHomeRoute(saved) ?: return
+        val now = SystemClock.elapsedRealtime()
+        if (now < nextLanHandoff) return
+        nextLanHandoff = now + ROUTE_RETURN_COOLDOWN_MS
+        val generation = returnGeneration
+        link.handbackToLan(saved.copy(address = route.address, port = route.port), route.network) {
+            generation == returnGeneration && !inBackground() && !peer.connected && !bank.pending && savedEmbeddedHost(saved) != null &&
+                preferredHomeRoute(saved) == route
+        }
+    }
+
     @Synchronized internal fun returnTick(
         routeAvailable: (String) -> Boolean = ::hasRoute,
         connect: (Host, () -> Boolean) -> Unit = { host, admit -> link.connect(host, reclaim = true) { admit() } },
@@ -989,18 +1067,21 @@ class Core private constructor(val ctx: Context) : Link.Events {
         val h = returnHost() ?: return
         val now = System.currentTimeMillis()
         if (now < returnAfter) return
+        val seen = discovery.found[h.id]?.takeIf { it.fp == h.fp }
         val embeddedNode = returnEmbeddedNode()
+        val home = if (embeddedNode == null) null else preferredHomeRoute(h)
         if (embeddedNode != null) {
             if (h.embeddedNode != embeddedNode || link.isNetemPeer(h)) {
                 stopReturn()
                 return
             }
-            returnAfter = now + 5000L
-            returnOverEmbedded(h, listOf(embeddedNode))
-            return
+            if (home == null) {
+                returnAfter = now + 5000L
+                returnOverEmbedded(h, listOf(embeddedNode))
+                return
+            }
         }
-        val seen = discovery.found[h.id]?.takeIf { it.fp == h.fp }
-        if (seen != null && (seen.os !in RETURN_OS || !seen.rc)) {
+        if (home == null && seen != null && (seen.os !in RETURN_OS || !seen.rc)) {
             returnAfter = now + 3000L
             return
         }
@@ -1021,9 +1102,13 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // Without a matching LAN beacon, alternate the paired Tailscale address and stored one.
         // Both keep the same certificate pin and non-takeover hello, including on mobile data.
         val testRoute = link.pairedNetemHost(h)?.let { NetemRoute.configured }
-        var dial = if (seen != null) h.copy(address = seen.address, port = seen.port) else h
+        var dial = when {
+            home != null -> h.copy(address = home.address, port = home.port)
+            seen != null -> h.copy(address = seen.address, port = seen.port)
+            else -> h
+        }
         val onTailnet = tailscale && Tailnet.onIt()
-        if (testRoute == null && seen == null && onTailnet) {
+        if (testRoute == null && home == null && seen == null && onTailnet) {
             val tail = Tailnet.address(h)
             if (tail != null) {
                 returnTailTurn = !returnTailTurn

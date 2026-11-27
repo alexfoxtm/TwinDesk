@@ -35,6 +35,11 @@ class EmbeddedTailnet {
     this.proofs = new Map();
     this.media = new EmbeddedMedia(server);
     server.on('client', (ctx) => { void this.media.start(ctx); });
+    server.on('closed', (ctx) => this.media.close(ctx));
+    server.on('message', (msg, ctx, ws) => {
+      if (msg.t === P.T.ADB_STATE) this.media.adbState(ctx, ws, msg);
+    });
+    server.embeddedAdbGrant = (ws) => this.media.adbGrant(ws);
     server.retireEmbeddedMedia = (ctx) => this.media.close(ctx);
     this.server.embeddedPeer = (socket) => {
       if (socket.localPort !== this.backend?.address()?.port || socket.remoteAddress !== local) return null;
@@ -140,6 +145,7 @@ class EmbeddedTailnet {
       if (epoch !== this.epoch || !peer) return socket.destroy();
       if (req.url === '/embedded/turn') return this.media.upgrade(req, socket, head, peer);
       if (req.url === '/embedded/dav') return this.media.upgradeDav(req, socket, head, peer);
+      if (req.url === '/embedded/adb') return this.media.upgradeAdb(req, socket, head, peer);
       if (req.url !== '/' && (req.url !== P.LOCK_PATH || !this.server.lockview)) return socket.destroy();
       this.server.wss.handleUpgrade(req, socket, head, (ws) => this.server.wss.emit('connection', ws, req));
     });

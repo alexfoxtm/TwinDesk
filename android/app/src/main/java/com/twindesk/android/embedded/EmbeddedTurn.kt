@@ -55,8 +55,12 @@ internal class EmbeddedTurn(
     private fun active() = !stopped && current()
 
     fun connectLocal(port: Int, ended: () -> Unit) {
+        connectLocal(InetSocketAddress(loopback, port), ended)
+    }
+
+    fun connectLocal(endpoint: InetSocketAddress, ended: () -> Unit) {
         val socket = Socket()
-        admit(socket, waitForDrain = true, prepare = { socket.connect(InetSocketAddress(loopback, port), 3000) }, ended = ended)
+        admit(socket, waitForDrain = true, prepare = { socket.connect(endpoint, 3000) }, ended = ended)
     }
 
     private fun admit(socket: Socket, waitForDrain: Boolean = false, prepare: () -> Unit = {}, ended: () -> Unit = {}) {
