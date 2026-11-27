@@ -46,6 +46,12 @@ if [ -n "$APK" ]; then
   BADGING=$(sh scripts/apk-badging.sh "$APK")
   APK_ID=$(printf '%s\n' "$BADGING" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1)
   [ "$APK_ID" = 'io.github.alexfoxtm.twindesk.android' ] || { echo 'error: the bundled Android APK is not the fork package' >&2; exit 1; }
+  APK_CODE=$(printf '%s\n' "$BADGING" | sed -n "s/^package: .* versionCode='\([0-9]*\)'.*/\1/p")
+  APK_VERSION=$(printf '%s\n' "$BADGING" | sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p")
+  if [ "$APK_CODE" != "$((100000 + FORK_BUILD))" ] || [ "$APK_VERSION" != "$VER" ]; then
+    echo "error: Android APK needs version $VER and versionCode $((100000 + FORK_BUILD)); rebuild the full APK for this fork build" >&2
+    exit 1
+  fi
   [ "$APK" = "$APK_DEST" ] || cp "$APK" "$APK_DEST"
 else
   echo "note: no Android full APK — the app won't offer the full Android build"

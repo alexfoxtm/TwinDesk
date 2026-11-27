@@ -20,6 +20,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DRY_RUN=0
 SKIP_ANDROID=0
 SKIP_MAC=0
+ANDROID_ONLY=0
 NO_INSTALL=0
 ALLOW_DIRTY=0
 QUIT_TIMEOUT=45
@@ -64,6 +65,7 @@ Options:
   --dry-run            Print each step and the commands it would run. Change nothing.
   --skip-android       Do not rebuild the Android APK.
   --skip-mac           Do not rebuild the Mac app.
+  --android-only       Retry the matching APK from the installed Mac build. Requires --device.
   --no-install         Build only: do not quit, copy, or install.
   --device <serial>    adb serial for the phone (for example a host:port).
   --quit-timeout <s>   Seconds to wait for the main process after each quit (default 45).
@@ -491,7 +493,7 @@ build_mac() {
 }
 
 require_newer_fork_build() {
-  [ "$NO_INSTALL" -eq 0 ] || return 0
+  [ "$NO_INSTALL" -eq 0 ] && [ "$ANDROID_ONLY" -eq 0 ] || return 0
   local installed="$APPLICATIONS/$app_name" previous
   [ -e "$installed" ] || return 0
   previous=$(plutil -extract CFBundleVersion raw "$installed/Contents/Info.plist" 2>/dev/null) ||
@@ -502,6 +504,24 @@ require_newer_fork_build() {
     fail "unexpected installed Mac CFBundleVersion: ${previous}"
   (( fork_build > 10#${previous%%.*} )) ||
     fail "fork build ${fork_build} must exceed installed Mac build ${previous}; bump ios/ForkBuild.xcconfig"
+}
+
+verify_android_retry() {
+  local installed="$APPLICATIONS/$app_name" info bundled
+  info="$installed/Contents/Info.plist"
+  bundled="$installed/Contents/Resources/app/mac/$apk_dest"
+  [ "$(plutil -extract CFBundleShortVersionString raw "$info" 2>/dev/null)" = "$mac_version" ] &&
+    [ "$(plutil -extract CFBundleVersion raw "$info" 2>/dev/null)" = "$fork_build" ] ||
+    fail "the installed Mac must already be build $mac_version ($fork_build) for an Android-only retry"
+  [ -f "$bundled" ] && cmp -s "$NEW_APK" "$bundled" ||
+    fail "the commit APK must match the APK bundled in the installed Mac"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    would codesign --verify --deep --strict "$installed"
+  else
+    codesign --verify --deep --strict "$installed" >>"$LOG" 2>&1 ||
+      fail "could not verify the installed Mac signature"
+  fi
+  step "phone: using the APK bundled with installed Mac build $fork_build"
 }
 
 verify_build() {
@@ -975,6 +995,7 @@ parse_args() {
       --dry-run) DRY_RUN=1 ;;
       --skip-android) SKIP_ANDROID=1 ;;
       --skip-mac) SKIP_MAC=1 ;;
+      --android-only) ANDROID_ONLY=1; SKIP_ANDROID=1; SKIP_MAC=1 ;;
       --no-install) NO_INSTALL=1 ;;
       --allow-dirty) ALLOW_DIRTY=1 ;;
       --quit-timeout)
@@ -997,6 +1018,9 @@ parse_args() {
 
 main() {
   parse_args "$@"
+  if [ "$ANDROID_ONLY" -eq 1 ] && { [ -z "$DEVICE" ] || [ "$NO_INSTALL" -eq 1 ]; }; then
+    fail "--android-only requires --device and installs the existing APK"
+  fi
   is_pos_int "$QUIT_TIMEOUT" || fail "--quit-timeout wants a positive whole number of seconds"
   is_pos_int "$POLL_INTERVAL" || fail "FORK_INSTALL_POLL_INTERVAL wants a positive whole number of seconds"
   is_uint "$POST_WAIT" || fail "FORK_INSTALL_POST_WAIT wants a whole number of seconds"
@@ -1008,6 +1032,12 @@ main() {
   require_commit_apk
   open_log
   build_android
+  if [ "$ANDROID_ONLY" -eq 1 ]; then
+    verify_android_retry
+    install_phone
+    [ "$PHONE_FAILED" -eq 0 ]
+    return
+  fi
   build_mac
   verify_build
   install_mac

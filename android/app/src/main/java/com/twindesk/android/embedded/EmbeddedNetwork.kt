@@ -28,6 +28,7 @@ internal class EmbeddedNetwork(context: Context, private val store: Store, priva
     @Volatile var status = Status("stopped")
         private set
     @Volatile private var desired = false
+    val enabled get() = desired
     @Volatile private var generation = 0L
     // Accessed on the lifecycle worker.
     private var started = false

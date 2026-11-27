@@ -860,6 +860,21 @@ function main() {
     assert.notEqual(staleApk.status, 0);
     assert.match(staleApk.stderr, /APK metadata must match 3\.2\.1 \(versionCode 100074\)/);
     assert.deepEqual(stateChanging(callsOf(reusedBuild.calls)), []);
+    const installed = path.join(reusedBuild.applications, 'TwinDesk Fork.app/Contents');
+    write(path.join(installed, 'Info.plist'), 'CFBundleShortVersionString=3.2.1\nCFBundleVersion=74\n');
+    const bundled = path.join(installed, 'Resources/app/mac/vendor/twindesk-android-full.apk');
+    write(bundled, 'new-apk-bytes\n');
+    const retry = run(reusedBuild, ['--android-only', '--device', 'galaxy']);
+    assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+    assert.match(retry.stdout, /using the APK bundled with installed Mac build 74/);
+    const calls = callsOf(reusedBuild.calls);
+    assert.equal(called(calls, 'adb').filter((line) => line.includes('\tinstall\t-r\t')).length, 1);
+    for (const name of ['osascript', 'ditto', 'open', 'gradlew', 'npm']) assert.deepEqual(called(calls, name), []);
+    write(bundled, 'another-apk\n');
+    const mismatch = run(reusedBuild, ['--android-only', '--device', 'galaxy']);
+    assert.notEqual(mismatch.status, 0);
+    assert.match(mismatch.stderr, /must match the APK bundled in the installed Mac/);
+    assert.equal(called(callsOf(reusedBuild.calls), 'adb').filter((line) => line.includes('\tinstall\t-r\t')).length, 1);
   } finally {
     fs.rmSync(reusedBuild.tmp, { recursive: true, force: true });
   }

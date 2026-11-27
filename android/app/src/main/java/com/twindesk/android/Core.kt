@@ -55,6 +55,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val link = Link(store, this, context = ctx)
     internal val embeddedNetwork = EmbeddedNetwork(ctx, store) {
         changed()
+        if (started && link.connected) adb.sendState()
         if (MainActivity.shown && returnHost()?.let { embeddedCandidates(it).isNotEmpty() } == true) {
             timers.execute { retryRouteReturn() }
         }

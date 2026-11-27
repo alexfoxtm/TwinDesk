@@ -51,10 +51,13 @@ function aboutInfo(app) {
   const v = process.versions;
   const version = app.getVersion();
   // The Mac packager ships this build setting beside shared/ for About.
-  const config = process.platform === 'darwin'
-    ? fs.readFileSync(path.join(__dirname, '../ios/ForkBuild.xcconfig'), 'utf8')
-    : '';
-  const build = /^CURRENT_PROJECT_VERSION = ([1-9][0-9]{0,3})$/m.exec(config)?.[1];
+  let build;
+  if (process.platform === 'darwin') {
+    try {
+      const config = fs.readFileSync(path.join(__dirname, '../ios/ForkBuild.xcconfig'), 'utf8');
+      build = /^CURRENT_PROJECT_VERSION = ([1-9][0-9]{0,3})$/m.exec(config)?.[1];
+    } catch (_) { /* Older bundles have only the upstream version. */ }
+  }
   return {
     app: {
       name: NAME[process.platform] || 'TwinDesk',

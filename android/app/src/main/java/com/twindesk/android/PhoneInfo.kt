@@ -366,7 +366,7 @@ class Adb(core: Core) : Feature(core) {
         val state = msg(Proto.T.ADB_STATE, "devOptions" to dev, "wifi" to on, "canEnable" to canEnable,
             "address" to address, "full" to BuildConfig.NOTIF_LISTENER, "port" to (connectWatch?.port ?: 0),
             "net" to onWifiNetwork, "hotspot" to isHotspotActive,
-            "keepWirelessTls" to (core.link.host?.embeddedNode != null))
+            "keepWirelessTls" to (core.link.host?.embeddedNode != null && core.embeddedNetwork.enabled))
         if (route != null) {
             val grant = embeddedGrant?.takeIf { core.link.embeddedMediaReady(it.owner) }
             core.link.sendFor(route, state.put("embeddedPort", grant?.endpoint?.port ?: 0))

@@ -504,7 +504,9 @@ class PhoneBridge extends EventEmitter {
       if (a.canEnable) this.server.sendToClient({ t: T.ADB_ENABLE, on: true }); // also refreshes adb.state
       if (a.canEnable && !direct) return this._set('connecting', 'Turning on wireless debugging…');
       // Android keeps wireless debugging off without a Wi-Fi network: a Wi-Fi Direct group isn't one.
-      if (direct) return this._set('waitingWifi', 'On a direct Wi-Fi link the phone can’t turn wireless debugging on (it needs a Wi-Fi network). Connect it once by USB cable or on the same Wi-Fi, and it works here too until the phone restarts. Meanwhile the mouse and keyboard work through Accessibility.');
+      if (direct) return this._set('waitingWifi', a.keepWirelessTls
+        ? 'Connect by USB to use ADB on this direct Wi-Fi link. The mouse and keyboard still work through Accessibility.'
+        : 'On a direct Wi-Fi link the phone can’t turn wireless debugging on (it needs a Wi-Fi network). Connect it once by USB cable or on the same Wi-Fi, and it works here too until the phone restarts. Meanwhile the mouse and keyboard work through Accessibility.');
       return this._set('waitingWifi', a.devOptions ? 'Turn on USB debugging and Wireless debugging on the phone (both).' : 'Turn on Developer options, then USB debugging and Wireless debugging on the phone (both).');
     }
     // Wireless debugging is on: connect where it listens. The phone tells us its port (it finds
