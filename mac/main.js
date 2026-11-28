@@ -933,6 +933,7 @@ app.whenReady().then(() => {
       onMoved: (fn) => peer.on('transport', () => fn()),
       send: (m) => peer.sendToClient(m),
       session: () => peer._fxSession(),
+      peerId: () => peer.current?.deviceId,
       peerName: () => (peer.current && peer.current.name) || '',
       setRequest: (fn) => { peer.drive = fn; },
     },

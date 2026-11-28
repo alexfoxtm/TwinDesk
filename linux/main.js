@@ -1285,6 +1285,7 @@ function loadDrive() {
       onMoved: (fn) => link.on('transport', () => fn()),
       send: (m) => link.send(m),
       session: () => link._fxSession(),
+      peerId: () => link.snapshot().session?.id,
       peerName: () => peerName(),
       setRequest: (fn) => { link.drive = fn; },
     },

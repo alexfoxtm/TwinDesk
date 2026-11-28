@@ -69,9 +69,9 @@ Messages (`shared/protocol.js`). An app without Drive ignores them:
 
 | Message | Direction | Body |
 |---|---|---|
-| `drive.hello` | either | `{v: 1, again?}`: Drive is on here. Each side answers once with its own. `again`: send everything once more. |
-| `drive.index` | either | `{entries, last}`: everything this side has, in parts of 1,000, once both said hello |
-| `drive.update` | either | `{entries}`: what changed here since |
+| `drive.hello` | either | `{v: 1, have?, again?}`: Drive is on here. Each side answers once with its own. `have` `{e, n}`: where this side last had all of the other's index. `again`: send the index once more (since `have`). |
+| `drive.index` | either | `{entries, last, upto?}`: once both said hello, in parts of 1,000: what changed since the other's `have`, or everything. `upto` `{e, n}` (last part): where this index is |
+| `drive.update` | either | `{entries, r?}`: what changed here since. `r` `{e, from, to}` (last part): those changes' numbers |
 | `drive.want` | host → guest | `{id, p, h}`: PUT this version of this file to me |
 | `drive.gone` | guest → host | `{id}`: I don't have that version any more |
 
@@ -87,9 +87,29 @@ Only the host serves:
 - The server only serves a path that's in the index, at the hash asked for, and only if that's what
   is on disk now.
 
+### When a session comes back
+
+Every change the other devices should hear of gets a number (`shared/drive.js` `cursor()`), within
+an epoch that starts again each time Drive starts. Each side keeps, per computer, the last place in
+that computer's index where it had everything: every part merged, every download done, and nothing
+the engine left for later (a file changed here meanwhile, or here but not scanned yet). Its hello
+says that place (`have`), and the other side sends only what changed after it, usually nothing. An
+update that follows straight on from that place moves it along. Anything that didn't come (a failed
+download, a session that ended halfway) leaves the place where it was, so the next hello asks for
+it again. Another epoch (that app restarted), or no `have` (an older TwinDesk): the whole index, as
+before. Without this a link that kept dropping sent every device's whole index every time it came
+back: 10,000 files are about 2.5 MB, to each computer.
+
+The parts of an index go 100 ms apart, not all at once, and stop when the session ends. A computer
+that came back 3 times within a minute waits until its link stayed up 15 s before Drive says hello
+again (`[drive] … came back 3 times within a minute` in the log).
+
+### Downloads
+
 Up to 4 files move at once. A download goes to `.twindesk/` inside the Drive folder, is checked
 against its hash, and is renamed into place only if the file there didn't change meanwhile. A
-failed download is tried again with the next index (a `drive.hello` with `again` after 30 s).
+failed download is tried again with the next index (a `drive.hello` with `again` after 30 s, which
+gets what changed since the last place this side had everything, the failed file included).
 
 Never over Bluetooth. A session on Bluetooth waits, and when it moves to Wi-Fi or a cable, the link
 kicks (`again`) and everything that waited goes.

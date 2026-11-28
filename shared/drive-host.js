@@ -7,7 +7,7 @@
 //   settings.drive = {on, folder ('' = ~/TwinDesk Drive)}; save(); me, meName: this device's id and
 //   name; userData: the app's folder (the index lives there); trash(abs) -> Promise.
 //   adapter: the app's session, {on(type, fn), onUp(fn), onDown(fn), onMoved(fn), send(msg),
-//   session() (fast files' {host, token, address, port?, fp?, transport}), peerName(),
+//   session() (fast files' {host, token, address, port?, fp?, transport}), peerId(), peerName(),
 //   setRequest(fn | null) (the host's HTTPS requests: fn(req, res) -> handled)}.
 //
 // createMesh({settings, save, me, meName, userData, trash, mesh, onChange}): the same for Multi-device:
@@ -24,18 +24,37 @@ const P = require('./protocol.js');
 const DRIVE_TYPES = [P.T.DRIVE_HELLO, P.T.DRIVE_INDEX, P.T.DRIVE_UPDATE, P.T.DRIVE_WANT, P.T.DRIVE_GONE];
 const defaultFolder = () => path.join(os.homedir(), 'TwinDesk Drive');
 
+function memoryFor(memories, id) {
+  if (!id) return {};
+  const memory = memories.get(id) || {};
+  memories.delete(id);
+  memories.set(id, memory);
+  if (memories.size > 64) memories.delete(memories.keys().next().value);
+  return memory;
+}
+
 function create({ settings, save, me, meName, userData, trash, adapter, onChange = () => {} }) {
-  let drive = null, link = null, up = false, hooked = false, error = '';
+  let drive = null, link = null, id = null, started = false, up = false, hooked = false, error = '';
+  const memories = new Map(); // authenticated peer id -> its checkpoint and reconnect times
   const cfg = () => settings.drive || (settings.drive = { on: false, folder: '' });
   const folder = () => cfg().folder || defaultFolder();
+
+  const select = (reconnect = false) => {
+    if (!link) return;
+    const next = adapter.peerId?.();
+    if (next === id && !reconnect) return;
+    link.stop();
+    id = next;
+    link.memory = memoryFor(memories, id);
+  };
 
   // The session's events go to the link while there is one (registered once: some adapters can't unregister).
   const hook = () => {
     if (hooked) return;
     hooked = true;
-    for (const t of DRIVE_TYPES) adapter.on(t, (m) => link && link.onMessage(m));
-    adapter.onUp(() => { up = true; if (link) link.start(); onChange(); });
-    adapter.onDown(() => { up = false; if (link) link.stop(); onChange(); });
+    for (const t of DRIVE_TYPES) adapter.on(t, (m) => { select(); if (link) link.onMessage(m); });
+    adapter.onUp(() => { up = true; select(true); if (link) link.start(); onChange(); });
+    adapter.onDown(() => { up = false; id = null; if (link) link.stop(); onChange(); });
     adapter.onMoved(() => link && link.kick());
   };
 
@@ -44,17 +63,21 @@ function create({ settings, save, me, meName, userData, trash, adapter, onChange
     const { Drive } = require('./drive.js');
     const { DriveLink } = require('./drive-link.js');
     hook();
-    drive = new Drive({ me, meName, folder, indexFile: path.join(userData, 'drive-index.json'), trash });
+    const selectedFolder = folder();
+    const engine = drive = new Drive({ me, meName, folder: () => selectedFolder, indexFile: path.join(userData, 'drive-index.json'), trash });
     drive.on('change', onChange);
-    link = new DriveLink({ drive, send: (m) => adapter.send(m), session: () => adapter.session(), peerName: () => adapter.peerName(), onChange });
+    link = new DriveLink({ drive, send: (m) => adapter.send(m), session: () => adapter.session(), peerName: () => adapter.peerName(), canStart: () => started, onChange });
     adapter.setRequest((req, res) => link.request(req, res));
     try {
-      await drive.start();
+      await engine.start();
+      if (drive !== engine) return;
+      started = true;
       error = '';
     } catch (e) {
       error = e.message;
     }
-    if (up || adapter.session()) link.start();
+    if (drive !== engine) return;
+    if (up || adapter.session()) { select(); link.start(); }
     onChange();
   }
 
@@ -62,6 +85,9 @@ function create({ settings, save, me, meName, userData, trash, adapter, onChange
     adapter.setRequest(null);
     if (link) link.destroy();
     link = null;
+    id = null;
+    started = false;
+    memories.clear();
     const d = drive;
     drive = null;
     if (d) await d.stop();
@@ -103,15 +129,16 @@ function create({ settings, save, me, meName, userData, trash, adapter, onChange
 // Multi-device: every connected computer syncs with the one engine here. A change adopted from one
 // goes on to the others (the engine's 'changed'), so they all end up the same.
 function createMesh({ settings, save, me, meName, userData, trash, mesh, onChange = () => {} }) {
-  let drive = null, DriveLink = null, HEADER = '', PATH = '', hooked = false, error = '';
+  let drive = null, DriveLink = null, HEADER = '', PATH = '', started = false, hooked = false, error = '';
   const links = new Map(); // peer id -> DriveLink, while that computer is connected
+  const memories = new Map(); // peer id -> where we are in its index, its reconnect times
   const cfg = () => settings.drive || (settings.drive = { on: false, folder: '' });
   const folder = () => cfg().folder || defaultFolder();
 
   const open = (id) => {
     if (links.has(id)) return links.get(id);
     if (!drive || !id || !mesh.isComputer(id)) return null;
-    const l = new DriveLink({ drive, send: (m) => mesh.send(id, m), session: () => mesh.session(id), peerName: () => mesh.peerName(id), onChange });
+    const l = new DriveLink({ drive, send: (m) => mesh.send(id, m), session: () => mesh.session(id), peerName: () => mesh.peerName(id), canStart: () => started, onChange, memory: memoryFor(memories, id) });
     links.set(id, l);
     return l;
   };
@@ -158,23 +185,28 @@ function createMesh({ settings, save, me, meName, userData, trash, mesh, onChang
     const { Drive } = require('./drive.js');
     ({ DriveLink, HEADER, PATH } = require('./drive-link.js'));
     hook();
-    drive = new Drive({ me, meName, folder, indexFile: path.join(userData, 'drive-index.json'), trash });
+    const selectedFolder = folder();
+    const engine = drive = new Drive({ me, meName, folder: () => selectedFolder, indexFile: path.join(userData, 'drive-index.json'), trash });
     drive.on('change', onChange);
     mesh.setRequest(request);
     try {
-      await drive.start();
+      await engine.start();
+      if (drive !== engine) return;
+      started = true;
       error = '';
     } catch (e) {
       error = e.message;
     }
-    if (!drive) return; // turned off meanwhile
+    if (drive !== engine) return; // turned off or changed folders meanwhile
     for (const id of mesh.connectedIds()) { const l = open(id); if (l) l.start(); }
     onChange();
   }
 
   async function stop() {
     mesh.setRequest(null);
+    started = false;
     for (const id of [...links.keys()]) close(id);
+    memories.clear();
     const d = drive;
     drive = null;
     if (d) await d.stop();

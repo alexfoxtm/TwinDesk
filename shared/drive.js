@@ -21,7 +21,13 @@
 // new Drive({me, meName, folder, indexFile, trash, watch}):
 //   me, meName: this device's id and name. folder(): the folder now. indexFile: where the index is kept.
 //   trash(abs) -> Promise: to the Trash (shell.trashItem). watch: fs.watch the folder (off in tests).
-// Events: 'changed' (entries: what this device changed, for the others), 'change' (status).
+// Events: 'changed' (entries: what this device changed, for the others; range: {e, from, to}, the
+// numbers they got, see cursor()), 'change' (status).
+//
+// Every change the others should hear of is numbered (seq), within an epoch that starts again with
+// each start(). A device that comes back says the number it has of ours (cursor() when it last had
+// everything), and gets only what changed since (entriesSince()): a link that drops and comes back
+// costs nothing when nothing changed. Another epoch (this app restarted): everything, as before.
 'use strict';
 
 const fs = require('fs');
@@ -67,6 +73,10 @@ function holdable(rel, platform = process.platform) {
   if (platform !== 'win32') return true;
   return rel.split('/').every((p) => !WIN_BAD.test(p) && !WIN_RESERVED.test(p));
 }
+
+const newEpoch = () => crypto.randomBytes(8).toString('hex');
+// merge()'s downloads, with .deferred beside them (not one of them: the list stays a plain list).
+const withDeferred = (pulls, deferred) => Object.defineProperty(pulls, 'deferred', { value: deferred });
 
 // ---- version vectors ----
 function cleanV(v) {
@@ -158,6 +168,9 @@ class Drive extends EventEmitter {
     this.watcher = null;
     this.watchTimer = null;
     this.retryTimer = null;
+    this.epoch = newEpoch();
+    this.seq = 0;
+    this.seqOf = new Map(); // rel -> seq of its last change (0: unchanged since this epoch began)
   }
 
   get folder() {
@@ -176,6 +189,9 @@ class Drive extends EventEmitter {
     await fsp.mkdir(path.join(this.folder, TMP_DIR), { recursive: true }).catch(() => {});
     this._clearTmp();
     this._load();
+    this.epoch = newEpoch();
+    this.seq = 0;
+    this.seqOf.clear();
     this.state = 'idle';
     if (this.watchOn) this._watch();
     this.scanTimer = setInterval(() => this.scan(), SCAN_MS);
@@ -321,7 +337,7 @@ class Drive extends EventEmitter {
     this.state = 'idle';
     if (changed.length) {
       this._save();
-      this.emit('changed', changed);
+      this._changed(changed);
     }
     this.emit('change');
     return changed;
@@ -332,19 +348,39 @@ class Drive extends EventEmitter {
     return [...this.index.values()].filter((e) => !this.skipped.has(e.p));
   }
 
-  // ---- merging: what another device has ----
-  // remote: its entries (as sent). peerName: for a conflict copy's name. Resolves to the downloads
-  // needed: [{p, h, s, m, entry}] — get each and hand it to adopt().
-  merge(remote, peerName = '') {
-    return this._run(() => this._merge(remote, peerName));
+  // Where this index is: {e: epoch, n: the last change's number}.
+  cursor() {
+    return { e: this.epoch, n: this.seq };
   }
 
-  async _merge(remote, peerName) {
-    if (this.state === 'off') return [];
+  // What changed after number n of this epoch (entries(), but only those).
+  entriesSince(n) {
+    return this.entries().filter((e) => (this.seqOf.get(e.p) || 0) > n);
+  }
+
+  _changed(list) {
+    const from = this.seq;
+    for (const e of list) this.seqOf.set(e.p, ++this.seq);
+    this.emit('changed', list, { e: this.epoch, from, to: this.seq });
+  }
+
+  // ---- merging: what another device has ----
+  // remote: its entries (as sent). peerName: for a conflict copy's name. Resolves to the downloads
+  // needed: [{p, h, s, m, entry}] — get each and hand it to adopt(). Their .deferred is true when
+  // an entry was left for later (it changed here meanwhile, or is here but not scanned yet): only
+  // the same entry again settles it, so the other side mustn't take this as having it all.
+  merge(remote, peerName = '', current = () => true) {
+    return this._run(() => this._merge(remote, peerName, current));
+  }
+
+  async _merge(remote, peerName, current) {
+    if (this.state === 'off' || !current()) return withDeferred([], true);
     await this._scan(); // what's here first, so a change made a moment ago counts
     const pulls = [];
     const changed = [];
+    let deferred = false;
     for (const raw of Array.isArray(remote) ? remote : []) {
+      if (!current()) { deferred = true; break; }
       const R = cleanEntry(raw);
       if (!R) continue;
       if (!holdable(R.p, this.platform)) {
@@ -355,6 +391,7 @@ class Drive extends EventEmitter {
       if (!L) {
         if (R.d) { this.index.set(R.p, R); changed.push(R); } // a deletion of something never here: remembered, and passed on
         else if (await this._exists(R.p)) { // there, but not seen yet (a scan will): a conflict later
+          deferred = true;
           continue;
         } else pulls.push(this._pull(R, R.v));
         continue;
@@ -363,7 +400,8 @@ class Drive extends EventEmitter {
       if (c === 'eq' || c === 'lt') continue;
       if (c === 'gt') {
         if (R.d) {
-          if (!L.d && !(await this._unchanged(L))) continue; // changed here meanwhile: the next scan makes it a conflict
+          if (!L.d && !(await this._unchanged(L))) { deferred = true; continue; } // changed here meanwhile: the next scan makes it a conflict
+          if (!current()) { deferred = true; break; }
           if (!L.d) await this._trash(R.p);
           this.index.set(R.p, R);
           changed.push(R);
@@ -390,16 +428,19 @@ class Drive extends EventEmitter {
         this.index.set(R.p, e);
         changed.push(e);
       } else if (wins(R, L)) { // theirs wins: ours is kept beside it, then theirs comes
-        if (!(await this._unchanged(L))) continue;
+        if (!(await this._unchanged(L))) { deferred = true; continue; }
+        if (!current()) { deferred = true; break; }
         await this._keepAsConflict(R.p);
         pulls.push(this._pull(R, merge(L.v, R.v), null));
       }
       // ours wins: nothing here; the other device keeps its copy as the conflict and takes ours
     }
-    this._save();
-    if (changed.length) this.emit('changed', changed);
+    if (changed.length) { // every change to the index here is in changed: nothing else to write
+      this._save();
+      this._changed(changed);
+    }
     this.emit('change');
-    return pulls;
+    return withDeferred(pulls, deferred);
   }
 
   _pull(R, v, L = null) {
@@ -468,21 +509,21 @@ class Drive extends EventEmitter {
   }
 
   // A download finished at tmp: checked and put in place (resolves true), or thrown away (false).
-  adopt(pull, tmp) {
-    return this._run(() => this._adopt(pull, tmp));
+  adopt(pull, tmp, current = () => true) {
+    return this._run(() => this._adopt(pull, tmp, current));
   }
 
-  async _adopt(pull, tmp) {
+  async _adopt(pull, tmp, current) {
     try {
-      return await this._place(pull, tmp);
+      return await this._place(pull, tmp, current);
     } finally {
       this.release(pull);
     }
   }
 
-  async _place(pull, tmp) {
+  async _place(pull, tmp, current) {
     const drop = () => fsp.rm(tmp, { force: true });
-    if (this.state === 'off') { await drop(); return false; }
+    if (this.state === 'off' || !current()) { await drop(); return false; }
     let h;
     try { h = await hashFile(tmp); } catch { await drop(); return false; }
     if (h !== pull.h) { await drop(); return false; }
@@ -496,6 +537,7 @@ class Drive extends EventEmitter {
     if (st && !pull.expect && !(L && L.d)) { await drop(); return false; } // a file appeared there meanwhile
     if (await this._caseClash(pull.p)) { await drop(); this.skipped.add(pull.p); return false; }
     await fsp.mkdir(path.dirname(abs), { recursive: true });
+    if (!current()) { await drop(); return false; }
     if (st && pull.expect) await this.trashFn(abs).catch(() => {}); // the old version to the Trash, as a deletion would
     await fsp.rename(tmp, abs);
     const m = pull.m ? new Date(pull.m) : new Date();
@@ -505,7 +547,7 @@ class Drive extends EventEmitter {
     this.index.set(pull.p, e);
     this.lastSync = this.now();
     this._save();
-    this.emit('changed', [e]); // passed on: a device that only this one meets gets it from here
+    this._changed([e]); // passed on: a device that only this one meets gets it from here
     this.emit('change');
     return true;
   }
