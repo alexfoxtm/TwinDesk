@@ -1,4 +1,4 @@
 // Increment once before each distributed fork build. Keep counting across upstream releases.
 // macOS and iOS use this as CFBundleVersion. Android adds 100000 for versionCode.
 // About pads the number to at least three digits.
-CURRENT_PROJECT_VERSION = 75
+CURRENT_PROJECT_VERSION = 76

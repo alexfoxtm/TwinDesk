@@ -98,6 +98,30 @@
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
 
+        <receiver
+            android:name=".MacWidgetProvider"
+            android:exported="false"
+            android:label="@string/mac_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/mac_widget_info" />
+        </receiver>
+
+        <activity
+            android:name=".MacWidgetConfigureActivity"
+            android:exported="true"
+            android:label="@string/mac_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".MacWidgetConnectActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.NoDisplay" />
+
         <activity
             android:name=".ViewerActivity"
             android:exported="false"
@@ -116,6 +140,13 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:windowSoftInputMode="adjustResize"
             android:launchMode="singleTask" />
+
+        <activity
+            android:name=".MacWidgetTouchpadActivity"
+            android:exported="false"
+            android:label="@string/label_remote"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:windowSoftInputMode="adjustResize" />
 
         <!-- The Deck full screen (Deck.kt): held landscape unless the computer's Deck says portrait. -->
         <activity

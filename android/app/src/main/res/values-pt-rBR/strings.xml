@@ -15,4 +15,6 @@
     <string name="label_copy">Copiar para o computador</string>
     <string name="label_open">Abrir no computador</string>
     <string name="label_clip_tile">Enviar área de transferência</string>
+    <string name="mac_widget_label">Mac do TwinDesk</string>
+    <string name="mac_widget_description">Conecte-se a um Mac salvo e veja o status da conexão.</string>
 </resources>

@@ -43,6 +43,7 @@ object Notify {
     const val ID_MEDIA_DEL = 17 // Remove on the computer's Photos page, without All files access: tap for Android's confirmation
     const val ID_PEER = 18 // Connect with Android (Peer.kt): a phone asks to connect, to pair, to see the screen
     const val ID_TETHER = 19 // Internet over USB (Tether.kt): Allow, then while it runs, Stop
+    const val ID_MEDIA_TRASH = 21 // Move to Trash on the computer's Photos page (Android 11+): tap for Android's Trash confirmation (20 is PcMedia)
     private const val ID_TASK_BASE = 900
     const val ID_SOUND = 12 // the sound capture: asking for Start, then its service's own
     private const val ID_FILES_BASE = 1000
@@ -278,6 +279,26 @@ object Notify {
                 .build())
         }
     }
+
+    // Photos moved to Trash on the computer (Android 11+): Android's own Trash confirmation,
+    // opened by tapping (distinct ID from ID_MEDIA_DEL and PcMedia's ID 20).
+    fun mediaTrash(ctx: Context, name: String, count: Int, confirm: PendingIntent) {
+        val what = if (count == 1) tr("1 photo or video") else tr("{count} photos and videos", "count" to count)
+        runCatching {
+            nm(ctx).createNotificationChannel(NotificationChannel(CH_ASK, tr("Requests from your computer"), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = tr("Access requested by your computer (Calls, Messages, Photos)")
+            })
+            nm(ctx).notify(ID_MEDIA_TRASH, Notification.Builder(ctx, CH_ASK)
+                .setSmallIcon(R.drawable.ic_stat)
+                .setContentTitle(tr("Move {what} to Trash?", "what" to what))
+                .setContentText(tr("{name} asks to move them to Trash on this phone. Tap to confirm.", "name" to name))
+                .setContentIntent(confirm)
+                .setAutoCancel(true)
+                .build())
+        }
+    }
+
+    fun cancelMediaTrash(ctx: Context) = runCatching { nm(ctx).cancel(ID_MEDIA_TRASH) }.let { }
 
     // The computer's Allow for Calls, Messages or Photos, when the prompt can't open by itself
     // (no "Display over other apps"): tap for Android's prompt. Its channel is made the first time.

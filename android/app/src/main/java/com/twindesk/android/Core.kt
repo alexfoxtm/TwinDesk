@@ -70,20 +70,23 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // … and PCs that connect to us: this phone advertises (BleServe.kt), as a PC's Bluetooth often can't.
     val serve = BleServe(ctx, { JSONObject().put("id", store.deviceId).put("name", store.deviceName).put("os", Proto.OS) }, ::changed, ::onServeOpen)
     init {
+        link.cableOnly = { store.flag(CABLE_ONLY, false) }
         link.bleRx = { maxOf(ble.lastDown, serve.lastRx) }
         discovery.onBeaconCycle = { link.checkBeatDeadline(); peer.link.checkBeatDeadline() }
         discovery.onHost = { seen, changed ->
-            if (link.embedded && link.host?.id == seen.id) preferHomeWifi()
-            if (changed && canReturn() && returnHost()?.let { it.id == seen.id && it.fp == seen.fp } == true) {
-                retryReturnNow()
-            } else returnTick()
+            if (!cableOnly) {
+                if (link.embedded && link.host?.id == seen.id) preferHomeWifi()
+                if (changed && canReturn() && returnHost()?.let { it.id == seen.id && it.fp == seen.fp } == true) {
+                    retryReturnNow()
+                } else returnTick()
+            }
         }
         discovery.onRouteAvailable = {
-            if (started) timers.execute { retryRouteReturn() }
+            if (started && !cableOnly) timers.execute { retryRouteReturn() }
         }
         discovery.onNetworkChange = {
             link.wake()
-            if (started) {
+            if (started && !cableOnly) {
                 fastAdvertisingUntil = android.os.SystemClock.elapsedRealtime() + 15_000L
                 main.removeCallbacks(advertisingSettled)
                 main.postDelayed(advertisingSettled, 15_000L)
@@ -169,6 +172,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // Connect with Android: another phone, on a session of its own beside the computer's (Peer.kt).
     // Not a Feature: the computer's messages never reach it, nor its the computer.
     val peer = Peer(this)
+    init { peer.link.cableOnly = { store.flag(CABLE_ONLY, false) } }
     // General › Modules (Modules.kt): the modules off when this process started; a page off isn't
     // shown and its features hear nothing from the computer.
     val modulesAtStart: Set<String> = Modules.off(store)
@@ -224,6 +228,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     private fun canReturn(): Boolean {
+        if (cableOnly) return false
         if (!returnTimerNeeded(inBackground(), link.connected, link.state == "connecting", link.pair != null, peer.connected)) return false
         val node = returnEmbeddedNode() ?: return true
         if (returnHost()?.let { preferredHomeRoute(it, allowSaved = false) } != null) return true
@@ -271,12 +276,14 @@ class Core private constructor(val ctx: Context) : Link.Events {
         if (started || store.flag("exited", false)) return
         started = true
         registerRebuildableCaches()
-        discovery.start()
+        if (!cableOnly) discovery.start()
         runCatching { peer.start() }.onFailure { Log.e("TwinDesk", "peer", it) }
+        if (cableOnly) runCatching { peer.suspendForCable() }
         Notify.channels(ctx)
         runCatching { localSend.start() }.onFailure { Log.e("TwinDesk", "localsend", it) }
+        if (cableOnly) runCatching { localSend.reconcile() }
         updates.start()
-        if (store.flag("remote.btpad", false)) btPad.start()
+        if (!cableOnly && store.flag("remote.btpad", false)) btPad.start()
         runCatching { bank.start() }.onFailure { Log.e("TwinDesk", "bank", it) }
         // Quiet links (Link.kt, shared/quiet.js, #143): what keeps the session pinging every second.
         // Clipboard, notifications and cursor sharing switched on don't: their messages go when
@@ -349,15 +356,93 @@ class Core private constructor(val ctx: Context) : Link.Events {
     var reconnectBg: Boolean
         get() = store.flag("reconnectBg", true)
         set(on) { store.setFlag("reconnectBg", on); changed() }
+
+    // Connection › USB cable only (off). Wireless dials, scans and listeners stay down.
+    // The saved preference is committed before anything is torn down.
+    var cableOnly: Boolean
+        get() = store.flag(CABLE_ONLY, false)
+        set(on) { applyCableOnly(on) }
+
+    @Synchronized
+    private fun applyCableOnly(on: Boolean) {
+        if (on == store.flag(CABLE_ONLY, false)) return
+        if (!store.commitFlag(CABLE_ONLY, on)) return
+        if (on) {
+            suspendWireless()
+            adb.check()
+        } else restoreWireless()
+        adb.sendState()
+        if (link.wired && link.connected) {
+            link.send(JSONObject().put("t", "phone.wired").put("nonce", wiredNonce).put("cable", if (on) 1 else 0))
+        }
+        changed()
+    }
+
+    // A cable-only screen or sound offer is the desktop relay on the verified adb-reverse session.
+    // Direct ICE, or any offer while the session is not that cable, is not the cable.
+    internal fun cableMediaOk(m: JSONObject): Boolean {
+        if (!cableOnly) return true
+        if (!link.wired) return false
+        val ice = m.optJSONObject("ice") ?: return false
+        if (ice.optString("iceTransportPolicy") != "relay") return false
+        val servers = ice.optJSONArray("iceServers") ?: return false
+        if (servers.length() !in 1..2) return false
+        return (0 until servers.length()).all { index ->
+            val url = servers.optJSONObject(index)?.opt("urls") as? String ?: return@all false
+            val port = CABLE_TURN.matchEntire(url)?.groupValues?.get(1)?.toIntOrNull()
+            port != null && port in 1..65535
+        }
+    }
+
+    @Synchronized
+    private fun invalidateInFlight() {
+        returnGeneration++
+        resumeUntil = 0L
+        resumeHost = null
+        resumeLater = null
+        embeddedTargetId = null
+    }
+
+    private var resumeEmbeddedAfterCable: Boolean? = null
+
+    // Does not sign out, forget a pair, or clear an explicit Stop. A live cable session stays.
+    private fun suspendWireless() {
+        resumeEmbeddedAfterCable = embeddedNetwork.enabled
+        invalidateInFlight()
+        runCatching { discovery.stop() }
+        runCatching { ble.stop() }
+        runCatching { serve.stop() }
+        runCatching { net.onClosed() }
+        if (btPadMade) runCatching { btPad.stop() }
+        runCatching { peer.suspendForCable() }
+        runCatching { localSend.reconcile() }
+        link.dropWirelessRoutes()
+        runCatching { embeddedNetwork.stop(signOut = false) }
+    }
+
+    // Brings back what the person had switched on. A return that Stop removed stays removed.
+    private fun restoreWireless() {
+        if (!started) return
+        if (store.flag("remote.btpad", false)) runCatching { btPad.start() }
+        runCatching { discovery.start() }
+        runCatching { peer.restoreAfterCable() }
+        runCatching { localSend.reconcile() }
+        val resumeEmbedded = resumeEmbeddedAfterCable
+        resumeEmbeddedAfterCable = null
+        if (resumeEmbedded == true) embeddedNetwork.start(false)
+        else if (resumeEmbedded == null) embeddedNetwork.restore()
+    }
+
     @Volatile private var resumeLater: Host? = null
 
     // MainActivity on screen: a session put off by Reconnect in the background, and a look at the
     // current one.
-    fun foreground() {
-        embeddedNetwork.restore()
+    fun foreground(reconnect: Boolean = true) {
+        if (!cableOnly) embeddedNetwork.restore()
         requestTimers()
         bank.opened() // Banking apps: Restore when TwinDesk opens
         link.wake()
+        if (cableOnly || !reconnect) return
         if (link.connected && link.embedded) timers.execute { preferHomeWifi() }
         if (returnHost() != null) { timers.execute { retryReturnNow() }; return }
         val h = resumeLater ?: return
@@ -389,6 +474,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
     private val bleReconcile = Any()
 
     private fun bleTick() = synchronized(bleReconcile) {
+        if (cableOnly) {
+            ble.scan(false)
+            serve.advertise(false, lowPower = lowPowerAdvertising())
+            return
+        }
         ble.prune()
         if (bleWifiOff && link.connected && net.via == "Wi-Fi") {
             link.dropAlt()
@@ -433,8 +523,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     fun changed() {
         // (runCatching: discovery may report before every feature exists)
-        val pcFast = link.connected && !link.wired && (screen.viewing || adb.viewed || remote.active)
-        val peerFast = peer.connected && (
+        val pcFast = !cableOnly && link.connected && !link.wired && (screen.viewing || adb.viewed || remote.active)
+        val peerFast = !cableOnly && peer.connected && (
             PeerScreen.viewer != null ||
             PeerScreen.screenActive ||
             PeerScreen.standaloneSoundActive ||
@@ -445,6 +535,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         runCatching { link.nudge() } // a hold started or ended: the computer hears within a tick
         requestTimers()
         version.value++
+        MacWidget.changed(ctx)
         main.post { TwinService.refresh(ctx); if (started) bank.checkSoon() }
     }
 
@@ -455,6 +546,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     // The UI's Connect prefers nearby routes. The Network card can switch this exact Mac.
     @Synchronized fun connect(h: Host) {
+        if (cableOnly) return
         if (link.connected && link.host?.id == h.id && link.host?.fp == h.fp) return
         if (h.os == "mac") {
             val saved = store.hosts().firstOrNull { it.id == h.id && it.fp == h.fp && it.token == h.token } ?: return
@@ -469,12 +561,43 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     @Synchronized
+    internal fun connectFromWidget(request: MacWidget.Request): MacWidget.ConnectResult {
+        val unavailable = MacWidget.ConnectResult.UNAVAILABLE
+        if (cableOnly) return unavailable
+        if (!MainActivity.shown || bank.pending || link.connected || link.state == "connecting" ||
+            link.pair != null || peer.connected) return unavailable
+        val saved = MacWidget.saved(ctx, store, request) ?: return unavailable
+        val current = { MacWidget.saved(ctx, store, request)?.sameWidgetPair(saved) == true }
+        val near = discovery.found[saved.id]?.fp == saved.fp || bleOn && (ble.get(saved.id) != null || serve.get(saved.id) != null)
+        if (!near && !link.isNetemPeer(saved)) {
+            val nodes = embeddedCandidates(saved)
+            if (nodes.isNotEmpty()) return if (connectSavedEmbedded(saved, nodes, widgetAdmit = current))
+                MacWidget.ConnectResult.STARTED else unavailable
+            if (saved.embeddedNode != null && embeddedNetwork.status.state == "starting")
+                return MacWidget.ConnectResult.WAITING_FOR_NETWORK
+            val legacy = saved.relay != null ||
+                (tailscale && Tailnet.address(saved)?.let { it != saved.address } == true && Tailnet.onIt())
+            if (saved.address.isBlank() && !legacy) return unavailable
+        }
+        stopReturn()
+        resumeHost = null
+        resumeLater = null
+        val generation = returnGeneration
+        val queued = connect(saved, false) {
+            generation == returnGeneration && !link.connected && link.pair == null && !peer.connected && current()
+        }
+        return if (queued) MacWidget.ConnectResult.STARTED else unavailable
+    }
+
+    @Synchronized
     internal fun connectEmbedded(h: Host): Boolean = connectSavedEmbedded(h, embeddedCandidates(h))
 
     internal fun canConnectEmbedded(h: Host): Boolean =
-        !peer.connected && (!link.connected || link.host?.sameEmbeddedPair(h) == true) && embeddedCandidates(h).isNotEmpty()
+        !cableOnly && !peer.connected && (!link.connected || link.host?.sameEmbeddedPair(h) == true) && embeddedCandidates(h).isNotEmpty()
 
-    private fun connectSavedEmbedded(h: Host, nodes: List<String>, fromQr: Boolean = false): Boolean {
+    private fun connectSavedEmbedded(h: Host, nodes: List<String>, fromQr: Boolean = false,
+                                     widgetAdmit: (() -> Boolean)? = null): Boolean {
+        if (cableOnly) return false
         val saved = savedEmbeddedHost(h) ?: return false
         if (nodes.isEmpty() || (!fromQr && !MainActivity.shown) || peer.connected || link.isNetemPeer(saved)) return false
         val same = link.host?.sameEmbeddedPair(saved) == true
@@ -491,7 +614,8 @@ class Core private constructor(val ctx: Context) : Link.Events {
         embeddedTargetId = saved.id
         val gen = returnGeneration
         link.connectEmbedded(embeddedNetwork, candidates, saved) {
-            val current = gen == returnGeneration && !peer.connected && savedEmbeddedHost(saved) != null
+            val current = gen == returnGeneration && !peer.connected && savedEmbeddedHost(saved) != null &&
+                widgetAdmit?.invoke() != false
             link.denyCode = if (current && !fromQr && !MainActivity.shown) "paused" else "local"
             current && (fromQr || MainActivity.shown)
         }
@@ -513,6 +637,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     @Synchronized
     internal fun pairEmbedded(offer: EmbeddedOffer): Boolean {
+        if (cableOnly) return false
         if (peer.connected || !embeddedNetwork.online(offer.node) || NetemRoute.configured?.peer == offer.id) return false
         val previous = store.hosts().find { it.id == offer.id }
         if (previous?.let { it.os != "mac" || it.fp != offer.pin || link.isNetemPeer(it) } == true) return false
@@ -536,6 +661,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
 
     @Synchronized
     internal fun stopEmbedded(signOut: Boolean) {
+        if (resumeEmbeddedAfterCable != null) resumeEmbeddedAfterCable = false
         synchronized(store) {
             val goodbye = if (embeddedTargetId != null || link.embedded || returnEmbeddedNode() != null) {
                 stopReturn(invalidateLink = link.embedded || !link.connected)
@@ -550,18 +676,20 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     // skipNet: the network just failed to reach it (a stale address after the Wi-Fi went): Bluetooth first.
-    private fun connect(h: Host, skipNet: Boolean) {
+    private fun connect(h: Host, skipNet: Boolean, admit: (() -> Boolean)? = null): Boolean {
+        if (cableOnly || admit?.invoke() == false) return false
         resumeUntil = 0
         link.pairedNetemHost(h)?.let {
             triedNet = true
-            link.connect(it)
-            return
+            link.connect(it, admit = admit)
+            return true
         }
         // The computer's screen, input and sound through ADB need wireless debugging: switch it on as
         // we connect (unless that computer said it doesn't use it: all through Native there).
         if (adb.canEnable && !adb.wifiDebugging && adb.neededBy(h) && !bank.pending) adb.enable(true)
-        val seen = if (skipNet) null else discovery.found[h.id]
-        if (seen != null && (seen.address != h.address || seen.port != h.port)) {
+        val seen = if (skipNet) null else discovery.found[h.id]?.takeIf { admit == null || it.fp == h.fp }
+        val target = if (seen != null && admit != null) h.copy(address = seen.address, port = seen.port) else h
+        if (admit == null && seen != null && (seen.address != h.address || seen.port != h.port)) {
             h.address = seen.address
             h.port = seen.port
             store.putHost(h)
@@ -571,39 +699,43 @@ class Core private constructor(val ctx: Context) : Link.Events {
         triedNet = !viaBle
         if (viaBle) {
             bg.execute {
+                if (cableOnly || admit?.invoke() == false) return@execute
                 val port = blePipe(h.id)
-                if (port != null) link.connect(h, blePort = port)
-                else if (h.address != "127.0.0.1") link.connect(h)
+                if (port != null) link.connect(target, blePort = port, admit = admit)
+                else if (target.address != "127.0.0.1" && (admit == null || target.address.isNotBlank())) link.connect(target, admit = admit)
             }
-            return
+            return true
         }
         // Not seen on this network: every other Connect through Tailscale, when both are on it (#161).
         // The address is for this attempt only (a copy); discovery puts the network's back.
         if (seen == null && tailscale) {
             tailTurn = !tailTurn
             val t = Tailnet.address(h)
-            if (tailTurn && t != null && t != h.address && Tailnet.onIt()) {
+            if ((tailTurn || (admit != null && target.address.isBlank() && h.relay == null)) && t != null && t != h.address && Tailnet.onIt()) {
                 Log.i("TwinDesk", "${h.name} isn’t on this network: through Tailscale")
-                link.connect(h.copy(address = t))
-                return
+                link.connect(h.copy(address = t), admit = admit)
+                return true
             }
         }
         // Not seen here either way: every other Connect through the computer's own relay, if it has one.
         val r = h.relay
         if (seen == null && r != null) {
             relayTurn = !relayTurn
-            if (relayTurn) {
+            if (relayTurn || (admit != null && target.address.isBlank())) {
                 bg.execute {
+                    if (cableOnly || admit?.invoke() == false) return@execute
                     val port = Relay.open(r)
                     if (port != null) {
                         Log.i("TwinDesk", "${h.name} isn’t on this network: through its relay")
-                        link.connect(h.copy(address = "127.0.0.1", port = port))
-                    } else link.connect(h)
+                        link.connect(h.copy(address = "127.0.0.1", port = port), admit = admit)
+                    } else if (admit == null || target.address.isNotBlank()) link.connect(target, admit = admit)
                 }
-                return
+                return true
             }
         }
-        link.connect(h)
+        if (admit != null && target.address.isBlank()) return false
+        link.connect(target, admit = admit)
+        return true
     }
     @Volatile private var tailTurn = false
     @Volatile private var relayTurn = false
@@ -611,6 +743,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // A PC opened a pipe on its own (its Pair or Connect, an invite): a paired one connects through
     // it now, an unpaired one is shown as an invite (Pair asks it for a pipe again).
     private fun onServeOpen(f: Found, port: Int): Boolean {
+        if (cableOnly) return false
         val h = store.hosts().find { it.id == f.id }
         if (h == null || link.connected || link.state == "connecting" || link.pair != null || peer.connected) {
             if (h == null) onInvite(f.copy(invited = true))
@@ -658,6 +791,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // and the session pins the computer's certificate, so another machine there fails.
     // false: none of them answers from this network.
     fun connectQr(id: String, addrs: List<String>, port: Int, nonce: String, name: String): Boolean {
+        if (cableOnly) return false
         if (id.isBlank() || port !in 1..65535) return false
         val answers = { a: String, p: Int ->
             runCatching { java.net.Socket().use { s -> s.connect(java.net.InetSocketAddress(a, p), 800) }; true }.getOrDefault(false)
@@ -698,6 +832,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     fun pair(f: Found) {
+        if (cableOnly) return
         if (f.address.isBlank() || (!f.address.startsWith("blp:") && !f.address.startsWith("ble:") && f.port !in 1..65535)) return
         invite = null
         discovery.clearInvite(f.id)
@@ -724,6 +859,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         (if (serve.get(id) != null) serve.open(id) else null) ?: (if (ble.get(id) != null) ble.open(id) else null)
 
     fun pairAddress(address: String) {
+        if (cableOnly) return
         val use = address.trim()
         if (use.isEmpty()) return
         stopReturn()
@@ -755,6 +891,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     }
 
     private fun onInvite(f: Found) {
+        if (cableOnly) return
         if (embeddedTargetId != null || link.embedded || returnEmbeddedNode() != null) return
         val h = store.hosts().find { it.id == f.id }
         if (h != null) {
@@ -800,7 +937,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // One session: a phone's ends (Peer.started ends ours the other way).
         if (peer.connected) { Log.i("TwinDesk", "ending the phone session for ${host.name}"); peer.disconnect() }
         // Tells the computer which of its USB devices this is (its screen and input use that one).
-        if (link.wired) link.send(JSONObject().put("t", "phone.wired").put("nonce", wiredNonce))
+        if (link.wired) link.send(JSONObject().put("t", "phone.wired").put("nonce", wiredNonce).put("cable", if (cableOnly) 1 else 0))
         // Paired through the cable: its network address once discovery has seen it.
         val seen = discovery.found[host.id]
         if (!link.embedded && host.address == "127.0.0.1" && seen != null) {
@@ -868,6 +1005,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                             screen.onEmbeddedIce(m, route)
                             true
                         }
+                        f === remote && t == Proto.T.REMOTE_STATE -> remote.onMessage(t, m, route)
                         f === screen && t == "screen.state" -> {
                             screen.noteSharingRoute(m, route)
                             screen.onMessage(t, m)
@@ -904,12 +1042,20 @@ class Core private constructor(val ctx: Context) : Link.Events {
             }
             return
         }
+        val embeddedDenial = embedded && code in setOf(Proto.E.BUSY, Proto.E.PAIR_REFUSED)
+        val revoked = embeddedDenial || link.state == "failed" ||
+            code in setOf("reclaim", "bad_message", Proto.E.VERSION_MISMATCH, Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN)
+        if (cableOnly) {
+            // A toggle or cable loss suspends returns. A replacement or Stop on the computer still
+            // retires the saved intent, so taking the cable-only switch off cannot revive it.
+            if (revoked && returnHost()?.id == host.id) stopReturn()
+            return
+        }
         // Capable Macs can be reclaimed without taking another session. Keep this intent across
         // outages, sleep and process death, until Disconnect/Forget/replacement explicitly ends it.
         if (link.ble && returnHost()?.id == host.id) stopReturn()
         if (returnHost()?.id == host.id) {
-            val embeddedDenial = embedded && code in setOf(Proto.E.BUSY, Proto.E.PAIR_REFUSED)
-            if (embeddedDenial || link.state == "failed" || code in setOf("local", "reclaim", "bad_message", Proto.E.VERSION_MISMATCH, Proto.E.RELEASED, Proto.E.REPLACED, Proto.E.BAD_TOKEN)) stopReturn()
+            if (revoked || code == "local") stopReturn()
             else synchronized(this) {
                 returnFailures = (returnFailures + 1).coerceAtMost(5)
                 returnFailureDeadline = System.currentTimeMillis() + (1000L shl returnFailures)
@@ -1047,6 +1193,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         homeRoute(host, allowSaved)?.takeUnless { it.network == manualEmbeddedWifi }
 
     @Synchronized private fun preferHomeWifi() {
+        if (cableOnly) return
         if (!link.connected || !link.embedded || !link.canReclaim || inBackground() || peer.connected || bank.pending) return
         val current = link.host ?: return
         val saved = returnHost()?.takeIf { it.sameEmbeddedPair(current) } ?: return
@@ -1070,7 +1217,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
             link.connect(host, reclaim = true, network = route?.network) { admit() }
         },
     ) {
-        if (!canReturn()) return
+        if (cableOnly || !canReturn()) return
         val h = returnHost() ?: return
         val now = System.currentTimeMillis()
         if (now < returnAfter) return
@@ -1160,6 +1307,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     @Volatile private var triedNet = false
 
     private fun resume() {
+        if (cableOnly) return
         val h = resumeHost ?: return
         if (System.currentTimeMillis() > resumeUntil || link.connected || link.state == "connecting" || link.pair != null || peer.connected) return
         if (inBackground()) { resumeLater = h; return }
@@ -1178,7 +1326,11 @@ class Core private constructor(val ctx: Context) : Link.Events {
         // Computers that take a paired phone back by itself after a long drop (hello rc:1,
         // #192/#266). Each still has to advertise rc, so an older computer is never dialed this way.
         val RETURN_OS = setOf("mac", "win", "linux")
+        const val CABLE_ONLY = "cableOnly"
+        private val CABLE_TURN = Regex("""turn:127[.]0[.]0[.]1:([0-9]{1,5})[?]transport=tcp""")
         @Volatile private var instance: Core? = null
+        internal fun running(): Core? = instance
+
         fun get(ctx: Context): Core = instance ?: synchronized(this) {
             instance ?: Core(ctx.applicationContext).also { instance = it; it.start() }
         }

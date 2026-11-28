@@ -223,7 +223,7 @@ class Adb(core: Core) : Feature(core) {
     private var seenOn = false // wireless debugging as the observer last saw it
     private fun scheduleAutoOff() {
         autoOff.removeCallbacksAndMessages(null)
-        if (!autoOffEnabled || !canEnable || !ours || core.link.connected) return
+        if (core.cableOnly || !autoOffEnabled || !canEnable || !ours || core.link.connected) return
         autoOff.postDelayed({
             if (autoOffEnabled && ours && !core.link.connected && wifiDebugging && enable(false)) sendState()
         }, AUTO_OFF_MS)
@@ -421,11 +421,12 @@ class Adb(core: Core) : Feature(core) {
             return
         }
         val embedded = core.link.embedded
-        val on = if (embedded) wirelessDebugging else wifiDebugging
+        val cable = core.cableOnly
+        val on = !cable && (if (embedded) wirelessDebugging else wifiDebugging)
         val dev = devOptions
         val route = core.link.currentTrustedRoute()?.takeIf(core.link::isEmbeddedRoute)
         val wifi = if (on && dev && route != null && core.link.embeddedMediaReady(route)) embeddedWifi() else null
-        val address = address()
+        val address = if (cable) "" else address()
         val marker = route?.marker ?: core.link.sessionMarker()
         val watch = connectWatch
         if (watch != null && (watch.marker !== marker || watch.wifi != wifi ||
@@ -435,9 +436,9 @@ class Adb(core: Core) : Feature(core) {
             if (startWatch && connectWatch == null && marker != null) watchConnectPort(marker, route, wifi, address)
         } else stopConnectWatch()
 
-        val state = msg(Proto.T.ADB_STATE, "devOptions" to dev, "wifi" to on, "canEnable" to canEnable,
+        val state = msg(Proto.T.ADB_STATE, "devOptions" to dev, "wifi" to on, "canEnable" to (!cable && canEnable),
             "address" to address, "full" to BuildConfig.NOTIF_LISTENER, "port" to (connectWatch?.port ?: 0),
-            "net" to onWifiNetwork, "hotspot" to isHotspotActive,
+            "net" to (!cable && onWifiNetwork), "hotspot" to (!cable && isHotspotActive),
             "keepWirelessTls" to (core.link.host?.embeddedNode != null && core.embeddedNetwork.enabled))
         if (route != null) {
             val cell = updateCellularAdb(route.takeIf { wifi == null }, startWatch)
@@ -463,6 +464,7 @@ class Adb(core: Core) : Feature(core) {
 
     // One tap: switch it on here if allowed, else open the setting.
     fun turnOn() {
+        if (core.cableOnly) return
         if (!enable(true)) openSettings()
         sendState()
     }
@@ -470,7 +472,7 @@ class Adb(core: Core) : Feature(core) {
     // byPerson: the Quick Settings tile and the home screen shortcut, the person's own switch (auto-off
     // leaves it on); TwinDesk's own (connecting, the computer asking, Turn on in this app) is `ours`.
     fun enable(on: Boolean, byPerson: Boolean = false): Boolean {
-        if (!canEnable || on && !onWifiNetwork) return false
+        if ((!byPerson && core.cableOnly) || !canEnable || on && !onWifiNetwork) return false
         val was = wifiDebugging
         ourWriteAt = SystemClock.elapsedRealtime()
         val ok = runCatching {
@@ -499,7 +501,7 @@ class Adb(core: Core) : Feature(core) {
         // Not asked either while the computer reaches adb anyway (#239: a Pixel on the USB cable, its
         // wireless debugging off, was asked again and again): paired is its adb answering now, and
         // on the cable with USB debugging on, that's the way it goes.
-        if (!core.link.connected || core.link.embedded || wifiDebugging || !onWifiNetwork || !needed || paired || usbReach) return settle(false) // not used there: nothing to ask
+        if (core.cableOnly || !core.link.connected || core.link.embedded || wifiDebugging || !onWifiNetwork || !needed || paired || usbReach) return settle(false) // not used there: nothing to ask
         if (!unlocked) return
         trying = enable(true)
         main.postDelayed({
@@ -539,7 +541,8 @@ class Adb(core: Core) : Feature(core) {
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
         when (t) {
-            Proto.T.ADB_ENABLE -> if (!core.link.embedded) { enable(m.optBoolean("on", true)); sendState() }
+            Proto.T.ADB_ENABLE -> if (!core.link.embedded && !core.cableOnly) { enable(m.optBoolean("on", true)); sendState() }
+                else if (!core.link.embedded) sendState()
             Proto.T.ADB_BRIDGE -> {
                 val was = bridge
                 bridge = m.optString("state")
@@ -615,6 +618,7 @@ class Adb(core: Core) : Feature(core) {
     // "Pair device with pairing code" is open (or about to be): ask for the code in a notification
     // (typing it there keeps Settings' dialog open), and look for our own pairing port meanwhile.
     fun askForCode() {
+        if (core.cableOnly) return
         findPairPort()
         Notify.pairCode(core.ctx, core.host?.name ?: tr("your computer"))
     }

@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
 const P = require('../shared/protocol.js');
+const { cable } = require('../shared/cableonly.js');
 const { Adb } = require('./adb');
 const { EmbeddedAdb } = require('./embedded-adb');
 const { Session, ACTION } = require('./scrcpy');
@@ -473,6 +474,8 @@ class PhoneBridge extends EventEmitter {
       return this._startControl();
     }
     if (embedded) return;
+    const cableId = this.server.current && this.server.current.deviceId;
+    if (cable.on(cableId)) return this._set('connecting', 'Waiting for the phone…');
     // TCP mode, switched on the last time we were in (USB cable or wireless debugging): works on a
     // direct Wi-Fi link too, where wireless debugging can't (though its switch may still say on).
     // Only at the session's own network address: on Bluetooth or the cable that's 127.0.0.1, where
@@ -575,6 +578,8 @@ class PhoneBridge extends EventEmitter {
 
   async _findDevice(address) {
     const list = await this.adb.devices();
+    const pinned = cable.exact(this.server.current && this.server.current.deviceId, list);
+    if (pinned !== undefined) return pinned;
     // On the USB cable (wired.js knows which device it is): that one, Wi-Fi or not.
     const usb = this.wired && this.server.current && this.wired.serialOf(this.server.current.deviceId);
     if (usb && list.some((x) => x.serial === usb && x.state === 'device')) return usb;

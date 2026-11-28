@@ -21,6 +21,8 @@
 //   'phoneFree'           — a phone's hold on the session ended (kept for phone.js)
 'use strict';
 
+const { cable } = require('../../shared/cableonly.js');
+
 const https = require('https');
 const { EventEmitter } = require('events');
 const { WebSocketServer } = require('ws');
@@ -341,6 +343,7 @@ class Server extends EventEmitter {
     ctx.deviceId = deviceId;
     ctx.name = name;
     ctx.os = os;
+    cable.noteAuthenticated(ctx, who.cable);
     ctx.authSeq = ++this.authSeq;
     ctx.ice = this.iceFor ? this.iceFor(ctx) : null; // a phone through adb reverse: the relay's RTCConfiguration
     ctx.resumeKey = P.randomHex(16);

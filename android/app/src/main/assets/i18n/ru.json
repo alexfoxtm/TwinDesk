@@ -1,4 +1,7 @@
 {
+  "Relay": "Ретранслятор",
+  "Choose a saved Mac": "Выберите сохранённый Mac",
+  "Pair a Mac in TwinDesk first.": "Сначала создайте пару с Mac в TwinDesk.",
   " (optional)": " (необязательно)",
   " and {count} more": " и ещё {count}",
   " · It connected to this phone": " · Оно подключилось к этому телефону",
@@ -172,6 +175,9 @@
   "Connected only while TwinDesk is open": "Подключено, только пока TwinDesk открыт",
   "Connected over Bluetooth": "Подключено по Bluetooth",
   "Connected over USB": "Подключено по USB",
+  "USB cable only": "Только USB-кабель",
+  "Only the USB cable is used. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale and TwinDesk Network stay suspended.": "Используется только USB-кабель. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale и TwinDesk Network приостановлены.",
+  "Wi-Fi, Bluetooth and TwinDesk Network can connect as well.": "Wi-Fi, Bluetooth и TwinDesk Network тоже могут подключаться.",
   "Connected to {hostName}. Open the gamepad to play.": "Подключено к {hostName}. Откройте геймпад, чтобы играть.",
   "Connected to {name}": "Подключено к {name}",
   "Connected to {name} over Wi-Fi Direct": "Подключено к {name} через Wi-Fi Direct",
@@ -1496,5 +1502,15 @@
   "TwinDesk Network": "Сеть TwinDesk",
   "TwinDesk Network couldn’t start or stopped responding": "Сеть TwinDesk не запустилась или перестала отвечать",
   "Waiting for Tailscale device approval": "Ожидание одобрения устройства в Tailscale",
-  "Check the recipient on the phone before sending.": "Перед отправкой проверьте получателя на телефоне."
+  "Check the recipient on the phone before sending.": "Перед отправкой проверьте получателя на телефоне.",
+  "Add marker": "Добавить метку",
+  "1 marker · last at {time}": "1 метка · последняя на {time}",
+  "{count} markers · last at {time}": "Меток: {count} · последняя на {time}",
+  "Sending to {name} (couldn’t save markers)": "Отправка на {name} (не удалось сохранить метки)",
+  "Waiting for {name} (couldn’t save markers)": "Ждёт {name} (не удалось сохранить метки)",
+  "Saved in Recordings › TwinDesk (couldn’t save markers)": "Сохранено в «Записи › TwinDesk» (не удалось сохранить метки)",
+  "Couldn’t save the recording": "Не удалось сохранить запись",
+  "Audio in {folder}, markers in Downloads › TwinDesk": "Аудио в «{folder}», метки в «Загрузки › TwinDesk»",
+  "Move {what} to Trash?": "Переместить {what} в корзину?",
+  "{name} asks to move them to Trash on this phone. Tap to confirm.": "{name} просит переместить их в корзину на этом телефоне. Нажмите, чтобы подтвердить."
 }

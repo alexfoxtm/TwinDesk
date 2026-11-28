@@ -33,9 +33,16 @@ UI.tab({
     let hidden = false;
     let asking = '';
     const chosen = new Set(); // names in cwd
+    let anchor = null; // last plain-selected name in cwd for Shift-click range
     let confirmDelete = false;
     let renaming = ''; // the name being renamed
     let refs = 0;
+
+    function clearSelection() {
+      chosen.clear();
+      anchor = null;
+      confirmDelete = false;
+    }
 
     const crumbs = el('div', { class: 'hub-crumbs', attrs: { 'data-literal': '' } });
     const upBtn = UI.button('‹', () => cwd && open(cwd.split('/').slice(0, -1).join('/')), 'small');
@@ -54,11 +61,10 @@ UI.tab({
     const deleteBtn = UI.button(tr('Delete'), () => {
       if (!confirmDelete) { confirmDelete = true; return paint(); }
       act({ a: 'delete', path: cwd, paths: [...chosen].map(join) });
-      chosen.clear();
-      confirmDelete = false;
+      clearSelection();
       paint();
     }, 'small');
-    const clearBtn = UI.button(tr('Done'), () => { chosen.clear(); confirmDelete = false; paint(); }, 'small');
+    const clearBtn = UI.button(tr('Done'), () => { clearSelection(); paint(); }, 'small');
     const folderBtn = UI.saveFolderButton();
     const selBar = el('div', { class: 'hub-media-bar hub-fs-sel' }, [selText, el('span', { class: 'hub-grow' }), folderBtn, saveBtn, renameBtn, deleteBtn, clearBtn]);
 
@@ -120,10 +126,10 @@ UI.tab({
     const act = (m) => UI.hubAsk({ t: 'fs.do', ref: ref(), ...m });
 
     function open(path) {
+      if (path !== cwd) items = []; // the old rows belong to a different folder
       cwd = path;
       asking = path;
-      chosen.clear();
-      confirmDelete = false;
+      clearSelection();
       renaming = '';
       newRow.hidden = true;
       UI.hubAsk({ t: 'fs.list', path, hidden });
@@ -141,14 +147,47 @@ UI.tab({
       if (!names.length) return;
       UI.hubAsk({ t: 'fs.save', paths: names.map(join) });
       status.textContent = tr(names.length === 1 ? 'Saving {file} to {me}’s {folder}…' : 'Saving {count} items to {me}’s {folder}…', { file: names[0], count: names.length, me: UI.fill('{me}'), folder: UI.receivedName(UI.state) });
-      chosen.clear();
+      clearSelection();
+      paint();
+    }
+
+    function setChoice(name, selected) {
+      if (selected) {
+        chosen.add(name);
+        anchor = name;
+      } else {
+        chosen.delete(name);
+        if (anchor === name) anchor = null;
+      }
+      confirmDelete = false;
+      paint();
+    }
+
+    function toggleChoice(name) {
+      setChoice(name, !chosen.has(name));
+    }
+
+    function shiftSelect(name) {
+      const to = items.findIndex((x) => x.name === name);
+      if (to < 0) return;
+      const from = anchor ? items.findIndex((x) => x.name === anchor) : -1;
+      if (from < 0) return setChoice(name, true);
+      const lo = Math.min(from, to);
+      const hi = Math.max(from, to);
+      for (let i = lo; i <= hi; i++) chosen.add(items[i].name);
+      confirmDelete = false;
       paint();
     }
 
     function row(it) {
       const check = el('input', { type: 'checkbox', class: 'hub-fs-check', attrs: { 'data-literal': '', 'aria-label': tr('Choose {file}', { file: it.name }) } });
       check.checked = chosen.has(it.name);
-      check.onchange = () => { if (check.checked) chosen.add(it.name); else chosen.delete(it.name); confirmDelete = false; paint(); };
+      check.onclick = (e) => {
+        if (!e.shiftKey) return;
+        e.preventDefault();
+        shiftSelect(it.name);
+      };
+      check.onchange = () => setChoice(it.name, check.checked);
       const when = it.at ? UI.clock(it.at) : '';
       const hint = it.dir ? [it.n != null ? tr(it.n === 1 ? '{count} item' : '{count} items', { count: it.n }) : tr('Folder'), when] : [UI.bytes(it.size || 0), when];
       let r;
@@ -157,7 +196,7 @@ UI.tab({
         const done = (ok) => {
           const name = input.value.trim();
           renaming = '';
-          if (ok && name && name !== it.name && !/[/\\]/.test(name)) { act({ a: 'rename', path: join(it.name), name }); chosen.clear(); }
+          if (ok && name && name !== it.name && !/[/\\]/.test(name)) { act({ a: 'rename', path: join(it.name), name }); clearSelection(); }
           paint();
         };
         input.addEventListener('keydown', (e) => { if (e.key === 'Enter') done(true); else if (e.key === 'Escape') done(false); });
@@ -168,8 +207,14 @@ UI.tab({
       } else {
         r = UI.row(it.name, hint.filter(Boolean).join(' · '), it.dir ? [el('span', { class: 'chev', text: '›' })] : [UI.button(tr('Save'), () => save([it.name]), 'small')], {
           literal: true,
-          onClick: () => (it.dir ? open(join(it.name)) : (check.checked = !check.checked, check.onchange())),
         });
+        r.classList.add('clickable');
+        r.onclick = (e) => {
+          if (e.target.closest('input,button,select')) return;
+          if (e.shiftKey) return shiftSelect(it.name);
+          if (it.dir) return open(join(it.name));
+          toggleChoice(it.name);
+        };
       }
       if (renaming !== it.name) { r.label.textContent = it.name; delete r.label.dataset.peer; } // a name as it is, braces too
       r.classList.add('hub-fs-row');
@@ -207,11 +252,17 @@ UI.tab({
       asking = '';
       if (m.error) {
         items = [];
+        clearSelection();
         status.textContent = tr(m.error);
       } else {
         items = (m.items || []).filter((x) => x && typeof x.name === 'string' && x.name)
           .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-        for (const n of [...chosen]) if (!items.some((x) => x.name === n)) chosen.delete(n);
+        for (const name of chosen) {
+          if (items.some((it) => it.name === name)) continue;
+          chosen.delete(name);
+          if (name === anchor) anchor = null;
+          confirmDelete = false;
+        }
         const gb = (n) => `${(n / 1e9).toFixed(n >= 1e11 ? 0 : 1)} GB`;
         status.textContent = m.total ? tr('{free} free of {total}', { free: gb(m.free || 0), total: gb(m.total) }) : '';
       }
@@ -249,7 +300,9 @@ UI.tab({
     UI.onDeviceChange(() => { // another device: its folders, from the top
       cwd = '';
       items = [];
-      chosen.clear();
+      clearSelection();
+      renaming = '';
+      newRow.hidden = true;
       loaded = false;
       paint();
       if (!page.hidden && UI.hubReady(UI.state, 'files') && !UI.onBle(UI.state)) { loaded = true; open(cwd); }

@@ -84,6 +84,7 @@ android {
     lint {
         checkReleaseBuilds = false
     }
+    testOptions.unitTests.isIncludeAndroidResources = true
     buildFeatures {
         compose = true
         buildConfig = true

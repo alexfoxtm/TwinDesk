@@ -6,6 +6,11 @@
 package com.twindesk.android
 
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import android.Manifest
@@ -101,11 +106,29 @@ import androidx.compose.ui.unit.sp
 class MainActivity : ComponentActivity() {
     private var resumed = mutableStateOf(0)
     private val focusGains = mutableStateOf(0)
+    private var widgetEntry = false
+    private var widgetConnect: MacWidget.Request? = null
+    private var widgetConnectWait: Job? = null
+    private var enteredForeground = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        TwinService.start(this)
+        widgetEntry = intent?.action == MacWidget.DISPATCH_CONNECT
+        if (widgetEntry) {
+            widgetConnect = MacWidget.takeConnect(intent)
+            if (widgetConnect == null) {
+                val restored = savedInstanceState != null || intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+                if (!restored) {
+                    finish()
+                    return
+                }
+                // Android may restore the task's original intent after the one-use ticket is gone.
+                widgetEntry = false
+                setIntent(Intent(Intent.ACTION_MAIN).setComponent(componentName))
+            }
+        }
+        if (!widgetEntry) TwinService.start(this)
         setContent { Theme { App(Core.get(this), resumed.value, focusGains) } }
         openTab.value = intent?.getStringExtra("tab")
         if (intent?.getBooleanExtra("update", false) == true) Core.get(this).updates.installNow() // the update notification
@@ -114,6 +137,16 @@ class MainActivity : ComponentActivity() {
     // A notification opened a page (the computer's media: Media).
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (intent.action == MacWidget.DISPATCH_CONNECT) {
+            val request = MacWidget.takeConnect(intent) ?: return
+            widgetEntry = true
+            widgetConnect = request
+            if (enteredForeground) dispatchWidgetConnect(Core.get(this))
+            return
+        }
+        widgetEntry = false
+        widgetConnect = null
+        widgetConnectWait?.cancel()
         setIntent(intent)
         intent.getStringExtra("tab")?.let { openTab.value = it }
         if (intent.getBooleanExtra("update", false)) Core.get(this).updates.installNow()
@@ -121,9 +154,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (isFinishing) return
+        val request = widgetConnect
+        if (request != null && MacWidget.saved(this, Core.running()?.store ?: Store(this), request) == null) {
+            widgetConnect = null
+            if (intent.action == MacWidget.DISPATCH_CONNECT) {
+                finish()
+                return
+            }
+        }
+        if (intent.action == MacWidget.DISPATCH_CONNECT) setIntent(Intent(Intent.ACTION_MAIN).setComponent(componentName))
         shown = true
+        enteredForeground = true
         resumed.value++ // permissions may have changed in Settings
-        Core.get(this).foreground() // a look at the session; one put off by Reconnect in the background
+        val core = Core.get(this)
+        core.foreground(reconnect = !widgetEntry)
+        if (widgetConnect != null) dispatchWidgetConnect(core)
         Core.get(this).adb.check() // back from Settings: is wireless debugging on now?
         Core.get(this).photos.permsChanged() // photo backup stops if photo or location access changed in Settings
         Core.get(this).hub.let { if (it.callsOn || it.messagesOn || it.mediaOn || it.filesOn) it.permsChanged() }
@@ -131,8 +177,30 @@ class MainActivity : ComponentActivity() {
         Core.get(this).share.let { if (it.on && it.serving != it.allowed) it.core.bg.execute { it.sync() } } // All files access just allowed (or taken away)
     }
 
+    private fun dispatchWidgetConnect(core: Core) {
+        val request = widgetConnect ?: return
+        widgetConnect = null
+        widgetConnectWait?.cancel()
+        if (MacWidget.saved(this, core.store, request) == null) return
+        val result = core.connectFromWidget(request)
+        // A valid widget tap also opens TwinDesk. Keep the usual service running even when its
+        // specific attempt cannot connect, or a foreground network wait is cancelled.
+        TwinService.start(this)
+        if (result == MacWidget.ConnectResult.WAITING_FOR_NETWORK) {
+            widgetConnectWait = lifecycleScope.launch {
+                withTimeoutOrNull(10_000) {
+                    core.version.first { core.connectFromWidget(request) != MacWidget.ConnectResult.WAITING_FOR_NETWORK }
+                }
+            }
+        }
+    }
+
     override fun onPause() {
         super.onPause()
+        widgetConnectWait?.cancel()
+        widgetEntry = false
+        if (!enteredForeground) return
+        enteredForeground = false
         shown = false
         Core.get(this).background()
     }
@@ -141,7 +209,7 @@ class MainActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) focusGains.value++
         // In front: Android lets us read the clipboard now.
-        if (hasFocus) Core.get(this).let { if (it.sync.get("clipboard", "out")) it.clip.sendCurrent(false); it.peer.clipNow() }
+        if (hasFocus && !widgetEntry && !isFinishing) Core.get(this).let { if (it.sync.get("clipboard", "out")) it.clip.sendCurrent(false); it.peer.clipNow() }
     }
 
     companion object {
@@ -716,6 +784,16 @@ private fun OverviewPage(core: Core, v: Int, connection: Boolean) {
 
 
     if (connection) {
+        MacCard(tr("USB cable only")) {
+            @Suppress("UNUSED_EXPRESSION") v
+            SwitchRow(
+                tr("USB cable only"),
+                if (core.cableOnly) tr("Only the USB cable is used. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale and TwinDesk Network stay suspended.")
+                else tr("Wi-Fi, Bluetooth and TwinDesk Network can connect as well."),
+                core.cableOnly,
+                first = true,
+            ) { core.cableOnly = it }
+        }
         EmbeddedNetworkCard(core, v, connection = true)
         ConnectionDoctorCard(core, v)
     }
@@ -807,7 +885,7 @@ private fun EmbeddedNetworkCard(core: Core, version: Int, connection: Boolean = 
     }
     MacCard(tr("TwinDesk Network")) {
         MacRow(label, first = true) {
-            when (status.state) {
+            if (!core.cableOnly) when (status.state) {
                 "stopped", "error" -> Primary(tr("Start")) { network.start(false) }
                 "needsLogin" -> Primary(tr("Sign in")) { network.start(true) }
             }

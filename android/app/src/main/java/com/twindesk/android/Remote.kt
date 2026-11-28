@@ -13,6 +13,8 @@ import androidx.activity.ComponentActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.Locale
 
@@ -21,6 +23,9 @@ class Remote(core: Core) : Feature(core) {
     @Volatile var why = ""; private set // why it doesn't take it now (the computer says), "" when it does
     @Volatile var active = false; private set // RemoteActivity is in front
     private var host: WebHost? = null
+    private var answerRoute: Any? = null
+
+    internal fun widgetAllowed(route: Link.TrustedRoute) = answerRoute !== route.marker || allowed != false
     private var mode = "pad"
     @Volatile private var ble: Boolean? = null // what the page was last told (through Bluetooth it sends moves less often)
 
@@ -85,7 +90,7 @@ class Remote(core: Core) : Feature(core) {
         if (host != null && ble != core.link.ble) host?.post(opts())
     }
 
-    private fun hello() { if (core.link.connected) core.send(msg(Proto.T.REMOTE_HELLO)) }
+    private fun hello() { if (core.link.connected) host?.sendRemote(msg(Proto.T.REMOTE_HELLO)) }
 
     fun attach(h: WebHost, mode: String) {
         host = h
@@ -101,23 +106,30 @@ class Remote(core: Core) : Feature(core) {
         if (host !== h) return
         host = null
         active = false
-        if (core.link.connected) core.send(msg(Proto.T.REMOTE_RELEASE))
+        if (core.link.connected) h.sendRemote(msg(Proto.T.REMOTE_RELEASE))
         core.changed()
     }
 
     override fun onWelcome(host: Host) {
+        answerRoute = null
         allowed = null
         this.host?.post(opts())
         if (active) hello()
     }
 
     override fun onClosed() {
+        answerRoute = null
         allowed = null
         host?.post(opts())
     }
 
-    override fun onMessage(t: String, m: JSONObject): Boolean {
+    override fun onMessage(t: String, m: JSONObject): Boolean =
+        onMessage(t, m, core.link.currentTrustedRoute())
+
+    internal fun onMessage(t: String, m: JSONObject, route: Link.TrustedRoute?): Boolean {
         if (t != Proto.T.REMOTE_STATE) return false
+        if (route != null && !core.link.accepts(route)) return true
+        answerRoute = route?.marker
         allowed = m.optBoolean("allowed", false)
         why = m.optString("why")
         host?.post(m)
@@ -168,12 +180,29 @@ class Remote(core: Core) : Feature(core) {
 }
 
 // Full screen: the touchpad and keyboard (any way up), the gamepad (held sideways), or voice typing.
-class RemoteActivity : ComponentActivity() {
+class MacWidgetTouchpadActivity : RemoteActivity()
+
+open class RemoteActivity : ComponentActivity() {
     private var host: WebHost? = null
     private var mode = "pad"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val pad = if (this is MacWidgetTouchpadActivity) {
+            val running = Core.running()
+            val owner = running?.let { MacWidget.touchpad(this, intent, it) }
+            if (running == null || owner == null) {
+                MacWidget.refreshRejectedTap(this, intent)
+                finish()
+                return
+            }
+            lifecycleScope.launch {
+                running.version.collect {
+                    if (!owner.current(running)) finish()
+                }
+            }
+            owner
+        } else null
         mode = when (val m = intent.getStringExtra("mode")) { "gamepad", "voice", "air", "present" -> m; else -> "pad" }
         if (mode == "gamepad") requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -187,7 +216,7 @@ class RemoteActivity : ComponentActivity() {
                 systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
         }
-        val h = WebHost(this, "remote.html", Core.get(this)) { ev, _ ->
+        val h = WebHost(this, "remote.html", Core.get(this), widgetPad = pad) { ev, _ ->
             when (ev) {
                 "close" -> finish()
                 // The touchpad's Rotate: sideways and back (the gamepad is always sideways).
@@ -222,12 +251,18 @@ class RemoteActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        host?.let { Core.get(this).remote.attach(it, mode) }
+        host?.let {
+            it.allowWidgetInput(true)
+            Core.get(this).remote.attach(it, mode)
+        }
     }
 
     override fun onStop() {
         super.onStop()
-        host?.let { Core.get(this).remote.detach(it) }
+        host?.let {
+            Core.get(this).remote.detach(it)
+            it.allowWidgetInput(false)
+        }
     }
 
     override fun onDestroy() {

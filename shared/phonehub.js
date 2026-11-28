@@ -117,6 +117,8 @@ class PhoneHub extends EventEmitter {
       // computer forgets the phone too, or it keeps keys the phone no longer has and TwinDesk's own
       // Bluetooth LE link to it fails on them.
       if (bt.forget && !(this.state && this.state.bt.forget) && this.audio && this.audio.unpair) this.audio.unpair();
+      const phone = this.phone;
+      const currentRoute = !!phone && (ctx === phone || (ctx.deviceId === phone.deviceId && (!phone.ws || !ctx.ws || ctx.ws === phone.ws)));
       this.state = {
         calls: {
           perm: perm(m.calls), missing: missing(m.calls),
@@ -129,7 +131,12 @@ class PhoneHub extends EventEmitter {
           sims: m.messages && Array.isArray(m.messages.sims) ? m.messages.sims.filter((x) => x && Number.isInteger(x.id)).slice(0, 4).map((x) => ({ id: x.id, label: str(x.label, 40) })) : [], // texts' SIMs (two or more)
           mms: !!(m.messages && m.messages.mms), // sends pictures and group texts
         },
-        media: { perm: perm(m.media), remove: !!(m.media && m.media.remove), alerts: !!(m.media && m.media.alerts) }, // remove: takes media.delete; alerts: can send media.new
+        media: {
+          perm: perm(m.media),
+          remove: !!(m.media && m.media.remove),
+          trash: !!(currentRoute && ctx.os === P.OS.ANDROID && m.media && m.media.remove && m.media.trash === true),
+          alerts: !!(m.media && m.media.alerts),
+        }, // remove: takes media.delete; trash: takes media.delete action:'trash' (Android 11+); alerts: can send media.new
         files: { perm: perm(m.files) },
         bt: {
           allowed: bt.allowed !== false, radio: bt.radio !== false, name: str(bt.name, 100), bonded: bt.bonded === true ? true : bt.bonded === false ? false : null,
@@ -253,8 +260,21 @@ class PhoneHub extends EventEmitter {
         if (!this.unread) return;
         this.unread = 0;
         return this.emit('change');
-      case 'send':
-        return this.ask(r.msg);
+      case 'send': {
+        const accepted = this.ask(r.msg);
+        // The Mac's hub IPC sends without a return value. Report a refused removal through its
+        // existing reply channel, scoped to the confirmation that produced it.
+        if (accepted === false && r.msg?.t === T.MEDIA_DELETE) {
+          const { deviceId, session } = r.msg.phone || {};
+          if (typeof deviceId === 'string' && Number.isSafeInteger(session) && Array.isArray(r.msg.ids)) {
+            this.emit('data', {
+              t: T.MEDIA_DELETE, ids: [], failed: Math.min(r.msg.ids.length, 300), confirm: 0,
+              phone: { deviceId, session }, ...(r.msg.action === 'trash' ? { action: 'trash' } : {}),
+            });
+          }
+        }
+        return accepted;
+      }
       case 'audio':
         return this.audioAct(String(r.a || ''));
       case 'call':
@@ -382,11 +402,23 @@ class PhoneHub extends EventEmitter {
       case T.MEDIA_THUMB: out.ids = ids(m.ids); break;
       case T.MEDIA_VIEW: out.id = str(m.id, 40); break;
       case T.MEDIA_SAVE: out.ids = ids(m.ids); break;
-      case T.MEDIA_DELETE:
-        if (!(this.state && this.state.media.remove)) return; // an older phone app
+      case T.MEDIA_DELETE: {
+        if (!(this.state && this.state.media.remove)) return false; // an older phone app
+        if (m.phone !== undefined && !this.samePhone(m.phone)) return false;
+        if (m.action !== undefined) {
+          // Scoped explicit Trash: never strip action or fall back to legacy permanent delete.
+          if (m.action !== 'trash' || !this.samePhone(m.phone)) return false;
+          if (!this.state.media.trash || !['ok', 'partial'].includes(this.state.media.perm)) return false;
+          if (!Array.isArray(m.ids) || !m.ids.length || m.ids.length > 300) return false;
+          if (!m.ids.every((x) => typeof x === 'string' && /^[iv]\d{1,18}$/.test(x))) return false;
+          out.ids = [...new Set(m.ids)];
+          out.action = 'trash';
+          break;
+        }
         out.ids = ids(m.ids);
-        if (!out.ids.length) return;
+        if (!out.ids.length) return false;
         break;
+      }
       case T.FS_LIST: {
         const p = phonePath(m.path);
         if (p == null) return;
@@ -526,6 +558,14 @@ class PhoneHub extends EventEmitter {
 
   onAnswer(m, ctx, ws) {
     if (!this.settings[ANSWERS[m.t]]) return;
+    if (ANSWERS[m.t] === 'media') {
+      const phone = this.phone;
+      if (!phone || !ctx || ctx.deviceId !== phone.deviceId) return;
+      const socket = typeof this.server.outbound === 'function' ? this.server.outbound(phone) : undefined;
+      const current = connectionOf(phone, socket);
+      if (current ? !sameConnection(current, connectionOf(ctx, ws)) : ctx !== phone) return;
+      m = { ...m, phone: { deviceId: phone.deviceId, session: this.phoneSession } };
+    }
     if (m.t === T.MEDIA_LIST && this.savePhotoAs) {
       const peer = this.photoSaveRoute;
       const source = connectionOf(ctx, ws);

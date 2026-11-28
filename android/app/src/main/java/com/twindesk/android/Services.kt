@@ -171,6 +171,12 @@ class ActionReceiver : BroadcastReceiver() {
 // it. Only adb's shell can send this (the receiver requires DUMP, which apps don't get).
 class WiredReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
+        // The wired desktop checks this through the existing DUMP-protected USB receiver before it
+        // considers its legacy ADB promotion. No service or network connection is started here.
+        if (intent.getBooleanExtra("checkCableMode", false)) {
+            if (isOrderedBroadcast) resultData = if (Store.cableOnly(ctx)) "twindesk-cable-only" else "twindesk-cable-unrestricted"
+            return
+        }
         val id = intent.getStringExtra("host") ?: return
         val port = intent.getIntExtra("port", 0)
         if (port <= 0 || port > 65535) return
@@ -204,6 +210,7 @@ class AdbTile : TileService() {
 
     override fun onClick() {
         val core = Core.get(this)
+        if (core.cableOnly) return
         if (core.adb.canEnable) {
             core.adb.enable(!core.adb.wifiDebugging, byPerson = true) // the person's own switch: auto-off leaves it on
             core.adb.sendState()

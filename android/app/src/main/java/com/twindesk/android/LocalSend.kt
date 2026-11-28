@@ -70,6 +70,8 @@ class LocalSend(private val core: Core) : LsEvents {
     // With the rest of TwinDesk (Core.start): not after Exit, and not before Core is whole.
     fun start() { apply() }
 
+    internal fun reconcile() = apply()
+
     // Screen on or off (Core's screen receiver). A wake announces at once so peers list this phone
     // again without waiting out the rest of the 30s period. Runs on `life`, with apply().
     fun onScreen(on: Boolean) = life.execute {
@@ -91,7 +93,7 @@ class LocalSend(private val core: Core) : LsEvents {
     private fun apply() {
         interactive = ctx.getSystemService(PowerManager::class.java)?.isInteractive != false
         life.execute {
-            val want = on
+            val want = on && !core.cableOnly
             runCatching {
                 val component = ComponentName(ctx, LocalSendShareActivity::class.java)
                 val state = if (want) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED

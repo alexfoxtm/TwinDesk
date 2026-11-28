@@ -148,12 +148,30 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
 
     fun start() {
         core.discovery.peerOn = on
-        core.discovery.onPeerAsk = { f, m -> main.post { onAsk(f, m) } }
+        core.discovery.onPeerAsk = { f, m -> main.post { if (!core.cableOnly) onAsk(f, m) } }
         link.busyHere = {
             PeerScreen.screenActive || PeerScreen.standaloneSoundActive || PeerScreen.viewer != null || inFiles.isNotEmpty() || outFiles.isNotEmpty()
         }
         val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         ctx.mainExecutor.execute { cm.addPrimaryClipChangedListener { clipNow() } }
+        hosting()
+    }
+
+    // Hosting and the guest dial are wireless. The saved "Connect with Android" switch stays.
+    @Synchronized
+    internal fun suspendForCable() {
+        waitingFor = ""
+        tempUntil = 0
+        asked = null
+        core.discovery.peerOn = false
+        if (connected) disconnect()
+        if (link.pair != null) link.cancelPairing()
+        hosting()
+    }
+
+    @Synchronized
+    internal fun restoreAfterCable() {
+        core.discovery.peerOn = on
         hosting()
     }
 
@@ -186,7 +204,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
     }
 
     private fun wantsHosting(now: Long) =
-        on && (hostOn || now < tempUntil || role == "host" || pairing != null)
+        !core.cableOnly && on && (hostOn || now < tempUntil || role == "host" || pairing != null)
 
     private var ticker: java.util.concurrent.ScheduledFuture<*>? = null
 
@@ -233,6 +251,7 @@ class Peer(val core: Core) : PeerServer.Handler, Link.Events {
 
     // Connect on a phone near: straight to it while it hosts; else ask it to.
     fun connect(f: Found) {
+        if (core.cableOnly) return
         message = ""
         if (connected && peerId == f.id) return
         if (connected) disconnect()

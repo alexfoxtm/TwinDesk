@@ -23,6 +23,7 @@ const { EventEmitter } = require('events');
 const { TurnThread } = require('../../shared/turn.js');
 const P = require('../../shared/protocol.js');
 const usbadb = require('../../shared/usbadb.js');
+const { cable } = require('../../shared/cableonly.js');
 
 const APP_ID = 'io.github.alexfoxtm.twindesk.android';
 const APP_CLASS = 'com.twindesk.android'; // Kotlin package; applicationId is APP_ID
@@ -47,7 +48,7 @@ class Wired extends EventEmitter {
     this.turnOk = false;
     this.phoneTurn = TURN_PORT; // the relay's port on the phone's side of adb reverse
     // Every session from 127.0.0.1 is a phone through adb reverse: its WebRTC uses the relay.
-    raw.iceFor = (ctx) => (P.isPhoneOs(ctx.os) && isLoopback(ctx.address) && ctx.transport !== 'ble' && this.turnOk ? this._ice() : null);
+    raw.iceFor = (ctx) => (P.isPhoneOs(ctx.os) && !ctx.embeddedPeer && isLoopback(ctx.address) && ctx.transport !== 'ble' && this.turnOk ? this._ice() : null);
     peer.on('t:phone.wired', (m, ctx) => {
       const hit = [...this.plugged].find(([, p]) => p.nonce && p.nonce === m.nonce);
       if (!hit || !ctx.deviceId) {
@@ -55,6 +56,7 @@ class Wired extends EventEmitter {
         return;
       }
       this.byDevice.set(ctx.deviceId, hit[0]);
+      cable.note(ctx.deviceId, hit[0], m);
       console.log(`[wired] ${ctx.name} is on the cable (${hit[0]})`);
       this.emit('change');
     });
@@ -87,6 +89,10 @@ class Wired extends EventEmitter {
   // The USB serial this phone is on, or null: known from phone.wired, else the only phone on a
   // cable here that isn't known as another.
   _serialFor(deviceId) {
+    if (cable.on(deviceId)) {
+      const exact = cable.serial(deviceId);
+      return exact && this.plugged.has(exact) ? exact : null;
+    }
     const known = this.byDevice.get(deviceId);
     if (known) return this.plugged.has(known) ? known : null;
     const taken = new Set(this.byDevice.values());
@@ -206,8 +212,10 @@ class Wired extends EventEmitter {
   // stays on until the phone restarts. Switching it on restarts adbd, which ends every adb reverse,
   // so it's done before the session comes onto the cable, not under it.
   async _tcpip(serial) {
+    if (cable.skipsTcpip(serial)) return;
     const prop = await this.adb.shell(serial, 'getprop service.adb.tcp.port', { timeout: 4000 });
     if (prop.code || prop.out.trim() === String(TCPIP_PORT)) return;
+    if (!(await cable.permitsWiredTcpip(this.adb, serial, `${APP_ID}/${APP_CLASS}.WiredReceiver`))) return;
     console.log(`[wired] ${serial}: adb's TCP mode on (${TCPIP_PORT})`);
     await this.adb.run(['-s', serial, 'tcpip', String(TCPIP_PORT)], { timeout: 8000 });
     await new Promise((r) => setTimeout(r, 1500)); // adbd goes away, then comes back on the cable

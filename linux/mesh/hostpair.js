@@ -185,7 +185,7 @@ class Pairing extends EventEmitter {
     ctx.fx2Wanted = msg.fx2 === 1; // … and the files engine (shared/meshfx2.js)
     ctx.fxWanted = msg.fx === 1; // fast files (shared/meshfx.js): the bytes over HTTPS, a token of this session
     ctx.mesh = !!msg.mesh; // the device speaks the mesh (docs/mesh.md): it gets the roster
-    this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN }, {
+    this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN, cable: msg.cable }, {
       t: P.T.WELCOME, v: P.PROTOCOL_VERSION, macId: this.id.id, macName: this.id.name, os: P.OS.LINUX, mesh: 1,
       tail: require('../../shared/tailnet.js').mine(), // its Tailscale addresses, for reconnecting away from this network (#161)
     });

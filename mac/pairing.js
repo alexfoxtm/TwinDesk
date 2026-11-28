@@ -289,7 +289,7 @@ class Pairing extends EventEmitter {
     ctx.photoBackup = msg.pb === 1; // camera photo backup (shared/photobackup.js); missing: an older phone
     if (e.os === P.OS.ANDROID && msg.pa === 1) ctx.appsPair = P.sha256Hex(`phone apps:${e.id}:${e.tokenHash}`);
     this.previews.authorize(ctx, e);
-    this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN }, {
+    this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN, cable: msg.cable }, {
       t: P.T.WELCOME, v: P.PROTOCOL_VERSION, macId: this.id.macId, macName: this.id.macName, os: P.OS.MAC,
       ...(ctx.photoBackup && e.os === P.OS.ANDROID && this.photoBackupOn?.() === true ? { pb: 1 } : {}),
       ...(ctx.appsPair ? { pa: 1 } : {}),

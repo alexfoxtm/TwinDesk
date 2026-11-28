@@ -20,7 +20,8 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import org.json.JSONObject
 
-class WebHost(ctx: Context, private val page: String, private val core: Core, private val onPageEvent: (String, JSONObject?) -> Unit = { _, _ -> }) {
+class WebHost internal constructor(ctx: Context, private val page: String, private val core: Core,
+    private val widgetPad: MacWidget.Touchpad? = null, private val onPageEvent: (String, JSONObject?) -> Unit = { _, _ -> }) {
     private val main = Handler(Looper.getMainLooper())
     private var ready = false
     private data class Delivery(val message: JSONObject, val embeddedRoute: Link.TrustedRoute?)
@@ -67,6 +68,15 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
         loadUrl("file:///android_asset/web/$page")
     }
 
+    @Volatile private var widgetPadActive = false
+
+    internal fun allowWidgetInput(active: Boolean) { widgetPadActive = active }
+
+    internal fun sendRemote(message: JSONObject): Boolean {
+        val pad = widgetPad ?: return core.send(message)
+        return widgetPadActive && pad.current(core) && core.link.sendWidgetInput(pad.route, pad.routeRevision, message)
+    }
+
     private inner class Bridge {
         // The pages' text in the app's language (I18n.kt); vars: a JSON object for its {name} parts.
         @JavascriptInterface fun tr(text: String, vars: String): String {
@@ -77,6 +87,10 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
         @JavascriptInterface fun send(json: String) {
             runCatching {
                 val m = JSONObject(json)
+                if (widgetPad != null) {
+                    if (m.optString("t").startsWith("remote.")) sendRemote(m)
+                    return
+                }
                 val id = m.remove("_embeddedOffer")
                 if (id != null) {
                     val offer = embeddedOffer
@@ -91,7 +105,10 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
         // write out again for each one. kind: 0 remote.mm {dx: a, dy: b, smooth}, 1 remote.wh {dx, dy},
         // 2 in.mm {x: a, y: b}.
         @JavascriptInterface fun move(kind: Int, a: Double, b: Double, smooth: Boolean) {
-            core.link.sendMove(kind, a, b, smooth)
+            val pad = widgetPad
+            if (pad == null) core.link.sendMove(kind, a, b, smooth)
+            else if (kind in 0..1 && widgetPadActive && pad.current(core))
+                core.link.sendMove(kind, a, b, smooth, pad.route, pad.routeRevision)
         }
         @JavascriptInterface fun ready() = main.post {
             ready = true
@@ -147,7 +164,7 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
         @JavascriptInterface fun setLayout(json: String) = main.post { core.remote.setLayout(json) }.let { }
         // The gamepad's state, as a Bluetooth gamepad (BtPad: remote.html while a computer is connected to it).
         @JavascriptInterface fun pad(b: Int, lx: Double, ly: Double, rx: Double, ry: Double, lt: Double, rt: Double) {
-            if (core.btPadMade) core.btPad.pad(b, lx, ly, rx, ry, lt, rt)
+            if (widgetPad == null && core.btPadMade) core.btPad.pad(b, lx, ly, rx, ry, lt, rt)
         }
         // The phone's turning (remote.html's air mouse and presentation pointer): window.tdMotion while on.
         @JavascriptInterface fun motion(on: Boolean) = main.post {
@@ -175,6 +192,7 @@ class WebHost(ctx: Context, private val page: String, private val core: Core, pr
         if (route != null && !core.link.embeddedMediaReady(route)) return
         when (m.optString("t")) {
             "rtc.offer", "audio.offer" -> {
+                if (!core.cableMediaOk(m)) return
                 embeddedOffer = route?.let { EmbeddedOffer(++offerId, it) }
                 m.remove("_embeddedOffer")
                 embeddedOffer?.let { m.put("_embeddedOffer", it.id) }
@@ -684,7 +702,7 @@ class Screen(core: Core) : Feature(core) {
 
     internal fun onOffer(m: JSONObject, route: Link.TrustedRoute?, fromEmbedded: Boolean = false) {
         // Link's socket can change while Core hands this message to the UI thread.
-        if (route == null || !core.link.accepts(route)) return
+        if (route == null || !core.link.accepts(route) || !core.cableMediaOk(m)) return
         viewerRetry.stopRetries(route.marker)
         resetVideo()
         videoSession = m.optInt("session", -1)
@@ -1211,7 +1229,7 @@ class MacSound(core: Core) : Feature(core) {
         if (!t.startsWith("audio.") || m.optString("dir") != "m2w") return false
         when (t) {
             "audio.offer" -> {
-                if (!core.sync.get("audio", "in")) return true
+                if (!core.sync.get("audio", "in") || !core.cableMediaOk(m)) return true
                 val h = host ?: WebHost(core.ctx, "audio.html", core).also { host = it }
                 h.post(m, embeddedRoute)
                 playing = true

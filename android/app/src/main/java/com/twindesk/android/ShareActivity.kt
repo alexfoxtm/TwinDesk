@@ -144,6 +144,11 @@ class AdbActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val core = Core.get(this)
+        if (core.cableOnly) {
+            Toast.makeText(applicationContext, tr("USB cable only"), Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
         if (core.adb.enable(true, byPerson = true)) {
             core.adb.sendState()
             Toast.makeText(applicationContext, tr("Wireless debugging is on"), Toast.LENGTH_SHORT).show()

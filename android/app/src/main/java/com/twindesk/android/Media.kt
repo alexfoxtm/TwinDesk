@@ -8,11 +8,14 @@
 package com.twindesk.android
 
 import android.content.ContentUris
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.BaseColumns
 import android.provider.MediaStore
 import android.provider.MediaStore.Files.FileColumns as F
@@ -23,15 +26,21 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 
-class Media(private val hub: Hub, private val core: Core) {
+class Media(private val hub: Hub, private val core: Core, internal val route: Link.TrustedRoute? = null) {
     private val cr = core.ctx.contentResolver
+    private val main = Handler(Looper.getMainLooper())
     private val want = ArrayDeque<String>() // pictures still to send, the computer's order
+    private val pendingTrash = LinkedHashMap<String, Uri>() // awaiting on-phone MediaStore Trash consent
+    private var trashObserver: ContentObserver? = null
     private var pumping = false
     @Volatile private var stopped = false
+    private val reconcileRun = Runnable { if (!stopped) hub.run { reconcilePendingTrash() } }
 
     fun stop() {
         stopped = true
         synchronized(want) { want.clear() }
+        stopTrashWatch(clearPending = true)
+        Notify.cancelMediaTrash(core.ctx)
     }
 
     // One page of the gallery, newest first. `before` is where the last page ended ("<date>:<id>").
@@ -59,15 +68,24 @@ class Media(private val hub: Hub, private val core: Core) {
             sel.append(" AND (${C.DATE_ADDED} < ? OR (${C.DATE_ADDED} = ? AND ${BaseColumns._ID} < ?))")
             args += listOf(bd.toString(), bd.toString(), bi.toString())
         }
+        if (Build.VERSION.SDK_INT >= 30) {
+            sel.append(" AND (${C.IS_TRASHED} = 0 OR ${C.IS_TRASHED} IS NULL)")
+        }
         val items = JSONArray()
         var last = ""
         var more = false
+        val cols = if (Build.VERSION.SDK_INT >= 30) {
+            arrayOf(BaseColumns._ID, F.MEDIA_TYPE, C.DATE_ADDED, C.DATE_TAKEN, C.WIDTH, C.HEIGHT, C.SIZE, C.DISPLAY_NAME, C.DURATION, C.BUCKET_DISPLAY_NAME, C.ORIENTATION, C.IS_TRASHED)
+        } else {
+            arrayOf(BaseColumns._ID, F.MEDIA_TYPE, C.DATE_ADDED, C.DATE_TAKEN, C.WIDTH, C.HEIGHT, C.SIZE, C.DISPLAY_NAME, C.DURATION, C.BUCKET_DISPLAY_NAME, C.ORIENTATION)
+        }
         cr.query(
             MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL),
-            arrayOf(BaseColumns._ID, F.MEDIA_TYPE, C.DATE_ADDED, C.DATE_TAKEN, C.WIDTH, C.HEIGHT, C.SIZE, C.DISPLAY_NAME, C.DURATION, C.BUCKET_DISPLAY_NAME, C.ORIENTATION),
+            cols,
             sel.toString(), args.toTypedArray(), "${C.DATE_ADDED} DESC, ${BaseColumns._ID} DESC",
         )?.use { c ->
             while (c.moveToNext()) {
+                if (Build.VERSION.SDK_INT >= 30 && c.columnCount > 11 && c.getInt(11) != 0) continue
                 if (items.length() >= n) { more = true; break }
                 val id = c.getLong(0)
                 val video = c.getInt(1) == F.MEDIA_TYPE_VIDEO
@@ -90,12 +108,20 @@ class Media(private val hub: Hub, private val core: Core) {
     fun albums(): JSONObject {
         data class A(val id: String, var name: String, var n: Int, val cover: String)
         val by = LinkedHashMap<String, A>()
+        val where = "${F.MEDIA_TYPE} IN (${F.MEDIA_TYPE_IMAGE}, ${F.MEDIA_TYPE_VIDEO})" +
+            if (Build.VERSION.SDK_INT >= 30) " AND (${C.IS_TRASHED} = 0 OR ${C.IS_TRASHED} IS NULL)" else ""
+        val cols = if (Build.VERSION.SDK_INT >= 30) {
+            arrayOf(BaseColumns._ID, F.MEDIA_TYPE, C.BUCKET_ID, C.BUCKET_DISPLAY_NAME, C.IS_TRASHED)
+        } else {
+            arrayOf(BaseColumns._ID, F.MEDIA_TYPE, C.BUCKET_ID, C.BUCKET_DISPLAY_NAME)
+        }
         cr.query(
             MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL),
-            arrayOf(BaseColumns._ID, F.MEDIA_TYPE, C.BUCKET_ID, C.BUCKET_DISPLAY_NAME),
-            "${F.MEDIA_TYPE} IN (${F.MEDIA_TYPE_IMAGE}, ${F.MEDIA_TYPE_VIDEO})", null, "${C.DATE_ADDED} DESC, ${BaseColumns._ID} DESC",
+            cols,
+            where, null, "${C.DATE_ADDED} DESC, ${BaseColumns._ID} DESC",
         )?.use { c ->
             while (c.moveToNext()) {
+                if (Build.VERSION.SDK_INT >= 30 && c.columnCount > 4 && c.getInt(4) != 0) continue
                 val b = c.getString(2) ?: continue
                 val a = by[b]
                 if (a != null) { a.n++; continue }
@@ -169,10 +195,25 @@ class Media(private val hub: Hub, private val core: Core) {
         return core.files.send(listOf(item), "photo-save-as", batch, photoSocket = source, photoGrant = grant)
     }
 
-    // Remove these from the phone. Answers media.delete {ids: the ones gone, failed, confirm: how many
-    // wait for Delete to be tapped here}.
+    // Remove or move to Trash from the phone. Answers media.delete {ids: the ones gone, failed,
+    // confirm: how many wait for on-phone consent, action?: "trash"}.
+    fun delete(m: JSONObject, route: Link.TrustedRoute?): JSONObject {
+        val ids = m.optJSONArray("ids")
+        if (m.has("action")) {
+            val action = m.opt("action") as? String
+            if (action == "trash") return trash(ids, route)
+            val count = (ids?.length() ?: 0).coerceIn(1, MAX_IDS)
+            return msg(Proto.T.MEDIA_DELETE, "ids" to JSONArray(), "failed" to count, "confirm" to 0)
+        }
+        if (hub.perm("media") !in listOf("ok", "partial")) {
+            val count = (ids?.length() ?: 0).coerceIn(0, MAX_IDS)
+            return msg(Proto.T.MEDIA_DELETE, "ids" to JSONArray(), "failed" to count, "confirm" to 0)
+        }
+        return delete(ids)
+    }
+
     fun delete(ids: JSONArray?): JSONObject {
-        val asked = (0 until (ids?.length() ?: 0)).map { ids!!.optString(it).take(40) }.filter { uri(it) != null }.distinct().take(300)
+        val asked = (0 until (ids?.length() ?: 0)).map { ids!!.optString(it).take(40) }.filter { uri(it) != null }.distinct().take(MAX_IDS)
         val gone = JSONArray()
         val left = ArrayList<Pair<String, Uri>>()
         val direct = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
@@ -190,6 +231,115 @@ class Media(private val hub: Hub, private val core: Core) {
             }
         }
         return msg(Proto.T.MEDIA_DELETE, "ids" to gone, "failed" to left.size - confirm, "confirm" to confirm)
+    }
+
+    // Reversible Trash on Android 11+ via MediaStore.createTrashRequest: bound to existing media
+    // permission, validated max 300 IDs, never falls back to direct/permanent delete even with All
+    // files access or when the system request fails.
+    private fun trash(ids: JSONArray?, route: Link.TrustedRoute?): JSONObject {
+        val rawCount = ids?.length() ?: 0
+        if (hub.perm("media") !in listOf("ok", "partial") || rawCount <= 0 || rawCount > MAX_IDS || Build.VERSION.SDK_INT < 30) {
+            return msg(Proto.T.MEDIA_DELETE, "ids" to JSONArray(), "failed" to rawCount.coerceAtLeast(0), "confirm" to 0, "action" to "trash")
+        }
+        val valid = LinkedHashMap<String, Uri>()
+        var invalid = 0
+        for (i in 0 until rawCount) {
+            val id = ids?.opt(i) as? String
+            val u = if (id != null && MEDIA_ID.matches(id)) uri(id) else null
+            if (id != null && u != null) valid[id] = u else invalid++
+        }
+        if (valid.isEmpty()) {
+            return msg(Proto.T.MEDIA_DELETE, "ids" to JSONArray(), "failed" to rawCount, "confirm" to 0, "action" to "trash")
+        }
+        val pi = runCatching { MediaStore.createTrashRequest(cr, valid.values.toList(), true) }.getOrNull()
+        if (pi == null) {
+            return msg(Proto.T.MEDIA_DELETE, "ids" to JSONArray(), "failed" to valid.size + invalid, "confirm" to 0, "action" to "trash")
+        }
+        if (!hub.mediaCurrent(this, route)) {
+            return msg(Proto.T.MEDIA_DELETE, "ids" to JSONArray(), "failed" to valid.size + invalid, "confirm" to 0, "action" to "trash")
+        }
+        trackPendingTrash(valid)
+        Notify.mediaTrash(core.ctx, core.host?.name ?: tr("Your computer"), valid.size, pi)
+        if (stopped || !hub.mediaCurrent(this, route) || hub.perm("media") !in listOf("ok", "partial")) {
+            stopTrashWatch(clearPending = true)
+            Notify.cancelMediaTrash(core.ctx)
+            return msg(Proto.T.MEDIA_DELETE, "ids" to JSONArray(), "failed" to rawCount, "confirm" to 0, "action" to "trash")
+        }
+        return msg(Proto.T.MEDIA_DELETE, "ids" to JSONArray(), "failed" to invalid, "confirm" to valid.size, "action" to "trash")
+    }
+
+    private fun trackPendingTrash(entries: Map<String, Uri>) {
+        synchronized(pendingTrash) {
+            for ((id, u) in entries) pendingTrash[id] = u
+            while (pendingTrash.size > MAX_IDS) {
+                val oldest = pendingTrash.keys.firstOrNull() ?: break
+                pendingTrash.remove(oldest)
+            }
+            if (stopped || trashObserver != null || pendingTrash.isEmpty()) return
+            val o = object : ContentObserver(main) {
+                override fun onChange(selfChange: Boolean, uri: Uri?) {
+                    if (stopped) return
+                    main.removeCallbacks(reconcileRun)
+                    main.postDelayed(reconcileRun, RECONCILE_MS)
+                }
+            }
+            val registered = runCatching {
+                cr.registerContentObserver(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, true, o)
+                cr.registerContentObserver(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, true, o)
+                true
+            }.getOrDefault(false)
+            if (registered) trashObserver = o else runCatching { cr.unregisterContentObserver(o) }
+        }
+    }
+
+    private fun stopTrashWatch(clearPending: Boolean) {
+        main.removeCallbacks(reconcileRun)
+        synchronized(pendingTrash) {
+            if (clearPending) pendingTrash.clear()
+            trashObserver?.let { o -> runCatching { cr.unregisterContentObserver(o) } }
+            trashObserver = null
+        }
+    }
+
+    internal fun reconcilePendingTrash() {
+        if (stopped || !hub.mediaCurrent(this, route) || hub.perm("media") !in listOf("ok", "partial")) {
+            stopTrashWatch(clearPending = true)
+            Notify.cancelMediaTrash(core.ctx)
+            return
+        }
+        val snapshot = synchronized(pendingTrash) { pendingTrash.entries.map { it.key to it.value } }
+        if (snapshot.isEmpty()) {
+            stopTrashWatch(clearPending = false)
+            return
+        }
+        val confirmed = ArrayList<String>()
+        val cols = if (Build.VERSION.SDK_INT >= 30) arrayOf(BaseColumns._ID, C.IS_TRASHED) else arrayOf(BaseColumns._ID)
+        for ((id, u) in snapshot) {
+            val gone = runCatching {
+                cr.query(u, cols, null, null, null)?.use { c ->
+                    !c.moveToFirst() || (Build.VERSION.SDK_INT >= 30 && c.columnCount > 1 && c.getInt(1) != 0)
+                } ?: false
+            }.getOrDefault(false)
+            if (gone) confirmed += id
+        }
+        if (confirmed.isEmpty()) return
+        val remaining = synchronized(pendingTrash) {
+            for (id in confirmed) pendingTrash.remove(id)
+            pendingTrash.size
+        }
+        if (remaining == 0) {
+            stopTrashWatch(clearPending = false)
+            Notify.cancelMediaTrash(core.ctx)
+        }
+        if (!stopped && hub.mediaCurrent(this, route)) {
+            core.link.sendFor(route, msg(Proto.T.MEDIA_DELETE, "ids" to jsonArray(confirmed), "failed" to 0, "confirm" to 0, "action" to "trash"))
+        }
+    }
+
+    companion object {
+        private const val MAX_IDS = 300
+        private const val RECONCILE_MS = 250L
+        private val MEDIA_ID = Regex("^[iv][0-9]{1,18}$")
     }
 
     private fun jpeg(b: Bitmap, q: Int): String {

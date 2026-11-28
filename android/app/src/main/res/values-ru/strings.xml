@@ -15,4 +15,6 @@
     <string name="label_copy">Копировать на компьютер</string>
     <string name="label_open">Открыть на компьютере</string>
     <string name="label_clip_tile">Отправить буфер обмена</string>
+    <string name="mac_widget_label">Mac в TwinDesk</string>
+    <string name="mac_widget_description">Подключайтесь к сохранённому Mac и проверяйте состояние подключения.</string>
 </resources>

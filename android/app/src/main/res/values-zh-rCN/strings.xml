@@ -15,4 +15,6 @@
     <string name="label_copy">复制到电脑</string>
     <string name="label_open">在电脑上打开</string>
     <string name="label_clip_tile">发送剪贴板</string>
+    <string name="mac_widget_label">TwinDesk Mac</string>
+    <string name="mac_widget_description">连接到一台已保存的 Mac 并查看连接状态。</string>
 </resources>

@@ -49,7 +49,7 @@ class Hub(core: Core) : Feature(core) {
     fun appCallRemoved(key: String) { calls?.appRemoved(key) }
     @Volatile private var messages: Messages? = null
     @Volatile private var policyRoute: Link.TrustedRoute? = null // the route whose hub.policy is in force
-    private var media: Media? = null
+    @Volatile private var media: Media? = null
     private var alerts: MediaAlerts? = null
     private var fs: FsBrowse? = null
 
@@ -128,7 +128,7 @@ class Hub(core: Core) : Feature(core) {
             Proto.T.MEDIA_THUMB -> if (mediaOn && !core.link.ble) media().thumbs(m.optJSONArray("ids"))
             Proto.T.MEDIA_VIEW -> if (mediaOn && !core.link.ble) media().let { md -> val id = m.str("id", 40); run { core.send(msg(Proto.T.MEDIA_VIEW, "id" to id, "data" to md.view(id))) } }
             Proto.T.MEDIA_SAVE -> if (mediaOn) media().let { md -> val ids = m.optJSONArray("ids"); run { md.save(ids) } }
-            Proto.T.MEDIA_DELETE -> if (mediaOn) media().let { md -> val ids = m.optJSONArray("ids"); run { core.send(md.delete(ids)) } }
+            Proto.T.MEDIA_DELETE -> mediaDelete(m, route)
             Proto.T.FS_LIST -> if (filesOn) fs().let { f -> run { core.send(f.list(m)) } }
             Proto.T.FS_DO -> if (filesOn) fs().let { f -> run { core.send(f.act(m)) } }
             Proto.T.FS_SAVE -> if (filesOn) fs().let { f -> val paths = m.optJSONArray("paths"); run { f.save(paths) } }
@@ -172,7 +172,23 @@ class Hub(core: Core) : Feature(core) {
         }
     }
 
-    private fun media(): Media = media ?: Media(this, core).also { media = it }
+    private fun mediaDelete(m: JSONObject, route: Link.TrustedRoute?) {
+        if (!mediaOn || !core.link.accepts(route) || policyRoute?.let { r -> route?.matches(r.marker, r.id, r.fp) } != true) return
+        val md = media()
+        if (!mediaCurrent(md, route)) return
+        run {
+            if (!mediaCurrent(md, route)) return@run
+            val reply = md.delete(m, route)
+            if (mediaCurrent(md, route)) core.link.sendFor(route, reply)
+        }
+    }
+
+    internal fun mediaCurrent(service: Media, route: Link.TrustedRoute?): Boolean =
+        mediaOn && media === service && core.link.accepts(route) &&
+            policyRoute?.let { r -> route?.matches(r.marker, r.id, r.fp) } == true &&
+            service.route?.let { r -> route?.matches(r.marker, r.id, r.fp) } == true
+
+    private fun media(): Media = media ?: Media(this, core, policyRoute).also { media = it }
 
     private fun fs(): FsBrowse = fs ?: FsBrowse(core).also { fs = it }
 
@@ -190,6 +206,7 @@ class Hub(core: Core) : Feature(core) {
         // Messages' observer belongs to the route whose policy started it; a new route gets a new one.
         if (live && messagesOn && messages != null && messages?.route !== policyRoute) { messages?.stop(); messages = null }
         if (live && messagesOn) (messages ?: Messages(this, core, policyRoute).also { messages = it }).start() else { messages?.stop(); messages = null }
+        if (live && mediaOn && media != null && media?.route !== policyRoute) { media?.stop(); media = null }
         if (!(live && mediaOn)) { media?.stop(); media = null }
         synchronized(this) {
             if (alertsLive()) (alerts ?: MediaAlerts(this, core).also { alerts = it }).start() else { alerts?.stop(); alerts = null }
@@ -229,7 +246,7 @@ class Hub(core: Core) : Feature(core) {
                 .put("sims", calls?.sims() ?: JSONArray()).put("companion", CallCompanion.allowed(core.ctx)),
             "messages" to JSONObject().put("perm", perm("messages")).put("missing", jsonArray(missing("messages"))).put("sims", messages?.sims() ?: JSONArray())
                 .put("mms", true), // pictures and group texts (sms.send image, addrs)
-            "media" to JSONObject().put("perm", perm("media")).put("remove", true).put("alerts", true).put("saveAs", true),
+            "media" to JSONObject().put("perm", perm("media")).put("remove", true).put("trash", Build.VERSION.SDK_INT >= 30).put("alerts", true).put("saveAs", true),
             "files" to JSONObject().put("perm", perm("files")),
             "bt" to if (callsOn) bt() else JSONObject(),
             "opens" to Settings.canDrawOverlays(core.ctx), // Allow on the computer opens the prompt here (else a notification)

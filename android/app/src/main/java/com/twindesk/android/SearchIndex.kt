@@ -184,6 +184,7 @@ object SearchIndex {
         Entry("Volume", { tr("Volume") }, "", "Media", ""),
         Entry("Camera", { tr("Camera") }, "This camera on {name}", "Camera", ""),
         Entry("Startup", { tr("Startup") }, "", "General", ""),
+        Entry("USB cable only", { tr("USB cable only") }, "", "Connection", ""),
         Entry("Connections", { tr("Connections") }, "", "General", ""),
         Entry("Prioritize performance over battery life", { tr("Prioritize performance over battery life") }, "Connections", "General", ""),
         Entry("Reconnect in the background", { tr("Reconnect in the background") }, "Connections", "General", ""),

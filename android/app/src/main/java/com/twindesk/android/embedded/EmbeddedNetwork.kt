@@ -39,13 +39,14 @@ internal class EmbeddedNetwork(context: Context, private val store: Store, priva
 
     @Synchronized
     fun restore() {
-        if (restoreAttempted) return
+        if (restoreAttempted || Store.cableOnly(ctx)) return
         restoreAttempted = true
         if (store.flag(ENABLED, false) && !desired) start(false)
     }
 
     @Synchronized
     fun start(signIn: Boolean) {
+        if (Store.cableOnly(ctx)) return
         val restart = desired && status.state == "error"
         if (!desired || restart) {
             if (!store.setEmbeddedEnabled(true)) {

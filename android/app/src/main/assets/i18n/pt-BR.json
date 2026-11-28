@@ -1,4 +1,7 @@
 {
+  "Relay": "Retransmissão",
+  "Choose a saved Mac": "Escolha um Mac salvo",
+  "Pair a Mac in TwinDesk first.": "Primeiro, emparelhe um Mac no TwinDesk.",
   " (optional)": " (opcional)",
   " and {count} more": " e mais {count}",
   " · It connected to this phone": " · Ele se conectou a este celular",
@@ -172,6 +175,9 @@
   "Connected only while TwinDesk is open": "Conectado só enquanto o TwinDesk está aberto",
   "Connected over Bluetooth": "Conectado por Bluetooth",
   "Connected over USB": "Conectado por USB",
+  "USB cable only": "Somente cabo USB",
+  "Only the USB cable is used. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale and TwinDesk Network stay suspended.": "Somente o cabo USB é usado. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale e TwinDesk Network ficam suspensos.",
+  "Wi-Fi, Bluetooth and TwinDesk Network can connect as well.": "Wi-Fi, Bluetooth e TwinDesk Network também podem conectar.",
   "Connected to {hostName}. Open the gamepad to play.": "Conectado a {hostName}. Abra o controle para jogar.",
   "Connected to {name}": "Conectado a {name}",
   "Connected to {name} over Wi-Fi Direct": "Conectado a {name} por Wi-Fi Direct",
@@ -1496,5 +1502,15 @@
   "TwinDesk Network": "Rede TwinDesk",
   "TwinDesk Network couldn’t start or stopped responding": "A rede TwinDesk não iniciou ou parou de responder",
   "Waiting for Tailscale device approval": "Aguardando a aprovação do dispositivo no Tailscale",
-  "Check the recipient on the phone before sending.": "Verifique o destinatário no telefone antes de enviar."
+  "Check the recipient on the phone before sending.": "Verifique o destinatário no telefone antes de enviar.",
+  "Add marker": "Adicionar marcador",
+  "1 marker · last at {time}": "1 marcador · último em {time}",
+  "{count} markers · last at {time}": "{count} marcadores · último em {time}",
+  "Sending to {name} (couldn’t save markers)": "Enviando para {name} (não foi possível salvar os marcadores)",
+  "Waiting for {name} (couldn’t save markers)": "Aguardando {name} (não foi possível salvar os marcadores)",
+  "Saved in Recordings › TwinDesk (couldn’t save markers)": "Salvo em Gravações › TwinDesk (não foi possível salvar os marcadores)",
+  "Couldn’t save the recording": "Não foi possível salvar a gravação",
+  "Audio in {folder}, markers in Downloads › TwinDesk": "Áudio em {folder}, marcadores em Downloads › TwinDesk",
+  "Move {what} to Trash?": "Mover {what} para a Lixeira?",
+  "{name} asks to move them to Trash on this phone. Tap to confirm.": "{name} pede para movê-los para a Lixeira neste celular. Toque para confirmar."
 }

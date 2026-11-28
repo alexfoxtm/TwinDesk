@@ -212,6 +212,7 @@ class Netlink(core: Core) : Feature(core) {
     }
 
     override fun onMessage(t: String, m: JSONObject): Boolean {
+        if (core.cableOnly && t.startsWith("net.")) return true
         if (t == Proto.T.FILE_CHUNK) { touch("files"); return false }
         when (t) {
             Proto.T.NET_CAPS -> synchronized(this) { peerCaps = m }
@@ -257,7 +258,7 @@ class Netlink(core: Core) : Feature(core) {
     }
 
     fun need(why: String, idleMs: Long = 0) {
-        if (!onBle) return
+        if (core.cableOnly || !onBle) return
         val fresh: Boolean
         synchronized(this) {
             fresh = !needs.containsKey(why)

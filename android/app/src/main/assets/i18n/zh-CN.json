@@ -1,4 +1,7 @@
 {
+  "Relay": "中继",
+  "Choose a saved Mac": "选择一台已保存的 Mac",
+  "Pair a Mac in TwinDesk first.": "请先在 TwinDesk 中配对一台 Mac。",
   " (optional)": "（可选）",
   " and {count} more": " 等另外 {count} 个",
   " · It connected to this phone": " · 对方连接到了这台手机",
@@ -172,6 +175,9 @@
   "Connected only while TwinDesk is open": "仅在 TwinDesk 打开时连接",
   "Connected over Bluetooth": "已通过蓝牙连接",
   "Connected over USB": "已通过 USB 连接",
+  "USB cable only": "仅使用 USB 线",
+  "Only the USB cable is used. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale and TwinDesk Network stay suspended.": "仅使用 USB 线。Wi-Fi、蓝牙、Wi-Fi Direct、Tailscale 和 TwinDesk Network 保持暂停。",
+  "Wi-Fi, Bluetooth and TwinDesk Network can connect as well.": "Wi-Fi、蓝牙和 TwinDesk Network 也可以连接。",
   "Connected to {hostName}. Open the gamepad to play.": "已连接到 {hostName}。打开游戏手柄即可开始游戏。",
   "Connected to {name}": "已连接到 {name}",
   "Connected to {name} over Wi-Fi Direct": "已通过 WLAN 直连连接到 {name}",
@@ -1496,5 +1502,15 @@
   "TwinDesk Network": "TwinDesk 网络",
   "TwinDesk Network couldn’t start or stopped responding": "TwinDesk 网络无法启动或已停止响应",
   "Waiting for Tailscale device approval": "正在等待 Tailscale 设备批准",
-  "Check the recipient on the phone before sending.": "请在手机上核实收件人后再发送。"
+  "Check the recipient on the phone before sending.": "请在手机上核实收件人后再发送。",
+  "Add marker": "添加标记",
+  "1 marker · last at {time}": "1 个标记 · 最近于 {time}",
+  "{count} markers · last at {time}": "{count} 个标记 · 最近于 {time}",
+  "Sending to {name} (couldn’t save markers)": "正在发送到 {name}（无法保存标记）",
+  "Waiting for {name} (couldn’t save markers)": "等待 {name}（无法保存标记）",
+  "Saved in Recordings › TwinDesk (couldn’t save markers)": "已保存在 录音 › TwinDesk（无法保存标记）",
+  "Couldn’t save the recording": "无法保存录音",
+  "Audio in {folder}, markers in Downloads › TwinDesk": "录音在“{folder}”，标记在“下载 › TwinDesk”",
+  "Move {what} to Trash?": "要将{what}移到回收站吗？",
+  "{name} asks to move them to Trash on this phone. Tap to confirm.": "{name} 请求将它们移到这台手机的回收站。点按以确认。"
 }

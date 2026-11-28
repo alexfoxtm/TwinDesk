@@ -15,4 +15,6 @@
     <string name="label_copy">Bilgisayara kopyala</string>
     <string name="label_open">Bilgisayarda aç</string>
     <string name="label_clip_tile">Panoyu gönder</string>
+    <string name="mac_widget_label">TwinDesk Mac</string>
+    <string name="mac_widget_description">Kayıtlı bir Mac’e bağlanın ve bağlantı durumunu görün.</string>
 </resources>

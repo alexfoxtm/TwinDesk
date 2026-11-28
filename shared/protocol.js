@@ -363,7 +363,7 @@
       // off until switched on (its page here, or the phone's Overview); while one is off the phone
       // keeps nothing running for it: no listener, no observer, no query.
       HUB_POLICY: 'hub.policy', // computer->phone {calls, messages, media, files, bt, mediaAlerts?}: which are on here (at every session start: it also says the computer has them); bt = call audio here over Bluetooth; mediaAlerts: true (left out otherwise) = tell this computer of new camera photos and videos (media.new), with media on
-      HUB_STATE: 'hub.state', // phone->computer {calls: {perm}, messages: {perm}, media: {perm, remove?, alerts?}, files: {perm}, bt: {name, bonded, le, bonding, forget, allowed, radio}}: perm 'ok'|'partial'|'ask'|'blocked'|'none' (not in this build)
+      HUB_STATE: 'hub.state', // phone->computer {calls: {perm}, messages: {perm}, media: {perm, remove?, trash?, alerts?}, files: {perm}, bt: {name, bonded, le, bonding, forget, allowed, radio}}: perm 'ok'|'partial'|'ask'|'blocked'|'none' (not in this build)
       HUB_ASK: 'hub.ask', // computer->phone {what: 'calls'|'messages'|'media'|'files'|'bt'}: ask the person on the phone for that one's permissions
       HUB_SET: 'hub.set', // phone->computer {what, on}: switched on or off on the phone
       HUB_BT: 'hub.bt', // computer->phone {address, unpair?}: this computer's Bluetooth address (is the phone paired with it?); unpair: forget it (classic and LE). phone->computer {unpair: true}: Forget on the phone, the computer forgets it too. Pairing itself is the person's, in Bluetooth settings
@@ -384,7 +384,7 @@
       MEDIA_VIEW: 'media.view', // computer->phone {id} | phone->computer {id, data}: a big preview
       MEDIA_SAVE: 'media.save', // computer->phone {ids}: send these files here (they come as file.offer, drop 'send')
       MEDIA_SAVE_AS: 'media.saveAs', // Mac->Android {id, batch}: one original photo (file.offer, drop 'photo-save-as', same batch)
-      MEDIA_DELETE: 'media.delete', // computer->phone {ids}: remove them (phones that say media.remove) | phone->computer {ids: gone, failed, confirm: waiting for Delete tapped on the phone}
+      MEDIA_DELETE: 'media.delete', // computer->phone {ids, action?: 'trash'}: remove or move to Trash (phones that say media.remove / media.trash) | phone->computer {ids: gone, failed, confirm: waiting for confirmation tapped on the phone, action?: 'trash'}
       // New camera photos and videos, for a notification on the computer. Only from a phone that says
       // media.alerts in hub.state, only while hub.policy has media and mediaAlerts, and with media's
       // perm 'ok' (all photos allowed): otherwise the phone watches nothing and sends nothing. What was there before the

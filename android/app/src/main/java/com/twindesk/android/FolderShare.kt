@@ -147,7 +147,8 @@ class FolderShare(core: Core) : Feature(core) {
     @Synchronized
     fun sync() {
         val route = core.link.currentTrustedRoute()?.takeIf(core.link::embeddedMediaReady)
-        val live = core.link.connected && !core.link.ble && (!core.link.embedded || route != null)
+        val live = core.link.connected && !core.link.ble && (!core.link.embedded || route != null) &&
+            (!core.cableOnly || core.link.wired)
         val want = live && on && allowed
         fun offer(m: JSONObject) {
             if (route != null) core.link.sendFor(route, m.put("embedded", 1)) else core.send(m)
@@ -168,7 +169,7 @@ class FolderShare(core: Core) : Feature(core) {
                 }
                 val d = dav ?: Dav(f, token, volumeName(f), ShareKey.ssl(), access).also {
                     davRoute = route
-                    it.start(loopbackOnly = route != null)
+                    it.start(loopbackOnly = route != null || core.link.wired)
                     dav = it
                 }
                 offer(msg(Proto.T.SHARE_OFFER, "on" to true, "port" to d.port, "secret" to token, "name" to volumeName(f), "cert" to ShareKey.cert()))

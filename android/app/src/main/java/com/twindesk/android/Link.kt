@@ -91,6 +91,8 @@ class Link(
     @Volatile var rttMs: Long? = null; private set
     // On a USB cable: the computer's port reached through adb reverse on this device's 127.0.0.1.
     @Volatile var wired = false; private set
+    // USB-only. Loopback is also BLE, embedded and the relay, so a 127.0.0.1 address is not proof.
+    @Volatile var cableOnly: () -> Boolean = { false }
     // Through Bluetooth (Ble.kt): the computer's port reached through a pipe on 127.0.0.1. After a
     // resume onto the network (Core), false again, with the Bluetooth socket kept as the fallback.
     @Volatile var ble = false; private set
@@ -102,7 +104,14 @@ class Link(
             connectionObservations.forPair(h.id, h.fp) else null
 
     private val exec = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "td-link").apply { isDaemon = true } }
+    // A Bluetooth fallback can return to a socket that used to be primary. Each primary
+    // tenure is separate for widget input, even when the socket object is the same.
+    @Volatile internal var widgetRouteRevision = Any(); private set
     @Volatile private var ws: WebSocket? = null
+        set(value) {
+            if (field !== value) widgetRouteRevision = Any()
+            field = value
+        }
     private data class NetemDial(val route: NetemRoute, val socket: WebSocket, val started: Long) {
         val traceRemaining = java.util.concurrent.atomic.AtomicInteger(48)
     }
@@ -332,12 +341,14 @@ class Link(
     // usbPort: connect through the cable (adb reverse) instead of the network; the host's own
     // address stays as it is, for when the cable comes out.
     // blePort: through a Bluetooth pipe on 127.0.0.1 instead.
-    // admit: reclaim only. Checked here, on the link thread, before this dial can replace a socket,
+    // admit: an explicitly fenced dial. Checked here, on the link thread, before this dial can replace a socket,
     // and again in hello(). The generation Core captured is already stale if Disconnect ran first.
     fun connect(h: Host, usbPort: Int = 0, blePort: Int = 0, reclaim: Boolean = false,
                 network: Network? = null, admit: (() -> Boolean)? = null) = run {
         val viaUsb = usbPort > 0
         val viaBle = blePort > 0
+        // Checked on the link thread, so a dial queued before the toggle still sees it.
+        if (cableOnly() && !viaUsb) return@run
         val wantReclaim = reclaim && !viaUsb && !viaBle
         val saved = pairedNetemHost(h)
         // A stale queued dial for the test peer must not fall through to an ordinary endpoint.
@@ -347,7 +358,8 @@ class Link(
         parting = false
         if (ws != null && !embedded && host?.id == h.id && wired == viaUsb && ble == viaBle && reclaimHello == wantReclaim && (state == "connecting" || state == "connected")) return@run
         closeSocket()
-        dialAdmit = if (wantReclaim) admit else null
+        dialAdmit = admit
+        if (!wantReclaim && admit != null) denyCode = "local"
         reclaimHello = wantReclaim
         pair = null
         connectionObservations.select(h.id, h.fp)
@@ -374,6 +386,7 @@ class Link(
     }
 
     internal fun handbackToLan(h: Host, network: Network, admit: () -> Boolean) = run {
+        if (cableOnly()) return@run
         val owner = ws ?: return@run
         if (parting || !connected || !embedded || !canReclaim || host?.sameEmbeddedPair(h) != true ||
             lanHandoff.get() != null || !admit()) return@run
@@ -387,6 +400,7 @@ class Link(
 
     private fun handbackOpen(move: LanHandoff) {
         if (!lanHandoff.compareAndSet(move, null)) return
+        if (cableOnly()) { move.socket.cancel(); return }
         // No token or departure until the Wi-Fi socket proved the saved certificate.
         if (parting || !connected || !embedded || ws !== move.owner ||
             host?.sameEmbeddedPair(move.host) != true || !move.admit()) {
@@ -417,7 +431,7 @@ class Link(
         reclaim: Boolean = false,
         admit: () -> Boolean,
     ) = run {
-        if (hostsKey != "hosts" || !admit()) return@run
+        if (cableOnly() || hostsKey != "hosts" || !admit()) return@run
         val pin = if (offer != null) offer.pin else {
             if (h == null || h.fp.isBlank() || h.token.isBlank() || isNetemPeer(h) ||
                 nodes.isEmpty() || h.embeddedNode?.let { nodes != listOf(it) } == true ||
@@ -490,6 +504,7 @@ class Link(
     // Core's Bluetooth tick looks up discovery for the current host on this executor. Offers and
     // retries live here too, so a tick queued before a socket change cannot dial the old peer's LAN.
     fun resume(discover: (String) -> Pair<String, Int>?) = run {
+        if (cableOnly()) return@run
         val h = host ?: return@run
         if (parting || !connected || !ble || resumeKey.isEmpty() || pending != null) return@run
         val seen = discover(h.id)
@@ -560,6 +575,8 @@ class Link(
     // (only the computer the phone allowed USB debugging for could have sent the nonce).
     // qr: the nonce came in the computer's QR code instead: the same, over the network.
     fun startPairing(address: String, port: Int, name: String, nonce: String = "", viaBle: Boolean = false, qr: Boolean = false) = run {
+        val cablePair = nonce.isNotEmpty() && !qr && !viaBle
+        if (cableOnly() && !cablePair) return@run
         parting = false // this is a newly requested pairing, after Core revoked the old return intent
         closeSocket()
         host = null
@@ -627,6 +644,11 @@ class Link(
         return sendOn(w, m)
     }
 
+    internal fun sendWidgetInput(route: TrustedRoute, revision: Any, m: JSONObject): Boolean {
+        val w = matches(route) ?: return false
+        return widgetRouteRevision === revision && sendOn(w, m)
+    }
+
     private fun matches(route: TrustedRoute?): WebSocket? {
         if (parting || route == null) return null
         val w = ws ?: return null
@@ -642,7 +664,7 @@ class Link(
     }
 
     private fun sendOn(w: WebSocket, m: JSONObject): Boolean {
-        if (w !== ws) return false
+        if (w !== ws || (cableOnly() && !wired)) return false
         if (embedded && (parting || !embeddedMessageAllowed(m, outgoing = true))) return false
         val sent = w.send(m.toString())
         if (sent) markProbe()
@@ -659,7 +681,7 @@ class Link(
     }
 
     internal fun photoRoute(source: WebSocket): Boolean =
-        !parting && connected && !ble && ws === source && host?.os == "mac"
+        !parting && connected && !ble && ws === source && host?.os == "mac" && (!cableOnly() || wired)
 
     internal fun backupSessionCurrent(marker: Any?): Boolean =
         marker is WebSocket && photoRoute(marker) && (!embedded || embeddedBackupAllowed())
@@ -675,9 +697,9 @@ class Link(
     // once. Never held for Wi-Fi (Netlink.holdOut holds only files). kind: 0 remote.mm, 1 remote.wh,
     // 2 in.mm (WebHost).
     private val hot = StringBuilder(96)
-    fun sendMove(kind: Int, a: Double, b: Double, smooth: Boolean): Boolean {
-        val w = ws ?: return false
-        if (state != "connected" || (embedded && parting) || !a.isFinite() || !b.isFinite()) return false
+    fun sendMove(kind: Int, a: Double, b: Double, smooth: Boolean, route: TrustedRoute? = null, widgetRevision: Any? = null): Boolean {
+        val w = (if (route == null) ws else matches(route)) ?: return false
+        if (state != "connected" || (cableOnly() && !wired) || (embedded && parting) || !a.isFinite() || !b.isFinite()) return false
         val line = synchronized(hot) {
             val s = hot
             s.setLength(0)
@@ -689,6 +711,7 @@ class Link(
             }
             s.append('}').toString()
         }
+        if (route != null && (matches(route) !== w || widgetRouteRevision !== widgetRevision)) return false
         return w.send(line).also { if (it) markProbe() }
     }
 
@@ -750,6 +773,7 @@ class Link(
         isEmbeddedRoute(route) && (embeddedTurn?.port ?: 0) > 0
 
     internal fun acceptsPostedMessage(source: WebSocket, fromEmbedded: Boolean, m: JSONObject): Boolean {
+        if (cableOnly() && (!wired || ws !== source)) return false
         if (m.optString("t").startsWith("lock.") && !ownsVideoSession(source)) return false
         if (!fromEmbedded && !embedded) return true
         return fromEmbedded && isEmbeddedSource(source) && !parting && connected &&
@@ -807,6 +831,25 @@ class Link(
         embeddedDial?.mirrorCall?.getAndSet(null)?.cancel()
         embeddedDial?.closeFolderCalls()
         embeddedDial?.closeReverseChildren()
+    }
+
+    // Drop wireless dials without parting a live cable session. Stop and Forget still use invalidateReturn.
+    internal fun dropWirelessRoutes() = run {
+        pending?.cancel()
+        pending = null
+        alt?.cancel()
+        alt = null
+        lanHandoff.getAndSet(null)?.socket?.cancel()
+        lanOffer = null
+        resumeTried.clear()
+        if (wired || pair?.wired == true) return@run
+        embeddedDial?.cancelled = true
+        helloTimer?.cancel(false)
+        if (ws != null || embeddedDial != null || pair != null || state == "connecting" || state == "connected") {
+            closeSocket()
+            pair = null
+            if (state != "idle") setState("idle", "")
+        }
     }
     internal fun canRememberReturn(h: Host, socket: Any?): Boolean = !parting && socket != null && ws === socket && state == "connected" && host?.id == h.id && host?.fp == h.fp
 
@@ -1075,6 +1118,7 @@ class Link(
 
     fun fx(): Fx? {
         val token = fxToken
+        if (cableOnly() && !wired) return null
         if (state != "connected" || ble || embedded || token.isEmpty()) return null
         val (address, port) = endpoint() ?: return null
         val fp = host?.fp ?: return null
@@ -1139,7 +1183,7 @@ class Link(
     }
 
     private fun onPendingOpen(w: WebSocket) {
-        if (parting) { pending = null; w.cancel(); return }
+        if (parting || cableOnly()) { pending = null; w.cancel(); return }
         val h = host ?: return
         lastRxOf[w] = System.currentTimeMillis()
         w.send(msg(Proto.T.HELLO, "v" to Proto.VERSION, "id" to store.deviceId, "name" to store.deviceName, "os" to Proto.OS, "token" to h.token, "resume" to resumeKey).toString())
@@ -1213,7 +1257,7 @@ class Link(
                 lastRxOf[webSocket] = System.currentTimeMillis()
                 if (webSocket === pending) {
                     val m = runCatching { JSONObject(text) }.getOrNull()
-                    if (!parting && m?.optString("t") == Proto.T.WELCOME && m.optBoolean("resumed")) promote(webSocket)
+                    if (!parting && !cableOnly() && m?.optString("t") == Proto.T.WELCOME && m.optBoolean("resumed")) promote(webSocket)
                     else { pending = null; webSocket.cancel() }
                 } else if (webSocket === ws || webSocket === alt) onText(text, webSocket, receivedAt)
             }
@@ -1236,6 +1280,11 @@ class Link(
     }
 
     private fun onOpen() {
+        if (cableOnly() && !wired && pair?.wired != true) {
+            lastCode = "local"
+            ws?.cancel()
+            return
+        }
         val dial = embeddedDial
         if (dial != null) {
             if (parting || !dial.current()) {
@@ -1266,6 +1315,11 @@ class Link(
         val allow = dialAdmit
         // Disconnect or a background pause invalidated this automatic dial. Do not send.
         // denyCode is "local" (do not retry) or "paused" (the screen left; the window stays).
+        if (cableOnly() && !wired) {
+            lastCode = "local"
+            ws?.cancel()
+            return
+        }
         if ((embedded && parting) || (allow != null && !allow())) {
             lastCode = denyCode
             ws?.cancel()
@@ -1285,6 +1339,7 @@ class Link(
             put("pa", 1)
             if (netemDial?.let { it.socket === ws } == true) put("netem", 1)
             if (reclaimHello) { put("rc", 1); put("resume", "0") }
+            put("cable", if (cableOnly()) 1 else 0)
         })
         helloSent = true
         helloTimer?.cancel(false)
@@ -1459,7 +1514,7 @@ class Link(
         if (mode != "session" || state == "connected" || (embedded && !helloSent)) return
         helloTimer?.cancel(false)
         val h = host ?: return
-        if (parting) {
+        if (parting || (cableOnly() && !wired)) {
             lastCode = "local"
             if (helloSent) raw(msg(Proto.T.BYE))
             val rejected = ws
@@ -1469,7 +1524,7 @@ class Link(
         }
         // Check the current return intent before welcome becomes a session. A refused late
         // welcome still closes gracefully after BYE, so the Mac can drop its temporary grace.
-        if (reclaimHello || embedded) {
+        if (dialAdmit != null) {
             val allow = dialAdmit
             if (allow != null && !allow()) {
                 lastCode = denyCode
@@ -1486,7 +1541,7 @@ class Link(
         }
         // Reclaim must be the paired Mac we dialed. A welcome for anyone else is refused, and the
         // pairing is kept (BAD_TOKEN is what forgets it).
-        if ((reclaimHello || netemDial != null || embedded) && m.optString("macId") != h.id) {
+        if ((reclaimHello || dialAdmit != null || netemDial != null || embedded) && m.optString("macId") != h.id) {
             lastCode = "reclaim"
             message = tr("{name} didn’t confirm this pairing. Use Connect to try again.", "name" to h.name)
             reclaimHello = false
@@ -1520,7 +1575,14 @@ class Link(
             host = saved
             saved
         } else {
-            store.putHost(if (kept != null) h.copy(address = kept.address, port = kept.port) else h, hostsKey)
+            synchronized(store) {
+                if (dialAdmit?.invoke() == false) {
+                    lastCode = denyCode
+                    ws?.cancel()
+                    return
+                }
+                store.putHost(if (kept != null) h.copy(address = kept.address, port = kept.port) else h, hostsKey)
+            }
             h
         }
         rttMs = null

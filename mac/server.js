@@ -12,6 +12,8 @@
 //   'listening' / 'listenError' (err)
 'use strict';
 
+const { cable } = require('../shared/cableonly.js');
+
 const { embeddedMediaAllowed } = require('./embedded-media.js');
 
 const https = require('https');
@@ -329,6 +331,7 @@ class Server extends EventEmitter {
     ctx.deviceId = deviceId;
     ctx.name = name;
     ctx.os = os;
+    cable.noteAuthenticated(ctx, who.cable);
     this.netemIceFor?.(ctx);
     ctx.ice = !ctx.netemRequested && this.iceFor ? this.iceFor(ctx) : null; // USB's RTCConfiguration
     ctx.resumeKey = P.randomHex(16);

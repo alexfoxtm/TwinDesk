@@ -258,7 +258,7 @@ class Pairing extends EventEmitter {
     ctx.fx2Wanted = msg.fx2 === 1; // fast files v2 (shared/fx2.js)
     ctx.fxPlainWanted = msg.fxPlain === 1; // unencrypted file transfers allowed (shared/fastfile.js plainOffer)
     ctx.ilWanted = msg.il && typeof msg.il === 'object' ? msg.il : null; // the input lane (shared/inputlane.js)
-    this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN }, {
+    this.server.authenticate(ctx, { deviceId: e.id, name: e.name, os: e.os || P.OS.WIN, cable: msg.cable }, {
       t: P.T.WELCOME, v: P.PROTOCOL_VERSION, macId: this.id.id, macName: this.id.name, os: P.OS.WIN,
       tail: require('../shared/tailnet.js').mine(), // its Tailscale addresses, for reconnecting away from this network (#161)
       relay: require('../shared/relay.js').welcome() || null, // your own relay (shared/relay.js), for reconnecting away from this network; null: none

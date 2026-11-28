@@ -27,6 +27,9 @@ data class Host(
     internal fun sameEmbeddedPair(other: Host) = os == "mac" && other.os == "mac" &&
         id == other.id && fp == other.fp && token == other.token && embeddedNode == other.embeddedNode
 
+    internal fun sameWidgetPair(other: Host) =
+        os == "mac" && other.os == "mac" && id == other.id && fp == other.fp && token == other.token
+
     fun json(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("os", os).put("address", address)
         .put("port", port).put("fp", fp).put("token", token).put("lastSeen", lastSeen)
@@ -46,7 +49,7 @@ data class Host(
 }
 
 class Store(private val ctx: Context) {
-    private val prefs = ctx.getSharedPreferences("twindesk", Context.MODE_PRIVATE)
+    private val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     // Every feature is off until it's turned on: a switch that was never saved is off (a fresh
     // install has them all off; an update keeps what was saved).
@@ -84,12 +87,44 @@ class Store(private val ctx: Context) {
 
     @Synchronized
     fun saveHosts(list: List<Host>, key: String = "hosts") {
-        if (key == "hosts") {
-            for (h in hosts(key)) {
-                if (list.none { it.id == h.id && it.fp == h.fp }) LockVault(ctx).forget(h.id)
+        val encoded = jsonArray(list.map { it.json() }).toString()
+        synchronized(widgetPairLock) {
+            val edit = prefs.edit().putString(key, encoded)
+            if (key == "hosts") {
+                for (h in hosts(key)) {
+                    if (list.none { it.id == h.id && it.fp == h.fp }) LockVault(ctx).forget(h.id)
+                    if (h.os == "mac" && list.none {
+                            h.sameWidgetPair(it) && (h.embeddedNode == null || h.embeddedNode == it.embeddedNode)
+                        }) edit.remove(widgetPairKey(h.id))
+                }
             }
+            edit.apply()
         }
-        prefs.edit().putString(key, jsonArray(list.map { it.json() }).toString()).apply()
+    }
+
+    // Widgets hold a random reference that disappears in the same preferences edit as the old
+    // saved pair. Renames and route/address updates keep it.
+    internal fun bindWidgetPair(host: Host): String? = synchronized(widgetPairLock) {
+        if (host.fp.isBlank() || host.token.isBlank() || hosts().none { it.sameWidgetPair(host) }) return null
+        val key = widgetPairKey(host.id)
+        prefs.getString(key, null) ?: Proto.randomHex(16).also { prefs.edit().putString(key, it).apply() }
+    }
+
+    internal fun widgetPair(id: String, revision: String): Host? = synchronized(widgetPairLock) {
+        if (prefs.getString(widgetPairKey(id), null) != revision) return null
+        hosts().firstOrNull { it.id == id && it.os == "mac" && it.fp.isNotBlank() && it.token.isNotBlank() }
+    }
+
+    internal fun hasWidgetPair(id: String, revision: String) =
+        prefs.getString(widgetPairKey(id), null) == revision
+
+    companion object {
+        private const val PREFS = "twindesk"
+        private val widgetPairLock = Any()
+        private fun widgetPairKey(id: String) = "widget.pair.$id"
+
+        internal fun cableOnly(ctx: Context) =
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(Core.CABLE_ONLY, false)
     }
 
     @Synchronized
@@ -112,6 +147,9 @@ class Store(private val ctx: Context) {
     internal fun setEmbeddedEnabled(on: Boolean) = prefs.edit().putBoolean(EmbeddedNetwork.ENABLED, on).commit()
 
     fun setFlag(key: String, on: Boolean) = prefs.edit().putBoolean(key, on).apply()
+
+    // Cable-only must be on disk before wireless teardown. apply() can die with the process first.
+    fun commitFlag(key: String, on: Boolean): Boolean = prefs.edit().putBoolean(key, on).commit()
 
     fun forgetHostClearingCredentials(id: String, key: String = "hosts") {
         if (key == "hosts") LockVault(ctx).forget(id)

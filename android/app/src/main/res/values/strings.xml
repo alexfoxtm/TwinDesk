@@ -16,4 +16,6 @@
     <string name="label_copy">Copy to computer</string>
     <string name="label_open">Open on computer</string>
     <string name="label_clip_tile">Send clipboard</string>
+    <string name="mac_widget_label">TwinDesk Mac</string>
+    <string name="mac_widget_description">Connect to one saved Mac and see its connection status.</string>
 </resources>

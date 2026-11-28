@@ -1,4 +1,7 @@
 {
+  "Relay": "Aktarıcı",
+  "Choose a saved Mac": "Kayıtlı bir Mac seçin",
+  "Pair a Mac in TwinDesk first.": "Önce TwinDesk’te bir Mac eşleyin.",
   " (optional)": " (isteğe bağlı)",
   " and {count} more": " ve {count} tane daha",
   " · It connected to this phone": " · Bu telefona o bağlandı",
@@ -172,6 +175,9 @@
   "Connected only while TwinDesk is open": "Yalnızca TwinDesk açıkken bağlı",
   "Connected over Bluetooth": "Bluetooth ile bağlı",
   "Connected over USB": "USB ile bağlı",
+  "USB cable only": "Yalnızca USB kablosu",
+  "Only the USB cable is used. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale and TwinDesk Network stay suspended.": "Yalnızca USB kablosu kullanılır. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale ve TwinDesk Network askıya alınır.",
+  "Wi-Fi, Bluetooth and TwinDesk Network can connect as well.": "Wi-Fi, Bluetooth ve TwinDesk Network de bağlanabilir.",
   "Connected to {hostName}. Open the gamepad to play.": "{hostName} cihazına bağlı. Oynamak için oyun kumandasını açın.",
   "Connected to {name}": "{name} cihazına bağlandı",
   "Connected to {name} over Wi-Fi Direct": "Wi-Fi Direct ile {name} cihazına bağlı",
@@ -1496,5 +1502,15 @@
   "TwinDesk Network": "TwinDesk Ağı",
   "TwinDesk Network couldn’t start or stopped responding": "TwinDesk Ağı başlatılamadı veya yanıt vermeyi bıraktı",
   "Waiting for Tailscale device approval": "Tailscale cihaz onayı bekleniyor",
-  "Check the recipient on the phone before sending.": "Göndermeden önce alıcıyı telefonda kontrol edin."
+  "Check the recipient on the phone before sending.": "Göndermeden önce alıcıyı telefonda kontrol edin.",
+  "Add marker": "İşaret ekle",
+  "1 marker · last at {time}": "1 işaret · son {time}",
+  "{count} markers · last at {time}": "{count} işaret · son {time}",
+  "Sending to {name} (couldn’t save markers)": "{name} cihazına gönderiliyor (işaretler kaydedilemedi)",
+  "Waiting for {name} (couldn’t save markers)": "{name} bekleniyor (işaretler kaydedilemedi)",
+  "Saved in Recordings › TwinDesk (couldn’t save markers)": "Kayıtlar › TwinDesk içine kaydedildi (işaretler kaydedilemedi)",
+  "Couldn’t save the recording": "Kayıt kaydedilemedi",
+  "Audio in {folder}, markers in Downloads › TwinDesk": "Ses, {folder} klasöründe; işaretler, İndirilenler › TwinDesk klasöründe",
+  "Move {what} to Trash?": "{what} Çöp Kutusuna taşınsın mı?",
+  "{name} asks to move them to Trash on this phone. Tap to confirm.": "{name} bunları bu telefondaki Çöp Kutusuna taşımak istiyor. Onaylamak için dokunun."
 }

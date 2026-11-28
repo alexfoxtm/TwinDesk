@@ -60,11 +60,20 @@ object I18n {
         lang = code
     }
 
-    private fun load(code: String): Map<String, String> = runCatching {
-        val text = app!!.assets.open("i18n/$code.json").bufferedReader().use { it.readText() }
+    internal fun textFor(ctx: Context, store: Store): (String) -> String {
+        val code = resolve(store.prefsString(PREF, ""))
+        val strings = if (code == "en") emptyMap() else load(ctx, code)
+        return { key -> strings[key] ?: key.substringAfter('|') }
+    }
+
+    private val translations = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+    private fun load(code: String) = load(app!!, code)
+
+    private fun load(ctx: Context, code: String): Map<String, String> = translations.computeIfAbsent(code) { runCatching {
+        val text = ctx.assets.open("i18n/$code.json").bufferedReader().use { it.readText() }
         val o = JSONObject(text)
         buildMap { for (k in o.keys()) o.optString(k).takeIf { it.isNotEmpty() }?.let { put(k, it) } }
-    }.getOrDefault(emptyMap())
+    }.getOrDefault(emptyMap()) }
 
     // "camera|Back": one English word with another meaning there; English shows what follows the |.
     fun text(key: String): String = (if (lang == "en") null else messages[key]) ?: key.substringAfter('|')
