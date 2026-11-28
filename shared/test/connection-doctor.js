@@ -11,10 +11,11 @@ const script = fs.readFileSync(path.join(__dirname, '../ui-connection-doctor.js'
 function mount(platform) {
   const byLabel = new Map();
   let show;
+  let opened;
   const UI = {
     el: (_tag, props, children) => ({ ...props, children }),
-    row(label) {
-      const row = { hint: '', hidden: false, setHint(hint) { this.hint = hint; } };
+    row(label, hint, controls) {
+      const row = { hint: '', controls, hidden: false, setHint(hint) { this.hint = hint; } };
       byLabel.set(label, row);
       return row;
     },
@@ -25,6 +26,7 @@ function mount(platform) {
     card: (title, children) => ({ title, children }),
     onBle: s => s.net?.transport === 'ble',
     via: s => s.net.transport === 'ble' ? 'Bluetooth' : s.net.lan || 'Wi-Fi Direct',
+    go: page => { opened = page; },
   };
   vm.runInNewContext(script, { UI, window: { I18n: { t: (key, vars) => key.replace(/\{(\w+)\}/g, (m, k) => vars?.[k] ?? m) } } });
   return {
@@ -32,6 +34,7 @@ function mount(platform) {
     hint: label => byLabel.get(label).hint,
     visible: label => !byLabel.get(label).hidden,
     toggle: () => show.click(),
+    open: label => { byLabel.get(label).controls[0].click(); return opened; },
   };
 }
 
@@ -53,6 +56,18 @@ function showsObservedPlatformState() {
   assert.equal(mac.hint('Screen Recording'), 'Allowed');
   assert.equal(mac.hint('Wireless debugging'), 'Ready');
   assert.equal(mac.hint('Screen sharing'), '2560 × 1440 · 30 fps · 8 Mb/s');
+  mac.card.update({ client: { ...peer, transport: 'embedded-tailnet' }, phone, files: {},
+    hub: { connected: true, deviceId: peer.id, messages: true, perm: { messages: { perm: 'ok' } } } });
+  assert.match(mac.hint('Transport'), /^TwinDesk Network/, 'the witnessed embedded route is identified');
+  assert.equal(mac.hint('Mirroring'), 'Ready', 'the selected phone has an observed ready ADB bridge');
+  assert.equal(mac.hint('File Sharing'), 'Ready');
+  assert.equal(mac.hint('Messages'), 'Ready');
+  assert.equal(mac.open('Mirroring'), 'mirror', 'the action opens the real mirrored-phone page');
+  assert.equal(mac.open('File Sharing'), 'files');
+  assert.equal(mac.open('Messages'), 'messages');
+  mac.card.update({ client: peer, phone, files: {},
+    hub: { connected: true, deviceId: peer.id, messages: true, perm: { messages: { perm: 'partial' } } } });
+  assert.equal(mac.hint('Messages'), 'Limited', 'partial permission remains visible');
   mac.toggle();
   mac.card.update({ link: { state: 'reconnecting' } });
   assert.equal(mac.card.el.children[0].hidden, true, 'connection updates leave Doctor collapsed');
@@ -101,6 +116,14 @@ function refusesUnobservedAndUnselectedFacts() {
   assert.equal(mac.hint('Screen sharing'), 'Off');
   mac.card.update({ sharing: { on: true }, stream: { status: 'live', ...stats } });
   assert.equal(mac.hint('Screen sharing'), 'Not connected');
+  mac.card.update({ client: { id: 'other', os: 'android' }, phone, files: {},
+    hub: { connected: true, deviceId: peer.id, messages: true, perm: { messages: { perm: 'ok' } } } });
+  assert.equal(mac.visible('Mirroring'), false, 'another phone’s ready bridge is excluded');
+  assert.equal(mac.hint('Messages'), 'Unknown', 'another phone’s permissions cannot imply availability');
+  mac.card.update({ client: peer, phone, files: {}, net: { transport: 'ble' },
+    hub: { connected: true, deviceId: peer.id, messages: false } });
+  assert.equal(mac.hint('File Sharing'), 'Waiting for Wi-Fi');
+  assert.equal(mac.hint('Messages'), 'Off', 'the current application sharing policy wins over connection state');
 }
 
 showsObservedPlatformState();

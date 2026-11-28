@@ -22,8 +22,10 @@ const ACTIONS = [
 ];
 
 const api = {
+  videoHandoff: (request) => ipcRenderer.invoke('videoHandoff', request).catch(() => ({ ok: false })),
   getState: () => ipcRenderer.invoke('getState'),
   notifReply: (arg) => ipcRenderer.invoke('notifReply', arg).then((ok) => ok === true, () => false),
+  copyNotif: (arg) => ipcRenderer.invoke('copyNotif', arg).then((ok) => ok === true, () => false),
   copyOtp: (code) => ipcRenderer.invoke('copyOtp', code).then((ok) => ok === true, () => false),
   useOtp: (id) => ipcRenderer.invoke('useOtp', id).catch(() => ({ ok: false, mode: 'refused' })),
   googleMessages: (arg) => ipcRenderer.invoke('googleMessages', arg),

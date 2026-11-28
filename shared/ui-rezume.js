@@ -88,6 +88,28 @@
     },
     build(body) {
       const { api } = UI;
+      let videoTarget = '';
+      const videoUrl = UI.el('input', { type: 'url', class: 'hub-input', placeholder: 'https://www.youtube.com/watch?v=…',
+        attrs: { 'aria-label': tr('Video link'), autocomplete: 'off', spellcheck: 'false' } });
+      const videoTime = UI.el('input', { type: 'number', class: 'hub-input', placeholder: tr('Use time from link'),
+        attrs: { 'aria-label': tr('Position in seconds'), min: '0', max: '604800', step: '1' } });
+      const videoNote = UI.note('info', tr('YouTube, Vimeo, Twitch and Dailymotion. Open TwinDesk on the receiving device to continue.'));
+      const sendVideo = UI.button(tr('Send video'), async () => {
+        if (!videoTarget || !api.videoHandoff || sendVideo.disabled) return;
+        const deviceId = videoTarget;
+        sendVideo.disabled = true;
+        const result = await api.videoHandoff({ deviceId, url: videoUrl.value, seconds: videoTime.value });
+        if (deviceId === videoTarget) videoNote.textContent = tr(result?.ok ? 'Video sent. Open TwinDesk on the other device to continue.' : 'Couldn’t send the video. Check the link and connection.');
+        sendVideo.disabled = !videoTarget;
+      }, 'small primary');
+      const videoSendRow = UI.row(tr('Send video'), tr('The receiving device asks before opening the video.'), [sendVideo]);
+      const videoCard = UI.card(tr('Continue watching'), [
+        UI.row(tr('Video link'), '', [videoUrl]),
+        UI.row(tr('Position in seconds'), tr('Use time from link'), [videoTime]),
+        videoSendRow,
+        videoNote,
+      ]);
+      videoCard.hidden = !mac || !api.videoHandoff;
       const labels = {
         web: 'Web pages', video: 'Videos', docs: 'Documents', apps: 'Phone apps', mirror: 'Mirror apps',
         send: 'Send from this device', receive: 'Receive from {name}', push: 'Open received items automatically', notify: 'Notification',
@@ -167,9 +189,18 @@
       const tabRow = UI.row(tr('Apps and Phone pages'), '', [sw.tab.el]);
       const where = UI.card(tr('Show in'), [notifyRow, barRow, trayRow, tabRow]);
 
-      body.append(withCard, note, offer.el, now, info, what, ways, winList.el, fileList.el, where);
+      body.append(videoCard, withCard, note, offer.el, now, info, what, ways, winList.el, fileList.el, where);
 
       return (s) => {
+        const selected = s.client || s.peer || s.session;
+        const nextVideoTarget = selected && ['android', 'ios'].includes(selected.os) ? selected.deviceId || selected.id || '' : '';
+        if (videoTarget !== nextVideoTarget) {
+          videoUrl.value = ''; videoTime.value = '';
+          videoNote.textContent = tr('YouTube, Vimeo, Twitch and Dailymotion. Open TwinDesk on the receiving device to continue.');
+        }
+        videoTarget = nextVideoTarget;
+        sendVideo.disabled = !videoTarget;
+        videoSendRow.label.textContent = videoTarget && selected.name ? tr('Send to {name}', { name: selected.name }) : tr('Send video');
         const h = s.rezume || {};
         const mw = h.meshWith;
         const p = mw ? partnerPeer(s, mw) : UI.peer(s);

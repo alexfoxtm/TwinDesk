@@ -537,7 +537,7 @@
           const otpOffer = nf.otp && nf.otp.id && nf.otp.code ? nf.otp : null;
           const history = (nf.history || []).slice(0, 6);
           notifCard.hidden = (!nf.receive && !otpOffer) || ov.notifs === false;
-          const nk = JSON.stringify([otpOffer && [otpOffer.id, otpOffer.label], history.map((h) => [h.id, h.from, h.at, h.actions]), Object.keys(nf.historyIcons || {}).length, devName, phone]);
+          const nk = JSON.stringify([otpOffer && [otpOffer.id, otpOffer.label], history.map((h) => [h.id, h.from, h.at, h.actions, h.copySession]), Object.keys(nf.historyIcons || {}).length, devName, phone]);
           if (nk !== notifKey) {
             notifKey = nk;
             const copyCode = (c) => (api.copyOtp ? api.copyOtp(c) : api.copyText(c));
@@ -568,9 +568,15 @@
               const acts = phone && api.notifReply ? (item.actions || []).map((a, i) => UI.button(a, () => api.notifReply({ ...key, act: i }), 'small')) : [];
               const x = phone && api.notifReply ? UI.button('×', () => api.notifReply({ ...key, dismiss: true }), 'small') : null;
               if (x) { x.title = t('Dismiss'); x.setAttribute('aria-label', t('Dismiss')); }
-              const r = row([item.appName || item.app, item.title].filter(Boolean).join(' · '), (text || t('Notification')) + ' · ' + UI.ago(item.at), [copy, ...acts, x]);
+              const textCopies = api.copyNotif && item.copySession ? [false, true].map((includeTitle) => {
+                const button = UI.button(t(includeTitle ? 'Copy title and text' : 'Copy text'), async () => {
+                  if (await api.copyNotif({ ...key, copySession: item.copySession, includeTitle })) button.textContent = t('Copied');
+                }, 'small');
+                return button;
+              }) : [];
+              const r = row([item.appName || item.app, item.title].filter(Boolean).join(' · '), (text || t('Notification')) + ' · ' + UI.ago(item.at), [copy, ...textCopies, ...acts, x]);
               // Its buttons on a line of their own under the words, which keep the row's width.
-              if (copy || acts.length || x) r.classList.add('dv-notif');
+              if (copy || textCopies.length || acts.length || x) r.classList.add('dv-notif');
               const icon = (nf.historyIcons || {})[item.app];
               if (icon) {
                 r.querySelector('.text').prepend(el('img', { class: 'dv-nicon', src: icon, alt: '' }));

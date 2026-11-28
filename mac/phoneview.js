@@ -501,7 +501,7 @@ class PhoneViews extends EventEmitter {
     this.views.set(id, v);
     if (kind === 'app') setImmediate(() => this._stubs());
     const tellMinimized = () => this._send(v, 'phoneview:opts', { minimized: win.isMinimized() });
-    win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, ...(ios || usb ? { screenOS: P.OS.IOS } : {}), ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
+    win.loadFile(path.join(__dirname, 'phoneview.html'), { query: { kind, title, titleKey, titleName, deviceId: this.server.current?.deviceId || '', ...(ios || usb ? { screenOS: P.OS.IOS } : {}), ...(kind === 'mic' ? { sink, virtual: process.platform === 'linux' ? '1' : '' } : {}), language: this._i18n().locale } });
     if (!hidden) win.once('ready-to-show', () => win.show());
     win.webContents.once('did-finish-load', () => {
       v.ready = true;
@@ -647,9 +647,10 @@ class PhoneViews extends EventEmitter {
     const content = win.getContentBounds();
     const work = screen.getDisplayMatching(bounds).workArea;
     const extraW = bounds.width - content.width;
-    const extraH = bounds.height - content.height + PHONEVIEW_BAR;
+    const chromeHeight = PHONEVIEW_BAR + (v.toolbarHeight || 0);
+    const extraH = bounds.height - content.height + chromeHeight;
     const [minW, minH] = win.getMinimumSize();
-    const long = Math.max(content.width, content.height - PHONEVIEW_BAR);
+    const long = Math.max(content.width, content.height - chromeHeight);
     const w = aspect >= 1 ? long : long * aspect;
     const h = w / aspect;
     const maxScale = Math.min((work.width - extraW) / w, (work.height - extraH) / h);
@@ -660,7 +661,7 @@ class PhoneViews extends EventEmitter {
     const x = Math.max(work.x, Math.min(work.x + work.width - width, bounds.x + Math.round((bounds.width - width) / 2)));
     const y = Math.max(work.y, Math.min(work.y + work.height - height, bounds.y + Math.round((bounds.height - height) / 2)));
     v.videoAspect = aspect;
-    win.setAspectRatio(aspect, { width: 0, height: PHONEVIEW_BAR });
+    win.setAspectRatio(aspect, { width: 0, height: chromeHeight });
     if (bounds.x !== x || bounds.y !== y || bounds.width !== width || bounds.height !== height) {
       win.setBounds({ x, y, width, height });
     }
@@ -777,6 +778,24 @@ class PhoneViews extends EventEmitter {
     if (quitting && v.ipadOwner) return;
     if (m.t === 'mirrorPreview') return this._saveIosPreview(v, m);
     if (m.t === 'retryIpad') return this._retryIos(v);
+    if (m.t === 'toolbarHeight') {
+      if ((v.kind !== 'screen' && v.kind !== 'app') || v.ios || !Number.isInteger(m.height) || m.height < 0 || m.height > 200) return;
+      const delta = m.height - (v.toolbarHeight || 0);
+      v.toolbarHeight = m.height;
+      const win = v.win;
+      if (v.kind === 'screen' && v.size && !win.isDestroyed()) {
+        win.setAspectRatio(v.size.width / v.size.height, { width: 0, height: PHONEVIEW_BAR + m.height });
+        if (delta && win.isNormal()) {
+          const bounds = win.getBounds();
+          const work = screen.getDisplayMatching(bounds).workArea;
+          const [, minHeight] = win.getMinimumSize();
+          const height = Math.min(work.height, Math.max(minHeight, bounds.height + delta));
+          const y = Math.max(work.y, Math.min(bounds.y, work.y + work.height - height));
+          if (height !== bounds.height || y !== bounds.y) win.setBounds({ ...bounds, y, height });
+        }
+      }
+      return;
+    }
     if (handleIPad(this, v, m)) return;
     // Keep on top (the title bar's pin): the window's own, no phone needed. 'floating': over other
     // apps' windows, under menus and the Dock.

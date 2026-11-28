@@ -863,6 +863,10 @@ function setupIpc(ctx) {
 
   ipcMain.handle('getState', () => ctx.state);
   const controlURL = pathToFileURL(`${__dirname}/control.html`).href;
+  ipcMain.handle('videoHandoff', ({ sender, senderFrame }, request) => {
+    if (!senderFrame || senderFrame !== sender.mainFrame || senderFrame.url.split(/[?#]/, 1)[0] !== controlURL) return { ok: false };
+    return require('../shared/video-handoff.js').sendVideo(ctx.server, request);
+  });
   ipcMain.handle('notifReply', ({ sender, senderFrame }, r) => {
     if (!senderFrame || senderFrame !== sender.mainFrame || senderFrame.url.split(/[?#]/, 1)[0] !== controlURL) return false;
     if (!r || typeof r !== 'object') return false;
@@ -873,6 +877,11 @@ function setupIpc(ctx) {
     if (r.dismiss) return ctx.notifs?.dismiss?.(r.id) === true;
     if (Number.isInteger(r.act)) return ctx.notifs?.act?.(r.id, r.act) === true;
     return ctx.notifs?.reply?.(r.id, r.text, r.from, r.replySession) === true;
+  });
+  ipcMain.handle('copyNotif', ({ sender, senderFrame }, arg) => {
+    if (!senderFrame || senderFrame !== sender.mainFrame || senderFrame.url.split(/[?#]/, 1)[0] !== controlURL) return false;
+    if (!arg || typeof arg.id !== 'string' || typeof arg.from !== 'string' || typeof arg.copySession !== 'string') return false;
+    return ctx.notifs?.copyText?.(arg.id, arg.from, arg.copySession, arg.includeTitle === true) === true;
   });
   ipcMain.handle('copyOtp', ({ sender, senderFrame }, code) => {
     if (!senderFrame || senderFrame !== sender.mainFrame || senderFrame.url.split(/[?#]/, 1)[0] !== controlURL) return false;

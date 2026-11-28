@@ -670,7 +670,10 @@
         control.el.addEventListener('click', paintHeldFrame, { capture: true });
       }
     }
-    rail.mount(document.querySelector('#bar .tools'));
+    const mountedRail = rail.mount(document.querySelector('#bar .tools'));
+    if (window.MirrorToolbar && !iosScreen && (kind === 'screen' || kind === 'app')) {
+      window.MirrorToolbar({ deviceId: q.get('deviceId') || '', rail: mountedRail, api });
+    }
   }
   canvas.focus();
 })();

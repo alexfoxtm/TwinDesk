@@ -697,6 +697,23 @@ UI.tab({
       }
       paintChats(UI.state, true);
     }
+    function attachmentCards(message, google) {
+      const gm = UI.state?.googleMessages;
+      const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+      if (!attachments.length) return message.attachment ? [el('div', { class: 'hub-text', text: tr('Attachment') })] : [];
+      return attachments.map((part) => {
+        const label = [typeof part.name === 'string' && part.name.trim() ? part.name : tr('Attachment'), typeof part.mime === 'string' ? part.mime : '',
+          Number.isSafeInteger(part.size) && part.size > 0 ? `${Math.ceil(part.size / 1024)} KB` : ''].filter(Boolean).join(' · ');
+        const save = google && part.save === true && typeof part.revision === 'string' && /^[a-f0-9]{64}$/.test(part.revision) ? UI.button(tr('Save attachment'), async () => {
+          if (save.disabled) return;
+          save.disabled = true;
+          const ok = await gmAct('saveAttachment', { chat: google.id, message: message.id, part: part.part, revision: part.revision }, gm);
+          save.disabled = false;
+          save.textContent = tr(ok ? 'Done' : 'Save attachment');
+        }, 'small') : null;
+        return el('div', { class: 'hub-attachment' }, [el('div', { class: 'hub-text', text: label }), save]);
+      });
+    }
     function loadGooglePhotos() {
       // Queue only one background download for the open conversation.
       if (page.hidden || !gmPhotoView || gmPhotoView.pending.size) return;
@@ -1055,7 +1072,7 @@ UI.tab({
             gmPhotoParts.push({ ...photo, node });
             return node;
           }) : []),
-          m.attachment ? el('div', { class: 'hub-text', text: tr('Attachment') }) : null,
+          ...attachmentCards(m, google),
           m.pic ? el('div', { class: 'hub-text', text: tr('Picture') }) : null,
           m.text ? el('div', { class: 'hub-text', text: m.text }) : null,
           textStatus(m),
@@ -1187,7 +1204,7 @@ UI.tab({
         nodes.push(el('div', { class: `hub-bubble ${m.out ? 'out' : 'in'} text${m.status === 'failed' ? ' failed' : ''}`, title: new Date(m.at).toLocaleString() }, [
           group && !m.out && (m.fromName || m.from) ? el('div', { class: 'hub-from', text: m.fromName || m.from }) : null,
           ...textPictures(m),
-          m.attachment ? el('div', { class: 'hub-text', text: tr('Attachment') }) : null,
+          ...attachmentCards(m, null),
           m.body ? el('div', { class: 'hub-text', text: m.body }) : null,
           textStatus(m),
         ]));

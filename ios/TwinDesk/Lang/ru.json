@@ -999,5 +999,9 @@
   "This device": "Это устройство",
   "Unavailable over Tailscale": "Недоступен через Tailscale",
   "Use the same Tailscale account on this device and your Mac.": "Используйте одну учётную запись Tailscale на этом устройстве и на Mac.",
-  "Check the recipient on the phone before sending.": "Перед отправкой проверьте получателя на телефоне."
+  "Check the recipient on the phone before sending.": "Перед отправкой проверьте получателя на телефоне.",
+  "Continue watching": "Продолжить просмотр",
+  "Continue at {time}": "Продолжить с {time}",
+  "Open video": "Открыть видео",
+  "Dismiss": "Закрыть"
 }

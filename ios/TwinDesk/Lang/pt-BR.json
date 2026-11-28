@@ -999,5 +999,9 @@
   "This device": "Este dispositivo",
   "Unavailable over Tailscale": "Indisponível pelo Tailscale",
   "Use the same Tailscale account on this device and your Mac.": "Use a mesma conta do Tailscale neste dispositivo e no Mac.",
-  "Check the recipient on the phone before sending.": "Verifique o destinatário no telefone antes de enviar."
+  "Check the recipient on the phone before sending.": "Verifique o destinatário no telefone antes de enviar.",
+  "Continue watching": "Continuar assistindo",
+  "Continue at {time}": "Continuar em {time}",
+  "Open video": "Abrir vídeo",
+  "Dismiss": "Dispensar"
 }

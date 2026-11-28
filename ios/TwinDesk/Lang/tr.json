@@ -999,5 +999,9 @@
   "This device": "Bu cihaz",
   "Unavailable over Tailscale": "Tailscale üzerinden kullanılamıyor",
   "Use the same Tailscale account on this device and your Mac.": "Bu cihazda ve Mac’inizde aynı Tailscale hesabını kullanın.",
-  "Check the recipient on the phone before sending.": "Göndermeden önce alıcıyı telefonda kontrol edin."
+  "Check the recipient on the phone before sending.": "Göndermeden önce alıcıyı telefonda kontrol edin.",
+  "Continue watching": "İzlemeye devam et",
+  "Continue at {time}": "{time} noktasından devam et",
+  "Open video": "Videoyu aç",
+  "Dismiss": "Kapat"
 }

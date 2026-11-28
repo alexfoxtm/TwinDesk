@@ -47,6 +47,10 @@ function sameProvenOffer(prev, item, from, socket) {
 // The renderer carries an opaque offer ID. The socket stays in the main process.
 // history: the list before this item, so a proven re-post keeps its open drafts sendable.
 function bindReply(item, from, socket, message, history) {
+  if (from && socket) {
+    item.copySession = randomUUID();
+    Object.defineProperty(item, 'copySocket', { value: socket });
+  }
   item.reply = !!(item.reply && message.id && from && socket);
   if (!item.reply) return;
   item.from = from;
@@ -63,7 +67,15 @@ function replyIsCurrent(n, item) {
 }
 
 function replyHistory(n) {
-  return (n.history || []).map((item) => item.reply && !replyIsCurrent(n, item) ? { ...item, reply: false } : item);
+  return (n.history || []).map((item) => {
+    const reply = item.reply && replyIsCurrent(n, item);
+    const copySession = item.copySession && copyIsCurrent(n, item) ? item.copySession : undefined;
+    return reply === item.reply && copySession === item.copySession ? item : { ...item, reply, copySession };
+  });
+}
+
+function copyIsCurrent(n, item) {
+  return !!(n.cfg?.receive && item.copySocket && n.replySocket(item.from) === item.copySocket && !hidden(n, item));
 }
 
 // Adds gone(id), act(id, i) and dismiss(id) to a notifs.js class. Its instances have history
@@ -71,6 +83,19 @@ function replyHistory(n) {
 // (send(m)) and to say they changed (changed()).
 function withPhoneActions(Cls) {
   Object.assign(Cls.prototype, {
+    copyText(id, from, session, includeTitle = false) {
+      const item = (this.history || []).find((h) => h.id === id && h.from === from && h.copySession === session);
+      if (!item || !session || !copyIsCurrent(this, item)) return false;
+      const text = [includeTitle ? item.title : '', item.subtitle, item.body].filter(Boolean).join('\n');
+      if (!text) return false;
+      const otp = require('./otp.js');
+      if (otp.otpOf([item.title, item.subtitle, item.body].filter(Boolean).join(' ')) || otp.otpOf(text)) {
+        return typeof this.copyOtp === 'function' ? this.copyOtp(text) : otp.quietCopy(text);
+      }
+      otp.invalidateQuietCopy();
+      require('electron').clipboard.writeText(text);
+      return true;
+    },
     // Gone here: from the list, and its notification closed.
     gone(id) {
       id = str(id, 200);
@@ -121,7 +146,7 @@ function withMeshPhoneActions(Cls) {
   Object.assign(Cls.prototype, {
     // A notification just shown: into the list (newest first, 50 kept). `direct` = it came from the
     // device it started on. Returns the item.
-    remember(m, { from, origin, on, direct, socket }) {
+    remember(m, { from, origin, on, direct, copy = direct, socket }) {
       if (!this.history) this.history = [];
       if (!this.historyIcons) this.historyIcons = new Map();
       const appName = str(m.appName, 100);
@@ -136,7 +161,7 @@ function withMeshPhoneActions(Cls) {
         actions: direct ? actionsOf(m) : [],
         ...messageIdentityOf(m, direct && socket && from),
       };
-      bindReply(item, direct && from, socket, m, this.history);
+      bindReply(item, copy && from, socket, m, this.history);
       if (item.app && typeof m.icon === 'string' && m.icon.startsWith('data:image/') && m.icon.length < 200000) {
         this.historyIcons.delete(item.app);
         this.historyIcons.set(item.app, m.icon);

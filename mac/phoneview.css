@@ -10,6 +10,8 @@ html, body { margin: 0; height: 100%; background: #000; color: var(--text); font
 #via { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px; margin: 0 auto 0 6px; flex: none; background: var(--hover); color: var(--muted); }
 #via.usb { background: rgba(48, 209, 88, 0.22); color: #30d158; }
 .tools { display: flex; gap: 2px; flex: none; }
+#bar .tools { flex-shrink: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.tools button { flex-shrink: 0; }
 .tools button {
   -webkit-app-region: no-drag; width: 26px; height: 24px; border: 0; border-radius: 6px; background: none; display: grid; place-items: center; padding: 0;
 }
@@ -32,3 +34,30 @@ button.active { background: rgba(10, 132, 255, 0.4); }
 body.app #b-power, body.camera #b-power, body.camera #b-enter-send, body.camera #b-swipe { display: none; }
 body.drop #stage { outline: 3px solid #0a84ff; outline-offset: -3px; }
 body.sound #bar { display: none; }
+#toolbar-position {
+  -webkit-app-region: no-drag; color: var(--text); background: var(--bar);
+  border: 1px solid var(--muted); border-radius: 5px; font: inherit; font-size: 11px;
+  padding: 3px; max-width: 112px; margin-left: 6px; flex-shrink: 0;
+}
+#toolbar-dock { display: none; }
+body[data-toolbar="above"] #toolbar-dock,
+body[data-toolbar="below"] #toolbar-dock {
+  display: flex; position: absolute; left: 0; right: 0; flex-direction: column;
+  background: var(--bar); padding: 4px 8px; box-sizing: border-box;
+}
+body[data-toolbar="above"] #toolbar-dock { top: 32px; }
+body[data-toolbar="below"] #toolbar-dock { bottom: 0; }
+#toolbar-dock .tools { overflow-x: auto; scrollbar-width: thin; gap: 4px; }
+#toolbar-dock .tools button { flex: none; width: 32px; height: 28px; }
+body[data-toolbar="above"] #stage { top: calc(32px + var(--toolbar-height, 0px)); }
+body[data-toolbar="below"] #stage { bottom: var(--toolbar-height, 0px); }
+body.rail[data-toolbar="above"] #stage,
+body.rail[data-toolbar="below"] #stage { right: 0; }
+body[data-toolbar="above"] #toolbar-dock #rail,
+body[data-toolbar="below"] #toolbar-dock #rail {
+  position: static; flex-direction: row; width: 100%; padding: 4px 0 0; border: 0;
+  overflow-y: hidden; overflow-x: auto; scrollbar-width: thin;
+}
+#toolbar-position:focus-visible, .tools button:focus-visible, #rail .ctl:focus-visible {
+  outline: 2px solid #0a84ff; outline-offset: -2px;
+}

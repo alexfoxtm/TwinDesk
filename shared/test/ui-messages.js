@@ -1773,3 +1773,27 @@ test('a new-message picture stays visible when that Google chat cannot take it',
   assert.equal(conv.children[2].hidden, false);
   assert.equal(conv.children[2].textContent, 'This picture stays with the new message. Remove it to open that Google Messages chat.');
 });
+
+test('Google attachment cards show filename and MIME and Save only a downloadable exact message part', async () => {
+  const state = {
+    ui: { chats: true }, hub: { deviceId: gmPhone, session: 1, messages: true, perm: { messages: {} } },
+    googleMessages: connected([{ id: 'paired', name: 'Fixture', addrs: [gmDest], reply: true, kind: 'rcs', at: 2000 }], {
+      chat: 'paired', loaded: true, items: [{ id: 'attachment', at: 1000, me: false, attachment: true,
+        attachments: [{ part: 2, revision: 'a'.repeat(64), name: 'fixture.pdf', mime: 'application/pdf', size: 1024, save: true },
+          { part: 3, name: 'remote-only.mp4', mime: 'video/mp4', size: 9000000, save: false }] }],
+    }),
+  };
+  const sent = [];
+  const { paint, chat, rows } = inbox(state, { googleMessages: async (msg) => { sent.push(msg); return true; } });
+  paint(state); rows()[0].onclick();
+  const nodes = [];
+  const visit = (node) => { if (node && typeof node === 'object') { nodes.push(node); for (const child of node.children || []) visit(child); } };
+  visit(chat);
+  assert.ok(nodes.some((node) => node.text === 'fixture.pdf · application/pdf · 1 KB'));
+  assert.ok(nodes.some((node) => node.text?.includes('remote-only.mp4')));
+  const save = nodes.filter((node) => node.text === 'Save attachment');
+  assert.equal(save.length, 1, 'unretrievable parts never expose Save');
+  await save[0].onclick();
+  const cmd = sent.find((msg) => msg.op === 'saveAttachment');
+  assert.equal(cmd.chat, 'paired'); assert.equal(cmd.message, 'attachment'); assert.equal(cmd.part, 2); assert.equal(cmd.revision, 'a'.repeat(64));
+});

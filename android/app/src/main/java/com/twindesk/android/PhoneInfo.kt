@@ -160,6 +160,7 @@ class Adb(core: Core) : Feature(core) {
     // The computer's side of wireless debugging (adb.bridge): needsPair, connecting, ready…
     @Volatile var bridge = ""; private set
     @Volatile var bridgeMessage = ""; private set
+    @Volatile internal var doctorBridgeRoute: Link.TrustedRoute? = null; private set
     @Volatile var canPair = false; private set // the computer has been looking a while: its pairing may really be gone
     // Xiaomi: “USB debugging (Security settings)” is off, so the computer's touches and keys are refused.
     @Volatile var inputBlocked = false; private set
@@ -520,6 +521,7 @@ class Adb(core: Core) : Feature(core) {
     }
 
     override fun onWelcome(host: Host) {
+        doctorBridgeRoute = null
         need = null
         autoOff.removeCallbacksAndMessages(null)
         // Wireless debugging only works on Wi-Fi; switch it on for the Mac if we may, else ask.
@@ -528,6 +530,7 @@ class Adb(core: Core) : Feature(core) {
     }
 
     override fun onClosed() {
+        doctorBridgeRoute = null
         viewed = false
         camera = Camera()
         if (!core.link.connected || connectWatch?.marker !== core.link.sessionMarker()) stopConnectWatch()
@@ -576,6 +579,10 @@ class Adb(core: Core) : Feature(core) {
     }
 
     internal fun onMessage(t: String, m: JSONObject, route: Link.TrustedRoute?, fromEmbedded: Boolean): Boolean {
+        if (t == Proto.T.ADB_BRIDGE) {
+            if (route == null || !core.link.accepts(route)) return true
+            doctorBridgeRoute = route
+        }
         if (fromEmbedded && t == Proto.T.ADB_ENABLE) return true
         if (t != "embedded.adb.open") return onMessage(t, m)
         if (m.opt("mode") == "cellular") {

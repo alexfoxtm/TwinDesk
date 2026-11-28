@@ -784,6 +784,7 @@ app.whenReady().then(() => {
   console.log(`[main] ${id.macName} (${id.macId}) fp ${id.fp}`);
 
   server = new Server(id, { hold: true }); // listens once the helper's input lane is settled (afterLane below)
+  new (require('./fork-update').ForkUpdate)({ server, version: app.getVersion() });
   require('./lockview').startLockView({ server, powerMonitor: require('electron').powerMonitor,
     remoteAllowed: () => settings.sharing.on === true && settings.sharing.remote !== false && settings.streamInput !== false });
   server.on('listening', () => console.log(`[server] listening on 0.0.0.0:${server.port}`));

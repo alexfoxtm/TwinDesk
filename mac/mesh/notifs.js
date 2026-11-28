@@ -460,10 +460,11 @@ class Notifs extends EventEmitter {
     const appName = str(m.appName, 100);
     // The recent ones, for Overview and Messages' chat apps; buttons and Reply go back to the device.
     const peer = this.mesh.get(from);
-    const direct = (!r.msg.o || r.msg.o === from) && peer && peer.os === P.OS.ANDROID;
-    const directPhone = (!r.msg.o || r.msg.o === from) && peer && P.isPhoneOs(peer.os);
+    const directOrigin = !!peer && (!r.msg.o || r.msg.o === from);
+    const direct = directOrigin && peer.os === P.OS.ANDROID;
+    const directPhone = directOrigin && P.isPhoneOs(peer.os);
     const socket = ws && ws === this.replySocket(from) ? ws : null;
-    const item = this.remember(m, { from, origin: r.msg.o || from, on: origin, direct: !!direct, socket });
+    const item = this.remember(m, { from, origin: r.msg.o || from, on: origin, direct, copy: directOrigin, socket });
     Object.defineProperty(item, 'actionPeer', { value: direct ? peer : null, writable: true });
     const title = item.title;
     const body = str(m.body);

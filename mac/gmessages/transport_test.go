@@ -152,6 +152,15 @@ func TestProjectUsesMessageTransport(t *testing.T) {
 }
 
 func TestProjectKeepsNonImageAttachmentsAndCaptions(t *testing.T) {
+	available := attachmentOf(3, &gmproto.MediaContent{MimeType: "application/pdf", MediaName: "fixture.pdf", Size: 1024, MediaID: "fixture", DecryptionKey: []byte{1}})
+	if available.Part != 3 || available.Name != "fixture.pdf" || available.MIME != "application/pdf" || available.Size != 1024 || !available.Save || len(available.Revision) != 64 {
+		t.Fatalf("attachment metadata = %+v", available)
+	}
+	oversized := attachmentOf(0, &gmproto.MediaContent{Size: maxPhoto + 1, MediaID: "fixture", DecryptionKey: []byte{1}})
+	if oversized.Save || attachmentOf(0, &gmproto.MediaContent{MediaID: "fixture"}).Save {
+		t.Fatal("oversized and keyless attachments cannot be saved")
+	}
+
 	media := func(mime string, format gmproto.MediaFormats) *gmproto.MessageInfo {
 		return &gmproto.MessageInfo{Data: &gmproto.MessageInfo_MediaContent{MediaContent: &gmproto.MediaContent{MimeType: mime, Format: format}}}
 	}
@@ -671,5 +680,25 @@ func TestPartlyMappedGroupIsNeverAOnePersonConversation(t *testing.T) {
 	c.Participants = c.Participants[:2]
 	if s := summarize(c, nil); s.Group || len(s.Addrs) != 1 {
 		t.Fatalf("group=%v addrs=%d, want a one-person conversation", s.Group, len(s.Addrs))
+	}
+}
+
+func TestAttachmentRevisionRejectsChangedPayloadBeforeFetch(t *testing.T) {
+	media := &gmproto.MediaContent{MimeType: "application/pdf", MediaName: "fixture.pdf", Size: 1024, MediaID: "fixture", DecryptionKey: []byte{1}}
+	original := attachmentOf(0, media)
+	base := *media
+	b := &inbox{photos: map[string]map[string][]*gmproto.MessageInfo{"chat": {"message": {&gmproto.MessageInfo{Data: &gmproto.MessageInfo_MediaContent{MediaContent: media}}}}}}
+	cmd := command{Chat: "chat", Message: "message", Part: 0, Revision: original.Revision}
+	// There is no client in this fixture: every mismatch must refuse before a fetch.
+	for _, mutate := range []func(){func() { media.MediaID = "replacement" }, func() { media.DecryptionKey = []byte{2} }, func() { media.MediaName = "replacement.pdf" }, func() { media.Size++ }} {
+		*media = base
+		mutate()
+		if attachmentOf(0, media).Revision == original.Revision || b.attachment(context.Background(), cmd) {
+			t.Fatal("changed media kept a pending Save authorized")
+		}
+	}
+	cmd.Revision = ""
+	if b.attachment(context.Background(), cmd) {
+		t.Fatal("missing revision accepted")
 	}
 }

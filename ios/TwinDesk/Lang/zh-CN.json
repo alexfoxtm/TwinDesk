@@ -999,5 +999,9 @@
   "This device": "此设备",
   "Unavailable over Tailscale": "无法通过 Tailscale 连接",
   "Use the same Tailscale account on this device and your Mac.": "在此设备和 Mac 上使用同一个 Tailscale 账户。",
-  "Check the recipient on the phone before sending.": "请在手机上核实收件人后再发送。"
+  "Check the recipient on the phone before sending.": "请在手机上核实收件人后再发送。",
+  "Continue watching": "继续观看",
+  "Continue at {time}": "从 {time} 继续",
+  "Open video": "打开视频",
+  "Dismiss": "关闭"
 }

@@ -43,7 +43,7 @@
         if (!h.save) asked = false;
         if (!items) return;
         const hist = (s.notifs && s.notifs.history) || [];
-        const key = JSON.stringify(hist.map((x) => [x.id, x.at])) + Math.floor(Date.now() / 15000);
+        const key = JSON.stringify(hist.map((x) => [x.id, x.at, x.copySession])) + Math.floor(Date.now() / 15000);
         if (key === lastKey) return;
         lastKey = key;
         items.replaceChildren(...(hist.length ? hist.slice(0, 200).map((x) => el('div', { class: 'hist-item' }, [
@@ -51,6 +51,12 @@
             el('div', { class: 'hist-preview selectable', attrs: { 'data-literal': '' }, text: [x.title, x.body].filter(Boolean).join(' — ') }),
             el('div', { class: 'hint', attrs: { 'data-literal': '' }, text: `${x.appName || x.app || ''} · ${UI.ago ? UI.ago(x.at) : new Date(x.at).toLocaleString()}` }),
           ]),
+          ...(UI.api.copyNotif && x.copySession ? [false, true].map((includeTitle) => {
+            const button = UI.button(t(includeTitle ? 'Copy title and text' : 'Copy text'), async () => {
+              if (await UI.api.copyNotif({ id: x.id, from: x.from, copySession: x.copySession, includeTitle })) button.textContent = t('Copied');
+            }, 'small');
+            return button;
+          }) : []),
         ])) : [UI.row(t('Nothing yet'), '')]));
       },
     };

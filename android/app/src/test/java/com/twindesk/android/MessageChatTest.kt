@@ -344,12 +344,17 @@ class MessageChatTest {
     @Test fun captionedNonImageMmsKeepsItsAttachmentMetadata() {
         val core = core()
         val service = Messages(core.hub, core)
+        var supportsNames = true
         provider("sms") { _, cols -> MatrixCursor(cols) }
         provider("mms") { uri, cols ->
+            if (!supportsNames && cols.contains("fn")) throw IllegalArgumentException("unsupported projection")
             MatrixCursor(cols).apply {
                 when (uri.lastPathSegment) {
                     null -> addRow(arrayOf<Any>(9L, 100L, 1, 7L))
-                    "part" -> { addRow(arrayOf<Any?>(1L, "text/plain", "Synthetic caption")); addRow(arrayOf<Any?>(2L, "video/mp4", null)) }
+                    "part" -> {
+                        addRow(cols.map { if (it == "_id") 1L else if (it == "ct") "text/plain" else if (it == "text") "Synthetic caption" else null })
+                        addRow(cols.map { if (it == "_id") 2L else if (it == "ct") "video/mp4" else if (it == "fn") "clip.mp4" else null })
+                    }
                     "addr" -> addRow(arrayOf<Any>("+12025550100", 137))
                 }
             }
@@ -358,5 +363,13 @@ class MessageChatTest {
         assertEquals("Synthetic caption", item.optString("body"))
         assertTrue(item.optBoolean("attachment"))
         assertEquals(0, item.getJSONArray("parts").length())
+        val attachment = item.getJSONArray("attachments").getJSONObject(0)
+        assertEquals("clip.mp4", attachment.getString("name"))
+        assertEquals("video/mp4", attachment.getString("mime"))
+        assertFalse(attachment.getBoolean("save"))
+        supportsNames = false
+        val legacy = service.thread(msg(Proto.T.SMS_THREAD, "id" to "7")).getJSONArray("items").getJSONObject(0)
+        assertTrue(legacy.optBoolean("attachment"))
+        assertEquals("", legacy.getJSONArray("attachments").getJSONObject(0).getString("name"))
     }
 }

@@ -16,6 +16,10 @@ class ConnectionDoctorTest {
         assertEquals(1234L, event?.at)
         assertEquals(ConnectionCloseReason.INTERRUPTED, ConnectionCloseReason.from("private error text", false))
         assertEquals(ConnectionCloseReason.IDENTITY, ConnectionCloseReason.from(null, true))
+        assertEquals("Ready", doctorFeaturePermission(true, true, "ok"))
+        assertEquals("Limited", doctorFeaturePermission(true, true, "partial"))
+        assertEquals("Settings on the computer", doctorFeaturePermission(true, false, "ok"))
+        assertEquals("Allow Messages access in Android settings", doctorFeaturePermission(true, true, "ask"))
     }
 
     @Test
@@ -23,6 +27,9 @@ class ConnectionDoctorTest {
         val observations = ConnectionObservations()
         observations.closed("mac", "certificate", "local", false, 1234)
         assertNull(observations.forPair("other", "certificate"))
+        assertEquals("Not connected", doctorFeaturePermission(false, true, "ok"))
+        assertEquals("Unknown", doctorFeaturePermission(true, null, "ok"))
+        assertEquals("Not supported", doctorFeaturePermission(true, true, "none"))
         assertNull(observations.forPair("mac", "replacement"))
         observations.select("other", "certificate")
         assertNull(observations.forPair("mac", "certificate"))

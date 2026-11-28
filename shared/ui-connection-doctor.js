@@ -6,16 +6,19 @@ UI.connectionDoctor = (platform) => {
   const { el } = UI;
   const t = window.I18n.t;
   const mac = platform === 'mac', linux = platform === 'linux';
-  const row = (label) => UI.row(label, '');
+  const row = (label, page) => UI.row(label, '', page ? [UI.button(t('Open'), () => UI.go(page), 'small')] : []);
   const linkRow = row(t('Transport'));
   const discoveryRow = row(t('Discovery'));
   const networkRow = mac ? row(t('Local Network')) : row(t('Firewall'));
-  const platformRow = mac ? row(t('Screen Recording')) : linux ? row(t('Desktop session')) : null;
-  const accessRow = mac ? row(t('mac.accessibility')) : linux ? row(t('Input')) : null;
-  const adbRow = row(t('Wireless debugging'));
-  const streamRow = row(t('Screen sharing'));
+  const platformRow = mac ? row(t('Screen Recording'), 'general') : linux ? row(t('Desktop session')) : null;
+  const accessRow = mac ? row(t('mac.accessibility'), 'general') : linux ? row(t('Input')) : null;
+  const adbRow = row(t('Wireless debugging'), 'mirror');
+  const streamRow = row(t('Screen sharing'), mac ? 'share' : 'screen');
+  const mirrorRow = row(t('Mirroring'), 'mirror');
+  const filesRow = row(t('File Sharing'), 'files');
+  const messagesRow = row(t('Messages'), 'messages');
   const rows = el('div', { attrs: { id: 'connection-doctor-rows' }, hidden: true },
-    [linkRow, discoveryRow, networkRow, platformRow, accessRow, adbRow, streamRow]);
+    [linkRow, discoveryRow, networkRow, platformRow, accessRow, adbRow, streamRow, mirrorRow, filesRow, messagesRow]);
   const toggle = UI.button(t('Show'), () => {
     rows.hidden = !rows.hidden;
     toggle.textContent = rows.hidden ? t('Show') : t('Hide');
@@ -35,7 +38,7 @@ UI.connectionDoctor = (platform) => {
     const phone = s.phone?.connected;
     const phoneSelected = connected && !!peer.id && peer.id === phone?.id;
     if (connected) {
-      const transport = phoneSelected && phone.usb ? t('USB cable')
+      const transport = peer.transport === 'embedded-tailnet' ? t('TwinDesk Network') : phoneSelected && phone.usb ? t('USB cable')
         : UI.onBle(s) || s.net?.onGroup || s.net?.lan ? UI.via(s) : 'IP';
       const rtt = mac ? peer.rttMs : link.rtt;
       linkRow.setHint(Number.isFinite(rtt) && rtt >= 0 ? `${transport} · ${t('Round-trip time')} · ${rtt} ms` : transport);
@@ -71,6 +74,25 @@ UI.connectionDoctor = (platform) => {
         : adb?.state === 'needsPair' ? t('Not paired') : adb?.state === 'waitingWifi' ? t('Waiting for Wi-Fi')
           : adb?.state === 'error' || adb?.state === 'missing' ? t('Problem') : t('Not in use'));
     }
+
+    mirrorRow.hidden = !phoneSelected || peer.os !== 'android';
+    if (!mirrorRow.hidden) {
+      const adb = s.phone.bridge;
+      mirrorRow.setHint(adb?.state === 'ready' ? t('Ready')
+        : adb?.mirror === 'native' ? t('Not in use')
+          : UI.onBle(s) ? t('Waiting for Wi-Fi') : adb?.message ? UI.adbMessage?.(adb.message) || adb.message : t('Unknown'));
+    }
+    // This is the selected session's file sender, not a permission to browse the phone.
+    filesRow.setHint(!connected ? t('Not connected') : !s.files ? t('Not supported')
+      : UI.onBle(s) ? t('Waiting for Wi-Fi') : t('Ready'));
+    const hub = s.hub;
+    const hubSelected = connected && hub?.connected && hub.deviceId === peer.id;
+    messagesRow.hidden = !peer || !['android', 'ios'].includes(peer.os);
+    messagesRow.setHint(!connected ? t('Not connected') : !hubSelected ? t('Unknown')
+      : hub.messages !== true ? t('Off') : hub.perm?.messages?.perm === 'ok' ? t('Ready')
+        : hub.perm?.messages?.perm === 'partial' ? t('Limited')
+          : hub.perm?.messages?.perm === 'none' ? t('Not supported')
+            : hub.perm?.messages?.perm === 'ask' ? t('Not allowed') : t('Unknown'));
 
     const candidate = mac ? s.stream : s.pcScreen;
     // Explicit identities are supplied by Mac and Windows Multi-device senders.

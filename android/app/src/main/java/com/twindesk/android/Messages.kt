@@ -336,11 +336,11 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
         d.parts.forEach { (pid, type) -> parts.put(JSONObject().put("id", "p$pid").put("type", type)) }
         return JSONObject().put("id", "m$id").put("thread", c.getLong(3).toString()).put("body", d.text.take(5000)).put("at", c.getLong(1) * 1000)
             .put("out", box != 1).put("from", d.from).put("fromName", if (d.from.isNotEmpty()) name(d.from) else "")
-            .put("status", when (box) { 4 -> "sending"; 5 -> "failed"; else -> "" }).put("parts", parts)
+            .put("status", when (box) { 4 -> "sending"; 5 -> "failed"; else -> "" }).put("parts", parts).put("attachments", d.attachments)
             .apply { if (d.attachment && d.parts.isEmpty()) put("attachment", true) } // video, audio, a contact card…
     }
 
-    private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val recipients: List<String>, val attachment: Boolean, val unnamed: Int) {
+    private class Mms(val text: String, val parts: List<Pair<Long, String>>, val from: String, val recipients: List<String>, val attachment: Boolean, val unnamed: Int, val attachments: JSONArray) {
         val images get() = parts.size
     }
 
@@ -399,13 +399,33 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
         val text = StringBuilder()
         val parts = ArrayList<Pair<Long, String>>()
         var attachment = false
-        cr.query(Uri.parse("content://mms/part"), arrayOf("_id", "ct", "text"), "mid = ?", arrayOf(id.toString()), null)?.use { c ->
+        val attachments = JSONArray()
+        val uri = Uri.parse("content://mms/part")
+        val args = arrayOf(id.toString())
+        val baseColumns = arrayOf("_id", "ct", "text")
+        val cursor = try {
+            cr.query(uri, baseColumns + arrayOf("name", "fn"), "mid = ?", args, null)
+        } catch (_: IllegalArgumentException) {
+            cr.query(uri, baseColumns, "mid = ?", args, null)
+        } catch (_: android.database.sqlite.SQLiteException) {
+            cr.query(uri, baseColumns, "mid = ?", args, null)
+        }
+        cursor?.use { c ->
+            val nameColumn = c.getColumnIndex("name")
+            val filenameColumn = c.getColumnIndex("fn")
             while (c.moveToNext()) {
                 val ct = c.getString(1) ?: ""
                 when {
                     ct == "text/plain" -> c.getString(2)?.let { if (text.isNotEmpty()) text.append('\n'); text.append(it) }
                     ct.startsWith("image/") -> { parts.add(c.getLong(0) to ct); attachment = true }
-                    ct != "application/smil" -> attachment = true
+                    ct != "application/smil" -> {
+                        attachment = true
+                        val filename = filenameColumn.takeIf { it >= 0 }?.let(c::getString)?.takeIf { it.isNotBlank() }
+                            ?: nameColumn.takeIf { it >= 0 }?.let(c::getString).orEmpty()
+                        attachments.put(JSONObject().put("part", "p${c.getLong(0)}")
+                            .put("name", filename.take(200))
+                            .put("mime", ct.take(100)).put("save", false))
+                    }
                 }
             }
         }
@@ -423,7 +443,7 @@ class Messages(private val hub: Hub, private val core: Core, internal val route:
             }
         }
         val from = if (incoming) senders.singleOrNull().orEmpty() else ""
-        return Mms(text.toString(), parts, from, recipients.toList(), attachment, unnamed)
+        return Mms(text.toString(), parts, from, recipients.toList(), attachment, unnamed, attachments)
     }
 
     // An MMS picture, at most 1024 px, as a data: URL.

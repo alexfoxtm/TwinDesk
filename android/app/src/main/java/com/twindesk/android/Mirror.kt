@@ -49,8 +49,11 @@ class PhoneMirror(core: Core) : Feature(core) {
 
     val on get() = SoundService.running?.screenOn == true
 
+    override fun onWelcome(host: Host) { error = "" }
+
     override fun onClosed() {
         want(false, "")
+        error = ""
         if (embeddedTarget != null) {
             key = ""
             embeddedTarget = null

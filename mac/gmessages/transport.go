@@ -5,7 +5,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -113,6 +115,7 @@ type command struct {
 	Chat     string            `json:"chat"`
 	Message  string            `json:"message"`
 	Part     int               `json:"part"`
+	Revision string            `json:"revision"`
 	Text     string            `json:"text"`
 	Image    string            `json:"image"`
 	Ref      int               `json:"ref"`
@@ -207,17 +210,27 @@ func pair(ctx context.Context, cookies map[string]string, out *output) *libgm.Au
 	return auth
 }
 
+type attachment struct {
+	Revision string `json:"revision"`
+	Part     int    `json:"part"`
+	Name     string `json:"name,omitempty"`
+	MIME     string `json:"mime,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+	Save     bool   `json:"save"`
+}
+
 type item struct {
-	ID         string `json:"id"`
-	At         int64  `json:"at"`
-	Text       string `json:"text"`
-	From       string `json:"from,omitempty"`
-	Me         bool   `json:"me"`
-	Receipt    string `json:"receipt,omitempty"`
-	Photos     []int  `json:"photos,omitempty"`
-	Attachment bool   `json:"attachment,omitempty"`
-	Transport  string `json:"transport,omitempty"`
-	Status     string `json:"status,omitempty"`
+	ID          string       `json:"id"`
+	At          int64        `json:"at"`
+	Text        string       `json:"text"`
+	From        string       `json:"from,omitempty"`
+	Me          bool         `json:"me"`
+	Receipt     string       `json:"receipt,omitempty"`
+	Photos      []int        `json:"photos,omitempty"`
+	Attachments []attachment `json:"attachments,omitempty"`
+	Attachment  bool         `json:"attachment,omitempty"`
+	Transport   string       `json:"transport,omitempty"`
+	Status      string       `json:"status,omitempty"`
 }
 
 type person struct {
@@ -405,6 +418,7 @@ func project(m *gmproto.Message, c *gmproto.Conversation) item {
 				i.Photos = append(i.Photos, index)
 			} else {
 				i.Attachment = true
+				i.Attachments = append(i.Attachments, attachmentOf(index, media))
 			}
 		}
 		if loc := part.GetLocationContent(); loc != nil {
@@ -425,6 +439,14 @@ func project(m *gmproto.Message, c *gmproto.Conversation) item {
 	}
 	i.Text = strings.Join(texts, "\n")
 	return i
+}
+
+func attachmentOf(index int, media *gmproto.MediaContent) attachment {
+	// The revision identifies this exact payload without exposing its media key or remote ID.
+	payload, _ := json.Marshal(media)
+	digest := sha256.Sum256(payload)
+	return attachment{Revision: hex.EncodeToString(digest[:]), Part: index, Name: media.GetMediaName(), MIME: media.GetMimeType(), Size: media.GetSize(),
+		Save: media.GetMediaID() != "" && len(media.GetDecryptionKey()) > 0 && media.GetSize() >= 0 && media.GetSize() <= maxPhoto}
 }
 
 func mediaImage(media *gmproto.MediaContent) bool {
@@ -613,7 +635,7 @@ func (b *inbox) remember(chat string, m *gmproto.Message) (item, bool) {
 		return item{}, false
 	}
 	i := project(m, b.convs[chat])
-	if chat == b.active && len(i.Photos) != 0 {
+	if chat == b.active && (len(i.Photos) != 0 || len(i.Attachments) != 0) {
 		if b.photos[chat] == nil {
 			b.photos[chat] = make(map[string][]*gmproto.MessageInfo)
 		}
@@ -757,6 +779,29 @@ func (b *inbox) photo(ctx context.Context, cmd command) bool {
 	return false
 }
 
+func (b *inbox) attachment(ctx context.Context, cmd command) bool {
+	parts := b.photos[cmd.Chat][cmd.Message]
+	if cmd.Part < 0 || cmd.Part >= len(parts) {
+		return false
+	}
+	media := parts[cmd.Part].GetMediaContent()
+	if media == nil || mediaImage(media) || !attachmentOf(cmd.Part, media).Save || cmd.Revision == "" || attachmentOf(cmd.Part, media).Revision != cmd.Revision {
+		return false
+	}
+	reader, err := b.client.DownloadMedia(ctx, media.GetMediaID(), media.GetDecryptionKey())
+	if err != nil {
+		return false
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(io.LimitReader(reader, maxPhoto+1))
+	if err != nil || len(data) > maxPhoto {
+		return false
+	}
+	b.out.send(event{"type": "attachment", "chat": cmd.Chat, "message": cmd.Message, "part": cmd.Part, "ref": cmd.Ref,
+		"revision": cmd.Revision, "data": base64.StdEncoding.EncodeToString(data)})
+	return true
+}
+
 func (b *inbox) handle(ctx context.Context, cmd command) bool {
 	c := b.convs[cmd.Chat]
 	if !b.ready || c == nil {
@@ -771,6 +816,8 @@ func (b *inbox) handle(ctx context.Context, cmd command) bool {
 		return cmd.Chat == b.active && cmd.Message != "" && b.client.MarkRead(ctx, cmd.Chat, cmd.Message) == nil
 	case "typing":
 		return cmd.Chat == b.active && kind(c) == "rcs" && b.client.SetTyping(ctx, cmd.Chat, b.sim(c)) == nil
+	case "attachment":
+		return cmd.Chat == b.active && b.attachment(ctx, cmd)
 	case "photo":
 		return cmd.Chat == b.active && b.photo(ctx, cmd)
 	}
@@ -881,7 +928,7 @@ func readCommands(ctx context.Context, in *bufio.Scanner, commands chan<- comman
 			photos, cancelPhotos = nextPhotos, cancelNextPhotos
 			photoView = cmd.PhotoView
 		}
-		if cmd.Op == "photo" {
+		if cmd.Op == "photo" || cmd.Op == "attachment" {
 			cmd.photoContext = photos
 		}
 		select {

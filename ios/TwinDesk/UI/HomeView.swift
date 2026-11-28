@@ -21,6 +21,7 @@ struct OverviewView: View {
                 if core.connected { actions }
                 if core.connected && (core.dev.can.contains(.volume) || core.dev.can.contains(.lock)) { controls }
             } right: {
+                if core.connected { VideoHandoffCard() }
                 if core.connected, let n = core.media.now { NowPlayingCard(now: n) }
                 if core.connected { PcClipCard(); PcNotifsCard() }
                 if !core.connected {

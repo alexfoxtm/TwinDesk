@@ -29,6 +29,7 @@ import java.util.concurrent.TimeUnit
 
 class Updates(private val core: Core) {
     data class Apk(val name: String, val url: String, val size: Long = 0, val digest: String = "")
+    val fork = ForkUpdate(core, ::installFork)
 
     @Volatile var checking = false; private set
     @Volatile var latest = ""; private set
@@ -183,27 +184,45 @@ class Updates(private val core: Core) {
     }
 
     // The APK goes to Android's installer; its answer comes to UpdateReceiver.
-    private fun commit(f: File) {
+    private fun installFork(f: File, version: String): String? {
+        if (!allowed()) {
+            runCatching {
+                core.ctx.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + core.ctx.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+            return tr("Allow TwinDesk to install apps, then tap Install now again")
+        }
+        commit(f, forkVersion = version)
+        return null
+    }
+
+    private fun commit(f: File, forkVersion: String? = null) {
         val pi = core.ctx.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(core.ctx.packageName)
             setSize(f.length())
-            if (Build.VERSION.SDK_INT >= 31) setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            if (Build.VERSION.SDK_INT >= 31) setRequireUserAction(if (forkVersion != null)
+                PackageInstaller.SessionParams.USER_ACTION_REQUIRED else PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
         }
         val id = pi.createSession(params)
-        pi.openSession(id).use { s ->
-            s.openWrite("base.apk", 0, f.length()).use { o ->
-                f.inputStream().use { it.copyTo(o) }
-                s.fsync(o)
+        try {
+            pi.openSession(id).use { s ->
+                s.openWrite("base.apk", 0, f.length()).use { o ->
+                    f.inputStream().use { it.copyTo(o) }
+                    s.fsync(o)
+                }
+                val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+                val result = Intent(core.ctx, UpdateReceiver::class.java).setPackage(core.ctx.packageName)
+                if (forkVersion != null) result.putExtra(UpdateReceiver.FORK_VERSION, forkVersion)
+                val back = PendingIntent.getBroadcast(core.ctx, id, result, flags)
+                s.commit(back.intentSender)
             }
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
-            val back = PendingIntent.getBroadcast(core.ctx, 51, Intent(core.ctx, UpdateReceiver::class.java).setPackage(core.ctx.packageName), flags)
-            s.commit(back.intentSender)
-        }
+        } catch (e: Exception) { runCatching { pi.abandonSession(id) }; throw e }
     }
 
     // Android's answer (UpdateReceiver). Success never comes back here: the new version replaces this process.
-    fun installAnswer(ok: Boolean, waiting: Boolean, message: String) {
+    fun installAnswer(ok: Boolean, waiting: Boolean, message: String, fromFork: Boolean) {
+        if (fromFork) { fork.installAnswer(ok, waiting, message); return }
         if (waiting) return
         stage = if (file?.exists() == true) "ready" else ""
         installError = if (ok) "" else message.ifEmpty { tr("The update didn’t install") }
@@ -269,17 +288,22 @@ class Updates(private val core: Core) {
 class UpdateReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         val core = Core.get(ctx)
+        val forkVersion = intent.getStringExtra(FORK_VERSION)
+        val version = forkVersion ?: core.updates.latest
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             @Suppress("DEPRECATION")
             val confirm = (if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java) else intent.getParcelableExtra(Intent.EXTRA_INTENT)) ?: return
             confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (MainActivity.shown) runCatching { ctx.startActivity(confirm) }.onFailure { Notify.updateReady(ctx, confirm, core.updates.latest) }
-            else Notify.updateReady(ctx, confirm, core.updates.latest)
-            core.updates.installAnswer(ok = true, waiting = true, message = "")
+            if (MainActivity.shown) runCatching { ctx.startActivity(confirm) }.onFailure { Notify.updateReady(ctx, confirm, version) }
+            else Notify.updateReady(ctx, confirm, version)
+            core.updates.installAnswer(ok = true, waiting = true, message = "", fromFork = forkVersion != null)
             return
         }
         val ok = status == PackageInstaller.STATUS_SUCCESS
-        core.updates.installAnswer(ok, waiting = false, message = if (status == PackageInstaller.STATUS_FAILURE_ABORTED) tr("The update was cancelled") else intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "")
+        core.updates.installAnswer(ok, waiting = false, message = if (status == PackageInstaller.STATUS_FAILURE_ABORTED) tr("The update was cancelled") else intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "",
+            fromFork = forkVersion != null)
     }
+
+    companion object { const val FORK_VERSION = "com.twindesk.android.FORK_INSTALL_VERSION" }
 }

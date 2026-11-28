@@ -162,6 +162,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     val shots = Screenshots(this) // screenshots both ways, onto the other clipboard
     val nowPlaying = NowPlaying(this) // what plays here, for the computer's media controls
     val rezume = Rezume(this) // ReZume: go on with what's in use on the other device (off until turned on)
+    val videoHandoff = VideoHandoff(this)
     val dev = DevCtl(this) // this phone's controls on the computer's Overview, the computer's on the Computer page
     private val appListLazy = lazy { AppList(this) } // the phone's apps, for the pages that pick some (Notifications, Banking apps)
     val appList by appListLazy
@@ -177,7 +178,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
     // shown and its features hear nothing from the computer.
     val modulesAtStart: Set<String> = Modules.off(store)
     fun moduleOn(id: String) = id in Modules.FIXED || id !in modulesAtStart
-    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, photos, share, sound, mirror, shots, nowPlaying, rezume, dev, pcMedia, deck, silence, tether)
+    private val features: List<Feature> = listOf(net, sync, clip, notifs, companion, files, fclip, info, apps, wake, adb, pointer, input, drive, screen, lockView, macSound, shortcuts, kvm, remote, hub, photos, share, sound, mirror, shots, nowPlaying, rezume, videoHandoff, dev, pcMedia, deck, silence, tether)
         .filter { f ->
             when (f) {
                 clip, fclip -> moduleOn("clipboard")
@@ -946,6 +947,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
             store.putHost(host)
         }
         for (f in features) runCatching { f.onWelcome(host) }.onFailure { Log.e("TwinDesk", "welcome", it) }
+        updates.fork.onWelcome(host)
         changed()
         if (link.embedded) timers.execute { preferHomeWifi() }
     }
@@ -972,6 +974,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         val pointerAt = if (t == Proto.T.PHONE_POINTER) SystemClock.uptimeMillis() else -1L
         main.post {
             if (!link.acceptsPostedMessage(source, fromEmbedded, m)) return@post
+            if (updates.fork.onMessage(t, m, route)) return@post
             if (t == "chat.want") {
                 notifs.chatWant(m, route)
                 return@post
@@ -992,6 +995,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
                         f === clip -> clip.onMessage(t, m, route)
                         f === tether -> tether.onMessage(t, m, route)
                         f === hub -> hub.onMessage(t, m, route)
+                        f === videoHandoff -> videoHandoff.onMessage(t, m, route)
                         f === adb -> adb.onMessage(t, m, route, fromEmbedded)
                         f === apps -> apps.onMessage(t, m, route)
                         f === share -> share.onMessage(t, m, route, fromEmbedded)
@@ -1030,6 +1034,7 @@ class Core private constructor(val ctx: Context) : Link.Events {
         main.post {
             // bad_token forgets the pair in Link before this runs. A drop keeps the while-away queue.
             clip.onSessionEnded(code, host.id)
+            updates.fork.onClosed()
             for (f in features) runCatching {
                 if (f === screen) screen.onLinkClosed(host, retainViewer) else f.onClosed()
             }

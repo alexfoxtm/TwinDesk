@@ -8,7 +8,7 @@ const { createInterface } = require('node:readline');
 
 const binary = path.join(__dirname, '..', 'mac-helper', '.build', 'release', 'twindesk-gmessages');
 const states = new Set(['disconnected', 'signing-in', 'connecting', 'offline', 'keychain-error', 'helper-error', 'connection-error']);
-const commands = new Set(['history', 'earlier', 'send', 'read', 'typing', 'photo']);
+const commands = new Set(['history', 'earlier', 'send', 'read', 'typing', 'photo', 'attachment']);
 const imageURL = /^data:image\/(?:jpeg|png|gif|webp);base64,[A-Za-z0-9+/=]+$/;
 const atOf = (row) => Number.isSafeInteger(row?.at) ? row.at : 0;
 
@@ -147,7 +147,15 @@ class GoogleMessages {
       }
     } else if (this.state === 'connected' && this.history?.chat === evt?.chat) {
       const h = this.history;
-      if (evt.type === 'photo' && typeof evt.data === 'string' && imageURL.test(evt.data)) {
+      if (evt.type === 'attachment') {
+        const req = this.pending.get(evt.ref);
+        if (req?.op === 'attachment' && req.chat === evt.chat && req.message === evt.message && req.part === evt.part && req.revision === evt.revision &&
+            typeof evt.data === 'string' && evt.data.length <= 8388608 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(evt.data)) {
+          req.finish(Buffer.from(evt.data, 'base64'));
+        }
+        return;
+      }
+      if (evt.type === 'photo'  && typeof evt.data === 'string' && imageURL.test(evt.data)) {
         this.pending.get(evt.ref)?.finish(evt.data);
         return;
       }
@@ -247,6 +255,8 @@ class GoogleMessages {
     } else if (this.history?.chat !== chat) return false;
     const message = typeof arg.message === 'string' ? arg.message.slice(0, 200) : '';
     const part = Number.isInteger(arg.part) ? arg.part : 0;
+    const revision = op === 'attachment' && typeof arg.revision === 'string' && /^[a-f0-9]{64}$/.test(arg.revision) ? arg.revision : '';
+    if (op === 'attachment' && !revision) return false;
     const photoView = op === 'photo' && Number.isSafeInteger(arg.photoView) && arg.photoView > 0 ? arg.photoView : undefined;
     const text = typeof arg.text === 'string' ? arg.text.trim().slice(0, 5000) : '';
     const image = typeof arg.image === 'string' && arg.image.length <= 6000000 && arg.image.startsWith('data:image/jpeg;') && imageURL.test(arg.image) ? arg.image : '';
@@ -259,9 +269,9 @@ class GoogleMessages {
         resolve(value);
       };
       const timer = setTimeout(() => finish(false), 38000);
-      this.pending.set(ref, { finish });
+      this.pending.set(ref, { finish, op, chat, message, part, revision });
       const deadline = Date.now() + 35000;
-      child.stdin.write(JSON.stringify({ op, chat, message, part, photoView, text, image, ref, deadline }) + '\n', (err) => {
+      child.stdin.write(JSON.stringify({ op, chat, message, part, revision, photoView, text, image, ref, deadline }) + '\n', (err) => {
         if (err) finish(false);
       });
     });
@@ -270,9 +280,32 @@ class GoogleMessages {
 
 function setupGoogleMessages({ app, ipcMain, window, current, enabled, change, onMessage, onReset }) {
   const gm = new GoogleMessages({ current, enabled, change, onMessage, onReset });
-  ipcMain.handle('googleMessages', (event, arg) => {
+  ipcMain.handle('googleMessages', async (event, arg) => {
     const win = window();
     if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return false;
+    if (arg?.op === 'attachment') return false;
+    if (arg?.op === 'saveAttachment') {
+      gm.sync();
+      const owner = gm.owner;
+      const child = gm.child;
+      const session = gm.session;
+      const item = gm.history?.chat === arg.chat && gm.history.items.find((m) => m.id === arg.message);
+      const part = item?.attachments?.find((p) => p.part === arg.part && p.save === true && p.revision === arg.revision && typeof p.revision === 'string' && /^[a-f0-9]{64}$/.test(p.revision));
+      if (!owner || arg.owner !== owner || !part || gm.state !== 'connected') return false;
+      const revision = part.revision;
+      const currentPart = () => !gm.closed && enabled() && current() === owner && gm.active && gm.owner === owner && gm.child === child && gm.session === session &&
+        gm.state === 'connected' && gm.history?.chat === arg.chat && gm.history.items.some((m) => m.id === arg.message && m.attachments?.some((p) => p.part === arg.part && p.save === true && p.revision === revision));
+      const { dialog } = require('electron');
+      const name = path.basename(String(part.name || 'attachment').replace(/\\/g, '/')).replace(/[\x00-\x1f\x7f]/g, '').slice(0, 180) || 'attachment';
+      const picked = await dialog.showSaveDialog(win, { defaultPath: name });
+      if (picked.canceled || !picked.filePath || !currentPart()) return false;
+      const data = await gm.action({ ...arg, revision, op: 'attachment' });
+      if (!Buffer.isBuffer(data) || data.length > 6 * 1024 * 1024 || !currentPart()) return false;
+      try {
+        await require('node:fs/promises').writeFile(picked.filePath, data, { mode: 0o600 });
+        return true;
+      } catch { return false; }
+    }
     return gm.action(arg);
   });
   app.on('will-quit', () => { gm.closed = true; gm.stop(); });

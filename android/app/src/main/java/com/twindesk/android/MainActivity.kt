@@ -484,7 +484,7 @@ internal fun App(core: Core, resumed: Int, focusGains: State<Int>) {
                 CoreUpdates(core) { Sidebar(core, it, tab) { tab = it } }
                 // the page in a rounded sheet beside the sidebar, as the phone's under its branding
                 Box(Modifier.weight(1f).fillMaxHeight().padding(top = 10.dp, end = 10.dp, bottom = 10.dp).clip(RoundedCornerShape(28.dp)).background(pal.sheet)) {
-                    Page(core, resumed, tab, Modifier.fillMaxSize())
+                    Page(core, resumed, tab, Modifier.fillMaxSize()) { if (shown(core, it)) tab = it }
                 }
             }
         } else {
@@ -509,7 +509,7 @@ internal fun App(core: Core, resumed: Int, focusGains: State<Int>) {
                 // The page in a big rounded sheet under the branding; the bar floats at its bottom.
                 Column(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)).background(pal.sheet)) {
                 if (more) CoreUpdates(core) { version -> MoreList(core, version, BOTTOM, Modifier.weight(1f)) { go(it, false) } }
-                else Page(core, resumed, tab, Modifier.weight(1f))
+                else Page(core, resumed, tab, Modifier.weight(1f)) { if (shown(core, it)) go(it, false) }
                 // Line icons, the selected one on a pill of the accent colour, a label under each.
                 // The bar floats off the edges, rounded (the tablet keeps the sidebar). Search is the
                 // round button at the right (Search.kt). Holding the bar opens Arrange.
@@ -660,14 +660,14 @@ private fun MoreList(core: Core, v: Int, BOTTOM: List<Tab>, modifier: Modifier, 
 }
 
 @Composable
-private fun Page(core: Core, resumed: Int, tab: Tab, modifier: Modifier) {
+private fun Page(core: Core, resumed: Int, tab: Tab, modifier: Modifier, openTab: (Tab) -> Unit) {
     val v by core.version.collectAsState()
     Column(modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 20.dp)) {
         Column(Modifier.widthIn(max = 820.dp)) {
             if (peerMode(core) && tab != Tab.Connection && tab != Tab.General && tab != Tab.About) PeerPage(core, v, tab.name)
             else when (tab) {
-                Tab.Overview -> OverviewPage(core, v, connection = false)
-                Tab.Connection -> OverviewPage(core, v, connection = true)
+                Tab.Overview -> OverviewPage(core, v, connection = false, openTab = openTab)
+                Tab.Connection -> OverviewPage(core, v, connection = true, openTab = openTab)
                 Tab.Calls -> CallsPage(core, v)
                 Tab.Messages -> MessagesPage(core, v)
                 Tab.Photos -> PhotosPage(core, v)
@@ -727,7 +727,7 @@ private fun NotConnected(core: Core, v: Int) {
 @Composable
 // One page, two halves: Connection (pairing, the link, Nearby, Switch to, Bluetooth, Scan QR code)
 // and Overview (the link, the computer's controls, every feature's switches; only while connected).
-private fun OverviewPage(core: Core, v: Int, connection: Boolean) {
+private fun OverviewPage(core: Core, v: Int, connection: Boolean, openTab: (Tab) -> Unit) {
     @Suppress("UNUSED_EXPRESSION") v // redraw on every Core change (Compose skips unread parameters)
     val link = core.link
     val host = core.host
@@ -785,10 +785,11 @@ private fun OverviewPage(core: Core, v: Int, connection: Boolean) {
     val heroAccent = pal.accent
     if (Modern.on) HeroCard { HeroBody(core, v, me, host, link, heroAccent) } else MacCard { HeroBody(core, v, me, host, link, heroAccent) }
 
+    if (!connection) VideoHandoffCard(core)
 
     if (connection) {
         EmbeddedNetworkCard(core, v, connection = true)
-        ConnectionDoctorCard(core, v)
+        ConnectionDoctorCard(core, v, openTab)
     }
 
     // The computer's own controls (dev.state, DevCtl.kt): ring, lock, sleep, Bluetooth, Do not disturb, volume.
@@ -939,18 +940,18 @@ private fun EmbeddedNetworkCard(core: Core, version: Int, connection: Boolean = 
 }
 
 @Composable
-private fun ConnectionDoctorCard(core: Core, version: Int) {
+private fun ConnectionDoctorCard(core: Core, version: Int, openTab: (Tab) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     MacCard {
         MacRow(tr("Connection Doctor"), first = true) {
             Secondary(if (expanded) tr("Hide") else tr("Show")) { expanded = !expanded }
         }
-        if (expanded) ConnectionDoctorDetails(core, version)
+        if (expanded) ConnectionDoctorDetails(core, version, openTab)
     }
 }
 
 @Composable
-private fun ConnectionDoctorDetails(core: Core, version: Int) {
+private fun ConnectionDoctorDetails(core: Core, version: Int, openTab: (Tab) -> Unit) {
     @Suppress("UNUSED_EXPRESSION") version
     val link = core.link
     val selected = if (link.pair == null) link.host?.let { current -> core.hosts().find { it.id == current.id && it.fp == current.fp } } else null
@@ -987,6 +988,15 @@ private fun ConnectionDoctorDetails(core: Core, version: Int) {
     }
     MacRow(if (core.screen.viewing && core.screen.videoPlaying) tr("Stream") else tr("Last stream"),
         core.screen.doctorSummary ?: tr("No stream measured on this connection"))
+    ConnectionFeatureRows(core) { page ->
+        val tab = when (page) {
+            "screen" -> Tab.Screen
+            "files" -> Tab.Files
+            "messages" -> Tab.Messages
+            else -> return@ConnectionFeatureRows
+        }
+        openTab(tab)
+    }
 }
 
 // The connected computer's controls, when it has them (an older TwinDesk says nothing: no card).
@@ -2226,6 +2236,7 @@ private fun GeneralPage(core: Core, v: Int) {
     }
     LinkedCard(core, v) // CompanionLink.kt
     EmbeddedNetworkCard(core, v)
+    DeskModeCard(core)
     TailscaleCard(core, v) // #161 (Tailnet.kt)
     // Arrange (Arrange.kt): the pages' order, and which are in the bottom bar.
     MacCard(tr("Page order")) {
@@ -2521,6 +2532,7 @@ private fun AboutPage(core: Core, v: Int) {
         SwitchRow(tr("Check automatically"), tr("Looks for new releases on GitHub every few hours"), u.auto) { u.auto = it }
         SwitchRow(tr("Install automatically"), tr("Downloads a new version and installs it when no computer is connected. Settings and permissions stay"), u.install) { u.install = it }
     }
+    if (BuildConfig.UPDATER) ForkUpdateCard(core, v)
     MacCard(tr("Made by")) {
         MacRow("Inuka Asith", "inukaasith.vercel.app", first = true) { Secondary(tr("Portfolio")) { open("https://inukaasith.vercel.app") } }
         MacRow(tr("Source code"), "github.com/alexfoxtm/TwinDesk") { Secondary("GitHub") { open("https://github.com/alexfoxtm/TwinDesk") } }
@@ -2537,6 +2549,35 @@ private fun AboutPage(core: Core, v: Int) {
     }
     Text(tr("Crafted with ☕ and ❤️ in Sri Lanka 🇱🇰"), color = pal.muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp))
+}
+
+@Composable
+private fun ForkUpdateCard(core: Core, version: Int) {
+    @Suppress("UNUSED_EXPRESSION") version
+    val update = core.updates.fork
+    val mac = core.link.host?.takeIf { it.os == "mac" && core.link.connected && !core.link.ble }
+    val offered = update.offer?.let { "${it.version} (${it.build.toString().padStart(3, '0')})" }
+    val hint = when (update.stage) {
+        "checking" -> tr("Checking…")
+        "current" -> tr("Up to date")
+        "downloading" -> tr("Downloading… {percent}%", "percent" to (update.progress * 100).toInt())
+        "installing" -> tr("Installing…")
+        "error" -> update.error.ifEmpty { tr("Couldn’t update") }
+        "offered" -> offered ?: ""
+        "ready" -> listOfNotNull(offered, update.error.takeIf { it.isNotEmpty() }).joinToString(" · ")
+        else -> mac?.let { tr("On {name}", "name" to it.name) } ?: tr("Connect to your Mac to check for a fork update.")
+    }
+    MacCard {
+        MacRow(tr("Update from your Mac"), hint, first = true) {
+            when (update.stage) {
+                "offered" -> Primary(tr("Download")) { update.download() }
+                "downloading" -> Secondary(tr("Cancel")) { update.cancel() }
+                "ready" -> Primary(tr("Install now")) { update.installNow() }
+                "checking", "installing" -> Unit
+                else -> if (mac != null) Secondary(tr("Check now")) { update.checkNow() }
+            }
+        }
+    }
 }
 
 

@@ -30,6 +30,7 @@ class PcMedia(core: Core) : Feature(core) {
     private var session: MediaSession? = null
     private var asked = false
     @Volatile var pageOpen = false; private set
+    private var deskOpen = false
 
     // Media › Show in the notification shade (on unless switched off).
     val notifOn: Boolean get() = core.store.flag("pcmedia.notif", true)
@@ -38,8 +39,10 @@ class PcMedia(core: Core) : Feature(core) {
     // The Media page in front: it shows what plays even with the notification off.
     fun page(open: Boolean) { pageOpen = open; main.post { want() } }
 
+    fun desk(open: Boolean) { main.post { deskOpen = open; want() } }
+
     private fun want() {
-        val w = core.link.connected && (notifOn || pageOpen)
+        val w = core.link.connected && (notifOn || pageOpen || deskOpen)
         if (w == asked) return
         asked = w
         if (core.link.connected) core.send(msg(Proto.T.PC_MEDIA_WANT, "on" to w))
