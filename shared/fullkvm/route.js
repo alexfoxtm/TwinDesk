@@ -68,7 +68,9 @@ module.exports = (Helper) => class FullKvmHelper extends Helper {
 
   request(cmd, args = {}, ms) {
     if (this.viaService && KVM.has(cmd)) return this.svc.request(cmd, args, ms);
-    if (this.viaService && cmd === 'lane') return Promise.reject(new Error('no native lane through Full KVM'));
+    // Linux Full KVM (#311): keep the JS lane from startup so the app helper never binds a native
+    // lane before the service connects (or while it reconnects) and steals motion from armReturn.
+    if (cmd === 'lane' && (this.viaService || (this.svc && process.platform === 'linux'))) return Promise.reject(new Error('no native lane through Full KVM'));
     return super.request(cmd, args, ms);
   }
 
