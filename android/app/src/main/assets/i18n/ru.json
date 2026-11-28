@@ -514,6 +514,7 @@
   "Not everything arrived": "Пришло не всё",
   "Not everything arrived from {from}.": "Не всё пришло с {from}.",
   "Not now": "Не сейчас",
+  "Don’t ask again": "Больше не спрашивать",
   "Not on Tailscale now": "Сейчас не в Tailscale",
   "Not on the same network": "Не в одной сети",
   "Not on this computer": "Недоступно на этом компьютере",

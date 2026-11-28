@@ -37,6 +37,7 @@ import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -376,10 +377,10 @@ internal fun App(core: Core, resumed: Int, focusGains: State<Int>) {
         MainActivity.openTab.value = null
     }
     val wide = LocalConfiguration.current.screenWidthDp >= 600
-    // Wireless debugging went off (MIUI / HyperOS): ask once per time it happens.
+    // Ask once when wireless debugging turns off, unless this device opted out of the reminder.
     var adbAsked by rememberSaveable { mutableStateOf(false) }
     if (!shell.adbOff) adbAsked = false
-    if (shell.adbOff && !adbAsked && !shell.ble) { // over Bluetooth it can't be used anyway
+    if (shell.adbOff && !adbAsked && !shell.ble && !core.store.flag("adb.noAsk", false)) {
         val name = shell.debugHost
         AlertDialog(
             onDismissRequest = { adbAsked = true },
@@ -394,7 +395,15 @@ internal fun App(core: Core, resumed: Int, focusGains: State<Int>) {
                 )
             },
             confirmButton = { TextButton(onClick = { adbAsked = true; core.adb.openSettings() }) { Text(tr("Open Settings"), color = pal.accent) } },
-            dismissButton = { TextButton(onClick = { adbAsked = true }) { Text(tr("Not now"), color = pal.muted) } },
+            dismissButton = {
+                FlowRow(horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = {
+                        core.store.setFlag("adb.noAsk", true)
+                        adbAsked = true
+                    }) { Text(tr("Don’t ask again"), color = pal.muted) }
+                    TextButton(onClick = { adbAsked = true }) { Text(tr("Not now"), color = pal.muted) }
+                }
+            },
         )
     }
 

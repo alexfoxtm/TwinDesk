@@ -514,6 +514,7 @@
   "Not everything arrived": "部分文件未送达",
   "Not everything arrived from {from}.": "并非所有内容都从 {from} 到达。",
   "Not now": "以后再说",
+  "Don’t ask again": "不再询问",
   "Not on Tailscale now": "当前未连接 Tailscale",
   "Not on the same network": "不在同一网络",
   "Not on this computer": "此电脑不支持",

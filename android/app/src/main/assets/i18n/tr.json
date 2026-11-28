@@ -514,6 +514,7 @@
   "Not everything arrived": "Her şey ulaşmadı",
   "Not everything arrived from {from}.": "{from} cihazından her şey gelmedi.",
   "Not now": "Şimdi değil",
+  "Don’t ask again": "Bir daha sorma",
   "Not on Tailscale now": "Şu anda Tailscale’de değil",
   "Not on the same network": "Aynı ağda değil",
   "Not on this computer": "Bu bilgisayarda yok",
