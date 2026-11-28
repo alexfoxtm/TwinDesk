@@ -55,6 +55,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.ColumnScope
@@ -62,6 +64,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -784,16 +787,6 @@ private fun OverviewPage(core: Core, v: Int, connection: Boolean) {
 
 
     if (connection) {
-        MacCard(tr("USB cable only")) {
-            @Suppress("UNUSED_EXPRESSION") v
-            SwitchRow(
-                tr("USB cable only"),
-                if (core.cableOnly) tr("Only the USB cable is used. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale and TwinDesk Network stay suspended.")
-                else tr("Wi-Fi, Bluetooth and TwinDesk Network can connect as well."),
-                core.cableOnly,
-                first = true,
-            ) { core.cableOnly = it }
-        }
         EmbeddedNetworkCard(core, v, connection = true)
         ConnectionDoctorCard(core, v)
     }
@@ -863,8 +856,18 @@ private fun OverviewPage(core: Core, v: Int, connection: Boolean) {
         }
     }
 
-    // Connect with Android (PeerUi.kt): another phone, beside the computer, at the bottom.
-    if (connection) AndroidSection(core, v)
+    if (connection) {
+        AndroidSection(core, v)
+        MacCard {
+            SwitchRow(
+                tr("USB cable only"),
+                if (core.cableOnly) tr("Only the USB cable is used. Wi-Fi, Bluetooth, Wi-Fi Direct, Tailscale and TwinDesk Network stay suspended.")
+                else tr("Wi-Fi, Bluetooth and TwinDesk Network can connect as well."),
+                core.cableOnly,
+                first = true,
+            ) { core.cableOnly = it }
+        }
+    }
 }
 
 @Composable
@@ -873,6 +876,7 @@ private fun EmbeddedNetworkCard(core: Core, version: Int, connection: Boolean = 
     val network = core.embeddedNetwork
     val status = network.status
     val context = LocalContext.current
+    var accountMenu by remember(status.state) { mutableStateOf(false) }
     val label = when (status.state) {
         "starting" -> tr("Starting…")
         "needsLogin" -> tr("Sign in to Tailscale")
@@ -888,6 +892,30 @@ private fun EmbeddedNetworkCard(core: Core, version: Int, connection: Boolean = 
             if (!core.cableOnly) when (status.state) {
                 "stopped", "error" -> Primary(tr("Start")) { network.start(false) }
                 "needsLogin" -> Primary(tr("Sign in")) { network.start(true) }
+            }
+            if (status.state != "stopping") Box {
+                IconButton(onClick = { accountMenu = true }) {
+                    Icon(Ico.more, contentDescription = tr("Network account"), tint = pal.muted)
+                }
+                DropdownMenu(expanded = accountMenu, onDismissRequest = { accountMenu = false }) {
+                    if (connection && status.state == "running") DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(tr("Pair a Mac"))
+                                Text(tr("Scan the TwinDesk Network pairing code shown on the Mac."), color = pal.muted, fontSize = 12.5.sp)
+                            }
+                        },
+                        onClick = { accountMenu = false; scanQr(context) },
+                    )
+                    if (status.state != "stopped") DropdownMenuItem(
+                        text = { Text(tr("Stop")) },
+                        onClick = { accountMenu = false; core.stopEmbedded(signOut = false) },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(tr("Sign out")) },
+                        onClick = { accountMenu = false; core.stopEmbedded(signOut = true) },
+                    )
+                }
             }
         }
         if (connection && status.state == "running") {
@@ -906,13 +934,6 @@ private fun EmbeddedNetworkCard(core: Core, version: Int, connection: Boolean = 
                     if (!current && core.canConnectEmbedded(host)) Secondary(tr("Connect")) { core.connectEmbedded(host) }
                 }
             }
-            MacRow(tr("Pair a Mac"), tr("Scan the TwinDesk Network pairing code shown on the Mac.")) {
-                Secondary(tr("Scan")) { scanQr(context) }
-            }
-        }
-        if (status.state != "stopping") MacRow(tr("Network account")) {
-            if (status.state != "stopped") Secondary(tr("Stop")) { core.stopEmbedded(signOut = false) }
-            Secondary(tr("Sign out")) { core.stopEmbedded(signOut = true) }
         }
     }
 }
