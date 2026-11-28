@@ -278,6 +278,17 @@ const indexed = (who) => sent[who].filter((m) => m.t === P.T.DRIVE_INDEX).reduce
   assert.deepStrictEqual(switchPeer('first').have, { e: 'first-epoch', n: 5 });
   await direct.stop();
 
+  // Stop can run during mkdir: the old start must not install a scan timer or replace the saved index.
+  const stopped = engine('stopped');
+  fs.mkdirSync(path.dirname(stopped.indexFile), { recursive: true });
+  fs.writeFileSync(stopped.indexFile, 'saved index');
+  const starting = stopped.start();
+  await stopped.stop();
+  await starting;
+  assert.strictEqual(stopped.state, 'off');
+  assert.strictEqual(stopped.scanTimer, null);
+  assert.strictEqual(fs.readFileSync(stopped.indexFile, 'utf8'), 'saved index');
+
   // ---- a link that keeps coming back waits before Drive says hello ----
   const flapMem = {};
   const hellos = [];

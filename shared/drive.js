@@ -185,11 +185,13 @@ class Drive extends EventEmitter {
   async start() {
     if (this.state !== 'off') return;
     this.state = 'starting';
+    const epoch = this.epoch = newEpoch();
     await fsp.mkdir(this.folder, { recursive: true });
+    if (this.state !== 'starting' || this.epoch !== epoch) return;
     await fsp.mkdir(path.join(this.folder, TMP_DIR), { recursive: true }).catch(() => {});
+    if (this.state !== 'starting' || this.epoch !== epoch) return;
     this._clearTmp();
     this._load();
-    this.epoch = newEpoch();
     this.seq = 0;
     this.seqOf.clear();
     this.state = 'idle';
@@ -200,6 +202,12 @@ class Drive extends EventEmitter {
   }
 
   async stop() {
+    if (this.state === 'off') return;
+    if (this.state === 'starting') {
+      this.state = 'off'; // the index isn't loaded yet, so don't write it
+      this.emit('change');
+      return;
+    }
     clearInterval(this.scanTimer);
     clearTimeout(this.watchTimer);
     clearTimeout(this.retryTimer);
